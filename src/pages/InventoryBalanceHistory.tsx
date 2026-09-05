@@ -186,14 +186,12 @@ const REF_LABELS: Record<string, string> = {
   roll_auto_fg: 'ผลิตสินค้าจากม้วน',
 }
 
-function dateDaysBefore(value: string, days: number) {
-  const date = new Date(`${value}T00:00:00`)
-  date.setDate(date.getDate() - days)
-  return localDate(date)
+function firstDayOfMonth(value: string) {
+  return `${value.slice(0, 7)}-01`
 }
 
 function MovementModal({ product, reportDate, onClose }: { product: InventoryHistoryRow; reportDate: string; onClose: () => void }) {
-  const [dateFrom, setDateFrom] = useState(() => dateDaysBefore(reportDate, 30))
+  const [dateFrom, setDateFrom] = useState(() => firstDayOfMonth(reportDate))
   const [dateTo, setDateTo] = useState(reportDate)
   const [movements, setMovements] = useState<StockMovement[]>([])
   const [users, setUsers] = useState<Record<string, string>>({})

@@ -20,6 +20,7 @@ npm install
 2. สร้างไฟล์ `.env` ใน root directory:
 ```
 VITE_SUPABASE_URL=your_supabase_url
+VITE_APP_URL=https://tr-erp-umber.vercel.app
 VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
 ```
 

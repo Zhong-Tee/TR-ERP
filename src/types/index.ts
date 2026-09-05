@@ -717,6 +717,7 @@ export interface QCSession {
   total_items: number
   pass_count: number
   fail_count: number
+  skipped_count?: number
   kpi_score: number | null
   created_at: string
 }
@@ -726,7 +727,11 @@ export interface QCRecord {
   session_id: string
   item_uid: string
   qc_by: string
-  status: 'pass' | 'fail' | 'pending'
+  status: 'pass' | 'fail' | 'pending' | 'skipped'
+  order_id?: string | null
+  order_item_id?: string | null
+  unit_index?: number | null
+  result_source?: 'manual' | 'recheck' | 'skip' | 'legacy'
   fail_reason: string | null
   is_rejected: boolean
   retry_count: number
@@ -757,6 +762,10 @@ export interface QCRecord {
 /** QC session item (in-memory during QC Operation) */
 export interface QCItem {
   uid: string
+  /** Stable order references used internally; uid remains the printed/scanned label. */
+  source_order_id: string
+  source_order_item_id: string
+  unit_index: number
   /** item_uid แถว or_order_items — ใช้รองรับ session/qc_records รูปแบบเก่า */
   source_line_uid?: string
   product_code: string
@@ -917,8 +926,8 @@ export interface QCAttempt {
   session_id: string
   item_uid: string
   attempt_no: number
-  attempt_type: 'initial' | 'recheck' | 'special_recheck'
-  result: 'pass' | 'fail'
+  attempt_type: 'initial' | 'recheck' | 'special_recheck' | 'skip'
+  result: 'pass' | 'fail' | 'skipped'
   fail_reason: string | null
   qc_by: string
   started_at: string

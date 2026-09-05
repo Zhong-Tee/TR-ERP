@@ -322,9 +322,8 @@ export default function TransportVerification() {
     }
   }
 
-  async function exportSummaryPng() {
-    if (!summaryRef.current) return
-    setExportingPng(true)
+  async function renderSummaryCanvas(): Promise<HTMLCanvasElement> {
+    if (!summaryRef.current) throw new Error('ไม่พบข้อมูลสรุปสำหรับสร้างภาพ')
     let captureNode: HTMLElement | null = null
     try {
       const html2canvas = (await import('html2canvas')).default
@@ -339,6 +338,25 @@ export default function TransportVerification() {
       document.body.appendChild(captureNode)
       const canvas = await html2canvas(captureNode, { scale: 2, backgroundColor: '#ffffff' })
       setLastExportSize({ width: canvas.width, height: canvas.height })
+      return canvas
+    } finally {
+      captureNode?.remove()
+    }
+  }
+
+  function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (blob) resolve(blob)
+        else reject(new Error('ไม่สามารถแปลงข้อมูลเป็นภาพ PNG ได้'))
+      }, 'image/png')
+    })
+  }
+
+  async function exportSummaryPng() {
+    setExportingPng(true)
+    try {
+      const canvas = await renderSummaryCanvas()
       const link = document.createElement('a')
       link.download = `สรุปยอดขนส่ง_${dateFilter}.png`
       link.href = canvas.toDataURL('image/png')
@@ -346,7 +364,34 @@ export default function TransportVerification() {
     } catch (err: any) {
       setMessageModal({ open: true, title: 'สร้างภาพไม่ได้', message: err?.message || String(err) })
     } finally {
-      captureNode?.remove()
+      setExportingPng(false)
+    }
+  }
+
+  async function copySummaryPng() {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+      setMessageModal({
+        open: true,
+        title: 'คัดลอกรูปไม่ได้',
+        message: 'เบราว์เซอร์นี้ไม่รองรับการคัดลอกรูปภาพ กรุณาเปิดผ่าน Chrome หรือ Edge บน HTTPS',
+      })
+      return
+    }
+
+    setExportingPng(true)
+    try {
+      // ส่ง Promise<Blob> เข้า ClipboardItem ทันที เพื่อรักษาสิทธิ์จากการคลิก
+      // และใช้ canvas ชุดเดียวกับปุ่มบันทึก จึงได้ขนาดภาพเท่ากันทุกประการ
+      const pngBlob = renderSummaryCanvas().then(canvasToPngBlob)
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })])
+      setMessageModal({ open: true, title: 'คัดลอกรูปแล้ว', message: 'คัดลอกรูปสรุปไปยังคลิปบอร์ดเรียบร้อยแล้ว' })
+    } catch (err: any) {
+      setMessageModal({
+        open: true,
+        title: 'คัดลอกรูปไม่ได้',
+        message: err?.message || 'กรุณาอนุญาตการเข้าถึงคลิปบอร์ด แล้วลองใหม่อีกครั้ง',
+      })
+    } finally {
       setExportingPng(false)
     }
   }
@@ -657,6 +702,15 @@ export default function TransportVerification() {
                 ? `ขนาดภาพล่าสุด ${lastExportSize.width.toLocaleString()} × ${lastExportSize.height.toLocaleString()} px`
                 : 'ขนาดภาพกว้างประมาณ 1,700 px'}
             </span>
+            <button
+              type="button"
+              onClick={copySummaryPng}
+              disabled={exportingPng}
+              className="inline-flex h-9 items-center justify-center gap-1 px-4 py-0 rounded-xl text-sm font-semibold leading-none bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+            >
+              <span className="inline-flex items-center leading-none">📋</span>
+              <span className="inline-flex items-center leading-none">คัดลอกรูป</span>
+            </button>
             <button
               type="button"
               onClick={exportSummaryPng}

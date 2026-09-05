@@ -47,6 +47,7 @@ interface QcSession {
   total_items: number
   pass_count: number
   fail_count: number
+  skipped_count?: number
   kpi_score: number
 }
 interface QcAttempt {
@@ -57,7 +58,7 @@ interface QcAttempt {
   qc_by: string
   duration_seconds: number
   completed_at: string
-  qc_records: { qty: number | null } | { qty: number | null }[] | null
+  qc_records: { qty: number | null; status: string | null; result_source: string | null } | { qty: number | null; status: string | null; result_source: string | null }[] | null
 }
 interface PackLog {
   packed_by: string
@@ -229,7 +230,7 @@ async function fetchQcAttemptsForRange(tsFrom: string, tsTo: string): Promise<Qc
   for (let from = 0; ; from += pageSize) {
     const { data, error } = await supabase
       .from('qc_record_attempts')
-      .select('session_id, attempt_no, attempt_type, result, qc_by, duration_seconds, completed_at, qc_records(qty)')
+      .select('session_id, attempt_no, attempt_type, result, qc_by, duration_seconds, completed_at, qc_records(qty,status,result_source)')
       .gte('completed_at', tsFrom)
       .lte('completed_at', tsTo)
       .order('completed_at', { ascending: true })
@@ -240,7 +241,10 @@ async function fetchQcAttemptsForRange(tsFrom: string, tsTo: string): Promise<Qc
     rows.push(...page)
     if (page.length < pageSize) break
   }
-  return rows
+  return rows.filter((attempt) => {
+    const record = Array.isArray(attempt.qc_records) ? attempt.qc_records[0] : attempt.qc_records
+    return record?.status !== 'skipped' && record?.result_source !== 'skip'
+  })
 }
 
 function getQcAttemptQty(attempt: QcAttempt): number {
@@ -310,7 +314,7 @@ export default function KPIDashboard() {
         .gte('created_at', tsFrom)
         .lte('created_at', tsTo),
       supabase.from('qc_sessions')
-        .select('id, username, start_time, end_time, total_items, pass_count, fail_count, kpi_score')
+        .select('id, username, start_time, end_time, total_items, pass_count, fail_count, skipped_count, kpi_score')
         .not('end_time', 'is', null)
         .gte('start_time', tsFrom).lte('start_time', tsTo),
       fetchQcAttemptsForRange(tsFrom, tsTo),
@@ -613,7 +617,7 @@ export default function KPIDashboard() {
     // Legacy fallback: attempts before the audit table was introduced cannot be reconstructed.
     let totalScore = 0, totalItems = 0, totalPass = 0, totalFail = 0, weightedItems = 0
     sessions.forEach((session) => {
-      const items = Number(session.total_items) || 0
+      const items = Math.max(0, (Number(session.total_items) || 0) - (Number(session.skipped_count) || 0))
       totalItems += items
       totalPass += Number(session.pass_count) || 0
       totalFail += Number(session.fail_count) || 0
@@ -663,7 +667,7 @@ export default function KPIDashboard() {
     qcData.forEach((session) => {
       const name = session.username || 'N/A'
       if (!m[name]) m[name] = { name, sessions: 0, items: 0, pass: 0, fail: 0, weightedScore: 0, weightedItems: 0 }
-      const items = Number(session.total_items) || 0
+      const items = Math.max(0, (Number(session.total_items) || 0) - (Number(session.skipped_count) || 0))
       m[name].sessions++
       m[name].items += items
       m[name].pass += Number(session.pass_count) || 0

@@ -6,7 +6,6 @@ import {
   fetchWorkOrdersWithProgress,
   fetchItemsByWorkOrder,
   fetchOpenSessionForWo,
-  fetchLatestRecordsForWorkOrder,
   saveQcRecord,
   fetchSettingsReasons,
   fetchInkTypes,
@@ -59,6 +58,7 @@ import Papa from 'papaparse'
 import { isAdminOrSuperadmin } from '../config/accessPolicy'
 import UrgencyBadge, { WoUrgencyChips } from '../components/common/UrgencyBadge'
 import QcSkipAutomationSettings from '../components/qc/QcSkipAutomationSettings'
+import { stableOrderItemUnitKey } from '../lib/productionUnits'
 
 type QCView = 'qc' | 'reject' | 'report' | 'history' | 'settings'
 type QCStep = 'select' | 'working'
@@ -788,6 +788,7 @@ export default function QC() {
               total_items: 0,
               pass_count: 0,
               fail_count: 0,
+              skipped_count: 0,
             })
             .select('id')
             .single()
@@ -800,15 +801,24 @@ export default function QC() {
         }
       }
 
-      // ใบงานหนึ่งอาจมีหลาย session: ต้องคืนสถานะล่าสุดของ UID จากทุก session
-      // ให้ตรงกับตัวเลข Pass/คงเหลือบนการ์ดคิว
-      const records = await fetchLatestRecordsForWorkOrder(woName)
-      const recordByUid: Record<string, (typeof records)[number]> = {}
-      records.forEach((record) => { recordByUid[record.item_uid] = record })
+      // Restore only the current open session. Historical sessions must never
+      // pre-approve a new run, even when a bill/sequence UID is reused.
+      const records = openSession ? await fetchSessionRecords(openSession.id) : []
+      const recordByStableKey = new Map<string, (typeof records)[number]>()
+      const legacyRecordByUid = new Map<string, (typeof records)[number]>()
+      records.forEach((record) => {
+        if (record.order_item_id && record.unit_index) {
+          recordByStableKey.set(stableOrderItemUnitKey(record.order_item_id, record.unit_index), record)
+        } else {
+          legacyRecordByUid.set(record.item_uid, record)
+        }
+      })
       items.forEach((item) => {
-        const record = recordByUid[item.uid] ?? (item.source_line_uid ? recordByUid[item.source_line_uid] : undefined)
+        const record = recordByStableKey.get(stableOrderItemUnitKey(item.source_order_item_id, item.unit_index))
+          ?? legacyRecordByUid.get(item.uid)
+          ?? (item.source_line_uid ? legacyRecordByUid.get(item.source_line_uid) : undefined)
         if (record) {
-          item.status = record.status as 'pass' | 'fail' | 'pending'
+          item.status = record.status === 'skipped' ? 'pending' : record.status
           item.fail_reason = record.fail_reason ?? undefined
           item.check_time = record.created_at ? new Date(record.created_at) : undefined
         }
@@ -988,39 +998,28 @@ export default function QC() {
     setLoading(true)
     try {
       // ยืนยันผลจากฐานข้อมูลจริงก่อนปิด session ป้องกัน UI แสดงครบแต่บาง record บันทึกไม่สำเร็จ
-      const workOrderName = qcState.filename.startsWith('WO-') ? qcState.filename.slice(3) : ''
-      const persistedRecords = await fetchLatestRecordsForWorkOrder(workOrderName)
-      const persistedStatusByUid = new Map(persistedRecords.map((record) => [record.item_uid, record.status]))
+      const persistedRecords = await fetchSessionRecords(qcState.sessionId)
+      const persistedStatusByStableKey = new Map(
+        persistedRecords
+          .filter((record) => record.order_item_id && record.unit_index)
+          .map((record) => [stableOrderItemUnitKey(record.order_item_id!, record.unit_index!), record.status])
+      )
+      const legacyStatusByUid = new Map(
+        persistedRecords
+          .filter((record) => !record.order_item_id || !record.unit_index)
+          .map((record) => [record.item_uid, record.status])
+      )
       const missingPassCount = activeSessionItems.filter((item) => {
-        const status = persistedStatusByUid.get(item.uid)
-          ?? (item.source_line_uid ? persistedStatusByUid.get(item.source_line_uid) : undefined)
+        const status = persistedStatusByStableKey.get(stableOrderItemUnitKey(item.source_order_item_id, item.unit_index))
+          ?? legacyStatusByUid.get(item.uid)
+          ?? (item.source_line_uid ? legacyStatusByUid.get(item.source_line_uid) : undefined)
         return status !== 'pass'
       }).length
       if (missingPassCount > 0) {
         throw new Error(`ผลตรวจในฐานข้อมูลยังไม่ครบ ${missingPassCount} รายการ กรุณาตรวจรายการอีกครั้ง`)
       }
-      const endTime = new Date()
-      const durationSeconds = (endTime.getTime() - (qcState.startTime?.getTime() || endTime.getTime())) / 1000
-      const kpi = totalItems > 0 ? durationSeconds / totalItems : 0
-      const { error: updateErr } = await supabase
-        .from('qc_sessions')
-        .update({
-          end_time: endTime.toISOString(),
-          total_items: totalItems,
-          pass_count: passedItems,
-          fail_count: failedItems,
-          kpi_score: kpi,
-        })
-        .eq('id', qcState.sessionId)
-      if (updateErr) throw updateErr
-      // Finish Job เป็น idempotent: แม้ session ปัจจุบันถูกปิดไปแล้วจากการกดครั้งก่อน
-      // ให้ปิด session อื่นที่ยังค้างและดำเนินการล้างหน้าจอต่อได้
-      const { error: staleSessionError } = await supabase
-        .from('qc_sessions')
-        .update({ end_time: endTime.toISOString() })
-        .eq('filename', qcState.filename)
-        .is('end_time', null)
-      if (staleSessionError) throw staleSessionError
+      const { error: finishError } = await supabase.rpc('qc_finish_session', { p_session_id: qcState.sessionId })
+      if (finishError) throw finishError
       if (activeTotalItems > 0 && activePassedItems === activeTotalItems && activeFailedItems === 0) {
         const woName = qcState.filename?.startsWith('WO-') ? qcState.filename.slice(3) : ''
         if (woName) {
@@ -1098,7 +1097,9 @@ export default function QC() {
 
         // Sync สถานะกลับไปที่ qcData.items เพื่อให้ QC Operation แสดงผลถูกต้อง
         const updatedItems = qcData.items.map((i) =>
-          i.uid === currentRejectItem.item_uid || i.source_line_uid === currentRejectItem.item_uid
+          (currentRejectItem.order_item_id && currentRejectItem.unit_index
+            ? i.source_order_item_id === currentRejectItem.order_item_id && i.unit_index === currentRejectItem.unit_index
+            : i.uid === currentRejectItem.item_uid || i.source_line_uid === currentRejectItem.item_uid)
             ? { ...i, status: 'pass' as const, fail_reason: undefined, check_time: new Date() }
             : i
         )
@@ -1178,7 +1179,24 @@ export default function QC() {
     try {
       const [data, attempts] = await Promise.all([fetchSessionRecords(session.id), fetchQcAttemptsBySession(session.id)])
       setSessionItems(data)
-      setSessionAttempts(attempts as QCAttempt[])
+      const skippedRows: QCAttempt[] = data
+        .filter((record) => record.status === 'skipped' && !attempts.some((attempt) => attempt.qc_record_id === record.id))
+        .map((record) => ({
+          id: `skip-${record.id}`,
+          qc_record_id: record.id,
+          session_id: record.session_id,
+          item_uid: record.item_uid,
+          attempt_no: 0,
+          attempt_type: 'skip',
+          result: 'skipped',
+          fail_reason: null,
+          qc_by: record.qc_by,
+          started_at: record.created_at,
+          completed_at: record.created_at,
+          duration_seconds: 0,
+          created_at: record.created_at,
+        }))
+      setSessionAttempts([...(attempts as QCAttempt[]), ...skippedRows])
       setShowSessionModal(true)
     } catch (e: any) {
       alert('โหลดไม่สำเร็จ: ' + (e?.message || e))
@@ -1352,28 +1370,43 @@ export default function QC() {
       const now = new Date()
       const filename = `WO-${woName}`
 
-      // สร้าง session ที่จบแล้ว
-      const { data: session, error: sessErr } = await supabase
-        .from('qc_sessions')
-        .insert({
-          username: qcUsername,
-          filename,
-          start_time: now.toISOString(),
-          end_time: now.toISOString(),
-          total_items: items.length,
-          pass_count: items.length,
-          fail_count: 0,
-          kpi_score: 0,
-        })
-        .select('id')
-        .single()
-      if (sessErr) throw sessErr
+      // Reuse an open session when present; otherwise create it as open and
+      // close it only after every skipped record has been written successfully.
+      const existingSession = await fetchOpenSessionForWo(woName)
+      let skipSessionId = existingSession?.id ?? null
+      if (!skipSessionId) {
+        const { data: session, error: sessErr } = await supabase
+          .from('qc_sessions')
+          .insert({
+            username: qcUsername,
+            filename,
+            start_time: now.toISOString(),
+            end_time: null,
+            total_items: 0,
+            pass_count: 0,
+            fail_count: 0,
+            skipped_count: 0,
+            kpi_score: 0,
+          })
+          .select('id')
+          .single()
+        if (sessErr) throw sessErr
+        skipSessionId = session.id
+      }
 
-      // บันทึก QC records ทุกรายการเป็น pass
+      // Record an authorized skip distinctly from an actual inspection pass.
       const records = items.map((item) => ({
-        session_id: session.id,
+        session_id: skipSessionId,
         item_uid: item.uid,
-        status: 'pass',
+        order_id: item.source_order_id,
+        order_item_id: item.source_order_item_id,
+        unit_index: item.unit_index,
+        status: 'skipped',
+        result_source: 'skip',
+        workflow_status: 'closed',
+        is_rejected: false,
+        resolved_at: now.toISOString(),
+        last_result_at: now.toISOString(),
         qc_by: qcUsername,
         product_name: item.product_name,
         product_code: item.product_code,
@@ -1388,15 +1421,24 @@ export default function QC() {
         qty: item.qty,
         remark: 'ข้ามการ QC',
       }))
-      const { error: recErr } = await supabase.from('qc_records').insert(records)
+      const { error: recErr } = await supabase.from('qc_records').upsert(records, {
+        onConflict: 'session_id,order_item_id,unit_index',
+      })
       if (recErr) throw recErr
 
-      // ปิด session ที่ยังค้างของใบงานนี้ทั้งหมด เพื่อไม่ให้ยังโชว์ใน QC Operation
-      await supabase
+      const { error: closeSkipError } = await supabase
         .from('qc_sessions')
-        .update({ end_time: now.toISOString() })
-        .eq('filename', filename)
+        .update({
+          end_time: now.toISOString(),
+          total_items: items.length,
+          pass_count: 0,
+          fail_count: 0,
+          skipped_count: items.length,
+          kpi_score: 0,
+        })
+        .eq('id', skipSessionId)
         .is('end_time', null)
+      if (closeSkipError) throw closeSkipError
 
       // อัปเดต plan — superadmin/admin ไม่บันทึกเวลาเริ่ม
       const skipTrackEnd = isAdminOrSuperadmin(user?.role)
@@ -2682,6 +2724,7 @@ export default function QC() {
                     <th className="px-4 py-3">ไฟล์</th>
                     <th className="px-4 py-3 text-center">ทั้งหมด</th>
                     <th className="px-4 py-3 text-center text-green-600">ผ่าน</th>
+                    <th className="px-4 py-3 text-center text-amber-600">ข้าม QC</th>
                     <th className="px-4 py-3 text-center text-red-600">ไม่ผ่าน</th>
                     <th className="px-4 py-3 text-center">ตัวชี้วัด (ชม:นาที:วินาที)</th>
                     <th className="px-4 py-3 text-center">ดำเนินการ</th>
@@ -2700,6 +2743,7 @@ export default function QC() {
                       <td className="px-4 py-3 truncate max-w-[200px] italic">{s.filename}</td>
                       <td className="px-4 py-3 text-center font-bold">{s.total_items}</td>
                       <td className="px-4 py-3 text-center font-bold text-green-600">{s.pass_count}</td>
+                      <td className="px-4 py-3 text-center font-bold text-amber-600">{s.skipped_count || 0}</td>
                       <td className="px-4 py-3 text-center font-bold text-red-600">{s.fail_count}</td>
                       <td className="px-4 py-3 text-center">
                         <span className="bg-gray-100 px-2 py-1 rounded font-mono font-bold">{(() => {
@@ -2782,6 +2826,7 @@ export default function QC() {
                           <span className="text-gray-500 text-[10px]">{rec.product_name || '-'}</span>
                         </div>
                         {rec.status === 'pass' && <span className="text-green-500 shrink-0">✓</span>}
+                        {rec.status === 'skipped' && <span className="text-amber-500 shrink-0">ข้าม</span>}
                         {rec.status === 'fail' && <span className="text-red-500 shrink-0">✗</span>}
                       </div>
                     ))}
@@ -2884,10 +2929,14 @@ export default function QC() {
                           <div className="flex gap-2 items-center">
                             <span
                               className={`px-4 py-2 rounded-xl font-bold ${
-                                currentHistoryRecord.status === 'pass' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'
+                                currentHistoryRecord.status === 'pass'
+                                  ? 'bg-green-500 text-white'
+                                  : currentHistoryRecord.status === 'skipped'
+                                    ? 'bg-amber-500 text-white'
+                                    : 'bg-red-500 text-white'
                               }`}
                             >
-                              {currentHistoryRecord.status === 'pass' ? 'ผ่าน' : 'ไม่ผ่าน'}
+                              {currentHistoryRecord.status === 'pass' ? 'ผ่าน' : currentHistoryRecord.status === 'skipped' ? 'ข้าม QC' : 'ไม่ผ่าน'}
                             </span>
                             {currentHistoryRecord.status === 'fail' && currentHistoryRecord.fail_reason && (
                               <span className="text-red-600 font-medium">เหตุผล: {currentHistoryRecord.fail_reason}</span>
@@ -3669,7 +3718,7 @@ export default function QC() {
         </div>
         <div className="p-4 text-sm text-gray-700">
           <p>ต้องการข้ามการ QC ใบงาน <strong className="text-amber-700">{skipQcConfirmWo}</strong> ทั้งหมดใช่หรือไม่?</p>
-          <p className="mt-2 text-red-500 text-xs">* ระบบจะบันทึกทุกรายการเป็น "ผ่าน" และจบงานอัตโนมัติ</p>
+          <p className="mt-2 text-red-500 text-xs">* ระบบจะบันทึกทุกรายการเป็น "ข้าม QC" (ไม่ใช่ผลตรวจผ่าน) และจบงานอัตโนมัติ</p>
         </div>
           {isProduction && skipQcConfirmWo && skipEligibilityByWo[skipQcConfirmWo] && (
             <div className="mx-4 mb-3 rounded-lg bg-amber-50 p-3 text-xs text-amber-800">
@@ -3950,8 +3999,8 @@ export default function QC() {
                   <td className="px-3 py-2 text-center font-bold">{formatDuration(attempt.duration_seconds)}</td>
                   <td className="px-3 py-2 font-mono font-bold text-blue-600">{attempt.item_uid}</td>
                   <td className="px-3 py-2 text-center">
-                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${attempt.result === 'pass' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}>
-                      {attempt.result === 'pass' ? 'ผ่าน' : 'ไม่ผ่าน'}
+                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${attempt.result === 'pass' ? 'bg-green-500 text-white' : attempt.result === 'skipped' ? 'bg-amber-500 text-white' : 'bg-red-500 text-white'}`}>
+                      {attempt.result === 'pass' ? 'ผ่าน' : attempt.result === 'skipped' ? 'ข้าม QC' : 'ไม่ผ่าน'}
                     </span>
                   </td>
                   <td className="px-3 py-2 text-center font-bold">{attempt.attempt_no}</td>

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import { buildIlikeOr, buildWhitespaceTolerantTrackingPattern } from '../../lib/searchFilter'
 import { fetchLatestRejectedManualSlipOrderIds, fetchLatestRejectedOverpayOrderIds } from '../../lib/rejectedOverpayRefunds'
+import { hasDuplicateSlipError, manualSlipSubmissionMode } from '../../lib/manualSlipRules'
 import { Order, OrderStatus } from '../../types'
 import { formatDateTime } from '../../lib/utils'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -15,6 +16,14 @@ import {
   isSalesTrTeamRole,
   resolveSalesPumpOwnerAdminName,
 } from '../../config/accessPolicy'
+
+type ManualSlipEligibility = {
+  allowed: boolean
+  reason: 'normal' | 'fallback_duplicate_review' | 'exact_trans_ref_duplicate' | 'cancelled_order'
+  requires_exception_review?: boolean
+  duplicate_order_id?: string
+  duplicate_bill_no?: string | null
+}
 
 interface OrderListProps {
   /** กรองตามสถานะบิล (ไม่ใช้เมื่อ filterByRejectedOverpayRefund = true) */
@@ -149,10 +158,27 @@ export default function OrderList({
   const [slipCheckSubmitting, setSlipCheckSubmitting] = useState(false)
   const [slipCheckSlipUrls, setSlipCheckSlipUrls] = useState<string[]>([])
   const [slipCheckSlipLoading, setSlipCheckSlipLoading] = useState(false)
+  const [slipCheckExceptionReview, setSlipCheckExceptionReview] = useState(false)
   const [slipCheckResult, setSlipCheckResult] = useState<{ open: boolean; success: boolean; message: string }>({ open: false, success: false, message: '' })
   const [slipCheckImageZoom, setSlipCheckImageZoom] = useState<string | null>(null)
 
   async function openSlipCheckModal(order: Order) {
+    const { data: eligibilityData, error: eligibilityError } = await supabase.rpc('manual_slip_submission_eligibility', {
+      p_order_id: order.id,
+    })
+    if (eligibilityError) {
+      setSlipCheckResult({ open: true, success: false, message: 'ตรวจสอบสิทธิ์ส่งสลิปไม่สำเร็จ: ' + eligibilityError.message })
+      return
+    }
+    const eligibility = eligibilityData as ManualSlipEligibility
+    if (!eligibility.allowed) {
+      const message = eligibility.reason === 'exact_trans_ref_duplicate'
+        ? `สลิปนี้ถูกใช้แล้วในบิล ${eligibility.duplicate_bill_no || '-'} จึงไม่สามารถส่งตรวจสลิปมือได้`
+        : 'บิลถูกยกเลิกแล้ว จึงไม่สามารถส่งตรวจสลิปมือได้'
+      setSlipCheckResult({ open: true, success: false, message })
+      return
+    }
+    setSlipCheckExceptionReview(Boolean(eligibility.requires_exception_review))
     setSlipCheckOrder(order)
     setSlipCheckForms([])
     setSlipCheckSlipUrls([])
@@ -195,20 +221,27 @@ export default function OrderList({
     if (filledForms.length === 0) return
     setSlipCheckSubmitting(true)
     try {
-      await supabase.from('ac_manual_slip_checks').delete().eq('order_id', slipCheckOrder.id)
-
       const payload = filledForms.map(f => ({
-        order_id: slipCheckOrder.id,
-        bill_no: slipCheckOrder.bill_no,
         transfer_date: f.transfer_date,
         transfer_time: f.transfer_time,
         transfer_amount: parseFloat(f.transfer_amount),
-        submitted_by: user?.username || user?.email || 'unknown',
       }))
-      const { error } = await supabase.from('ac_manual_slip_checks').insert(payload)
+      const { data, error } = await supabase.rpc('manual_slip_submit', {
+        p_order_id: slipCheckOrder.id,
+        p_entries: payload,
+      })
       if (error) throw error
-      setSlipCheckResult({ open: true, success: true, message: `ส่งตรวจสลิปเรียบร้อย ${filledForms.length} รายการ` })
+      const result = (data || {}) as { inserted_count?: number; requires_exception_review?: boolean }
+      setSlipCheckResult({
+        open: true,
+        success: true,
+        message: result.requires_exception_review
+          ? `ส่งตรวจกรณีพิเศษเรียบร้อย ${result.inserted_count || filledForms.length} รายการ`
+          : `ส่งตรวจสลิปเรียบร้อย ${result.inserted_count || filledForms.length} รายการ`,
+      })
       setSlipCheckOrder(null)
+      setSlipCheckExceptionReview(false)
+      void loadOrders()
     } catch (e: any) {
       setSlipCheckResult({ open: true, success: false, message: 'ส่งไม่สำเร็จ: ' + (e?.message || e) })
     } finally {
@@ -538,9 +571,30 @@ export default function OrderList({
             orderIdToSlipsTotal.set(slip.order_id, prev + (Number(slip.verified_amount) || 0))
           })
         }
+
+        // Exact transRef duplicates are definitive and cannot be overridden by
+        // manual approval. Amount/date-only matches remain reviewable.
+        const statusValues = Array.isArray(status) ? status : status ? [status] : []
+        const listHasManualSlipActions = includeRejectedOverpayRefundOrders || filterByRejectedOverpayRefund ||
+          statusValues.some((value) => value === 'ตรวจสอบไม่ผ่าน' || value === 'ตรวจสอบไม่สำเร็จ') ||
+          filteredData.some((order: any) => order.status === 'ตรวจสอบไม่ผ่าน' || order.status === 'ตรวจสอบไม่สำเร็จ')
+        const exactDuplicateResult = listHasManualSlipActions
+          ? await supabase.rpc('manual_slip_exact_duplicate_orders', { p_order_ids: orderIds })
+          : { data: [], error: null }
+        const { data: exactDuplicateRows, error: exactDuplicateError } = exactDuplicateResult
+        const exactDuplicateByOrder = new Map<string, { duplicate_order_id: string; duplicate_bill_no: string | null }>()
+        for (const row of (exactDuplicateRows || []) as Array<{ order_id: string; duplicate_order_id: string; duplicate_bill_no: string | null }>) {
+          exactDuplicateByOrder.set(row.order_id, {
+            duplicate_order_id: row.duplicate_order_id,
+            duplicate_bill_no: row.duplicate_bill_no,
+          })
+        }
         
         // Add verification data and ยอดรวมสลิป (จาก ac_verified_slips ไม่รวมที่ลบ) ต่อ order
         filteredData = filteredData.map((order: any) => {
+          const orderSlips = verifiedMap.get(order.id) || []
+          const hasDuplicateBadge = orderSlips.some((slip: any) => hasDuplicateSlipError(slip.validation_errors))
+          const exactDuplicate = exactDuplicateByOrder.get(order.id)
           const slipsTotal = orderIdToSlipsTotal.get(order.id) ?? null
           const orderTotal = order.total_amount != null ? Number(order.total_amount) : 0
           const amountMatchesFromSlips =
@@ -549,9 +603,13 @@ export default function OrderList({
               : null
           return {
             ...order,
-            verified_slips: verifiedMap.get(order.id) || [],
+            verified_slips: orderSlips,
             slip_logs_total_amount: slipsTotal,
             slip_logs_amount_matches: amountMatchesFromSlips,
+            manual_slip_exact_duplicate: Boolean(exactDuplicate) || (Boolean(exactDuplicateError) && hasDuplicateBadge),
+            manual_slip_duplicate_lookup_failed: Boolean(exactDuplicateError) && hasDuplicateBadge,
+            manual_slip_duplicate_bill_no: exactDuplicate?.duplicate_bill_no || null,
+            manual_slip_fallback_duplicate: hasDuplicateBadge && !exactDuplicate && !exactDuplicateError,
           }
         })
 
@@ -754,6 +812,25 @@ export default function OrderList({
             'จัดส่งแล้ว',
             'ยกเลิก',
           ].includes(order.status)
+
+        const manualSlipMode = manualSlipSubmissionMode({
+          hasPending: (order as any).manual_slip_badge === 'pending',
+          hasDuplicateBadge: (order as any).verified_slips?.some((slip: any) => hasDuplicateSlipError(slip.validation_errors)) === true,
+          hasExactTransRefDuplicate: Boolean((order as any).manual_slip_exact_duplicate) && !(order as any).manual_slip_duplicate_lookup_failed,
+          duplicateLookupFailed: Boolean((order as any).manual_slip_duplicate_lookup_failed),
+        })
+        const exactManualSlipDuplicate = manualSlipMode === 'blocked_exact' || manualSlipMode === 'blocked_safe'
+        const manualSlipAlreadyPending = manualSlipMode === 'pending'
+        const manualSlipDisabled = exactManualSlipDuplicate || manualSlipAlreadyPending
+        const manualSlipButtonTitle = exactManualSlipDuplicate
+          ? ((order as any).manual_slip_duplicate_lookup_failed
+              ? 'ตรวจสอบเลขอ้างอิงสลิปซ้ำไม่สำเร็จ ระบบจึงปิดการส่งไว้เพื่อความปลอดภัย'
+              : `สลิปถูกใช้แล้วในบิล ${(order as any).manual_slip_duplicate_bill_no || '-'} ไม่สามารถส่งตรวจสลิปมือได้`)
+          : manualSlipAlreadyPending
+            ? 'ส่งตรวจสลิปมือแล้ว กรุณารอฝ่ายบัญชีดำเนินการ'
+            : (order as any).manual_slip_fallback_duplicate
+              ? 'ผลซ้ำจากยอดและเวลาเท่านั้น สามารถส่งตรวจกรณีพิเศษได้'
+              : 'ส่งตรวจสลิปมือ'
 
         const cardBg = orderIdx % 2 === 0
           ? 'bg-white border-l-4 border-l-blue-400 border border-gray-100'
@@ -1111,9 +1188,18 @@ export default function OrderList({
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); openSlipCheckModal(order) }}
-                    className="px-3 py-2 bg-orange-500 hover:bg-orange-600 text-white text-xs font-bold rounded-xl whitespace-nowrap transition"
+                    disabled={manualSlipDisabled}
+                    title={manualSlipButtonTitle}
+                    className="px-3 py-2 bg-orange-500 hover:bg-orange-600 disabled:bg-gray-300 disabled:text-gray-600 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl whitespace-nowrap transition"
                   >
-                    <i className="fas fa-paper-plane mr-1"></i>ส่งตรวจสลิป
+                    <i className={`fas ${exactManualSlipDuplicate ? 'fa-ban' : 'fa-paper-plane'} mr-1`}></i>
+                    {exactManualSlipDuplicate
+                      ? 'ส่งตรวจไม่ได้'
+                      : manualSlipAlreadyPending
+                        ? 'รอตรวจสลิปมือ'
+                        : (order as any).manual_slip_fallback_duplicate
+                          ? 'ส่งตรวจกรณีพิเศษ'
+                          : 'ส่งตรวจสลิป'}
                   </button>
                   {enableFailureArchive && canArchiveFailure && !order.failed_queue_archived_at && (
                     <button
@@ -1308,7 +1394,7 @@ export default function OrderList({
         }}
       />
 
-      <Modal open={!!slipCheckOrder} onClose={() => setSlipCheckOrder(null)} contentClassName="max-w-4xl w-full">
+      <Modal open={!!slipCheckOrder} onClose={() => { setSlipCheckOrder(null); setSlipCheckExceptionReview(false) }} contentClassName="max-w-4xl w-full">
         {slipCheckOrder && (
           <div className="flex flex-col max-h-[90vh]">
             <div className="p-6 border-b border-gray-200 shrink-0">
@@ -1317,6 +1403,12 @@ export default function OrderList({
                 บิล <span className="font-mono font-bold text-blue-600">{slipCheckOrder.bill_no}</span> — ยอดรวม ฿{slipCheckOrder.total_amount?.toLocaleString()}
                 {slipCheckSlipUrls.length > 0 && <span className="ml-2 text-gray-400">({slipCheckSlipUrls.length} สลิป)</span>}
               </p>
+              {slipCheckExceptionReview && (
+                <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+                  <i className="fas fa-exclamation-triangle mr-2"></i>
+                  พบข้อมูลซ้ำจากยอดและเวลา แต่ไม่พบเลขอ้างอิงธุรกรรมซ้ำ — รายการนี้จะส่งเป็น “ตรวจสอบกรณีพิเศษ”
+                </div>
+              )}
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-4">
@@ -1398,7 +1490,7 @@ export default function OrderList({
                 </div>
                 <div className="flex gap-3">
                   <button
-                    onClick={() => setSlipCheckOrder(null)}
+                    onClick={() => { setSlipCheckOrder(null); setSlipCheckExceptionReview(false) }}
                     className="px-5 py-2.5 border border-gray-300 rounded-lg font-semibold text-gray-600 hover:bg-gray-50 transition"
                   >
                     ยกเลิก
@@ -1408,7 +1500,9 @@ export default function OrderList({
                     disabled={slipCheckSubmitting || slipCheckForms.filter(f => f.transfer_date && f.transfer_time && f.transfer_amount).length === 0}
                     className="px-5 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition disabled:opacity-50"
                   >
-                    {slipCheckSubmitting ? 'กำลังส่ง...' : `ยืนยัน (${slipCheckForms.filter(f => f.transfer_date && f.transfer_time && f.transfer_amount).length} รายการ)`}
+                    {slipCheckSubmitting
+                      ? 'กำลังส่ง...'
+                      : `${slipCheckExceptionReview ? 'ยืนยันส่งกรณีพิเศษ' : 'ยืนยัน'} (${slipCheckForms.filter(f => f.transfer_date && f.transfer_time && f.transfer_amount).length} รายการ)`}
                   </button>
                 </div>
               </div>

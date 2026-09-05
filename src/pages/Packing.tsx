@@ -4,7 +4,7 @@ import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { getPublicUrl, fetchInkTypes } from '../lib/qcApi'
 import { supabase } from '../lib/supabase'
 import { Order, OrderItem, WorkOrder, InkType, PackingMeta } from '../types'
-import { flatBillUnitUid, normalizedLineQuantity } from '../lib/productionUnits'
+import { flatBillUnitUid, normalizedLineQuantity, stableOrderItemUnitKey } from '../lib/productionUnits'
 import { sortOrderItemsForExport } from '../lib/orderItemExportSort'
 import { isCondoStampProductName } from '../lib/condoStamp'
 import { SELF_PICKUP_CHANNELS } from '../lib/channelBehavior'
@@ -172,9 +172,12 @@ function packingGroupLabel(item: PackingItem): string {
 function resolvePackingQcStatus(
   qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>,
   unitUid: string,
-  sourceLineUid: string | null | undefined
+  sourceLineUid: string | null | undefined,
+  orderItemId: string | null | undefined,
+  unitIndex: number
 ): 'pass' | 'fail' | 'skip' | null {
-  return qcStatusMap[unitUid] ?? (sourceLineUid ? qcStatusMap[sourceLineUid] : undefined) ?? null
+  const stableStatus = orderItemId ? qcStatusMap[stableOrderItemUnitKey(orderItemId, unitIndex)] : undefined
+  return stableStatus ?? qcStatusMap[unitUid] ?? (sourceLineUid ? qcStatusMap[sourceLineUid] : undefined) ?? null
 }
 
 function buildPackingItemsFromOrder(
@@ -205,7 +208,7 @@ function buildPackingItemsFromOrder(
       // Legacy QC records can be keyed by the original order-line UID, while
       // current records use bill-unit UID. Match the same fallback used by the
       // QC Operation queue so Packing cannot disagree with a completed session.
-      const qcStatus = resolvePackingQcStatus(qcStatusMap, unitUid, item.item_uid)
+      const qcStatus = resolvePackingQcStatus(qcStatusMap, unitUid, item.item_uid, item.id, c + 1)
       rows.push({
         bill_no: order.bill_no || '',
         channel_code: order.channel_code || '',
@@ -1619,10 +1622,14 @@ export default function Packing() {
       )
       const bill = String(ord.bill_no || '').trim() || '—'
       const unitUids = Array.from({ length: totalUnits }, (_, i) => flatBillUnitUid(bill, i + 1))
+      const stableUnits: Array<{ orderItemId: string; unitIndex: number }> = []
       sortedPackingOrderItems(ord).forEach((item: any) => {
         if (item.item_uid) unitUids.push(item.item_uid)
+        for (let unitIndex = 1; unitIndex <= normalizedLineQuantity(item.quantity); unitIndex += 1) {
+          if (item.id) stableUnits.push({ orderItemId: item.id, unitIndex })
+        }
       })
-      const qcStatusMap = await fetchQcStatusMap(unitUids)
+      const qcStatusMap = await fetchQcStatusMap(unitUids, stableUnits)
       const selfPickupChannelCodes = await fetchSelfPickupChannelCodes()
       const rows = buildPackingItemsFromOrder(ord, qcStatusMap, scannedKeySet, selfPickupChannelCodes)
       setTagSearchRows(rows)
@@ -1958,7 +1965,7 @@ export default function Packing() {
             .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN),
           supabase
             .from('qc_sessions')
-            .select('filename')
+            .select('filename, total_items, pass_count, fail_count, skipped_count')
             .not('end_time', 'is', null)
             .in('filename', names.map((n) => `WO-${n}`)),
           supabase
@@ -1976,13 +1983,18 @@ export default function Packing() {
         )
 
         const finishedWoSet = new Set(
-          (finishedSessions || []).map((s: any) => (s.filename as string).replace(/^WO-/, ''))
+          (finishedSessions || [])
+            .filter((s: any) => Number(s.total_items) > 0
+              && Number(s.pass_count || 0) + Number(s.skipped_count || 0) === Number(s.total_items)
+              && Number(s.fail_count || 0) === 0)
+            .map((s: any) => (s.filename as string).replace(/^WO-/, ''))
         )
         const skippedWoSet = new Set(
           (skipLogsData || []).map((s: any) => s.work_order_name as string)
         )
 
         const allUnitUids: string[] = []
+        const allStableUnits: Array<{ orderItemId: string; unitIndex: number }> = []
         ;(allProductionOrders || []).forEach((o: any) => {
           const bill = String(o.bill_no || '').trim() || '—'
           let seq = 0
@@ -1992,10 +2004,11 @@ export default function Packing() {
             for (let i = 0; i < n; i += 1) {
               seq += 1
               allUnitUids.push(flatBillUnitUid(bill, seq))
+              if (oi.id) allStableUnits.push({ orderItemId: oi.id, unitIndex: i + 1 })
             }
           })
         })
-        const qcStatusMap = await fetchQcStatusMap(allUnitUids)
+        const qcStatusMap = await fetchQcStatusMap(allUnitUids, allStableUnits)
 
         const allOrderIds = (allProductionOrders || []).map((o: any) => o.id).filter(Boolean)
         const scannedKeySet = await fetchPackingUnitScanKeySet(allOrderIds)
@@ -2039,7 +2052,7 @@ export default function Packing() {
               for (let i = 0; i < n; i += 1) {
                 seq += 1
                 const unitUid = flatBillUnitUid(bill, seq)
-                const st = resolvePackingQcStatus(qcStatusMap, unitUid, oi.item_uid)
+                const st = resolvePackingQcStatus(qcStatusMap, unitUid, oi.item_uid, oi.id, i + 1)
                 if (st === 'pass' || st === 'skip') unitReady += 1
                 const key = `${o.id}\u0001${unitUid}`
                 if (scannedKeySet.has(key)) unitScanned += 1
@@ -2067,7 +2080,7 @@ export default function Packing() {
               for (let i = 0; i < n; i += 1) {
                 seq += 1
                 allUnitCount += 1
-                if (resolvePackingQcStatus(qcStatusMap, flatBillUnitUid(bill, seq), oi.item_uid) === 'skip') skipUnitCount += 1
+                if (resolvePackingQcStatus(qcStatusMap, flatBillUnitUid(bill, seq), oi.item_uid, oi.id, i + 1) === 'skip') skipUnitCount += 1
               }
             })
           })
@@ -2173,6 +2186,7 @@ export default function Packing() {
       }
       const scannedKeySet = await fetchPackingUnitScanKeySet(ordersWithTracking.map((o) => o.id))
       const unitUids: string[] = []
+      const stableUnits: Array<{ orderItemId: string; unitIndex: number }> = []
       ordersWithTracking.forEach((order) => {
         const bill = String(order.bill_no || '').trim() || '—'
         const activeItems = sortedPackingOrderItems(order)
@@ -2185,9 +2199,12 @@ export default function Packing() {
         }
         activeItems.forEach((item: any) => {
           if (item.item_uid) unitUids.push(item.item_uid)
+          for (let unitIndex = 1; unitIndex <= normalizedLineQuantity(item.quantity); unitIndex += 1) {
+            if (item.id) stableUnits.push({ orderItemId: item.id, unitIndex })
+          }
         })
       })
-      const qcStatusMap = await fetchQcStatusMap(unitUids)
+      const qcStatusMap = await fetchQcStatusMap(unitUids, stableUnits)
       await prepareDataForPacking(
         ordersWithTracking,
         qcStatusMap,
@@ -2205,16 +2222,23 @@ export default function Packing() {
     }
   }
 
-  async function fetchQcStatusMap(itemUids: Array<string | null | undefined>) {
+  async function fetchQcStatusMap(
+    itemUids: Array<string | null | undefined>,
+    stableUnits: Array<{ orderItemId: string; unitIndex: number }> = []
+  ) {
     const uniqueUids = Array.from(new Set(itemUids.filter((uid): uid is string => !!uid && String(uid).trim() !== '')))
-    if (uniqueUids.length === 0) return {}
+    const uniqueOrderItemIds = Array.from(new Set(stableUnits.map((unit) => unit.orderItemId).filter(Boolean)))
+    if (uniqueUids.length === 0 && uniqueOrderItemIds.length === 0) return {}
 
     // PostgREST limits a response page. Fetch every matching record in bounded
     // UID batches, otherwise an older/high-volume WO can silently lose statuses.
     const rows: Array<{
       id: string
       item_uid: string
+      order_item_id: string | null
+      unit_index: number | null
       status: string
+      result_source: string | null
       remark: string | null
       created_at: string | null
       last_result_at: string | null
@@ -2226,7 +2250,7 @@ export default function Packing() {
       for (let from = 0; ; from += pageSize) {
         const { data, error } = await supabase
           .from('qc_records')
-          .select('id, item_uid, status, remark, created_at, last_result_at')
+          .select('id, item_uid, order_item_id, unit_index, status, result_source, remark, created_at, last_result_at')
           .in('item_uid', batch)
           .order('id', { ascending: true })
           .range(from, from + pageSize - 1)
@@ -2239,18 +2263,43 @@ export default function Packing() {
       }
     }
 
-    rows.sort((a, b) => {
+    for (let batchStart = 0; batchStart < uniqueOrderItemIds.length; batchStart += uidBatchSize) {
+      const batch = uniqueOrderItemIds.slice(batchStart, batchStart + uidBatchSize)
+      for (let from = 0; ; from += pageSize) {
+        const { data, error } = await supabase
+          .from('qc_records')
+          .select('id, item_uid, order_item_id, unit_index, status, result_source, remark, created_at, last_result_at')
+          .in('order_item_id', batch)
+          .order('id', { ascending: true })
+          .range(from, from + pageSize - 1)
+        if (error) {
+          console.error('QC stable status load error:', error)
+          return {}
+        }
+        rows.push(...((data || []) as typeof rows))
+        if (!data || data.length < pageSize) break
+      }
+    }
+
+    const dedupedRows = Array.from(new Map(rows.map((row) => [row.id, row])).values())
+    dedupedRows.sort((a, b) => {
       const timeDiff = new Date(a.last_result_at || 0).getTime() - new Date(b.last_result_at || 0).getTime()
       return timeDiff !== 0 ? timeDiff : a.id.localeCompare(b.id)
     })
     const map: Record<string, 'pass' | 'fail' | 'skip'> = {}
-    rows.forEach((row) => {
+    dedupedRows.forEach((row) => {
       const uid = row.item_uid
-      if (!uid) return
-      if (row.status === 'pass' && row.remark === 'ข้ามการ QC') {
-        map[uid] = 'skip'
-      } else if (row.status === 'pass' || row.status === 'fail') {
-        map[uid] = row.status
+      const status: 'pass' | 'fail' | 'skip' | null = row.status === 'skipped'
+        || row.result_source === 'skip'
+        || (row.status === 'pass' && row.remark === 'ข้ามการ QC')
+        ? 'skip'
+        : row.status === 'pass' || row.status === 'fail' ? row.status : null
+      if (!status) return
+      if (row.order_item_id && row.unit_index) {
+        map[stableOrderItemUnitKey(row.order_item_id, row.unit_index)] = status
+      } else if (uid) {
+        // Only legacy records may fall back to the mutable display UID.
+        map[uid] = status
       }
     })
     return map

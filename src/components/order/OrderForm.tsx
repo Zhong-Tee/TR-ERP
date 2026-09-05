@@ -21,6 +21,7 @@ import { findWyProduct } from '../../lib/wyProductMatcher'
 import { calculateChargeableItemsTotal } from '../../lib/orderItemPricing'
 import { buildIlikeOr } from '../../lib/searchFilter'
 import { isSelfPickupBill, isSelfPickupChannel } from '../../lib/channelBehavior'
+import { getMissingCustomerShippingFields } from '../../lib/orderCustomerValidation'
 
 // Component for uploading slips without immediate verification
 function SlipUploadSimple({
@@ -1912,6 +1913,27 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       console.error('User not found')
       setLoading(false)
       return
+    }
+
+    // ทุกเส้นทางที่บันทึกเป็น "ข้อมูลครบ" ต้องมีรายละเอียดจัดส่งครบ
+    // ยกเว้นช่องทางที่ปิดช่องที่อยู่หรือไม่ใช้ข้อมูลลูกค้าอยู่แล้ว
+    if (targetStatus === 'ลงข้อมูลเสร็จสิ้น') {
+      const channelCode = formData.channel_code?.trim() || ''
+      const requiresCustomerShipping =
+        !CHANNELS_BLOCK_ADDRESS.includes(channelCode) &&
+        !CHANNELS_SKIP_CUSTOMER_FIELDS.includes(channelCode)
+      const missingFields = requiresCustomerShipping
+        ? getMissingCustomerShippingFields(formData)
+        : []
+
+      if (missingFields.length > 0) {
+        setMessageModal({
+          open: true,
+          title: 'ข้อมูลที่อยู่และเบอร์โทรไม่ครบ',
+          message: `กรุณากรอกข้อมูลต่อไปนี้ให้ครบก่อนบันทึก (ข้อมูลครบ):\n${missingFields.map((field) => `• ${field}`).join('\n')}`,
+        })
+        return
+      }
     }
 
     // ก่อนเปิดบิลเข้าสู่ workflow ต้องให้ตัวเลือก "ออกแบบ" และลิงก์ไฟล์แนบสอดคล้องกัน
@@ -6337,10 +6359,15 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
               const isAddressBlockedSave = CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)
               const isSkipCustomerFields = CHANNELS_SKIP_CUSTOMER_FIELDS.includes(formData.channel_code)
-              const composedAddressSave = [formData.address_line, formData.sub_district, formData.district, formData.province, formData.postal_code].filter(Boolean).join(' ').trim()
-              const hasAddressSave = (formData.customer_address?.trim() || composedAddressSave) !== ''
-              if (!isAddressBlockedSave && !isSkipCustomerFields && !hasAddressSave) {
-                setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกที่อยู่ลูกค้า หรือวางที่อยู่ในช่องเพื่อแยกข้อมูลอัตโนมัติ' })
+              const missingCustomerShippingFields = !isAddressBlockedSave && !isSkipCustomerFields
+                ? getMissingCustomerShippingFields(formData)
+                : []
+              if (missingCustomerShippingFields.length > 0) {
+                setMessageModal({
+                  open: true,
+                  title: 'ข้อมูลที่อยู่และเบอร์โทรไม่ครบ',
+                  message: `กรุณากรอกข้อมูลต่อไปนี้ให้ครบก่อนบันทึก (ข้อมูลครบ):\n${missingCustomerShippingFields.map((field) => `• ${field}`).join('\n')}`,
+                })
                 return
               }
 

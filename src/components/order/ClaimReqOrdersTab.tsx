@@ -861,11 +861,16 @@ export default function ClaimReqOrdersTab({
         if (error) throw error
       }
 
-      const { error: stErr } = await supabase
-        .from('or_orders')
-        .update({ status: passed ? 'ตรวจสอบแล้ว' : 'ตรวจสอบไม่ผ่าน' })
-        .eq('id', modalOrder.id)
-      if (stErr) console.warn('ClaimReqOrdersTab: update status after slip verify', stErr)
+      // เมื่อผ่านแล้ว rpc_confirm_claim_req_shipping จะย้ายบิลเคลมเข้า "ใบสั่งงาน"
+      // โดยตรง (PUMP ไป "เสร็จสิ้น") ห้ามเขียนทับกลับเป็น "ตรวจสอบแล้ว"
+      // เพราะจะทำให้บิลเคลมต้องผ่านหน้ารอตรวจคำสั่งซื้อโดยไม่จำเป็น
+      if (!passed) {
+        const { error: stErr } = await supabase
+          .from('or_orders')
+          .update({ status: 'ตรวจสอบไม่ผ่าน' })
+          .eq('id', modalOrder.id)
+        if (stErr) console.warn('ClaimReqOrdersTab: update failed claim status after slip verify', stErr)
+      }
 
       setClaimVerify({
         open: true,
@@ -877,9 +882,9 @@ export default function ClaimReqOrdersTab({
         totalAmount: outcome?.totalFromSlips ?? 0,
         errors: verifyError ? [verifyError] : outcome?.errors ?? [],
         statusMessage: !slipRequired
-          ? 'บิลเคลมไม่มียอดต้องชำระเพิ่ม — ยืนยันที่อยู่และย้ายบิลไป "ตรวจสอบแล้ว" เรียบร้อย'
+          ? 'บิลเคลมไม่มียอดต้องชำระเพิ่ม — ยืนยันที่อยู่และย้ายบิลไป "ใบสั่งงาน" เรียบร้อย'
           : passed
-          ? 'ตรวจสลิปผ่าน — ยืนยันที่อยู่และย้ายบิลไป "ตรวจสอบแล้ว" เรียบร้อย'
+          ? 'ตรวจสลิปผ่าน — ยืนยันที่อยู่และย้ายบิลไป "ใบสั่งงาน" เรียบร้อย'
           : 'ตรวจสลิปไม่ผ่าน — ยังไม่ยืนยันที่อยู่ และบิลถูกย้ายไปเมนู "ตรวจสอบไม่ผ่าน"',
       })
 

@@ -348,7 +348,10 @@ export function useAuth() {
   }
 
   async function sendPasswordResetEmail(email: string) {
-    const redirectTo = `${window.location.origin}/reset-password`
+    // ใช้ production URL เป็นค่าเริ่มต้นเสมอ เพื่อให้ link ที่เปิดจากอีเมลบนมือถือ
+    // ไม่ย้อนกลับไป localhost ของเครื่องที่เป็นผู้กดขอ reset ระหว่างทดสอบระบบ
+    const appUrl = (import.meta.env.VITE_APP_URL || 'https://tr-erp-umber.vercel.app').replace(/\/+$/, '')
+    const redirectTo = `${appUrl}/reset-password`
     const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo })
     if (error) throw error
   }

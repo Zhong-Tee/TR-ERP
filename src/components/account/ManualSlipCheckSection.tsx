@@ -1,11 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order } from '../../types'
-import { useAuthContext } from '../../contexts/AuthContext'
 import { formatDateTime } from '../../lib/utils'
+import { isSlipOrderStatusConsideredUsed } from '../../lib/manualSlipRules'
 import Modal from '../ui/Modal'
 import OrderDetailView from '../order/OrderDetailView'
-import { pumpVerifiedRoutingStatus } from '../../lib/pumpConfirmRouting'
 
 type ManualSlipRow = {
   id: string
@@ -16,10 +15,12 @@ type ManualSlipRow = {
   transfer_amount: number
   submitted_by: string
   submitted_at: string
-  status: 'pending' | 'approved' | 'rejected'
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled'
   reviewed_by: string | null
   reviewed_at: string | null
   rejected_reason: string | null
+  cancelled_at: string | null
+  submission_kind: 'manual' | 'duplicate_fallback_review'
 }
 
 type OrderGroup = {
@@ -40,7 +41,6 @@ type EditingCell = {
 } | null
 
 export default function ManualSlipCheckSection() {
-  const { user } = useAuthContext()
   const [rows, setRows] = useState<ManualSlipRow[]>([])
   const [loading, setLoading] = useState(true)
   const [filterTab, setFilterTab] = useState<'pending' | 'done'>('pending')
@@ -130,7 +130,16 @@ export default function ManualSlipCheckSection() {
     }
   }, [editingCell, editValue, editSaving, rows, cancelEditing])
 
-  useEffect(() => { loadRows() }, [])
+  useEffect(() => {
+    void loadRows()
+    const channel = supabase
+      .channel('manual-slip-check-section')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_manual_slip_checks' }, () => {
+        void loadRows()
+      })
+      .subscribe()
+    return () => { void supabase.removeChannel(channel) }
+  }, [])
 
   async function loadRows() {
     setLoading(true)
@@ -174,11 +183,11 @@ export default function ManualSlipCheckSection() {
 
   const filteredGroups = useMemo(() => {
     if (filterTab === 'pending') return orderGroups.filter(g => g.entries.some(e => e.status === 'pending'))
-    return orderGroups.filter(g => g.entries.every(e => e.status === 'approved' || e.status === 'rejected'))
+    return orderGroups.filter(g => g.entries.every(e => e.status !== 'pending'))
   }, [orderGroups, filterTab])
 
   const pendingCount = useMemo(() => orderGroups.filter(g => g.entries.some(e => e.status === 'pending')).length, [orderGroups])
-  const doneCount = useMemo(() => orderGroups.filter(g => g.entries.every(e => e.status === 'approved' || e.status === 'rejected')).length, [orderGroups])
+  const doneCount = useMemo(() => orderGroups.filter(g => g.entries.every(e => e.status !== 'pending')).length, [orderGroups])
 
   async function handleViewDetail(orderId: string) {
     setDetailLoading(true)
@@ -204,7 +213,7 @@ export default function ManualSlipCheckSection() {
     try {
       const { data, error } = await supabase
         .from('ac_verified_slips')
-        .select('id, order_id, verified_amount, easyslip_date, easyslip_response, or_orders!inner(bill_no)')
+        .select('id, order_id, verified_amount, easyslip_date, easyslip_response, or_orders!inner(bill_no, status)')
         .or('is_deleted.is.null,is_deleted.eq.false')
       if (error) throw error
 
@@ -218,6 +227,8 @@ export default function ManualSlipCheckSection() {
         const transferTime = entry.transfer_time
 
         const matches = (data || []).filter((slip: any) => {
+          if (slip.order_id === group.order_id) return false
+          if (!isSlipOrderStatusConsideredUsed(slip.or_orders?.status)) return false
           if (!slip.easyslip_date) return false
           const d = new Date(slip.easyslip_date)
           if (isNaN(d.getTime())) return false
@@ -257,38 +268,14 @@ export default function ManualSlipCheckSection() {
   }
 
   async function applyManualSlipDecision(group: OrderGroup, action: 'approved' | 'rejected', rejectedReason?: string) {
-    const reviewData = {
-      status: action,
-      reviewed_by: user?.username || user?.email || 'unknown',
-      reviewed_at: new Date().toISOString(),
-      rejected_reason: action === 'rejected' ? rejectedReason?.trim() || null : null,
-    }
-    const { error: updateErr } = await supabase
-      .from('ac_manual_slip_checks')
-      .update(reviewData)
-      .eq('order_id', group.order_id)
-      .eq('status', 'pending')
-    if (updateErr) throw updateErr
-
-    const newOrderStatus = action === 'approved' ? 'ตรวจสอบแล้ว' : 'ตรวจสอบไม่ผ่าน'
-    let orderUpdateStatus = newOrderStatus
-    if (action === 'approved' && newOrderStatus === 'ตรวจสอบแล้ว') {
-      const { data: ord } = await supabase
-        .from('or_orders')
-        .select('channel_code, requires_confirm_design')
-        .eq('id', group.order_id)
-        .maybeSingle()
-      if (ord?.channel_code === 'PUMP') {
-        orderUpdateStatus = pumpVerifiedRoutingStatus(ord.requires_confirm_design !== false)
-      }
-    }
-    const { error: orderErr } = await supabase
-      .from('or_orders')
-      .update({ status: orderUpdateStatus })
-      .eq('id', group.order_id)
-    if (orderErr) throw orderErr
-
-    return { orderUpdateStatus, action }
+    const { data, error } = await supabase.rpc('manual_slip_decide', {
+      p_order_id: group.order_id,
+      p_action: action,
+      p_rejected_reason: action === 'rejected' ? rejectedReason?.trim() || null : null,
+    })
+    if (error) throw error
+    const result = (data || {}) as { order_status?: string }
+    return { orderUpdateStatus: result.order_status || (action === 'approved' ? 'ตรวจสอบแล้ว' : 'ตรวจสอบไม่ผ่าน'), action }
   }
 
   async function handleAction(action: 'approved' | 'rejected') {
@@ -340,11 +327,13 @@ export default function ManualSlipCheckSection() {
   const statusColor = (s: string) => {
     if (s === 'approved') return 'bg-green-100 text-green-700'
     if (s === 'rejected') return 'bg-red-100 text-red-700'
+    if (s === 'cancelled') return 'bg-gray-200 text-gray-700'
     return 'bg-yellow-100 text-yellow-800'
   }
   const statusLabel = (s: string) => {
     if (s === 'approved') return 'อนุมัติแล้ว'
     if (s === 'rejected') return 'ปฏิเสธแล้ว'
+    if (s === 'cancelled') return 'ยกเลิก'
     return 'รอตรวจสอบ'
   }
 
@@ -448,6 +437,11 @@ export default function ManualSlipCheckSection() {
                       <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${statusColor(group.status)}`}>
                         {statusLabel(group.status)}
                       </span>
+                      {group.entries.some(e => e.submission_kind === 'duplicate_fallback_review') && (
+                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+                          ตรวจสอบกรณีพิเศษ
+                        </span>
+                      )}
                     </div>
 
                     {/* Slip entries — one row per slip */}
@@ -483,6 +477,12 @@ export default function ManualSlipCheckSection() {
                       <div className="text-xs text-rose-700 bg-rose-50 border border-rose-100 rounded-lg px-2.5 py-1.5 mt-2 inline-block">
                         <i className="fas fa-comment-dots mr-1"></i>
                         เหตุผลที่ไม่อนุมัติ: <span className="font-semibold">{group.rejected_reason}</span>
+                      </div>
+                    )}
+                    {group.entries.some(e => e.status === 'cancelled') && (
+                      <div className="text-xs text-gray-700 bg-gray-100 border border-gray-200 rounded-lg px-2.5 py-1.5 mt-2 inline-block">
+                        <i className="fas fa-ban mr-1"></i>
+                        ปิดรายการอัตโนมัติ เนื่องจากบิลถูกยกเลิก
                       </div>
                     )}
                   </div>

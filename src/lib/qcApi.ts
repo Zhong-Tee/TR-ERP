@@ -6,7 +6,7 @@ import { buildIlikeOr } from './searchFilter'
 import * as XLSX from 'xlsx'
 import type { QCItem, QCRecord, WorkOrder, SettingsReason, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct, QCCategoryGroup } from '../types'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN, isOrderAllowedInFulfillmentFlow } from './orderFlowFilter'
-import { flatBillUnitUid, normalizedLineQuantity } from './productionUnits'
+import { flatBillUnitUid, normalizedLineQuantity, stableOrderItemUnitKey } from './productionUnits'
 import { sortOrderItemsForExport } from './orderItemExportSort'
 
 const QC_SELECTED_WORK_ORDER = 'qc_selected_work_order'
@@ -58,6 +58,8 @@ type QCProgressRecord = {
   id: string
   session_id: string
   item_uid: string
+  order_item_id?: string | null
+  unit_index?: number | null
   status: string
   is_rejected: boolean | null
   last_result_at: string | null
@@ -104,7 +106,7 @@ async function fetchProgressRecordsBySessionIds(sessionIds: string[]): Promise<Q
   return fetchQueryInBatches<QCProgressRecord>(sessionIds, (batch, from, to) =>
     supabase
         .from('qc_records')
-        .select('id, session_id, item_uid, status, is_rejected, last_result_at')
+        .select('id, session_id, item_uid, order_item_id, unit_index, status, is_rejected, last_result_at')
         .in('session_id', batch)
         .order('last_result_at', { ascending: true })
         .order('id', { ascending: true })
@@ -211,6 +213,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
   const totalByWo: Record<string, number> = {}
   const flatUidsByWo: Record<string, string[]> = {}
   const sourceUidByFlatUid: Record<string, string> = {}
+  const stableKeyByFlatUid: Record<string, string> = {}
   woNames.forEach((name) => {
     const oids = orderIdsByWo[name] || []
     const ords = (orders || [])
@@ -234,6 +237,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
           const flatUid = flatBillUnitUid(bill, seq)
           flatList.push(flatUid)
           if (r.item_uid) sourceUidByFlatUid[flatUid] = r.item_uid
+          stableKeyByFlatUid[flatUid] = stableOrderItemUnitKey(r.id, i + 1)
         }
       })
     })
@@ -272,14 +276,15 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
 
   // โหลดผลของทุก session เป็น batch แทนการยิง 2 queries ต่อใบงานพร้อมกัน
   // และ paginate เพื่อไม่ให้ติด default row limit ของ PostgREST
-  const sessionIdToWo: Record<string, string> = {}
-  const allSessionIds: string[] = []
+  const openSessionIdByWo: Record<string, string> = {}
   allSessions.forEach((session) => {
     const match = session.filename?.match(/^WO-(.+)$/)
     if (!match || !woNames.includes(match[1])) return
-    sessionIdToWo[session.id] = match[1]
-    allSessionIds.push(session.id)
+    if (session.end_time == null) openSessionIdByWo[match[1]] = session.id
   })
+  const sessionIdToWo: Record<string, string> = {}
+  Object.entries(openSessionIdByWo).forEach(([woName, sessionId]) => { sessionIdToWo[sessionId] = woName })
+  const allSessionIds = Object.values(openSessionIdByWo)
   const progressRecords = await fetchProgressRecordsBySessionIds(allSessionIds)
   const latestRecordsByWo: Record<string, QCProgressRecord[]> = {}
   woNames.forEach((name) => (latestRecordsByWo[name] = []))
@@ -295,10 +300,18 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     const woName = wo.work_order_name
     const total_items = totalByWo[woName] ?? 0
     const itemStatusMap: Record<string, string> = {}
+    const stableStatusMap: Record<string, string> = {}
     const itemRejectedMap: Record<string, boolean> = {}
+    const stableRejectedMap: Record<string, boolean> = {}
     ;(latestRecordsByWo[woName] || []).forEach((record) => {
-      itemStatusMap[record.item_uid] = record.status
-      if (record.is_rejected) itemRejectedMap[record.item_uid] = true
+      if (record.order_item_id && record.unit_index) {
+        const stableKey = stableOrderItemUnitKey(record.order_item_id, record.unit_index)
+        stableStatusMap[stableKey] = record.status
+        if (record.is_rejected) stableRejectedMap[stableKey] = true
+      } else {
+        itemStatusMap[record.item_uid] = record.status
+        if (record.is_rejected) itemRejectedMap[record.item_uid] = true
+      }
     })
     const orderIds = orderIdsByWo[woName] || []
     const total_bills = orderIds.length
@@ -309,10 +322,11 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     const woFlat = flatUidsByWo[woName] || []
     woFlat.forEach((uid) => {
       const sourceUid = sourceUidByFlatUid[uid]
-      const st = itemStatusMap[uid] ?? (sourceUid ? itemStatusMap[sourceUid] : undefined)
-      if (st === 'pass') pass_items++
+      const stableKey = stableKeyByFlatUid[uid]
+      const st = (stableKey ? stableStatusMap[stableKey] : undefined) ?? itemStatusMap[uid] ?? (sourceUid ? itemStatusMap[sourceUid] : undefined)
+      if (st === 'pass' || st === 'skipped') pass_items++
       else if (st === 'fail') fail_items++
-      if (itemRejectedMap[uid] || (sourceUid ? itemRejectedMap[sourceUid] : false)) reject_items++
+      if ((stableKey ? stableRejectedMap[stableKey] : false) || itemRejectedMap[uid] || (sourceUid ? itemRejectedMap[sourceUid] : false)) reject_items++
     })
     const remaining = Math.max(0, total_items - pass_items - fail_items)
     const qc_done = pass_items
@@ -333,14 +347,16 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
           const flatUid = flatBillUnitUid(bill, seq)
           uids.push(flatUid)
           if (r.item_uid) sourceUidByFlatUid[flatUid] = r.item_uid
+          stableKeyByFlatUid[flatUid] = stableOrderItemUnitKey(r.id, i + 1)
         }
       })
       if (uids.length === 0) return
       const statuses = uids.map((uid) => {
         const sourceUid = sourceUidByFlatUid[uid]
-        return itemStatusMap[uid] ?? (sourceUid ? itemStatusMap[sourceUid] : undefined) ?? 'pending'
+        const stableKey = stableKeyByFlatUid[uid]
+        return (stableKey ? stableStatusMap[stableKey] : undefined) ?? itemStatusMap[uid] ?? (sourceUid ? itemStatusMap[sourceUid] : undefined) ?? 'pending'
       })
-      if (statuses.every((s) => s === 'pass')) pass_bills++
+      if (statuses.every((s) => s === 'pass' || s === 'skipped')) pass_bills++
       else if (statuses.some((s) => s === 'fail')) fail_bills++
     })
     const remaining_bills = total_bills - pass_bills - fail_bills
@@ -377,11 +393,12 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
 
   if (excludeCompleted) {
     return result.filter((r) => {
-      if (r.remaining > 0) return true
       const wo = r.work_order_name
       const sessionIds = sessionIdsByWo[wo] || []
+      const planTracks = latestPlanTracksByName[wo]
+      if (!hasOpenSessionByWoName[wo] && planTracks && isPlanQcDoneFromTracks(planTracks)) return false
+      if (r.remaining > 0) return true
       if (sessionIds.length === 0) {
-        const planTracks = latestPlanTracksByName[wo]
         if (planTracks && !isPlanQcDoneFromTracks(planTracks)) return true
         return false
       }
@@ -492,6 +509,9 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
         seq++
         qcItems.push({
           uid: flatBillUnitUid(bill, seq),
+          source_order_id: o.id,
+          source_order_item_id: row.id,
+          unit_index: c + 1,
           source_line_uid: row.item_uid || undefined,
           product_code: row.product_id ? (productCodeMap[row.product_id] || '0') : '0',
           product_name: row.product_name || '',
@@ -549,7 +569,7 @@ export async function fetchRecordsForSession(sessionId: string) {
 /** Save one QC record (Pass/Fail) — upsert by session_id + item_uid. */
 export async function saveQcRecord(
   sessionId: string,
-  item: { uid: string; status: 'pass' | 'fail' | 'pending'; fail_reason?: string | null; product_code?: string; product_name?: string; bill_no?: string; ink_color?: string | null; font?: string | null; floor?: string; cartoon_name?: string; line1?: string; line2?: string; line3?: string; qty?: number; remark?: string },
+  item: { uid: string; source_order_id?: string; source_order_item_id?: string; unit_index?: number; status: 'pass' | 'fail' | 'pending'; fail_reason?: string | null; product_code?: string; product_name?: string; bill_no?: string; ink_color?: string | null; font?: string | null; floor?: string; cartoon_name?: string; line1?: string; line2?: string; line3?: string; qty?: number; remark?: string },
   qcBy: string,
   attemptStartedAt?: string
 ) {
@@ -557,6 +577,10 @@ export async function saveQcRecord(
   const row = {
     session_id: sessionId,
     item_uid: item.uid,
+    order_id: item.source_order_id ?? null,
+    order_item_id: item.source_order_item_id ?? null,
+    unit_index: item.unit_index ?? null,
+    result_source: 'manual',
     qc_by: qcBy,
     status: item.status,
     fail_reason: item.fail_reason ?? null,
@@ -579,8 +603,9 @@ export async function saveQcRecord(
     qty: item.qty ?? 1,
     remark: item.remark ?? null,
   }
+  const conflictColumns = item.source_order_item_id && item.unit_index ? 'session_id,order_item_id,unit_index' : 'session_id,item_uid'
   const { data, error } = await supabase.from('qc_records').upsert(row, {
-    onConflict: 'session_id,item_uid',
+    onConflict: conflictColumns,
   }).select('*').single()
   if (error) throw error
   if (item.status === 'pass' || item.status === 'fail') {

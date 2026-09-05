@@ -10,3 +10,8 @@ export function flatBillUnitUid(billNo: string, unitIndex1Based: number): string
   const bill = String(billNo ?? '').trim() || '—'
   return `${bill}-${unitIndex1Based}`
 }
+
+/** Stable internal identity shared by QC and Packing. The printed bill UID stays unchanged. */
+export function stableOrderItemUnitKey(orderItemId: string, unitIndex1Based: number): string {
+  return `${String(orderItemId).trim()}\u0001${unitIndex1Based}`
+}

@@ -35,6 +35,42 @@ type DailySheetRow = {
   balance_eod: number
 }
 
+type WmsUsageBreakdown = {
+  workOrder: number
+  requisition: number
+  other: number
+  total: number
+}
+
+type WmsUsageRpcRow = {
+  product_code: string | null
+  correct_qty: number | string | null
+  work_order_qty?: number | string | null
+  requisition_qty?: number | string | null
+  other_qty?: number | string | null
+}
+
+type OtherWmsDetailRow = {
+  wms_order_id: string
+  order_reference: string | null
+  product_code: string
+  product_name: string
+  qty: number
+  unit_name: string | null
+  used_at: string
+  fulfillment_mode: string | null
+  picker_name: string | null
+  classification_reason: string
+}
+
+type OtherWmsDetailContext = {
+  productId: string
+  productCode: string
+  productName: string
+  from: string
+  to: string
+}
+
 type WmsMapLineUi = {
   id: string
   product_id: string
@@ -103,6 +139,16 @@ function endOfDayIso(ymd: string): string {
 }
 
 const SUB_WAREHOUSE_READ_ONLY_ROLES = new Set(['production', 'qc_staff', 'packing_staff'])
+const MANUAL_REMOVE_REASONS = [
+  'ของเสีย/ชำรุด',
+  'สูญหาย',
+  'ปรับยอดจากการนับ',
+  'ใช้งานภายในนอก WMS',
+  'แก้ไขยอดตั้งต้น',
+  'อื่น ๆ',
+] as const
+
+const EMPTY_WMS_USAGE: WmsUsageBreakdown = { workOrder: 0, requisition: 0, other: 0, total: 0 }
 
 export default function WarehouseSub() {
   const { user } = useAuthContext()
@@ -131,7 +177,13 @@ export default function WarehouseSub() {
   const [historyProductCode, setHistoryProductCode] = useState('')
 
   const [wmsCorrectMap, setWmsCorrectMap] = useState<Record<string, number>>({})
+  const [wmsUsageMap, setWmsUsageMap] = useState<Record<string, WmsUsageBreakdown>>({})
+  const [dailyWmsUsageMap, setDailyWmsUsageMap] = useState<Record<string, WmsUsageBreakdown>>({})
   const [loadingWms, setLoadingWms] = useState(false)
+  const [otherWmsModalOpen, setOtherWmsModalOpen] = useState(false)
+  const [otherWmsLoading, setOtherWmsLoading] = useState(false)
+  const [otherWmsRows, setOtherWmsRows] = useState<OtherWmsDetailRow[]>([])
+  const [otherWmsContext, setOtherWmsContext] = useState<OtherWmsDetailContext | null>(null)
 
   /** วันที่นับสต๊อครายวัน (เขตเวลาไทย — ฝั่ง RPC) */
   const [countDate, setCountDate] = useState(() => toLocalYmd(new Date()))
@@ -231,13 +283,14 @@ export default function WarehouseSub() {
     filteredMoves.forEach((move) => productById.set(move.product_id, move))
     return [...productById.values()].map((product) => {
       const totals = rangeMoveTotals.get(product.product_id) || { added: 0, removed: 0 }
-      const wmsUsed = Number(wmsCorrectMap[product.product_code] || 0)
+      const wmsUsage = wmsUsageMap[product.product_code] || EMPTY_WMS_USAGE
+      const wmsUsed = wmsUsage.total
       const balance = periodBalances[product.product_id]
-      return { ...product, ...totals, wmsUsed, opening: balance?.opening, closing: balance?.closing }
+      return { ...product, ...totals, ...wmsUsage, wmsUsed, opening: balance?.opening, closing: balance?.closing }
     })
-  }, [filteredMoves, periodBalances, rangeMoveTotals, wmsCorrectMap])
+  }, [filteredMoves, periodBalances, rangeMoveTotals, wmsUsageMap])
 
-  async function applyDynamicWmsMapsToCorrectMap(map: Record<string, number>, subId: string) {
+  async function applyDynamicWmsMapsToUsageMap(map: Record<string, WmsUsageBreakdown>, subId: string) {
     if (!subId) return
     try {
       const { data: groups, error } = await supabase
@@ -266,24 +319,99 @@ export default function WarehouseSub() {
       ;(prods || []).forEach((p: { id: string; product_code: string }) => {
         idToCode[String(p.id)] = String(p.product_code || '')
       })
-      const sumByGroup: Record<string, number> = {}
+      const sumByGroup: Record<string, WmsUsageBreakdown> = {}
       gids.forEach((gid) => {
-        sumByGroup[gid] = 0
+        sumByGroup[gid] = { ...EMPTY_WMS_USAGE }
       })
       ;(sourceRows || []).forEach((s: { group_id: string; product_id: string }) => {
         const code = idToCode[String(s.product_id)]
         if (!code) return
         const gid = String(s.group_id)
-        sumByGroup[gid] = (sumByGroup[gid] ?? 0) + (map[code] ?? 0)
+        const current = sumByGroup[gid] || { ...EMPTY_WMS_USAGE }
+        const source = map[code] || EMPTY_WMS_USAGE
+        sumByGroup[gid] = {
+          workOrder: current.workOrder + source.workOrder,
+          requisition: current.requisition + source.requisition,
+          other: current.other + source.other,
+          total: current.total + source.total,
+        }
       })
       spareRows.forEach((s: { group_id: string; product_id: string }) => {
         const code = idToCode[String(s.product_id)]
         if (!code) return
         const gid = String(s.group_id)
-        map[code] = sumByGroup[gid] ?? 0
+        map[code] = { ...(sumByGroup[gid] || EMPTY_WMS_USAGE) }
       })
     } catch (e) {
-      console.warn('applyDynamicWmsMapsToCorrectMap skipped:', e)
+      console.warn('applyDynamicWmsMapsToUsageMap skipped:', e)
+    }
+  }
+
+  async function fetchWmsUsageBreakdown(fromYmd: string, toYmd: string, subId: string) {
+    const params = {
+      p_from: startOfDayIso(fromYmd),
+      p_to: endOfDayIso(toYmd),
+    }
+    let { data, error } = await supabase.rpc('rpc_get_wms_usage_breakdown_by_product', params)
+    let hasBreakdown = !error
+    if (error) {
+      const fallback = await supabase.rpc('rpc_get_wms_correct_qty_by_product', params)
+      data = fallback.data
+      error = fallback.error
+      hasBreakdown = false
+    }
+    if (error) throw error
+    const map: Record<string, WmsUsageBreakdown> = {}
+    ;((data || []) as WmsUsageRpcRow[]).forEach((r) => {
+      const code = String(r.product_code || '')
+      if (!code) return
+      const total = Number(r.correct_qty || 0)
+      map[code] = {
+        workOrder: Number(r.work_order_qty || 0),
+        requisition: Number(r.requisition_qty || 0),
+        other: hasBreakdown ? Number(r.other_qty || 0) : total,
+        total,
+      }
+    })
+    await applyDynamicWmsMapsToUsageMap(map, subId)
+    return map
+  }
+
+  async function openOtherWmsDetails(context: OtherWmsDetailContext) {
+    if (!selectedSubId) return
+    setOtherWmsContext(context)
+    setOtherWmsRows([])
+    setOtherWmsModalOpen(true)
+    setOtherWmsLoading(true)
+    try {
+      const { data, error } = await supabase.rpc('rpc_get_sub_warehouse_other_wms_details', {
+        p_sub_warehouse_id: selectedSubId,
+        p_product_id: context.productId,
+        p_from: startOfDayIso(context.from),
+        p_to: endOfDayIso(context.to),
+      })
+      if (error) throw error
+      setOtherWmsRows(((data || []) as Array<Record<string, unknown>>).map((row) => ({
+        wms_order_id: String(row.wms_order_id || ''),
+        order_reference: row.order_reference ? String(row.order_reference) : null,
+        product_code: String(row.product_code || ''),
+        product_name: String(row.product_name || ''),
+        qty: Number(row.qty || 0),
+        unit_name: row.unit_name ? String(row.unit_name) : null,
+        used_at: String(row.used_at || ''),
+        fulfillment_mode: row.fulfillment_mode ? String(row.fulfillment_mode) : null,
+        picker_name: row.picker_name ? String(row.picker_name) : null,
+        classification_reason: String(row.classification_reason || 'ข้อมูลอ้างอิงไม่ครบ'),
+      })))
+    } catch (e: unknown) {
+      console.error('Load other WMS details failed:', e)
+      showMessage({
+        title: 'โหลดรายละเอียดไม่สำเร็จ',
+        message: e instanceof Error ? e.message : String(e),
+      })
+      setOtherWmsModalOpen(false)
+    } finally {
+      setOtherWmsLoading(false)
     }
   }
 
@@ -659,24 +787,13 @@ export default function WarehouseSub() {
     if (!dateFrom || !dateTo) return
     setLoadingWms(true)
     try {
-      const fromIso = startOfDayIso(dateFrom)
-      const toIso = endOfDayIso(dateTo)
-      const { data, error } = await supabase.rpc('rpc_get_wms_correct_qty_by_product', {
-        p_from: fromIso,
-        p_to: toIso,
-      })
-      if (error) throw error
-      const map: Record<string, number> = {}
-      ;(data || []).forEach((r: any) => {
-        const code = String(r.product_code || '')
-        if (!code) return
-        map[code] = Number(r.correct_qty || 0)
-      })
-      await applyDynamicWmsMapsToCorrectMap(map, selectedSubId)
-      setWmsCorrectMap(map)
+      const usageMap = await fetchWmsUsageBreakdown(dateFrom, dateTo, selectedSubId)
+      setWmsUsageMap(usageMap)
+      setWmsCorrectMap(Object.fromEntries(Object.entries(usageMap).map(([code, usage]) => [code, usage.total])))
     } catch (e: any) {
       console.error('Load WMS correct qty failed:', e)
       setWmsCorrectMap({})
+      setWmsUsageMap({})
     } finally {
       setLoadingWms(false)
     }
@@ -686,10 +803,13 @@ export default function WarehouseSub() {
     if (!countDate) return
     setLoadingDaily(true)
     try {
-      const { data, error } = await supabase.rpc('rpc_get_sub_warehouse_daily_stock_sheet', {
-        p_sub_warehouse_id: subId,
-        p_date: countDate,
-      })
+      const [{ data, error }, usageMap] = await Promise.all([
+        supabase.rpc('rpc_get_sub_warehouse_daily_stock_sheet', {
+          p_sub_warehouse_id: subId,
+          p_date: countDate,
+        }),
+        fetchWmsUsageBreakdown(countDate, countDate, subId),
+      ])
       if (error) throw error
       const rows = (data || []).map((r: any) => ({
         product_id: String(r.product_id),
@@ -705,9 +825,11 @@ export default function WarehouseSub() {
         balance_eod: Number(r.balance_eod || 0),
       })) as DailySheetRow[]
       setDailyRows(rows)
+      setDailyWmsUsageMap(usageMap)
     } catch (e: any) {
       console.error('Load daily stock sheet failed:', e)
       setDailyRows([])
+      setDailyWmsUsageMap({})
       showMessage({
         title: 'ผิดพลาด',
         message: 'โหลดสรุปรายวันไม่สำเร็จ — ตรวจว่าได้รัน migration ล่าสุดของคลังย่อยแล้ว หรือลองรีเฟรช: ' + (e?.message || String(e)),
@@ -841,10 +963,8 @@ export default function WarehouseSub() {
 
   const selectAdjustType = (type: 'add' | 'remove') => {
     setAdjustType(type)
-    const currentReason = adjustReason.trim()
-    if (!currentReason || currentReason === 'เติมสต๊อค' || currentReason === 'ลดสต๊อค') {
-      setAdjustReason(type === 'add' ? 'เติมสต๊อค' : 'ลดสต๊อค')
-    }
+    setAdjustReason(type === 'add' ? 'เติมสต๊อค' : '')
+    setAdjustNote('')
   }
 
   const createSubWarehouse = async () => {
@@ -920,6 +1040,47 @@ export default function WarehouseSub() {
     if (!Number.isFinite(q) || q <= 0) {
       showMessage({ message: 'กรุณากรอกจำนวนให้ถูกต้อง' })
       return
+    }
+    if (!adjustReason.trim()) {
+      showMessage({ message: 'กรุณาระบุเหตุผลในการปรับสต๊อก' })
+      return
+    }
+    if (adjustType === 'remove' && !adjustNote.trim()) {
+      showMessage({ message: 'กรุณากรอกรายละเอียดการลดมือ เพื่อใช้ตรวจสอบย้อนหลัง' })
+      return
+    }
+
+    if (adjustType === 'remove') {
+      const product = products.find((row) => row.product_id === adjustProductId)
+      if (product) {
+        try {
+          const today = toLocalYmd(new Date())
+          const todayUsage = await fetchWmsUsageBreakdown(today, today, selectedSubId)
+          const wmsQty = todayUsage[product.product_code]?.total || 0
+          if (wmsQty > 0 && Math.abs(wmsQty - q) < 0.000001) {
+            const canOverrideDuplicate = user?.role === 'superadmin' || user?.role === 'admin'
+            if (!canOverrideDuplicate) {
+              showMessage({
+                title: 'ไม่สามารถลดมือได้',
+                message: `วันนี้สินค้า ${product.product_code} ถูกบันทึกในยอดตัดสต๊อกรวม จำนวน ${wmsQty.toLocaleString()} แล้ว ซึ่งตรงกับจำนวนที่กำลังลด กรุณาตรวจสอบรายการ WMS หรือให้ผู้ดูแลระบบดำเนินการหากเป็นคนละเหตุการณ์`,
+              })
+              return
+            }
+            const confirmed = await showConfirm({
+              title: 'อาจเป็นการหักยอดซ้ำ',
+              message: `วันนี้สินค้า ${product.product_code} ถูกบันทึกในยอดตัดสต๊อกรวม จำนวน ${wmsQty.toLocaleString()} แล้ว และตรงกับจำนวนที่กำลังลดมือ\n\nยืนยันว่าเป็นคนละเหตุการณ์และต้องการลดมือเพิ่มเติมหรือไม่?`,
+            })
+            if (!confirmed) return
+          }
+        } catch (e) {
+          console.warn('Duplicate manual reduction check skipped:', e)
+          showMessage({
+            title: 'ยังตรวจสอบรายการ WMS ไม่สำเร็จ',
+            message: 'ระบบยังยืนยันไม่ได้ว่ารายการนี้ซ้ำกับยอด WMS หรือไม่ กรุณาลองใหม่อีกครั้งเพื่อป้องกันยอดถูกหักซ้ำ',
+          })
+          return
+        }
+      }
     }
     const delta = adjustType === 'add' ? q : -q
     setAdjustSaving(true)
@@ -1039,14 +1200,17 @@ export default function WarehouseSub() {
         <div className="border-b border-emerald-100 bg-emerald-50 px-4 py-3">
           <div className="font-black text-emerald-950">สรุปยอดในช่วงวันที่เลือก</div>
         </div>
-        <table className="w-full min-w-[900px] text-sm">
+        <table className="w-full min-w-[1250px] text-sm">
           <thead>
             <tr className="bg-white text-slate-600">
               <th className="p-3 text-left">รหัส / สินค้า</th>
               <th className="p-3 text-right">ยอดต้นช่วง</th>
               <th className="p-3 text-right">เติมรวม</th>
               <th className="p-3 text-right">ลดด้วยมือ</th>
-              <th className="p-3 text-right">ผลิต WMS</th>
+              <th className="p-3 text-right">ใบงาน</th>
+              <th className="p-3 text-right">ใบเบิก</th>
+              <th className="p-3 text-right">อื่น ๆ</th>
+              <th className="p-3 text-right">ตัดสต๊อกรวม</th>
               <th className="p-3 text-right">คงเหลือปลายช่วง</th>
             </tr>
           </thead>
@@ -1060,6 +1224,20 @@ export default function WarehouseSub() {
                 <td className="p-3 text-right font-semibold tabular-nums">{row.opening?.toLocaleString() ?? '-'}</td>
                 <td className="p-3 text-right font-bold text-emerald-700 tabular-nums">+{row.added.toLocaleString()}</td>
                 <td className="p-3 text-right font-bold text-red-700 tabular-nums">-{row.removed.toLocaleString()}</td>
+                <td className="p-3 text-right tabular-nums">{row.workOrder.toLocaleString()}</td>
+                <td className="p-3 text-right tabular-nums">{row.requisition.toLocaleString()}</td>
+                <td className="p-3 text-right tabular-nums">
+                  {row.other > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => void openOtherWmsDetails({ productId: row.product_id, productCode: row.product_code, productName: row.product_name, from: dateFrom, to: dateTo })}
+                      className="font-black text-orange-700 underline decoration-dotted underline-offset-4 hover:text-orange-900"
+                      title="ตรวจสอบรายการ WMS ที่ยังจำแนกไม่ได้"
+                    >
+                      {row.other.toLocaleString()}
+                    </button>
+                  ) : '0'}
+                </td>
                 <td className="p-3 text-right font-bold text-amber-700 tabular-nums">-{row.wmsUsed.toLocaleString()}</td>
                 <td className="p-3 text-right font-black text-slate-950 tabular-nums">{row.closing?.toLocaleString() ?? '-'}</td>
               </tr>
@@ -1221,7 +1399,7 @@ export default function WarehouseSub() {
               </div>
 
               {productViewMode === 'range' && <div className="mt-3 max-w-5xl rounded-xl border border-emerald-100 bg-emerald-50/70 px-4 py-3 text-sm text-slate-700">
-                สรุปเฉพาะช่วงวันที่เลือก: <span className="font-bold">เติม − ลดด้วยมือ − ผลิตใช้ไป (WMS) = เปลี่ยนแปลงสุทธิในช่วง</span>
+                สรุปเฉพาะช่วงวันที่เลือก: <span className="font-bold">เติม − ลดด้วยมือ − ตัดสต๊อกรวม = เปลี่ยนแปลงสุทธิในช่วง</span>
               </div>}
             </div>
 
@@ -1274,7 +1452,7 @@ export default function WarehouseSub() {
                 <div className="py-14 text-center text-slate-500 text-sm">ไม่พบสินค้าที่ตรงกับคำค้นหา</div>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full text-sm min-w-[920px]">
+                  <table className="w-full text-sm min-w-[1250px]">
                     <thead>
                       <tr className="bg-emerald-600 text-white">
                         <th className="p-3 text-center rounded-tl-xl w-12" aria-label="จัดลำดับ" />
@@ -1285,7 +1463,10 @@ export default function WarehouseSub() {
                         <th className="p-3 text-center whitespace-nowrap">คงเหลือต้นวัน</th>
                         <th className="p-3 text-center whitespace-nowrap">เติมสต๊อค</th>
                         <th className="p-3 text-center whitespace-nowrap">ลด (มือ)</th>
-                        <th className="p-3 text-center whitespace-nowrap">ผลิตใช้ไป</th>
+                        <th className="p-3 text-center whitespace-nowrap">ใบงาน</th>
+                        <th className="p-3 text-center whitespace-nowrap">ใบเบิก</th>
+                        <th className="p-3 text-center whitespace-nowrap">อื่น ๆ</th>
+                        <th className="p-3 text-center whitespace-nowrap">ตัดสต๊อกรวม</th>
                         <th className="p-3 text-center whitespace-nowrap">คงเหลือ (สิ้นวัน)</th>
                         {canModifySubWarehouseStock && <th className="p-3 text-center rounded-tr-xl">จัดการ</th>}
                       </tr>
@@ -1293,6 +1474,7 @@ export default function WarehouseSub() {
                     <tbody className="divide-y">
                       {filteredDailyRows.map((p) => {
                         const dash = loadingDaily
+                        const dailyUsage = dailyWmsUsageMap[p.product_code] || EMPTY_WMS_USAGE
                         return (
                           <tr
                             key={p.product_id}
@@ -1322,7 +1504,21 @@ export default function WarehouseSub() {
                             <td className="p-3 text-center tabular-nums text-slate-600">
                               {dash ? '…' : Math.abs(p.reduce_day).toLocaleString()}
                             </td>
-                            <td className="p-3 text-center tabular-nums text-slate-800">
+                            <td className="p-3 text-center tabular-nums text-slate-700">{dash ? '…' : dailyUsage.workOrder.toLocaleString()}</td>
+                            <td className="p-3 text-center tabular-nums text-slate-700">{dash ? '…' : dailyUsage.requisition.toLocaleString()}</td>
+                            <td className="p-3 text-center tabular-nums">
+                              {dash ? '…' : dailyUsage.other > 0 ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void openOtherWmsDetails({ productId: p.product_id, productCode: p.product_code, productName: p.product_name, from: countDate, to: countDate })}
+                                  className="font-black text-orange-700 underline decoration-dotted underline-offset-4 hover:text-orange-900"
+                                  title="ตรวจสอบรายการ WMS ที่ยังจำแนกไม่ได้"
+                                >
+                                  {dailyUsage.other.toLocaleString()}
+                                </button>
+                              ) : <span className="text-slate-500">0</span>}
+                            </td>
+                            <td className="p-3 text-center tabular-nums font-semibold text-amber-700">
                               {dash ? '…' : p.wms_day.toLocaleString()}
                             </td>
                             <td
@@ -1363,7 +1559,7 @@ export default function WarehouseSub() {
               <div className="py-14 text-center text-slate-500 text-sm">ไม่พบสินค้าที่ตรงกับคำค้นหา</div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+                <table className="w-full min-w-[1200px] text-sm">
                   <thead>
                     <tr className="bg-emerald-600 text-white">
                       <th className="p-3 text-center rounded-tl-xl w-12" aria-label="จัดลำดับ" />
@@ -1373,7 +1569,10 @@ export default function WarehouseSub() {
                       <th className="p-3 text-center">หน่วย</th>
                       <th className="p-3 text-center">เติมในช่วง</th>
                       <th className="p-3 text-center">ลดด้วยมือ</th>
-                      <th className="p-3 text-center">ผลิตใช้ไป (WMS)</th>
+                      <th className="p-3 text-center">ใบงาน</th>
+                      <th className="p-3 text-center">ใบเบิก</th>
+                      <th className="p-3 text-center">อื่น ๆ</th>
+                      <th className="p-3 text-center">ตัดสต๊อกรวม</th>
                       <th className="p-3 text-center">เปลี่ยนแปลงสุทธิ</th>
                       {canModifySubWarehouseStock && <th className="p-3 text-center rounded-tr-xl">จัดการ</th>}
                     </tr>
@@ -1382,6 +1581,7 @@ export default function WarehouseSub() {
                     {filteredWarehouseProducts.map((p) => {
                       const moveTotals = rangeMoveTotals.get(p.product_id) || { added: 0, removed: 0 }
                       const wmsQty = wmsCorrectMap[p.product_code] ?? 0
+                      const wmsUsage = wmsUsageMap[p.product_code] || EMPTY_WMS_USAGE
                       const netChange = moveTotals.added - moveTotals.removed - Number(wmsQty || 0)
                       return (
                         <tr
@@ -1405,7 +1605,21 @@ export default function WarehouseSub() {
                           <td className="p-3 text-center tabular-nums text-red-600">
                             {moveTotals.removed.toLocaleString()}
                           </td>
+                          <td className="p-3 text-center tabular-nums">{loadingWms ? '-' : wmsUsage.workOrder.toLocaleString()}</td>
+                          <td className="p-3 text-center tabular-nums">{loadingWms ? '-' : wmsUsage.requisition.toLocaleString()}</td>
                           <td className="p-3 text-center tabular-nums">
+                            {loadingWms ? '-' : wmsUsage.other > 0 ? (
+                              <button
+                                type="button"
+                                onClick={() => void openOtherWmsDetails({ productId: p.product_id, productCode: p.product_code, productName: p.product_name, from: dateFrom, to: dateTo })}
+                                className="font-black text-orange-700 underline decoration-dotted underline-offset-4 hover:text-orange-900"
+                                title="ตรวจสอบรายการ WMS ที่ยังจำแนกไม่ได้"
+                              >
+                                {wmsUsage.other.toLocaleString()}
+                              </button>
+                            ) : <span className="text-slate-500">0</span>}
+                          </td>
+                          <td className="p-3 text-center font-semibold text-amber-700 tabular-nums">
                             {loadingWms ? '-' : Number(wmsQty || 0).toLocaleString()}
                           </td>
                           <td
@@ -1564,6 +1778,95 @@ export default function WarehouseSub() {
       </Modal>
 
       <Modal
+        open={otherWmsModalOpen}
+        onClose={() => setOtherWmsModalOpen(false)}
+        closeOnBackdropClick
+        contentClassName="max-w-6xl w-full max-h-[90vh] overflow-hidden"
+      >
+        <div className="flex max-h-[90vh] flex-col text-slate-900">
+          <div className="border-b border-orange-100 bg-orange-50 px-6 py-5 pr-16">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-xl font-black text-orange-950">ตรวจสอบรายการ WMS ประเภท “อื่น ๆ”</div>
+                <div className="mt-1 text-sm text-slate-700">
+                  {otherWmsContext?.productCode} — {otherWmsContext?.productName}
+                </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  ช่วงวันที่ {otherWmsContext?.from} ถึง {otherWmsContext?.to}
+                </div>
+              </div>
+              <div className="rounded-xl border border-orange-200 bg-white px-4 py-2 text-right">
+                <div className="text-xs font-semibold text-slate-500">รวมที่ต้องตรวจสอบ</div>
+                <div className="text-xl font-black text-orange-700">
+                  {otherWmsRows.reduce((sum, row) => sum + row.qty, 0).toLocaleString()}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="overflow-auto p-6">
+            {otherWmsLoading ? (
+              <div className="py-12 text-center font-semibold text-slate-400">กำลังโหลดรายละเอียด...</div>
+            ) : otherWmsRows.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-5 py-10 text-center text-sm text-slate-600">
+                ไม่พบรายการที่ยังจำแนกไม่ได้ในช่วงวันที่นี้ กรุณารีเฟรชหน้าคลังย่อยอีกครั้ง
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-orange-100">
+                <table className="w-full min-w-[1050px] text-sm">
+                  <thead>
+                    <tr className="bg-orange-100 text-orange-950">
+                      <th className="p-3 text-left">วันเวลา</th>
+                      <th className="p-3 text-left">เลขอ้างอิง WMS</th>
+                      <th className="p-3 text-left">สินค้าใน WMS</th>
+                      <th className="p-3 text-right">จำนวน</th>
+                      <th className="p-3 text-left">รูปแบบการจ่าย</th>
+                      <th className="p-3 text-left">ผู้หยิบ</th>
+                      <th className="p-3 text-left">สาเหตุ</th>
+                      <th className="p-3 text-center">ตรวจต้นทาง</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-orange-100">
+                    {otherWmsRows.map((row) => (
+                      <tr key={row.wms_order_id} className="hover:bg-orange-50/60">
+                        <td className="p-3 whitespace-nowrap text-slate-600">
+                          {row.used_at ? new Date(row.used_at).toLocaleString('th-TH') : '-'}
+                        </td>
+                        <td className="p-3 font-bold text-slate-900">{row.order_reference || '-'}</td>
+                        <td className="p-3">
+                          <div className="font-semibold">{row.product_code}</div>
+                          <div className="text-xs text-slate-500">{row.product_name}</div>
+                        </td>
+                        <td className="p-3 text-right font-black tabular-nums">
+                          {row.qty.toLocaleString()} {row.unit_name || ''}
+                        </td>
+                        <td className="p-3 text-slate-600">{row.fulfillment_mode || 'รายการเดิม'}</td>
+                        <td className="p-3 text-slate-600">{row.picker_name || '-'}</td>
+                        <td className="p-3 font-semibold text-orange-800">{row.classification_reason}</td>
+                        <td className="p-3 text-center">
+                          <a
+                            href="/wms"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-700 hover:bg-blue-100"
+                          >
+                            เปิด WMS
+                          </a>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-xs text-blue-900">
+              วิธีแก้: ตรวจเลขอ้างอิงกับใบงานหรือใบเบิกต้นทาง แล้วแก้การเชื่อมโยงให้ถูกต้อง รายการจะย้ายออกจาก “อื่น ๆ” อัตโนมัติหลังรีเฟรช
+            </div>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
         open={adjustModalOpen}
         onClose={() => setAdjustModalOpen(false)}
         closeOnBackdropClick
@@ -1619,24 +1922,44 @@ export default function WarehouseSub() {
               />
             </div>
             <div>
-              <label className="text-sm font-semibold text-slate-700">เหตุผล</label>
-              <input
-                type="text"
-                value={adjustReason}
-                onChange={(e) => setAdjustReason(e.target.value)}
-                placeholder={adjustType === 'add' ? 'เช่น เติมสต๊อค' : 'เช่น ลดสต๊อค'}
-                className="w-full mt-2 px-4 py-3 rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900"
-              />
+              <label className="text-sm font-semibold text-slate-700">เหตุผล <span className="text-red-600">*</span></label>
+              {adjustType === 'remove' ? (
+                <select
+                  value={adjustReason}
+                  onChange={(e) => setAdjustReason(e.target.value)}
+                  className="w-full mt-2 px-4 py-3 rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900"
+                >
+                  <option value="">เลือกเหตุผลการลดมือ</option>
+                  {MANUAL_REMOVE_REASONS.map((reason) => <option key={reason} value={reason}>{reason}</option>)}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={adjustReason}
+                  onChange={(e) => setAdjustReason(e.target.value)}
+                  placeholder="เช่น เติมสต๊อค"
+                  className="w-full mt-2 px-4 py-3 rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900"
+                />
+              )}
             </div>
           </div>
 
+          {adjustType === 'remove' && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <div className="font-bold">ใช้ “ลดมือ” เฉพาะเหตุการณ์ที่ไม่ได้ถูกบันทึกในยอดตัดสต๊อกรวม</div>
+              <div className="mt-1">รายการใบงานหรือใบเบิกที่ตรวจเป็น “ถูกต้อง” จะถูกรวมในยอดตัดสต๊อกรวมอัตโนมัติแล้ว</div>
+            </div>
+          )}
+
           <div>
-            <label className="text-sm font-semibold text-slate-700">หมายเหตุ (ไม่บังคับ)</label>
+            <label className="text-sm font-semibold text-slate-700">
+              รายละเอียด {adjustType === 'remove' ? <span className="text-red-600">*</span> : <span className="font-normal text-slate-500">(ไม่บังคับ)</span>}
+            </label>
             <input
               type="text"
               value={adjustNote}
               onChange={(e) => setAdjustNote(e.target.value)}
-              placeholder="รายละเอียดเพิ่มเติม..."
+              placeholder={adjustType === 'remove' ? 'ระบุเหตุการณ์หรือเอกสารอ้างอิง เพื่อให้ตรวจสอบย้อนหลังได้' : 'รายละเอียดเพิ่มเติม...'}
               className="w-full mt-2 px-4 py-3 rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900"
             />
           </div>

@@ -40,8 +40,12 @@ file_size_limit = "50MiB"
 
 [auth]
 enabled = true
-site_url = "http://localhost:5173"
-additional_redirect_urls = ["https://localhost:5173"]
+site_url = "https://tr-erp-umber.vercel.app"
+additional_redirect_urls = [
+  "https://tr-erp-umber.vercel.app/reset-password",
+  "https://tr-erp-zhong-tees-projects.vercel.app/reset-password",
+  "http://localhost:5173/reset-password"
+]
 jwt_expiry = 3600
 enable_signup = false
 
