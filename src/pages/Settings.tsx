@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
 import type { User, BankSetting, BillHeaderSetting, OrderChatLog, IssueType } from '../types'
@@ -16,6 +17,7 @@ import { useAuthContext } from '../contexts/AuthContext'
 import { getRoleLookupCandidates, normalizeRole } from '../config/accessPolicy'
 import { pumpVerifiedRoutingStatus } from '../lib/pumpConfirmRouting'
 import { MOBILE_MODE_ROLES, MOBILE_MODE_INFO, getMobileAccess, type MobileMode } from '../lib/mobileMode'
+import { authErrorMessage } from '../lib/authErrorMessage'
 
 const SETTINGS_TABS = [
   { key: 'users', label: 'จัดการสิทธิ์ผู้ใช้' },
@@ -253,9 +255,22 @@ export default function Settings() {
   const [issueTypeSaving, setIssueTypeSaving] = useState(false)
   const [issueTypeEditingId, setIssueTypeEditingId] = useState<string | null>(null)
   const [userRoleFilter, setUserRoleFilter] = useState<string>('all')
+  const [userSearch, setUserSearch] = useState('')
   const [hideInactiveUsers, setHideInactiveUsers] = useState(false)
   /** user id ที่กำลังเปิด popover สิทธิ์ Mobile อยู่ */
   const [mobileAccessUserId, setMobileAccessUserId] = useState<string | null>(null)
+  const [mobileAccessPopoverPosition, setMobileAccessPopoverPosition] = useState({ top: 0, left: 0 })
+
+  useEffect(() => {
+    if (!mobileAccessUserId) return
+    const closePopover = () => setMobileAccessUserId(null)
+    window.addEventListener('resize', closePopover)
+    window.addEventListener('scroll', closePopover, true)
+    return () => {
+      window.removeEventListener('resize', closePopover)
+      window.removeEventListener('scroll', closePopover, true)
+    }
+  }, [mobileAccessUserId])
 
   // ผู้ขาย (Sellers) — seller_type: thailand | foreign
   const [sellers, setSellers] = useState<
@@ -565,9 +580,11 @@ export default function Settings() {
 
   async function updateUserRole(userId: string, newRole: string) {
     try {
+      const targetUser = users.find((user) => user.id === userId)
+      const mobileAccess = getMobileAccess(targetUser).filter((mode) => mode !== normalizeRole(newRole))
       const { error } = await supabase
         .from('us_users')
-        .update({ role: newRole })
+        .update({ role: newRole, mobile_access: mobileAccess })
         .eq('id', userId)
 
       if (error) throw error
@@ -706,7 +723,12 @@ export default function Settings() {
       setCreateUserForm({ email: '', password: '', username: '', role: 'sales-tr' })
       loadUsers()
     } catch (err: any) {
-      showMessage({ title: 'ผิดพลาด', message: err.message })
+      // ปิดฟอร์มก่อนแสดงข้อความ เพื่อไม่ให้ Modal สร้าง User บัง Popup แจ้งข้อผิดพลาด
+      setShowCreateUserModal(false)
+      showMessage({
+        title: 'ไม่สามารถเพิ่มผู้ใช้ได้',
+        message: authErrorMessage(err, 'ไม่สามารถสร้างผู้ใช้ได้ กรุณาตรวจสอบข้อมูลแล้วลองใหม่อีกครั้ง'),
+      })
     } finally {
       setCreateUserLoading(false)
     }
@@ -2820,15 +2842,29 @@ export default function Settings() {
 
       {/* Users Tab */}
       {activeTab === 'users' && hasAccess('settings-users') && (() => {
+        const normalizedUserSearch = userSearch.trim().toLocaleLowerCase('th-TH')
         const filteredUsers = (userRoleFilter === 'all'
           ? users
           : users.filter((u) => normalizeRole(u.role) === normalizeRole(userRoleFilter))
-        ).filter((u) => !hideInactiveUsers || u.is_active !== false)
+        )
+          .filter((u) => !hideInactiveUsers || u.is_active !== false)
+          .filter((u) => !normalizedUserSearch || `${u.email || ''} ${u.username || ''}`.toLocaleLowerCase('th-TH').includes(normalizedUserSearch))
+          .sort((a, b) => {
+            const aRoleIndex = allRoles.indexOf(normalizeRole(a.role))
+            const bRoleIndex = allRoles.indexOf(normalizeRole(b.role))
+            const roleOrder = (aRoleIndex < 0 ? Number.MAX_SAFE_INTEGER : aRoleIndex)
+              - (bRoleIndex < 0 ? Number.MAX_SAFE_INTEGER : bRoleIndex)
+            if (roleOrder !== 0) return roleOrder
+
+            const aName = (a.username || a.email || '').trim()
+            const bName = (b.username || b.email || '').trim()
+            return aName.localeCompare(bName, ['th', 'en'], { sensitivity: 'base', numeric: true })
+          })
         return (
         <div className="bg-white p-6 rounded-lg shadow">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
             <h2 className="text-xl font-bold">ผู้ใช้ทั้งหมด</h2>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
               {currentUser?.role === 'superadmin' && (
                 <button
                   type="button"
@@ -2838,6 +2874,30 @@ export default function Settings() {
                   + สร้าง User ใหม่
                 </button>
               )}
+              <label className="relative block min-w-[230px]">
+                <span className="sr-only">ค้นหาผู้ใช้</span>
+                <svg className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m21 21-4.35-4.35m1.35-5.65a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
+                </svg>
+                <input
+                  type="search"
+                  value={userSearch}
+                  onChange={(e) => setUserSearch(e.target.value)}
+                  placeholder="ค้นหาอีเมล หรือ Username"
+                  className="w-full rounded-lg border border-gray-300 py-1.5 pl-9 pr-8 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                />
+                {userSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setUserSearch('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded px-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                    title="ล้างคำค้นหา"
+                    aria-label="ล้างคำค้นหา"
+                  >
+                    ✕
+                  </button>
+                )}
+              </label>
               {(() => {
                 const inactiveCount = users.filter((u) => u.is_active === false).length
                 return (
@@ -2889,7 +2949,7 @@ export default function Settings() {
           </div>
         {filteredUsers.length === 0 ? (
           <div className="text-center py-12 text-gray-500">
-            ไม่พบข้อมูลผู้ใช้
+            {userSearch.trim() ? `ไม่พบผู้ใช้ที่ตรงกับ “${userSearch.trim()}”` : 'ไม่พบข้อมูลผู้ใช้'}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -3000,7 +3060,20 @@ export default function Settings() {
                             <button
                               type="button"
                               disabled={isInactive}
-                              onClick={() => setMobileAccessUserId(open ? null : user.id)}
+                              onClick={(event) => {
+                                if (open) {
+                                  setMobileAccessUserId(null)
+                                  return
+                                }
+                                const rect = event.currentTarget.getBoundingClientRect()
+                                const popoverWidth = 256
+                                const estimatedHeight = 340
+                                setMobileAccessPopoverPosition({
+                                  top: Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - estimatedHeight - 8)),
+                                  left: Math.max(8, Math.min(rect.right - popoverWidth, window.innerWidth - popoverWidth - 8)),
+                                })
+                                setMobileAccessUserId(user.id)
+                              }}
                               className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition disabled:opacity-40 disabled:cursor-not-allowed ${
                                 granted.length > 0
                                   ? 'bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100'
@@ -3010,10 +3083,13 @@ export default function Settings() {
                             >
                               {granted.length > 0 ? `${granted.length} โหมด` : '— ปิด —'} ▾
                             </button>
-                            {open && (
+                            {open && createPortal(
                               <>
-                                <div className="fixed inset-0 z-20" onClick={() => setMobileAccessUserId(null)} />
-                                <div className="absolute right-0 top-full mt-1 z-30 w-64 bg-white border border-gray-200 rounded-xl shadow-lg p-3 text-left space-y-2">
+                                <div className="fixed inset-0 z-[90]" onClick={() => setMobileAccessUserId(null)} />
+                                <div
+                                  className="fixed z-[100] w-64 bg-white border border-gray-200 rounded-xl shadow-xl p-3 text-left space-y-2"
+                                  style={mobileAccessPopoverPosition}
+                                >
                                   <p className="text-xs font-semibold text-gray-500 mb-1">สิทธิ์ Role มือถือ</p>
                                   {MOBILE_MODE_ROLES.map((mode) => {
                                     const isOwnRole = normalizeRole(user.role) === mode
@@ -3048,7 +3124,8 @@ export default function Settings() {
                                     เปิดแล้ว user จะเห็นหน้าเลือกโหมดเมื่อ login จากมือถือ
                                   </p>
                                 </div>
-                              </>
+                              </>,
+                              document.body,
                             )}
                           </div>
                         )

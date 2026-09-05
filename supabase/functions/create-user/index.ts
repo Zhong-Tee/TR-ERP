@@ -58,7 +58,21 @@ serve(async (req) => {
       password,
       email_confirm: true,
     })
-    if (createErr) throw new Error(createErr.message)
+    if (createErr) {
+      const duplicateEmail = createErr.code === 'email_exists'
+        || createErr.code === 'user_already_exists'
+        || createErr.message.toLowerCase().includes('already been registered')
+        || createErr.message.toLowerCase().includes('already registered')
+      if (duplicateEmail) {
+        return new Response(JSON.stringify({
+          error: 'อีเมลนี้มีบัญชีอยู่ในระบบแล้ว กรุณาตรวจสอบรายชื่อผู้ใช้ หากไม่พบ โปรดติดต่อผู้ดูแลระบบเพื่อตรวจสอบบัญชีค้าง',
+        }), {
+          status: 409,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        })
+      }
+      throw new Error(createErr.message)
+    }
 
     const newUserId = newAuthUser.user.id
 

@@ -1,10 +1,21 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../../../lib/supabase'
 import { useWmsModal } from '../useWmsModal'
+import { useAuthContext } from '../../../contexts/AuthContext'
 
 type Category4M = 'Man' | 'Machine' | 'Material' | 'Method' | '-'
 type TopicRow = { id: string; topic_name: string; category_4m?: Category4M }
 type NonPickerCategory = { id: string; category_name: string }
+type StoreBackupUser = { id: string; email: string | null; username: string | null; role: string }
+type StoreBackupAssignment = {
+  id: string
+  user_id: string
+  starts_at: string
+  ends_at: string
+  is_active: boolean
+  granted_by: string | null
+  user: StoreBackupUser | null
+}
 
 const CATEGORY_4M_OPTIONS: Category4M[] = ['-', 'Man', 'Machine', 'Material', 'Method']
 const CATEGORY_4M_LABELS: Record<Category4M, string> = {
@@ -34,7 +45,29 @@ const TOPIC_SECTIONS: TopicSection[] = [
   { table: 'wms_borrow_topics', label: 'หัวข้อรายการยืม', has4m: true },
 ]
 
+function bangkokDateInput(date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Bangkok',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date)
+}
+
+function bangkokDayBoundary(date: string, endOfDay = false): string {
+  return new Date(`${date}T${endOfDay ? '23:59:59.999' : '00:00:00'}+07:00`).toISOString()
+}
+
+function assignmentStatus(assignment: StoreBackupAssignment): { label: string; className: string } {
+  const now = Date.now()
+  if (!assignment.is_active) return { label: 'ปิดแล้ว', className: 'bg-gray-100 text-gray-600' }
+  if (new Date(assignment.starts_at).getTime() > now) return { label: 'รอเริ่มใช้งาน', className: 'bg-blue-100 text-blue-700' }
+  if (new Date(assignment.ends_at).getTime() < now) return { label: 'หมดอายุ', className: 'bg-amber-100 text-amber-700' }
+  return { label: 'กำลังใช้งาน', className: 'bg-emerald-100 text-emerald-700' }
+}
+
 export default function SettingsSection() {
+  const { user: currentUser } = useAuthContext()
   const [topics, setTopics] = useState<TopicRow[]>([])
   const [sectionTopics, setSectionTopics] = useState<Record<string, TopicRow[]>>({})
   const [newTopic, setNewTopic] = useState('')
@@ -42,7 +75,14 @@ export default function SettingsSection() {
   const [productCategories, setProductCategories] = useState<string[]>([])
   const [newNonPickerCategory, setNewNonPickerCategory] = useState('')
   const [newSectionInputs, setNewSectionInputs] = useState<Record<string, { name: string; category: Category4M }>>({})
+  const [storeBackupUsers, setStoreBackupUsers] = useState<StoreBackupUser[]>([])
+  const [storeBackupAssignments, setStoreBackupAssignments] = useState<StoreBackupAssignment[]>([])
+  const [selectedStoreBackupUserId, setSelectedStoreBackupUserId] = useState('')
+  const [storeBackupStartDate, setStoreBackupStartDate] = useState(() => bangkokDateInput())
+  const [storeBackupEndDate, setStoreBackupEndDate] = useState(() => bangkokDateInput())
+  const [storeBackupSaving, setStoreBackupSaving] = useState(false)
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const canManageStoreBackups = ['superadmin', 'admin', 'store'].includes(String(currentUser?.role || ''))
 
   const loadSettings = useCallback(async () => {
     const { data: topicsData } = await supabase
@@ -65,7 +105,36 @@ export default function SettingsSection() {
       results[sec.table] = (data || []) as TopicRow[]
     }
     setSectionTopics(results)
-  }, [])
+
+    if (canManageStoreBackups) {
+      const [usersResult, assignmentsResult] = await Promise.all([
+        supabase
+          .from('us_users')
+          .select('id, email, username, role')
+          .in('role', ['production', 'qc_staff', 'packing_staff'])
+          .or('is_active.eq.true,is_active.is.null')
+          .order('role')
+          .order('username'),
+        supabase
+          .from('wms_store_backup_assignments')
+          .select('id, user_id, starts_at, ends_at, is_active, granted_by, user:us_users!user_id(id, email, username, role)')
+          .order('created_at', { ascending: false }),
+      ])
+      if (usersResult.error) {
+        console.error('Load Store backup users error:', usersResult.error)
+      } else {
+        setStoreBackupUsers((usersResult.data || []) as StoreBackupUser[])
+      }
+      if (assignmentsResult.error) {
+        console.error('Load Store backup assignments error:', assignmentsResult.error)
+      } else {
+        setStoreBackupAssignments((assignmentsResult.data || []).map((row: any) => ({
+          ...row,
+          user: Array.isArray(row.user) ? row.user[0] || null : row.user || null,
+        })) as StoreBackupAssignment[])
+      }
+    }
+  }, [canManageStoreBackups])
 
   useEffect(() => {
     const timer = window.setTimeout(() => { void loadSettings() }, 0)
@@ -141,10 +210,56 @@ export default function SettingsSection() {
     loadSettings()
   }
 
+  const saveStoreBackup = async () => {
+    if (!selectedStoreBackupUserId) {
+      showMessage({ message: 'กรุณาเลือกพนักงาน Store สำรอง' })
+      return
+    }
+    if (!storeBackupStartDate || !storeBackupEndDate || storeBackupEndDate < storeBackupStartDate) {
+      showMessage({ message: 'กรุณาตรวจสอบวันเริ่มต้นและวันสิ้นสุดให้ถูกต้อง' })
+      return
+    }
+    setStoreBackupSaving(true)
+    const { error } = await supabase.from('wms_store_backup_assignments').upsert({
+      user_id: selectedStoreBackupUserId,
+      starts_at: bangkokDayBoundary(storeBackupStartDate),
+      ends_at: bangkokDayBoundary(storeBackupEndDate, true),
+      is_active: true,
+      granted_by: currentUser?.id || null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'user_id' })
+    setStoreBackupSaving(false)
+    if (error) {
+      showMessage({ message: `บันทึกพนักงาน Store สำรองไม่สำเร็จ: ${error.message}` })
+      return
+    }
+    setSelectedStoreBackupUserId('')
+    showMessage({ message: 'บันทึกสิทธิ์ Store สำรองเรียบร้อยแล้ว' })
+    await loadSettings()
+  }
+
+  const revokeStoreBackup = async (assignment: StoreBackupAssignment) => {
+    const displayName = assignment.user?.username || assignment.user?.email || 'ผู้ใช้นี้'
+    const ok = await showConfirm({
+      title: 'ยกเลิกสิทธิ์ Store สำรอง',
+      message: `ต้องการยกเลิกสิทธิ์ของ “${displayName}” ทันทีหรือไม่?`,
+    })
+    if (!ok) return
+    const { error } = await supabase
+      .from('wms_store_backup_assignments')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('id', assignment.id)
+    if (error) {
+      showMessage({ message: `ยกเลิกสิทธิ์ไม่สำเร็จ: ${error.message}` })
+      return
+    }
+    await loadSettings()
+  }
+
   return (
     <section className="h-full flex flex-col">
       <h2 className="text-3xl font-black mb-6 text-slate-800">ตั้งค่าระบบ</h2>
-      <div className="grid grid-cols-2 gap-6 flex-1 min-h-0">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1 min-h-0">
         {/* หัวข้อแจ้งเตือน */}
         <div className="bg-white p-6 rounded-2xl border shadow-sm flex flex-col">
           <h3 className="font-bold text-gray-400 text-[16px] uppercase tracking-widest mb-4 border-b pb-2 text-slate-800">
@@ -267,6 +382,100 @@ export default function SettingsSection() {
             ))}
           </div>
         </div>
+
+        {canManageStoreBackups && (
+          <div className="bg-white p-6 rounded-2xl border shadow-sm flex flex-col">
+            <div className="mb-4 border-b pb-3">
+              <h3 className="font-bold text-[16px] uppercase tracking-widest text-slate-800">
+                พนักงาน Store สำรอง
+              </h3>
+              <p className="mt-1 text-xs leading-5 text-slate-500">
+                เปิดสิทธิ์ชั่วคราวให้ production, qc_staff หรือ packing_staff เข้าถึงเฉพาะ “ใบงานใหม่” และ “ตรวจสินค้า” โดยไม่เปลี่ยน Role หลัก
+              </p>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="sm:col-span-2 text-xs font-semibold text-slate-600">
+                เลือกพนักงาน
+                <select
+                  value={selectedStoreBackupUserId}
+                  onChange={(event) => setSelectedStoreBackupUserId(event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white p-2.5 text-sm"
+                >
+                  <option value="">-- เลือก User --</option>
+                  {storeBackupUsers.map((backupUser) => (
+                    <option key={backupUser.id} value={backupUser.id}>
+                      {backupUser.username || backupUser.email || backupUser.id} · {backupUser.role}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-slate-600">
+                วันที่เริ่มต้น
+                <input
+                  type="date"
+                  value={storeBackupStartDate}
+                  onChange={(event) => setStoreBackupStartDate(event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-sm"
+                />
+              </label>
+              <label className="text-xs font-semibold text-slate-600">
+                วันที่สิ้นสุด
+                <input
+                  type="date"
+                  min={storeBackupStartDate}
+                  value={storeBackupEndDate}
+                  onChange={(event) => setStoreBackupEndDate(event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-sm"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={saveStoreBackup}
+                disabled={storeBackupSaving || !selectedStoreBackupUserId}
+                className="sm:col-span-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {storeBackupSaving ? 'กำลังบันทึก...' : 'เปิดสิทธิ์ Store สำรอง'}
+              </button>
+            </div>
+
+            <div className="mt-5 divide-y overflow-y-auto border-t max-h-80">
+              {storeBackupAssignments.length === 0 ? (
+                <p className="py-5 text-center text-sm text-slate-400">ยังไม่มีพนักงาน Store สำรอง</p>
+              ) : storeBackupAssignments.map((assignment) => {
+                const status = assignmentStatus(assignment)
+                return (
+                  <div key={assignment.id} className="flex items-center justify-between gap-3 py-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="truncate text-sm font-semibold text-slate-800">
+                          {assignment.user?.username || assignment.user?.email || assignment.user_id}
+                        </span>
+                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${status.className}`}>
+                          {status.label}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {assignment.user?.role || 'ไม่พบ Role'} · {new Date(assignment.starts_at).toLocaleDateString('th-TH', { timeZone: 'Asia/Bangkok' })}
+                        {' ถึง '}
+                        {new Date(assignment.ends_at).toLocaleDateString('th-TH', { timeZone: 'Asia/Bangkok' })}
+                      </p>
+                    </div>
+                    {assignment.is_active && (
+                      <button
+                        type="button"
+                        onClick={() => revokeStoreBackup(assignment)}
+                        className="shrink-0 rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50"
+                      >
+                        ยกเลิก
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
       {MessageModal}
       {ConfirmModal}

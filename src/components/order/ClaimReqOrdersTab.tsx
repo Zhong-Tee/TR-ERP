@@ -8,6 +8,7 @@ import ClaimRequestComparePanel from '../claim/ClaimRequestComparePanel'
 import ClaimEditModal from '../claim/ClaimEditModal'
 import VerificationResultModal, { type AmountStatus } from './VerificationResultModal'
 import { verifyAndSaveClaimSlips, type ClaimSlipVerifyResult } from '../../lib/claimSlipVerification'
+import { requiresClaimPaymentSlip } from '../../lib/claimPayment'
 import { parseAddressText } from '../../lib/thaiAddress'
 import type { ClaimCompareDetail, RefOrderDetail } from '../claim/claimCompareShared'
 import { fmtMoney, mobilePhoneFromBillingDetails } from '../claim/claimCompareShared'
@@ -327,7 +328,7 @@ export default function ClaimReqOrdersTab({
   const [expandedSlipPreview, setExpandedSlipPreview] = useState<{ url: string; name: string } | null>(null)
   const [claimVerify, setClaimVerify] = useState<{
     open: boolean
-    type: 'success' | 'failed'
+    type: 'success' | 'failed' | 'save_success'
     accountMatch: boolean | null
     bankCodeMatch: boolean | null
     amountStatus: AmountStatus
@@ -356,6 +357,8 @@ export default function ClaimReqOrdersTab({
 
   const canConfirm = CAN_CONFIRM_ROLES.includes(userRole as (typeof CAN_CONFIRM_ROLES)[number])
   const canEditClaim = CAN_EDIT_CLAIM_ROLES.includes(userRole || '')
+  const confirmPaymentAmount = Math.max(0, Number(modalOrder?.total_amount) || 0)
+  const confirmSlipRequired = requiresClaimPaymentSlip(confirmPaymentAmount)
 
   /** เปิดดูแล้ว (อนุมัติแล้ว/ปฏิเสธ) — จำต่อผู้ใช้ใน localStorage เพื่อให้ badge ลดลงเมื่อคลิกดู */
   const { user } = useAuthContext()
@@ -821,30 +824,32 @@ export default function ClaimReqOrdersTab({
       setErrorMsg(`กรุณากรอกข้อมูลให้ครบ: ${missingFields.join(', ')}`)
       return
     }
-    if (confirmSlipFiles.length === 0) {
+    if (confirmSlipRequired && confirmSlipFiles.length === 0) {
       setErrorMsg('กรุณาแนบสลิปโอนเพื่อให้ระบบตรวจสอบก่อนยืนยันที่อยู่')
       return
     }
     setSaving(true)
     setErrorMsg('')
     try {
-      // EasySlip must pass before shipping is confirmed.
-      const orderAmount = Number(modalOrder.total_amount) || 0
+      const orderAmount = Math.max(0, Number(modalOrder.total_amount) || 0)
+      const slipRequired = requiresClaimPaymentSlip(orderAmount)
       let outcome: ClaimSlipVerifyResult | null = null
       let verifyError: string | null = null
-      try {
-        outcome = await verifyAndSaveClaimSlips({
-          orderId: modalOrder.id,
-          billNo: modalOrder.bill_no,
-          channelCode: modalOrder.channel_code || null,
-          expectedAmount: orderAmount,
-          files: confirmSlipFiles,
-          verifiedBy: user?.id ?? null,
-        })
-      } catch (ve: unknown) {
-        verifyError = (ve as Error)?.message || String(ve)
+      if (slipRequired) {
+        try {
+          outcome = await verifyAndSaveClaimSlips({
+            orderId: modalOrder.id,
+            billNo: modalOrder.bill_no,
+            channelCode: modalOrder.channel_code || null,
+            expectedAmount: orderAmount,
+            files: confirmSlipFiles,
+            verifiedBy: user?.id ?? null,
+          })
+        } catch (ve: unknown) {
+          verifyError = (ve as Error)?.message || String(ve)
+        }
       }
-      const passed = !!outcome?.passed
+      const passed = slipRequired ? !!outcome?.passed : true
 
       if (passed) {
         const { error } = await supabase.rpc('rpc_confirm_claim_req_shipping', {
@@ -864,14 +869,16 @@ export default function ClaimReqOrdersTab({
 
       setClaimVerify({
         open: true,
-        type: passed ? 'success' : 'failed',
+        type: slipRequired ? (passed ? 'success' : 'failed') : 'save_success',
         accountMatch: outcome?.accountMatch ?? null,
         bankCodeMatch: outcome?.bankCodeMatch ?? null,
         amountStatus: outcome?.amountStatus ?? 'mismatch',
         orderAmount,
         totalAmount: outcome?.totalFromSlips ?? 0,
         errors: verifyError ? [verifyError] : outcome?.errors ?? [],
-        statusMessage: passed
+        statusMessage: !slipRequired
+          ? 'บิลเคลมไม่มียอดต้องชำระเพิ่ม — ยืนยันที่อยู่และย้ายบิลไป "ตรวจสอบแล้ว" เรียบร้อย'
+          : passed
           ? 'ตรวจสลิปผ่าน — ยืนยันที่อยู่และย้ายบิลไป "ตรวจสอบแล้ว" เรียบร้อย'
           : 'ตรวจสลิปไม่ผ่าน — ยังไม่ยืนยันที่อยู่ และบิลถูกย้ายไปเมนู "ตรวจสอบไม่ผ่าน"',
       })
@@ -1588,6 +1595,7 @@ export default function ClaimReqOrdersTab({
             onChange={(e) => setMobilePhone(e.target.value)}
             required
           />
+          {confirmSlipRequired ? (
           <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -1644,6 +1652,14 @@ export default function ClaimReqOrdersTab({
               </div>
             )}
           </div>
+          ) : (
+            <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50/70 p-3">
+              <p className="text-sm font-semibold text-blue-800">ไม่ต้องแนบสลิปโอน</p>
+              <p className="mt-1 text-xs text-blue-700">
+                บิลเคลมนี้มียอดที่ต้องชำระ 0.00 บาท สามารถบันทึกและยืนยันที่อยู่ได้ทันที
+              </p>
+            </div>
+          )}
           </form>
           {errorMsg && <p className="text-sm text-red-600 mb-3">{errorMsg}</p>}
           <div className="flex gap-3 justify-end pt-2">
@@ -1655,11 +1671,13 @@ export default function ClaimReqOrdersTab({
                 || !recipientName.trim()
                 || !customerAddress.trim()
                 || !mobilePhone.trim()
-                || confirmSlipFiles.length === 0
+                || (confirmSlipRequired && confirmSlipFiles.length === 0)
               }
               onClick={handleSaveConfirm}
             >
-              {saving ? 'กำลังตรวจสลิป...' : 'บันทึกและยืนยันที่อยู่'}
+              {saving
+                ? (confirmSlipRequired ? 'กำลังตรวจสลิป...' : 'กำลังบันทึก...')
+                : 'บันทึกและยืนยันที่อยู่'}
             </button>
           </div>
         </div>

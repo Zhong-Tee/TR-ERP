@@ -20,11 +20,11 @@ export const MOBILE_MODE_INFO: Record<MobileMode, { label: string; description: 
 const MODE_KEY = 'tr-erp:mobile-mode'
 const DESKTOP_KEY = 'tr-erp:desktop-override'
 
-/** รายชื่อโหมดที่ user นี้เปิดสิทธิ์ไว้ (กรองเฉพาะค่าที่ระบบรู้จัก) */
+/** รายชื่อโหมดเพิ่มเติมที่ user นี้เปิดสิทธิ์ไว้ (ไม่รวม role หลักและกรองเฉพาะค่าที่ระบบรู้จัก) */
 export function getMobileAccess(user: User | null | undefined): MobileMode[] {
   const raw = user?.mobile_access
   if (!Array.isArray(raw)) return []
-  return MOBILE_MODE_ROLES.filter((m) => raw.includes(m))
+  return MOBILE_MODE_ROLES.filter((mode) => raw.includes(mode) && mode !== user?.role)
 }
 
 /** โหมดที่ผู้ใช้เลือกใช้งานได้ รวม role มือถือหลักของบัญชีด้วย */

@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect, useCallback, ReactNode 
 import { supabase } from '../lib/supabase'
 import { useAuthContext } from './AuthContext'
 import { getMenuAccessCandidates, isDesktopDbManagedRole, isSuperadmin, normalizeRole } from '../config/accessPolicy'
+import { wmsStoreBackupMenuDecision } from '../lib/wmsStoreBackup'
 
 interface MenuAccessContextType {
   /** Raw map from DB. */
@@ -19,39 +20,55 @@ const MenuAccessContext = createContext<MenuAccessContextType | undefined>(undef
 export function MenuAccessProvider({ children }: { children: ReactNode }) {
   const { user } = useAuthContext()
   const [accessMap, setAccessMap] = useState<Record<string, boolean> | null>(null)
+  const [isWmsStoreBackup, setIsWmsStoreBackup] = useState(false)
   const [loaded, setLoaded] = useState(false)
-  const [prevRole, setPrevRole] = useState<string | undefined>(user?.role)
+  const userAccessKey = `${user?.id || ''}:${user?.role || ''}`
+  const [prevUserAccessKey, setPrevUserAccessKey] = useState(userAccessKey)
 
   // Synchronously reset loaded state when role changes so consumers
   // (SmartRedirect, ProtectedRoute) never see stale menuAccess data.
-  if (prevRole !== user?.role) {
-    setPrevRole(user?.role)
+  if (prevUserAccessKey !== userAccessKey) {
+    setPrevUserAccessKey(userAccessKey)
     setLoaded(false)
     setAccessMap(null)
+    setIsWmsStoreBackup(false)
   }
 
   const fetchAndApply = useCallback(async (showLoading: boolean) => {
     if (!user?.role) {
       setAccessMap(null)
+      setIsWmsStoreBackup(false)
       setLoaded(true)
       return
     }
     if (isSuperadmin(user.role)) {
       setAccessMap(null)
+      setIsWmsStoreBackup(false)
       setLoaded(true)
       return
     }
     if (!isDesktopDbManagedRole(user.role)) {
       setAccessMap(null)
+      setIsWmsStoreBackup(false)
       setLoaded(true)
       return
     }
     if (showLoading) setLoaded(false)
     try {
-      const { data, error } = await supabase
-        .from('st_user_menus')
-        .select('menu_key, has_access')
-        .eq('role', normalizeRole(user.role))
+      const [menuResult, backupResult] = await Promise.all([
+        supabase
+          .from('st_user_menus')
+          .select('menu_key, has_access')
+          .eq('role', normalizeRole(user.role)),
+        supabase.rpc('is_current_wms_store_backup'),
+      ])
+      const { data, error } = menuResult
+      if (backupResult.error) {
+        console.error('WMS Store backup access load error:', backupResult.error)
+        setIsWmsStoreBackup(false)
+      } else {
+        setIsWmsStoreBackup(backupResult.data === true)
+      }
       if (error) {
         console.error('MenuAccess load error:', error)
         if (showLoading) setLoaded(true)
@@ -71,7 +88,7 @@ export function MenuAccessProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoaded(true)
     }
-  }, [user?.role])
+  }, [user?.id, user?.role])
 
   useEffect(() => {
     fetchAndApply(true)
@@ -99,10 +116,32 @@ export function MenuAccessProvider({ children }: { children: ReactNode }) {
     }
   }, [user?.role, fetchAndApply])
 
+  // สิทธิ์มีวันเริ่ม/หมดอายุ จึงตรวจซ้ำแม้ไม่มีการแก้แถวในฐานข้อมูล
+  useEffect(() => {
+    if (!user?.id || isSuperadmin(user.role)) return
+    const timer = window.setInterval(() => fetchAndApply(false), 60_000)
+    const channel = supabase
+      .channel(`wms-store-backup-${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wms_store_backup_assignments', filter: `user_id=eq.${user.id}` },
+        () => fetchAndApply(false),
+      )
+      .subscribe()
+    return () => {
+      window.clearInterval(timer)
+      supabase.removeChannel(channel)
+    }
+  }, [user?.id, user?.role, fetchAndApply])
+
   const hasAccess = useCallback(
     (menuKey: string): boolean => {
       if (isSuperadmin(user?.role)) return true
       if (!isDesktopDbManagedRole(user?.role)) return false
+      if (isWmsStoreBackup) {
+        const backupDecision = wmsStoreBackupMenuDecision(menuKey)
+        if (backupDecision !== null) return backupDecision
+      }
       if (accessMap === null) return false
       const candidates = getMenuAccessCandidates(menuKey)
       for (const candidate of candidates) {
@@ -112,7 +151,7 @@ export function MenuAccessProvider({ children }: { children: ReactNode }) {
       }
       return false
     },
-    [accessMap, user?.role],
+    [accessMap, isWmsStoreBackup, user?.role],
   )
 
   return (

@@ -6,6 +6,7 @@ import { supabase } from '../lib/supabase'
 import { Order, OrderItem, WorkOrder, InkType, PackingMeta } from '../types'
 import { flatBillUnitUid, normalizedLineQuantity } from '../lib/productionUnits'
 import { sortOrderItemsForExport } from '../lib/orderItemExportSort'
+import { isCondoStampProductName } from '../lib/condoStamp'
 import { SELF_PICKUP_CHANNELS } from '../lib/channelBehavior'
 import { parseAddressText } from '../lib/thaiAddress'
 import { downloadFlashWaybillXlsx } from '../lib/flashWaybillExport'
@@ -1669,6 +1670,16 @@ export default function Packing() {
     if (currentIndex < 0) return null
     return aggregatedData[currentIndex] || null
   }, [aggregatedData, currentIndex])
+
+  const currentGroupHasCondoStamp = useMemo(
+    () => currentGroup?.some((item) => isCondoStampProductName(item.product_name)) ?? false,
+    [currentGroup],
+  )
+
+  const tagSearchHasCondoStamp = useMemo(
+    () => tagSearchRows?.some((item) => isCondoStampProductName(item.product_name)) ?? false,
+    [tagSearchRows],
+  )
 
   useEffect(() => {
     if (view !== 'main') return
@@ -3621,7 +3632,7 @@ export default function Packing() {
                         <th className="p-2 border">รูปสินค้า</th>
                         <th className="p-2 border">รูปลาย</th>
                         <th className="p-2 border">สินค้า</th>
-                        <th className="p-2 border">ชั้น</th>
+                        {tagSearchHasCondoStamp && <th className="p-2 border">ชั้น</th>}
                         <th className="p-2 border">สีหมึก</th>
                         <th className="p-2 border">ลาย//เส้น</th>
                         <th className="p-2 border">ฟอนต์</th>
@@ -3704,9 +3715,11 @@ export default function Packing() {
                                   <span className="min-w-0 break-words">{item.product_name}</span>
                                 </div>
                               </td>
-                              <td className="p-2 border">
-                                {item.shelf_location || ''}
-                              </td>
+                              {tagSearchHasCondoStamp && (
+                                <td className="p-2 border">
+                                  {isCondoStampProductName(item.product_name) ? item.shelf_location || '' : ''}
+                                </td>
+                              )}
                               <td className="p-2 border">{item.ink_color || ''}</td>
                               <td className="p-2 border">{combinedPattern}</td>
                               <td className="p-2 border">{item.font || ''}</td>
@@ -4694,7 +4707,7 @@ export default function Packing() {
                           <th className="p-2 border">รูปสินค้า</th>
                           <th className="p-2 border">รูปลาย</th>
                           <th className="p-2 border">สินค้า</th>
-                          <th className="p-2 border">ชั้น</th>
+                          {currentGroupHasCondoStamp && <th className="p-2 border">ชั้น</th>}
                           <th className="p-2 border">สีหมึก</th>
                           <th className="p-2 border">ลาย//เส้น</th>
                           <th className="p-2 border">ฟอนต์</th>
@@ -4798,9 +4811,11 @@ export default function Packing() {
                                     <span className="min-w-0 break-words">{item.product_name}</span>
                                   </div>
                                 </td>
-                                <td className="p-2 border">
-                                  {item.shelf_location || ''}
-                                </td>
+                                {currentGroupHasCondoStamp && (
+                                  <td className="p-2 border">
+                                    {isCondoStampProductName(item.product_name) ? item.shelf_location || '' : ''}
+                                  </td>
+                                )}
                                 <td className="p-2 border">
                                   {item.ink_color ? (
                                     <div className="flex items-center gap-1.5">
@@ -4871,7 +4886,7 @@ export default function Packing() {
                             )
                           })}
                         <tr aria-hidden="true">
-                          <td colSpan={10} className="h-8 border-0 p-0 bg-white" />
+                          <td colSpan={currentGroupHasCondoStamp ? 10 : 9} className="h-8 border-0 p-0 bg-white" />
                         </tr>
                         </tbody>
                       </table>
