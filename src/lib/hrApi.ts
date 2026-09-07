@@ -2235,7 +2235,7 @@ export async function deleteTimeCertification(id: string) {
 
 export async function fetchScoreAppeals(filters?: { status?: string; employee_id?: string }) {
   let q = supabase.from('hr_score_appeals')
-    .select(`*, employee:hr_employees!employee_id(${SCORE_EMP_MINI}), event:hr_score_events!score_event_id(*)`)
+    .select(`*, employee:hr_employees!employee_id(${SCORE_EMP_MINI}), reviewer:hr_employees!reviewed_by(${SCORE_EMP_MINI}), event:hr_score_events!score_event_id(*)`)
     .order('created_at', { ascending: false })
   if (filters?.status) q = q.eq('status', filters.status)
   if (filters?.employee_id) q = q.eq('employee_id', filters.employee_id)

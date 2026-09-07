@@ -818,6 +818,7 @@ export default function WorkScore() {
                     <th className="p-3 text-left font-semibold">เหตุการณ์</th>
                     <th className="p-3 text-left font-semibold">เหตุผลที่ทักท้วง</th>
                     <th className="p-3 text-center font-semibold">สถานะ</th>
+                    <th className="p-3 text-left font-semibold">ผู้อนุมัติ</th>
                     <th className="p-3 text-center font-semibold rounded-tr-xl">จัดการ</th>
                   </tr>
                 </thead>
@@ -842,6 +843,17 @@ export default function WorkScore() {
                         {a.status === 'pending' && <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-xs">รอตรวจสอบ</span>}
                         {a.status === 'accepted' && <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-xs">ยอมรับ</span>}
                         {a.status === 'rejected' && <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs">ปฏิเสธ</span>}
+                      </td>
+                      <td className="p-3 whitespace-nowrap">
+                        {a.reviewer ? (
+                          <>
+                            <div className="font-medium">
+                              {a.reviewer.first_name} {a.reviewer.last_name}
+                              {a.reviewer.nickname && <span className="ml-1.5 font-normal text-emerald-700">({a.reviewer.nickname})</span>}
+                            </div>
+                            <div className="text-xs text-gray-400">{a.reviewer.employee_code}</div>
+                          </>
+                        ) : '-'}
                       </td>
                       <td className="p-3 text-center whitespace-nowrap">
                         {a.status === 'pending' ? (

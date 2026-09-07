@@ -5,6 +5,11 @@ import { useAuthContext } from '../contexts/AuthContext'
 import Modal from '../components/ui/Modal'
 import { useWmsModal } from '../components/wms/useWmsModal'
 import { getPublicUrl } from '../lib/qcApi'
+import { useMenuAccess } from '../contexts/MenuAccessContext'
+import {
+  canManageSubWarehouseStock as roleCanManageSubWarehouseStock,
+  canRequestSubWarehouseStock as roleCanRequestSubWarehouseStock,
+} from '../lib/subWarehouseAccess'
 
 type SubWarehouse = {
   id: string
@@ -91,6 +96,7 @@ type MoveRow = {
   id: string
   created_at: string
   created_by: string | null
+  created_by_name: string | null
   product_id: string
   product_code: string
   product_name: string
@@ -129,6 +135,21 @@ function startOfDayIso(ymd: string): string {
   return `${ymd}T00:00:00+07:00`
 }
 
+type ReplenishmentRequestRow = {
+  id: string
+  sub_warehouse_id: string
+  product_id: string
+  product_code: string
+  product_name: string
+  unit_name: string | null
+  requested_qty: number
+  status: 'pending'
+  requested_by: string
+  requester_name: string
+  created_at: string
+  updated_at: string
+}
+
 type PeriodBalance = {
   opening: number
   closing: number
@@ -138,7 +159,6 @@ function endOfDayIso(ymd: string): string {
   return `${ymd}T23:59:59.999+07:00`
 }
 
-const SUB_WAREHOUSE_READ_ONLY_ROLES = new Set(['production', 'qc_staff', 'packing_staff'])
 const MANUAL_REMOVE_REASONS = [
   'ของเสีย/ชำรุด',
   'สูญหาย',
@@ -152,8 +172,11 @@ const EMPTY_WMS_USAGE: WmsUsageBreakdown = { workOrder: 0, requisition: 0, other
 
 export default function WarehouseSub() {
   const { user } = useAuthContext()
+  const { isWmsStoreBackup } = useMenuAccess()
   const canManageSubWarehouseSettings = user?.role === 'superadmin' || user?.role === 'admin'
-  const canModifySubWarehouseStock = !!user && !SUB_WAREHOUSE_READ_ONLY_ROLES.has(user.role)
+  const canModifySubWarehouseStock = roleCanManageSubWarehouseStock(user?.role, isWmsStoreBackup)
+  const canRequestSubWarehouseStock = roleCanRequestSubWarehouseStock(user?.role, isWmsStoreBackup)
+  const canShowStockActions = canModifySubWarehouseStock || canRequestSubWarehouseStock
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   const [subWarehouses, setSubWarehouses] = useState<SubWarehouse[]>([])
@@ -167,6 +190,16 @@ export default function WarehouseSub() {
 
   const [moves, setMoves] = useState<MoveRow[]>([])
   const [loadingMoves, setLoadingMoves] = useState(false)
+  const [replenishmentRequests, setReplenishmentRequests] = useState<ReplenishmentRequestRow[]>([])
+  const [loadingRequests, setLoadingRequests] = useState(false)
+  const [requestFilterActive, setRequestFilterActive] = useState(false)
+  const [requestModalOpen, setRequestModalOpen] = useState(false)
+  const [requestProductId, setRequestProductId] = useState('')
+  const [requestQty, setRequestQty] = useState('')
+  const [requestSaving, setRequestSaving] = useState(false)
+  const [fulfillModalOpen, setFulfillModalOpen] = useState(false)
+  const [fulfillProductId, setFulfillProductId] = useState('')
+  const [fulfillingRequestId, setFulfillingRequestId] = useState<string | null>(null)
 
   const [dateFrom, setDateFrom] = useState(() => {
     const d = new Date()
@@ -233,6 +266,16 @@ export default function WarehouseSub() {
     () => subWarehouses.find((s) => s.id === selectedSubId) || null,
     [subWarehouses, selectedSubId],
   )
+  const requestsByProduct = useMemo(() => {
+    const grouped = new Map<string, ReplenishmentRequestRow[]>()
+    replenishmentRequests.forEach((request) => {
+      const rows = grouped.get(request.product_id) || []
+      rows.push(request)
+      grouped.set(request.product_id, rows)
+    })
+    return grouped
+  }, [replenishmentRequests])
+  const fulfillRequests = requestsByProduct.get(fulfillProductId) || []
   const filteredMapUiGroups = useMemo(() => {
     const term = mapGroupSearch.trim().toLocaleLowerCase('th')
     if (!term) return mapUiGroups
@@ -240,19 +283,25 @@ export default function WarehouseSub() {
   }, [mapGroupSearch, mapUiGroups])
   const filteredWarehouseProducts = useMemo(() => {
     const term = warehouseProductSearch.trim().toLocaleLowerCase('th')
-    if (!term) return products
-    return products.filter((product) =>
+    const visible = canModifySubWarehouseStock && requestFilterActive
+      ? products.filter((product) => (requestsByProduct.get(product.product_id)?.length || 0) > 0)
+      : products
+    if (!term) return visible
+    return visible.filter((product) =>
       `${product.product_code} ${product.product_name}`.toLocaleLowerCase('th').includes(term),
     )
-  }, [products, warehouseProductSearch])
+  }, [canModifySubWarehouseStock, products, requestFilterActive, requestsByProduct, warehouseProductSearch])
   const filteredDailyRows = useMemo(() => {
     const term = warehouseProductSearch.trim().toLocaleLowerCase('th')
-    const filtered = term ? dailyRows.filter((product) =>
+    const requestFiltered = canModifySubWarehouseStock && requestFilterActive
+      ? dailyRows.filter((product) => (requestsByProduct.get(product.product_id)?.length || 0) > 0)
+      : dailyRows
+    const filtered = term ? requestFiltered.filter((product) =>
       `${product.product_code} ${product.product_name}`.toLocaleLowerCase('th').includes(term),
-    ) : dailyRows
+    ) : requestFiltered
     const order = new Map(products.map((product, index) => [product.product_id, index]))
     return [...filtered].sort((a, b) => (order.get(a.product_id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.product_id) ?? Number.MAX_SAFE_INTEGER))
-  }, [dailyRows, products, warehouseProductSearch])
+  }, [canModifySubWarehouseStock, dailyRows, products, requestFilterActive, requestsByProduct, warehouseProductSearch])
   const filteredMoves = useMemo(() => {
     const term = historyProductCode.trim().toLocaleLowerCase('th')
     if (!term) return moves
@@ -284,7 +333,7 @@ export default function WarehouseSub() {
     return [...productById.values()].map((product) => {
       const totals = rangeMoveTotals.get(product.product_id) || { added: 0, removed: 0 }
       const wmsUsage = wmsUsageMap[product.product_code] || EMPTY_WMS_USAGE
-      const wmsUsed = wmsUsage.total
+      const wmsUsed = wmsUsage.workOrder
       const balance = periodBalances[product.product_id]
       return { ...product, ...totals, ...wmsUsage, wmsUsed, opening: balance?.opening, closing: balance?.closing }
     })
@@ -764,6 +813,7 @@ export default function WarehouseSub() {
         id: String(r.id),
         created_at: String(r.created_at),
         created_by: r.created_by ? String(r.created_by) : null,
+        created_by_name: r.created_by_name ? String(r.created_by_name) : null,
         product_id: String(r.product_id),
         product_code: String(r.product_code || ''),
         product_name: String(r.product_name || ''),
@@ -783,13 +833,46 @@ export default function WarehouseSub() {
     }
   }
 
+  async function loadReplenishmentRequests(subId: string) {
+    if (!subId || (!canModifySubWarehouseStock && !canRequestSubWarehouseStock)) {
+      setReplenishmentRequests([])
+      return
+    }
+    setLoadingRequests(true)
+    try {
+      const { data, error } = await supabase.rpc('rpc_get_sub_warehouse_replenishment_requests', {
+        p_sub_warehouse_id: subId,
+      })
+      if (error) throw error
+      setReplenishmentRequests(((data || []) as Array<Record<string, unknown>>).map((row) => ({
+        id: String(row.id),
+        sub_warehouse_id: String(row.sub_warehouse_id),
+        product_id: String(row.product_id),
+        product_code: String(row.product_code || ''),
+        product_name: String(row.product_name || ''),
+        unit_name: row.unit_name ? String(row.unit_name) : null,
+        requested_qty: Number(row.requested_qty || 0),
+        status: 'pending',
+        requested_by: String(row.requested_by),
+        requester_name: String(row.requester_name || '-'),
+        created_at: String(row.created_at),
+        updated_at: String(row.updated_at),
+      })))
+    } catch (e) {
+      console.error('Load sub warehouse replenishment requests failed:', e)
+      setReplenishmentRequests([])
+    } finally {
+      setLoadingRequests(false)
+    }
+  }
+
   async function loadWmsCorrect() {
     if (!dateFrom || !dateTo) return
     setLoadingWms(true)
     try {
       const usageMap = await fetchWmsUsageBreakdown(dateFrom, dateTo, selectedSubId)
       setWmsUsageMap(usageMap)
-      setWmsCorrectMap(Object.fromEntries(Object.entries(usageMap).map(([code, usage]) => [code, usage.total])))
+      setWmsCorrectMap(Object.fromEntries(Object.entries(usageMap).map(([code, usage]) => [code, usage.workOrder])))
     } catch (e: any) {
       console.error('Load WMS correct qty failed:', e)
       setWmsCorrectMap({})
@@ -885,8 +968,9 @@ export default function WarehouseSub() {
       loadWmsCorrect(),
       loadDailySheet(selectedSubId),
       loadPeriodBalances(selectedSubId),
+      loadReplenishmentRequests(selectedSubId),
     ])
-  }, [selectedSubId, dateFrom, dateTo, countDate]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedSubId, dateFrom, dateTo, countDate, canModifySubWarehouseStock, canRequestSubWarehouseStock]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     loadSubWarehouses()
@@ -903,6 +987,22 @@ export default function WarehouseSub() {
     void loadDailySheet(selectedSubId)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- countDate only; sub handled by refreshAll
   }, [countDate])
+
+  useEffect(() => {
+    if (!selectedSubId || (!canModifySubWarehouseStock && !canRequestSubWarehouseStock)) return
+    const channel = supabase
+      .channel(`sub-warehouse-requests-${selectedSubId}-${user?.id || 'user'}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wh_sub_warehouse_replenishment_requests', filter: `sub_warehouse_id=eq.${selectedSubId}` },
+        () => void loadReplenishmentRequests(selectedSubId),
+      )
+      .subscribe()
+    return () => {
+      supabase.removeChannel(channel)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSubId, user?.id, canModifySubWarehouseStock, canRequestSubWarehouseStock])
 
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
@@ -959,6 +1059,92 @@ export default function WarehouseSub() {
     setAdjustReason('เติมสต๊อค')
     setAdjustNote('')
     setAdjustModalOpen(true)
+  }
+
+  const openRequestForProduct = (productId: string) => {
+    if (!canRequestSubWarehouseStock) {
+      showMessage({ message: 'บัญชีนี้ไม่มีสิทธิ์ขอเบิกสินค้าคลังย่อย' })
+      return
+    }
+    const current = (requestsByProduct.get(productId) || []).find((request) => request.requested_by === user?.id)
+    setRequestProductId(productId)
+    setRequestQty(current ? String(current.requested_qty) : '')
+    setRequestModalOpen(true)
+  }
+
+  const saveReplenishmentRequest = async () => {
+    if (!selectedSubId || !requestProductId || !canRequestSubWarehouseStock) return
+    const qty = Number(String(requestQty || '').replace(/,/g, '').trim())
+    if (!Number.isFinite(qty) || qty <= 0) {
+      showMessage({ message: 'กรุณากรอกจำนวนที่ขอเบิกให้ถูกต้อง' })
+      return
+    }
+    setRequestSaving(true)
+    try {
+      const { error } = await supabase.rpc('rpc_set_sub_warehouse_replenishment_request', {
+        p_sub_warehouse_id: selectedSubId,
+        p_product_id: requestProductId,
+        p_requested_qty: qty,
+      })
+      if (error) throw error
+      setRequestModalOpen(false)
+      await loadReplenishmentRequests(selectedSubId)
+      showMessage({ title: 'สำเร็จ', message: 'ส่งคำขอเบิกให้ Store แล้ว สามารถคลิกจำนวนเพื่อแก้ไขได้จนกว่าจะเติมสต๊อค' })
+    } catch (e: unknown) {
+      showMessage({ title: 'ส่งคำขอไม่สำเร็จ', message: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setRequestSaving(false)
+    }
+  }
+
+  const cancelReplenishmentRequest = async () => {
+    const current = (requestsByProduct.get(requestProductId) || []).find((request) => request.requested_by === user?.id)
+    if (!current || !selectedSubId) return
+    setRequestSaving(true)
+    try {
+      const { error } = await supabase.rpc('rpc_cancel_sub_warehouse_replenishment_request', {
+        p_request_id: current.id,
+      })
+      if (error) throw error
+      setRequestModalOpen(false)
+      await loadReplenishmentRequests(selectedSubId)
+      showMessage({ title: 'สำเร็จ', message: 'ยกเลิกคำขอเบิกแล้ว' })
+    } catch (e: unknown) {
+      showMessage({ title: 'ยกเลิกไม่สำเร็จ', message: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setRequestSaving(false)
+    }
+  }
+
+  const openFulfillRequestsForProduct = (productId: string) => {
+    setFulfillProductId(productId)
+    setFulfillModalOpen(true)
+  }
+
+  const fulfillReplenishmentRequest = async (requestId: string) => {
+    if (!selectedSubId || !canModifySubWarehouseStock) return
+    const keepModalOpen = fulfillRequests.length > 1
+    setFulfillingRequestId(requestId)
+    try {
+      const { error } = await supabase.rpc('rpc_fulfill_sub_warehouse_replenishment_request', {
+        p_request_id: requestId,
+      })
+      if (error) throw error
+      await Promise.all([
+        loadReplenishmentRequests(selectedSubId),
+        loadAssignedProducts(selectedSubId),
+        loadMoves(selectedSubId),
+        loadDailySheet(selectedSubId),
+        loadPeriodBalances(selectedSubId),
+      ])
+      setFulfillModalOpen(keepModalOpen)
+      showMessage({ title: 'เติมสต๊อคแล้ว', message: 'ระบบเพิ่มยอดคลังย่อยและบันทึกผู้ทำรายการเรียบร้อยแล้ว' })
+    } catch (e: unknown) {
+      showMessage({ title: 'ยืนยันเติมสต๊อคไม่สำเร็จ', message: e instanceof Error ? e.message : String(e) })
+      await loadReplenishmentRequests(selectedSubId)
+    } finally {
+      setFulfillingRequestId(null)
+    }
   }
 
   const selectAdjustType = (type: 'add' | 'remove') => {
@@ -1056,19 +1242,19 @@ export default function WarehouseSub() {
         try {
           const today = toLocalYmd(new Date())
           const todayUsage = await fetchWmsUsageBreakdown(today, today, selectedSubId)
-          const wmsQty = todayUsage[product.product_code]?.total || 0
+          const wmsQty = todayUsage[product.product_code]?.workOrder || 0
           if (wmsQty > 0 && Math.abs(wmsQty - q) < 0.000001) {
             const canOverrideDuplicate = user?.role === 'superadmin' || user?.role === 'admin'
             if (!canOverrideDuplicate) {
               showMessage({
                 title: 'ไม่สามารถลดมือได้',
-                message: `วันนี้สินค้า ${product.product_code} ถูกบันทึกในยอดตัดสต๊อกรวม จำนวน ${wmsQty.toLocaleString()} แล้ว ซึ่งตรงกับจำนวนที่กำลังลด กรุณาตรวจสอบรายการ WMS หรือให้ผู้ดูแลระบบดำเนินการหากเป็นคนละเหตุการณ์`,
+                message: `วันนี้สินค้า ${product.product_code} ถูกบันทึกเป็นยอดใช้ตามใบงาน จำนวน ${wmsQty.toLocaleString()} แล้ว ซึ่งตรงกับจำนวนที่กำลังลด กรุณาตรวจสอบรายการ WMS หรือให้ผู้ดูแลระบบดำเนินการหากเป็นคนละเหตุการณ์`,
               })
               return
             }
             const confirmed = await showConfirm({
               title: 'อาจเป็นการหักยอดซ้ำ',
-              message: `วันนี้สินค้า ${product.product_code} ถูกบันทึกในยอดตัดสต๊อกรวม จำนวน ${wmsQty.toLocaleString()} แล้ว และตรงกับจำนวนที่กำลังลดมือ\n\nยืนยันว่าเป็นคนละเหตุการณ์และต้องการลดมือเพิ่มเติมหรือไม่?`,
+              message: `วันนี้สินค้า ${product.product_code} ถูกบันทึกเป็นยอดใช้ตามใบงาน จำนวน ${wmsQty.toLocaleString()} แล้ว และตรงกับจำนวนที่กำลังลดมือ\n\nยืนยันว่าเป็นคนละเหตุการณ์และต้องการลดมือเพิ่มเติมหรือไม่?`,
             })
             if (!confirmed) return
           }
@@ -1187,6 +1373,61 @@ export default function WarehouseSub() {
     showMessage,
   ])
 
+  const requestProduct = products.find((product) => product.product_id === requestProductId)
+  const currentOwnRequest = (requestsByProduct.get(requestProductId) || []).find((request) => request.requested_by === user?.id)
+  const fulfillProduct = products.find((product) => product.product_id === fulfillProductId)
+
+  const renderStockActions = (productId: string) => {
+    const pending = requestsByProduct.get(productId) || []
+    if (canModifySubWarehouseStock) {
+      const totalRequested = pending.reduce((sum, request) => sum + request.requested_qty, 0)
+      return (
+        <div className="flex min-w-[10rem] items-center justify-center gap-2">
+          {pending.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => openFulfillRequestsForProduct(productId)}
+              className="rounded-lg bg-orange-500 px-3 py-1.5 font-bold text-white hover:bg-orange-600"
+              title={`${pending.length.toLocaleString()} คำขอ`}
+            >
+              ขอเบิก {totalRequested.toLocaleString()}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => openAdjustForProduct(productId)}
+              className="rounded-lg bg-blue-600 px-3 py-1.5 font-semibold text-white hover:bg-blue-700"
+            >
+              เพิ่ม/ลด
+            </button>
+          )}
+          {canManageSubWarehouseSettings && (
+            <button
+              type="button"
+              onClick={() => deleteAssignedProduct(productId)}
+              className="rounded-lg bg-red-600 px-3 py-1.5 font-semibold text-white hover:bg-red-700"
+            >
+              ลบ
+            </button>
+          )}
+        </div>
+      )
+    }
+    if (canRequestSubWarehouseStock) {
+      const ownRequest = pending.find((request) => request.requested_by === user?.id)
+      return (
+        <button
+          type="button"
+          onClick={() => openRequestForProduct(productId)}
+          className={`rounded-lg px-3 py-1.5 font-bold text-white ${ownRequest ? 'bg-orange-500 hover:bg-orange-600' : 'bg-violet-600 hover:bg-violet-700'}`}
+        >
+          {ownRequest ? `ขอเบิก ${ownRequest.requested_qty.toLocaleString()}` : 'ขอเบิก'}
+        </button>
+      )
+    }
+    return null
+  }
+
   const moveHistoryContent = loadingMoves || loadingPeriodBalances || loadingWms ? (
     <div className="py-10 text-center text-slate-400">กำลังโหลด...</div>
   ) : filteredMoves.length === 0 ? (
@@ -1210,7 +1451,7 @@ export default function WarehouseSub() {
               <th className="p-3 text-right">ใบงาน</th>
               <th className="p-3 text-right">ใบเบิก</th>
               <th className="p-3 text-right">อื่น ๆ</th>
-              <th className="p-3 text-right">ตัดสต๊อกรวม</th>
+              <th className="p-3 text-right">ใช้ตามใบงาน</th>
               <th className="p-3 text-right">คงเหลือปลายช่วง</th>
             </tr>
           </thead>
@@ -1255,6 +1496,7 @@ export default function WarehouseSub() {
             <th className="p-3 text-center">ประเภท</th>
             <th className="p-3 text-right">จำนวน</th>
             <th className="p-3 text-right">ยอดสุทธิจากการปรับมือ</th>
+            <th className="p-3 text-left">ผู้ทำรายการ</th>
             <th className="p-3 text-left rounded-tr-xl">เหตุผล/หมายเหตุ</th>
           </tr></thead>
           <tbody className="divide-y">{chronologicalMoves.map((move) => {
@@ -1268,6 +1510,7 @@ export default function WarehouseSub() {
               <td className="p-3 text-center"><span className={`inline-flex rounded-full px-3 py-1 text-xs font-bold ${isAdd ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>{isAdd ? 'เติม' : 'ลดมือ'}</span></td>
               <td className={`p-3 text-right font-bold tabular-nums ${isAdd ? 'text-emerald-700' : 'text-red-700'}`}>{Math.abs(delta).toLocaleString()}</td>
               <td className="p-3 text-right font-bold tabular-nums">{Number(move.balance_after || 0).toLocaleString()}</td>
+              <td className="p-3 font-semibold text-slate-700">{move.created_by_name || (move.created_by ? move.created_by : 'ระบบ')}</td>
               <td className="p-3 text-slate-600"><div className="font-semibold text-slate-700">{displayReason}</div>{move.note && <div className="text-xs text-slate-500">{move.note}</div>}</td>
             </tr>
           })}</tbody>
@@ -1399,7 +1642,7 @@ export default function WarehouseSub() {
               </div>
 
               {productViewMode === 'range' && <div className="mt-3 max-w-5xl rounded-xl border border-emerald-100 bg-emerald-50/70 px-4 py-3 text-sm text-slate-700">
-                สรุปเฉพาะช่วงวันที่เลือก: <span className="font-bold">เติม − ลดด้วยมือ − ตัดสต๊อกรวม = เปลี่ยนแปลงสุทธิในช่วง</span>
+                สรุปเฉพาะช่วงวันที่เลือก: <span className="font-bold">เติม − ลดด้วยมือ − ใช้ตามใบงาน = เปลี่ยนแปลงสุทธิในช่วง</span> ส่วนใบเบิกและอื่น ๆ แสดงเพื่อการตรวจสอบเท่านั้น
               </div>}
             </div>
 
@@ -1407,13 +1650,34 @@ export default function WarehouseSub() {
             {productViewMode !== 'history' && (
               <div className="mb-4">
                 <label className="text-sm font-semibold text-slate-700">ค้นหาสินค้าในคลังย่อย</label>
-                <input
-                  type="search"
-                  value={warehouseProductSearch}
-                  onChange={(e) => setWarehouseProductSearch(e.target.value)}
-                  placeholder="ค้นหาด้วยรหัสหรือชื่อสินค้า"
-                  className="w-full mt-2 px-4 py-2.5 rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
-                />
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    type="search"
+                    value={warehouseProductSearch}
+                    onChange={(e) => setWarehouseProductSearch(e.target.value)}
+                    placeholder="ค้นหาด้วยรหัสหรือชื่อสินค้า"
+                    className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-4 py-2.5 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500"
+                  />
+                  {canModifySubWarehouseStock && (
+                    <button
+                      type="button"
+                      onClick={() => setRequestFilterActive((active) => !active)}
+                      className={`shrink-0 whitespace-nowrap rounded-xl border px-4 py-2.5 text-sm font-bold ${
+                        requestFilterActive
+                          ? 'border-orange-500 bg-orange-500 text-white'
+                          : 'border-orange-200 bg-orange-50 text-orange-800 hover:bg-orange-100'
+                      }`}
+                    >
+                      คำขอเบิก ({replenishmentRequests.length.toLocaleString()})
+                    </button>
+                  )}
+                </div>
+                {canModifySubWarehouseStock && (loadingRequests || requestFilterActive) && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    {loadingRequests && <span className="text-xs text-slate-400">กำลังโหลดคำขอ…</span>}
+                    {requestFilterActive && <span className="text-xs font-semibold text-orange-700">กำลังแสดงเฉพาะสินค้าที่มีคำขอรอดำเนินการ</span>}
+                  </div>
+                )}
               </div>
             )}
             <div
@@ -1466,9 +1730,9 @@ export default function WarehouseSub() {
                         <th className="p-3 text-center whitespace-nowrap">ใบงาน</th>
                         <th className="p-3 text-center whitespace-nowrap">ใบเบิก</th>
                         <th className="p-3 text-center whitespace-nowrap">อื่น ๆ</th>
-                        <th className="p-3 text-center whitespace-nowrap">ตัดสต๊อกรวม</th>
+                        <th className="p-3 text-center whitespace-nowrap">ใช้ตามใบงาน</th>
                         <th className="p-3 text-center whitespace-nowrap">คงเหลือ (สิ้นวัน)</th>
-                        {canModifySubWarehouseStock && <th className="p-3 text-center rounded-tr-xl">จัดการ</th>}
+                        {canShowStockActions && <th className="p-3 text-center rounded-tr-xl">จัดการ</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y">
@@ -1528,26 +1792,7 @@ export default function WarehouseSub() {
                             >
                               {dash ? '…' : p.balance_eod.toLocaleString()}
                             </td>
-                            {canModifySubWarehouseStock && (
-                              <td className="p-3">
-                                <div className="flex min-w-[10rem] items-center justify-between gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => openAdjustForProduct(p.product_id)}
-                                    className="px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 font-semibold"
-                                  >
-                                    เพิ่ม/ลด
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => deleteAssignedProduct(p.product_id)}
-                                    className="px-3 py-1.5 rounded-lg bg-red-600 text-white hover:bg-red-700 font-semibold"
-                                  >
-                                    ลบ
-                                  </button>
-                                </div>
-                              </td>
-                            )}
+                            {canShowStockActions && <td className="p-3 text-center">{renderStockActions(p.product_id)}</td>}
                           </tr>
                         )
                       })}
@@ -1572,9 +1817,9 @@ export default function WarehouseSub() {
                       <th className="p-3 text-center">ใบงาน</th>
                       <th className="p-3 text-center">ใบเบิก</th>
                       <th className="p-3 text-center">อื่น ๆ</th>
-                      <th className="p-3 text-center">ตัดสต๊อกรวม</th>
+                      <th className="p-3 text-center">ใช้ตามใบงาน</th>
                       <th className="p-3 text-center">เปลี่ยนแปลงสุทธิ</th>
-                      {canModifySubWarehouseStock && <th className="p-3 text-center rounded-tr-xl">จัดการ</th>}
+                      {canShowStockActions && <th className="p-3 text-center rounded-tr-xl">จัดการ</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -1629,26 +1874,7 @@ export default function WarehouseSub() {
                           >
                             {loadingWms ? '-' : netChange.toLocaleString()}
                           </td>
-                          {canModifySubWarehouseStock && (
-                            <td className="p-3">
-                              <div className="flex min-w-[10rem] items-center justify-between gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => openAdjustForProduct(p.product_id)}
-                                  className="px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 font-semibold"
-                                >
-                                  เพิ่ม/ลด
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => deleteAssignedProduct(p.product_id)}
-                                  className="px-3 py-1.5 rounded-lg bg-red-600 text-white hover:bg-red-700 font-semibold"
-                                >
-                                  ลบ
-                                </button>
-                              </div>
-                            </td>
-                          )}
+                          {canShowStockActions && <td className="p-3 text-center">{renderStockActions(p.product_id)}</td>}
                         </tr>
                       )
                     })}
@@ -1773,6 +1999,116 @@ export default function WarehouseSub() {
             >
               {addingProduct ? 'กำลังเพิ่ม...' : 'เพิ่มสินค้า'}
             </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={requestModalOpen}
+        onClose={() => setRequestModalOpen(false)}
+        closeOnBackdropClick={!requestSaving}
+        contentClassName="max-w-lg w-full"
+      >
+        <div className="space-y-5 p-6 text-slate-900">
+          <div className="pr-12">
+            <div className="text-xl font-black">ขอเบิกเข้าคลังย่อย</div>
+            <div className="mt-1 text-sm text-slate-600">
+              {requestProduct?.product_code} — {requestProduct?.product_name}
+            </div>
+          </div>
+          <div>
+            <label className="text-sm font-bold text-slate-700">จำนวนที่ต้องการ</label>
+            <div className="mt-2 flex items-center gap-2">
+              <input
+                type="number"
+                min="0.000001"
+                step="any"
+                value={requestQty}
+                onChange={(event) => setRequestQty(event.target.value)}
+                className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20"
+                autoFocus
+              />
+              <span className="whitespace-nowrap text-sm font-semibold text-slate-500">{requestProduct?.unit_name || 'หน่วย'}</span>
+            </div>
+            {currentOwnRequest && (
+              <div className="mt-2 text-xs text-orange-700">
+                แก้ไขคำขอเดิมที่ส่งเมื่อ {new Date(currentOwnRequest.created_at).toLocaleString('th-TH')}
+              </div>
+            )}
+          </div>
+          <div className="flex flex-wrap justify-between gap-2">
+            <div>
+              {currentOwnRequest && (
+                <button
+                  type="button"
+                  disabled={requestSaving}
+                  onClick={() => void cancelReplenishmentRequest()}
+                  className="rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 font-bold text-red-700 hover:bg-red-100 disabled:opacity-50"
+                >
+                  ยกเลิกคำขอ
+                </button>
+              )}
+            </div>
+            <button
+              type="button"
+              disabled={requestSaving}
+              onClick={() => void saveReplenishmentRequest()}
+              className="rounded-xl bg-violet-600 px-5 py-2.5 font-bold text-white hover:bg-violet-700 disabled:opacity-50"
+            >
+              {requestSaving ? 'กำลังบันทึก…' : currentOwnRequest ? 'ยืนยันการแก้ไข' : 'ยืนยันคำขอ'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={fulfillModalOpen}
+        onClose={() => setFulfillModalOpen(false)}
+        closeOnBackdropClick={!fulfillingRequestId}
+        contentClassName="max-w-2xl w-full"
+      >
+        <div className="space-y-5 p-6 text-slate-900">
+          <div className="pr-12">
+            <div className="text-xl font-black">คำขอเบิก</div>
+            <div className="mt-1 text-sm text-slate-600">
+              {fulfillProduct?.product_code} — {fulfillProduct?.product_name}
+            </div>
+          </div>
+          {fulfillRequests.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-slate-500">
+              คำขอนี้ถูกดำเนินการแล้ว
+            </div>
+          ) : (
+            <div className="divide-y rounded-xl border border-orange-100">
+              {fulfillRequests.map((request) => (
+                <div key={request.id} className="flex flex-wrap items-center justify-between gap-4 p-4">
+                  <div>
+                    <div className="font-black text-slate-900">{request.requester_name}</div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      ขอเมื่อ {new Date(request.created_at).toLocaleString('th-TH')}
+                      {request.updated_at !== request.created_at ? ' · มีการแก้ไขคำขอ' : ''}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="text-right">
+                      <div className="text-2xl font-black text-orange-700">{request.requested_qty.toLocaleString()}</div>
+                      <div className="text-xs text-slate-500">{request.unit_name || 'หน่วย'}</div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={fulfillingRequestId !== null}
+                      onClick={() => void fulfillReplenishmentRequest(request.id)}
+                      className="rounded-xl bg-emerald-600 px-4 py-2.5 font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      {fulfillingRequestId === request.id ? 'กำลังเติม…' : 'ยืนยันเติมสต๊อค'}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-xs text-blue-900">
+            เมื่อยืนยัน ระบบจะเพิ่มยอดคลังย่อยตามจำนวนคำขอและบันทึกชื่อผู้ยืนยันในประวัติอัตโนมัติ
           </div>
         </div>
       </Modal>
@@ -1946,8 +2282,8 @@ export default function WarehouseSub() {
 
           {adjustType === 'remove' && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              <div className="font-bold">ใช้ “ลดมือ” เฉพาะเหตุการณ์ที่ไม่ได้ถูกบันทึกในยอดตัดสต๊อกรวม</div>
-              <div className="mt-1">รายการใบงานหรือใบเบิกที่ตรวจเป็น “ถูกต้อง” จะถูกรวมในยอดตัดสต๊อกรวมอัตโนมัติแล้ว</div>
+              <div className="font-bold">ใช้ “ลดมือ” เฉพาะเหตุการณ์ที่ไม่ได้ถูกบันทึกเป็นการใช้ตามใบงาน</div>
+              <div className="mt-1">ยอดใบเบิกและรายการอื่น ๆ ไม่ถูกนำมาหักคลังย่อยอัตโนมัติ</div>
             </div>
           )}
 

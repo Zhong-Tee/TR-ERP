@@ -23,6 +23,7 @@ const TRANSACTIONAL_TABLES = [
   'ac_ecommerce_sale_lines',
   'ac_ecommerce_import_batches',
   'pr_machinery_status_events',
+  'wh_sub_warehouse_replenishment_requests',
   'wh_sub_warehouse_stock_moves',
   'plan_jobs',
   'roll_usage_logs',

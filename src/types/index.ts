@@ -2093,6 +2093,7 @@ export interface HRScoreAppeal {
   created_at: string
   updated_at: string
   employee?: HREmployee
+  reviewer?: HREmployee | null
   event?: HRScoreEvent
 }
 

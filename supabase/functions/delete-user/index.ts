@@ -94,6 +94,7 @@ serve(async (req) => {
       { table: 'pp_production_orders', column: 'rejected_by' },
       { table: 'wh_sub_warehouses', column: 'created_by' },
       { table: 'wh_sub_warehouse_stock_moves', column: 'created_by' },
+      { table: 'wh_sub_warehouse_replenishment_requests', column: 'fulfilled_by' },
       { table: 'pk_packing_unit_scans', column: 'scanned_by' },
       { table: 'inv_epoch_opening', column: 'created_by' },
     ]
@@ -110,6 +111,7 @@ serve(async (req) => {
       { table: 'or_order_chat_logs', column: 'sender_id' },
       { table: 'or_order_reviews', column: 'reviewed_by' },
       { table: 'wms_requisitions', column: 'created_by' },
+      { table: 'wh_sub_warehouse_replenishment_requests', column: 'requested_by' },
       { table: 'or_issues', column: 'created_by' },
     ]
 

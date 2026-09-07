@@ -3,6 +3,7 @@ import { wmsStoreBackupMenuDecision } from './wmsStoreBackup'
 
 describe('WMS Store backup menu scope', () => {
   it('เปิดเฉพาะเมนูหลัก ใบงานใหม่ และตรวจสินค้า', () => {
+    expect(wmsStoreBackupMenuDecision('warehouse-sub')).toBe(true)
     expect(wmsStoreBackupMenuDecision('wms')).toBe(true)
     expect(wmsStoreBackupMenuDecision('wms-new-orders')).toBe(true)
     expect(wmsStoreBackupMenuDecision('wms-review')).toBe(true)

@@ -13,6 +13,8 @@ interface MenuAccessContextType {
   hasAccess: (menuKey: string) => boolean
   /** Force reload from DB (e.g. after saving role settings) */
   refreshMenuAccess: () => void
+  /** Active temporary Store assignment for capabilities beyond menu access. */
+  isWmsStoreBackup: boolean
 }
 
 const MenuAccessContext = createContext<MenuAccessContextType | undefined>(undefined)
@@ -155,7 +157,7 @@ export function MenuAccessProvider({ children }: { children: ReactNode }) {
   )
 
   return (
-    <MenuAccessContext.Provider value={{ menuAccess: accessMap, menuAccessLoading: !loaded, hasAccess, refreshMenuAccess }}>
+    <MenuAccessContext.Provider value={{ menuAccess: accessMap, menuAccessLoading: !loaded, hasAccess, refreshMenuAccess, isWmsStoreBackup }}>
       {children}
     </MenuAccessContext.Provider>
   )
