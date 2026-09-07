@@ -721,7 +721,6 @@ export default function CartoonPatterns() {
               disabled={uploadingImages}
               onChange={(e) => {
                 const files = e.target.files
-                e.target.value = ''
                 if (files?.length) handleUploadImages(files)
               }}
             />
