@@ -9,15 +9,20 @@ export function isCondoTierExportProduct(productName: string | null | undefined)
   return isCondoStampProductName(productName)
 }
 
-/** ดึงเลขชั้นจาก product_type (เช่น ชั้น1) สำหรับเรียงลำดับ */
-export function condoFloorSortKey(productType: string | null | undefined): number {
+/** ดึงเลขชั้นจาก product_type (เช่น ชั้น1 → 1) */
+export function condoFloorNumber(productType: string | null | undefined): number | null {
   const s = String(productType ?? '').trim()
-  const m = s.match(/ชั้น\s*(\d+)/)
+  const m = s.match(/\d+/)
   if (m) {
-    const num = parseInt(m[1], 10)
-    return Number.isFinite(num) ? num : 999
+    const num = parseInt(m[0], 10)
+    return Number.isFinite(num) && num > 0 ? num : null
   }
-  return 999
+  return null
+}
+
+/** ดึงเลขชั้นสำหรับเรียงลำดับ โดยค่าที่ไม่ใช่ชั้นให้อยู่ท้ายสุด */
+export function condoFloorSortKey(productType: string | null | undefined): number {
+  return condoFloorNumber(productType) ?? 999
 }
 
 export type ExportSortableItem = {

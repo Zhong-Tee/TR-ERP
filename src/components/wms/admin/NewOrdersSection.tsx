@@ -31,7 +31,8 @@ export default function NewOrdersSection() {
   const [pickers, setPickers] = useState<Array<{ id: string; username: string | null }>>([])
   const [selectedWorkOrder, setSelectedWorkOrder] = useState<string | null>(null)
   const [selectedPickerId, setSelectedPickerId] = useState('')
-  const [loading, setLoading] = useState(true)
+  /** แสดงหน้ากำลังโหลดเฉพาะครั้งแรก; Realtime refresh ต้องคงรายการเดิมไว้เพื่อไม่ให้หน้ากระพริบ */
+  const [initialLoading, setInitialLoading] = useState(true)
   const [assigning, setAssigning] = useState(false)
   /** จำนวนบิลที่ยังไม่ยกเลิก/จัดส่งแล้ว — สอดคล้องกับ Plan จัดการใบงาน */
   const [activeBillCountByWo, setActiveBillCountByWo] = useState<Record<string, number>>({})
@@ -89,7 +90,6 @@ export default function NewOrdersSection() {
 
   const loadWorkOrders = async () => {
     const requestId = ++loadRequestRef.current
-    setLoading(true)
     try {
       const [{ data }, assignedNames, nonPickerCategories, subWarehouseProductIds] = await Promise.all([
         supabase
@@ -187,7 +187,7 @@ export default function NewOrdersSection() {
       setDueBillsByWo(dueMap)
       setWorkOrders(finalList)
     } finally {
-      if (requestId === loadRequestRef.current) setLoading(false)
+      if (requestId === loadRequestRef.current) setInitialLoading(false)
     }
   }
 
@@ -258,7 +258,7 @@ export default function NewOrdersSection() {
     }
   }
 
-  if (loading) {
+  if (initialLoading) {
     return <div className="text-center text-slate-400 py-10">กำลังโหลด...</div>
   }
 

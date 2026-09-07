@@ -1111,6 +1111,12 @@ export default function WorkOrderManageList({
     return str
   }
 
+  const combineBarcodeLines = (line1: string | null | undefined, line2: string | null | undefined) =>
+    [line1, line2]
+      .map((line) => String(line ?? '').trim())
+      .filter(Boolean)
+      .join(' // ')
+
   type OrderWithItems = Order & { or_order_items?: Array<{ bill_no?: string; item_uid: string; quantity?: number; product_name: string; ink_color: string | null; product_type: string | null; cartoon_pattern: string | null; line_pattern: string | null; font: string | null; line_1: string | null; line_2: string | null; line_3: string | null; no_name_line?: boolean; notes: string | null; file_attachment: string | null; product_id: string }> }
 
   async function fetchOrdersWithItems(workOrderId: string): Promise<OrderWithItems[]> {
@@ -1227,7 +1233,7 @@ export default function WorkOrderManageList({
               flatBillUnitUid(bill, unitSeq),
               item.product_name,
               item.ink_color ?? '',
-              forceText(item.line_1),
+              forceText(combineBarcodeLines(item.line_1, item.line_2)),
               category,
             ])
           }

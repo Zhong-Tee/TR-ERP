@@ -1,6 +1,7 @@
 import { supabase } from './supabase'
 import { flatBillUnitUid, normalizedLineQuantity } from './productionUnits'
-import { sortOrderItemsForExport } from './orderItemExportSort'
+import { identifyCondoStampItems, isCondoStampItem } from './condoStamp'
+import { condoFloorNumber, sortOrderItemsForExport } from './orderItemExportSort'
 
 /**
  * คอลัมน์รายการสินค้าสำหรับ export/คัดลอกข้อมูลใบงาน (ลำดับตรงกับหัวตาราง Excel)
@@ -21,9 +22,6 @@ export const EXPORT_ITEM_COLUMNS: Array<{ key: string; label: string; settingsKe
   { key: 'notes', label: 'หมายเหตุ', settingsKey: 'notes' },
   { key: 'file_attachment', label: 'ไฟล์แนบ', settingsKey: 'attachment' },
 ]
-
-/** สินค้าที่แสดงคอลัมน์ "ชั้นที่" */
-const LAYER_PRODUCT_NAMES = ['ตรายางคอนโด TWB ฟ้า', 'ตรายางคอนโด TWP ชมพู']
 
 /** กัน Excel/Sheets ตีความ +/0 เป็นตัวเลขหรือสูตร (นำหน้าด้วย zero-width space) */
 function forceText(val: string | null | undefined): string {
@@ -79,6 +77,7 @@ export async function buildProductionExportRows(
   ordersSorted.forEach((order) => {
     const rawItems = (order.or_order_items || order.order_items || []) as any[]
     const items = sortOrderItemsForExport(rawItems as any)
+    const condoStampItems = identifyCondoStampItems(items, productCategoryByProductId)
     const bill = String(order.bill_no ?? '').trim() || '—'
     const nameForDisplay = resolveName(order)
     let unitSeq = 0
@@ -90,11 +89,10 @@ export async function buildProductionExportRows(
             ? ' ' + (item.notes || '').replace(/\[SET-.*?\]/g, '').trim()
             : '')
         : (item.notes || '').replace(/\[SET-.*?\]/g, '').trim()
-      const productName = String(item.product_name ?? '').trim()
-      const showLayer = LAYER_PRODUCT_NAMES.includes(productName)
       const pid = item.product_id ? String(item.product_id) : ''
       const productCode = pid ? productCodeByProductId[pid] ?? '' : ''
       const category = pid ? productCategoryByProductId[pid] || 'N/A' : 'N/A'
+      const showLayer = isCondoStampItem(item, condoStampItems, category)
       const copies = normalizedLineQuantity(item.quantity)
       for (let c = 0; c < copies; c++) {
         unitSeq++
@@ -105,7 +103,7 @@ export async function buildProductionExportRows(
           else if (col.key === 'line_1' || col.key === 'line_2' || col.key === 'line_3')
             row.push(forceText(item[col.key]))
           else if (col.key === 'quantity') row.push(1)
-          else if (col.key === 'product_type') row.push(showLayer ? item.product_type ?? '' : '')
+          else if (col.key === 'product_type') row.push(showLayer ? condoFloorNumber(item.product_type) ?? '' : '')
           else if (col.key === 'cartoon_pattern' || col.key === 'line_pattern')
             row.push(item[col.key] != null && String(item[col.key]).trim() !== '' ? item[col.key] : 0)
           else row.push(item[col.key] ?? '')

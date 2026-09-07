@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import { identifyCondoStampItems, isCondoStampItem } from './condoStamp'
-import { sortOrderItemsForBillDisplay, sortOrderItemsForExport } from './orderItemExportSort'
+import { condoFloorNumber, sortOrderItemsForBillDisplay, sortOrderItemsForExport } from './orderItemExportSort'
 import { flatBillUnitUid } from './productionUnits'
 
 describe('condo stamp item detection', () => {
+  it('exports the condo floor as a positive number only', () => {
+    expect(condoFloorNumber('ชั้น1')).toBe(1)
+    expect(condoFloorNumber('ชั้น 5')).toBe(5)
+    expect(condoFloorNumber('')).toBeNull()
+    expect(condoFloorNumber('FG')).toBeNull()
+  })
+
   it('detects every row in a condo group from detail-row structure', () => {
     const items = [
       { id: 'main', product_id: 'cdab1', product_name: 'สินค้า CDAB1', product_type: 'ชั้น1' },

@@ -421,7 +421,7 @@ export default function Account() {
     }
     if (slipFilterChannel.trim()) {
       const q = slipFilterChannel.trim().toLowerCase()
-      list = list.filter((r) => (r.or_orders?.channel_code ?? '').toLowerCase().includes(q))
+      list = list.filter((r) => (r.or_orders?.channel_code ?? '').trim().toLowerCase() === q)
     }
     if (slipFilterDateFrom || slipFilterDateTo) {
       list = list.filter((r) => {

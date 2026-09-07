@@ -2056,11 +2056,12 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         original_customer_address: originalCustomerAddress.trim() || formData.customer_address?.trim() || null,
       }
 
-      // บิลที่บันทึก "ข้อมูลครบ": ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED → สถานะ "ตรวจสอบแล้ว" โดยตรง; ช่องทางอื่นที่ไม่มี slip verification → บันทึกเป็น "ตรวจสอบแล้ว"
+      // บิลที่บันทึก "ข้อมูลครบ": ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED → สถานะ "ตรวจสอบแล้ว" โดยตรง
+      // ยกเว้น SHOP/SHOPP ที่บังคับอัปโหลดสลิป ต้องคงสถานะไว้จนตรวจ EasySlip เสร็จ
       let statusToSave: OrderStatus = targetStatus
       if (targetStatus === 'ลงข้อมูลเสร็จสิ้น') {
         const channelCode = formData.channel_code?.trim() || ''
-        if (CHANNELS_COMPLETE_TO_VERIFIED.includes(channelCode)) {
+        if (CHANNELS_COMPLETE_TO_VERIFIED.includes(channelCode) && !CHANNELS_SHOW_SLIP_UPLOAD.includes(channelCode)) {
           statusToSave = 'ตรวจสอบแล้ว'
         } else {
           let channelHasSlipVerification = false
@@ -2257,9 +2258,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
       // ถ้าเป็น "ลงข้อมูลเสร็จสิ้น" ให้ตรวจสอบสลิป (เฉพาะเมื่อช่องทางมีในข้อมูลธนาคารสำหรับตรวจสลิป)
       // ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED บันทึกเป็น "ตรวจสอบแล้ว" แล้ว — ไม่ต้องรันตรวจสลิป
+      // ยกเว้น SHOP/SHOPP ที่บังคับอัปโหลดสลิปและต้องนำข้อมูลเข้า EasySlip
       if (targetStatus === 'ลงข้อมูลเสร็จสิ้น') {
         const channelCodeForVerify = formData.channel_code?.trim() || ''
-        if (CHANNELS_COMPLETE_TO_VERIFIED.includes(channelCodeForVerify)) {
+        if (CHANNELS_COMPLETE_TO_VERIFIED.includes(channelCodeForVerify) && !CHANNELS_SHOW_SLIP_UPLOAD.includes(channelCodeForVerify)) {
           // ข้ามการตรวจสลิป — สถานะถูกบันทึกเป็น "ตรวจสอบแล้ว" แล้วใน handleSubmitInternal
         } else {
         const originalStatus = order?.status
