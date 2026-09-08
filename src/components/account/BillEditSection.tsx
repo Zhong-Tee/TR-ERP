@@ -500,7 +500,7 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
   function getEditZoneBadge(order: SearchResult): { label: string; color: string } {
     if (order.status === 'จัดส่งแล้ว' || order.shipped_time) return { label: 'เคลม', color: 'bg-red-100 text-red-700' }
     if (order.status === 'ยกเลิก') return { label: 'ปิด', color: 'bg-gray-200 text-gray-500' }
-    if (order.work_order_id || order.work_order_name?.trim()) return { label: 'ขอยกเลิก/แก้ชื่อได้', color: 'bg-amber-100 text-amber-700' }
+    if (order.work_order_id || order.work_order_name?.trim()) return { label: 'ขอยกเลิก/แก้ข้อมูลผลิตได้', color: 'bg-amber-100 text-amber-700' }
     return { label: 'แก้ไขได้', color: 'bg-green-100 text-green-700' }
   }
 
@@ -533,7 +533,7 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
             )}
             {isNameLinesOnly ? (
               <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-semibold ml-1">
-                แก้เฉพาะบรรทัดชื่อ
+                แก้ข้อมูลผลิต/จัดส่ง
               </span>
             ) : (
               <>

@@ -5,6 +5,7 @@ import { useAuthContext } from '../contexts/AuthContext'
 import { InventoryReturn, InventoryReturnItem } from '../types'
 import { getProductImageUrl } from '../components/wms/wmsUtils'
 import { useWmsModal } from '../components/wms/useWmsModal'
+import * as ExcelJS from 'exceljs'
 
 type StatusFilter = 'all' | 'pending' | 'return_to_stock' | 'waste'
 type ItemDisposition = 'return_to_stock' | 'waste' | 'lost'
@@ -59,10 +60,11 @@ export default function WarehouseReturns() {
   const [updating, setUpdating] = useState<string | null>(null)
   const [lightboxImg, setLightboxImg] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [exporting, setExporting] = useState(false)
   const [wasteCostMap, setWasteCostMap] = useState<Record<string, number>>({})
   const [itemDispositions, setItemDispositions] = useState<Record<string, ItemDisposition>>({})
 
-  const canSeeCost = ['superadmin', 'account'].includes(user?.role || '')
+  const canSeeCost = ['superadmin', 'admin', 'account'].includes(user?.role || '')
 
   // Create form - tracking lookup
   const [trackingInput, setTrackingInput] = useState('')
@@ -327,6 +329,150 @@ export default function WarehouseReturns() {
     })
   }
 
+  const exportToExcel = async () => {
+    if (filteredReturns.length === 0) {
+      showMessage({ message: 'ไม่มีข้อมูลสำหรับ Export Excel' })
+      return
+    }
+
+    setExporting(true)
+    try {
+      const returnIds = filteredReturns.map((ret) => ret.id)
+      const itemSelect = canSeeCost
+        ? 'return_id, qty, disposition, pr_products(product_code, product_name, unit_cost)'
+        : 'return_id, qty, disposition, pr_products(product_code, product_name)'
+      const { data, error } = await supabase
+        .from('inv_return_items')
+        .select(itemSelect)
+        .in('return_id', returnIds)
+      if (error) throw error
+
+      const itemsByReturn = new Map<string, any[]>()
+      ;(data || []).forEach((item: any) => {
+        const items = itemsByReturn.get(item.return_id) || []
+        items.push(item)
+        itemsByReturn.set(item.return_id, items)
+      })
+
+      const dispositionLabel = (value?: string | null) => {
+        if (value === 'return_to_stock') return 'คืนกลับสต๊อค'
+        if (value === 'waste') return 'ของเสีย'
+        if (value === 'lost') return 'สูญหาย'
+        return '-'
+      }
+
+      const workbook = new ExcelJS.Workbook()
+      workbook.creator = 'TR-ERP'
+      workbook.created = new Date()
+      const worksheet = workbook.addWorksheet('รับสินค้าตีกลับ', {
+        views: [{ state: 'frozen', ySplit: 1 }],
+      })
+
+      const columns: Partial<ExcelJS.Column>[] = [
+        { header: 'เลขที่รับคืน', key: 'return_no', width: 22 },
+        { header: 'เลขบิลอ้างอิง', key: 'ref_bill_no', width: 20 },
+        { header: 'เลขพัสดุ', key: 'tracking_number', width: 22 },
+        { header: 'วันที่รับคืน', key: 'created_at', width: 20 },
+        { header: 'วันที่ดำเนินการ', key: 'received_at', width: 20 },
+        { header: 'สถานะ', key: 'status', width: 20 },
+        { header: 'เหตุผลตีกลับ', key: 'reason', width: 28 },
+        { header: 'หมายเหตุ', key: 'note', width: 28 },
+        { header: 'รหัสสินค้า', key: 'product_code', width: 18 },
+        { header: 'ชื่อสินค้า', key: 'product_name', width: 35 },
+        { header: 'จำนวน', key: 'qty', width: 12 },
+        { header: 'ผลตรวจสินค้า', key: 'item_disposition', width: 18 },
+      ]
+      if (canSeeCost) {
+        columns.push(
+          { header: 'ต้นทุนต่อหน่วย', key: 'unit_cost', width: 16 },
+          { header: 'ต้นทุนรวม', key: 'total_cost', width: 16 },
+        )
+      }
+      worksheet.columns = columns
+
+      filteredReturns.forEach((ret) => {
+        const items = itemsByReturn.get(ret.id) || []
+        const rows = items.length > 0 ? items : [null]
+        rows.forEach((item: any) => {
+          const qty = item ? Number(item.qty) || 0 : null
+          const unitCost = item ? Number(item.pr_products?.unit_cost) || 0 : null
+          worksheet.addRow({
+            return_no: ret.return_no,
+            ref_bill_no: ret.ref_bill_no || '-',
+            tracking_number: ret.tracking_number || '-',
+            created_at: formatDate(ret.created_at),
+            received_at: ret.received_at ? formatDate(ret.received_at) : '-',
+            status: statusLabel(ret),
+            reason: ret.reason || '-',
+            note: ret.note || '-',
+            product_code: item?.pr_products?.product_code || '-',
+            product_name: item?.pr_products?.product_name || '-',
+            qty: qty ?? '-',
+            item_disposition: dispositionLabel(item?.disposition),
+            ...(canSeeCost ? {
+              unit_cost: unitCost ?? '-',
+              total_cost: qty !== null && unitCost !== null ? qty * unitCost : '-',
+            } : {}),
+          })
+        })
+      })
+
+      const headerRow = worksheet.getRow(1)
+      headerRow.height = 26
+      headerRow.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2563EB' } }
+        cell.alignment = { vertical: 'middle', horizontal: 'center' }
+      })
+      worksheet.autoFilter = { from: 'A1', to: `${worksheet.getColumn(columns.length).letter}1` }
+
+      let previousReturnNo = ''
+      let useBlueFill = false
+      worksheet.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return
+        const returnNo = String(row.getCell(1).value || '')
+        if (returnNo !== previousReturnNo) {
+          previousReturnNo = returnNo
+          useBlueFill = !useBlueFill
+        }
+        row.eachCell((cell) => {
+          cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: useBlueFill ? 'FFEFF6FF' : 'FFFFFFFF' },
+          }
+          cell.border = {
+            top: { style: 'thin', color: { argb: 'FFE5E7EB' } },
+            left: { style: 'thin', color: { argb: 'FFE5E7EB' } },
+            bottom: { style: 'thin', color: { argb: 'FFE5E7EB' } },
+            right: { style: 'thin', color: { argb: 'FFE5E7EB' } },
+          }
+          cell.alignment = { vertical: 'top', wrapText: true }
+        })
+      })
+      worksheet.getColumn('qty').numFmt = '#,##0.##'
+      if (canSeeCost) {
+        worksheet.getColumn('unit_cost').numFmt = '#,##0.00'
+        worksheet.getColumn('total_cost').numFmt = '#,##0.00'
+      }
+
+      const buffer = await workbook.xlsx.writeBuffer()
+      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      const date = new Date().toISOString().slice(0, 10)
+      link.href = url
+      link.download = `รับสินค้าตีกลับ_${statusFilter}_${date}.xlsx`
+      link.click()
+      window.URL.revokeObjectURL(url)
+    } catch (error: any) {
+      console.error('Export warehouse returns failed:', error)
+      showMessage({ message: `Export Excel ไม่สำเร็จ: ${error.message}` })
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const filterTabs: { key: StatusFilter; label: string; color: string; activeColor: string; count: number }[] = [
     { key: 'all', label: 'ทั้งหมด', color: 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200', activeColor: 'bg-slate-700 text-white border-slate-700', count: stats.all },
     { key: 'pending', label: 'รอดำเนินการ', color: 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100', activeColor: 'bg-amber-500 text-white border-amber-500', count: stats.pending },
@@ -353,13 +499,24 @@ export default function WarehouseReturns() {
             </button>
           ))}
         </div>
-        <button
-          type="button"
-          onClick={() => { resetCreateForm(); setCreateOpen(true) }}
-          className="px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold"
-        >
-          + เปิดใบรับสินค้าตีกลับ
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={exportToExcel}
+            disabled={exporting || loading || filteredReturns.length === 0}
+            className="px-4 py-2 bg-green-600 text-white rounded-xl hover:bg-green-700 font-semibold disabled:cursor-not-allowed disabled:opacity-50 transition flex items-center gap-2"
+          >
+            <i className={`fas ${exporting ? 'fa-spinner fa-spin' : 'fa-file-excel'}`}></i>
+            {exporting ? 'กำลังสร้างไฟล์...' : 'Export Excel'}
+          </button>
+          <button
+            type="button"
+            onClick={() => { resetCreateForm(); setCreateOpen(true) }}
+            className="px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold"
+          >
+            + เปิดใบรับสินค้าตีกลับ
+          </button>
+        </div>
       </div>
 
       <div className="bg-white p-6 rounded-lg shadow">

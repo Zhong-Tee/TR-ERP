@@ -494,11 +494,19 @@ export type OrderFormNameLinePayload = {
   line_3: string | null
 }
 
+export type OrderFormLimitedItemPayload = OrderFormNameLinePayload & {
+  ink_color: string | null
+  product_type: string | null
+  cartoon_pattern: string | null
+  font: string | null
+  no_name_line: boolean
+}
+
 export type OrderFormLimitedEditPayload = {
   channel_order_no: string | null
   tracking_number: string | null
   express_receipt_number: string | null
-  lines: OrderFormNameLinePayload[]
+  lines: OrderFormLimitedItemPayload[]
 }
 
 export type OrderFormRef = {
@@ -518,7 +526,7 @@ interface OrderFormProps {
   readOnly?: boolean
   /** โหมดดูอย่างเดียว (จาก ตรวจสอบแล้ว/ยกเลิก): ซ่อนขอเอกสารและปุ่มบันทึก/ยกเลิก แสดงเฉพาะปุ่มกลับ */
   viewOnly?: boolean
-  /** จากบัญชี > แก้ไขบิล: แก้ได้เฉพาะบรรทัดชื่อ — บันทึกผ่านปุ่มด้านบนของ BillEditSection */
+  /** จากบัญชี > แก้ไขบิล: แก้ได้เฉพาะข้อมูลผลิตที่กำหนด — บันทึกผ่านปุ่มด้านบนของ BillEditSection */
   billEditScope?: 'full' | 'nameLinesOnly'
 }
 
@@ -1660,7 +1668,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   }, [fonts, defaultFontCode])
 
   useEffect(() => {
-    if (!defaultFontName || items.length === 0) return
+    if (nameLinesOnlyMode || !defaultFontName || items.length === 0) return
     const nextItems = items.map((item, index) => {
       if (!isFieldEnabled(index, 'font')) return item
       if (String(item.font || '').trim()) return item
@@ -1668,7 +1676,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     })
     const changed = nextItems.some((item, index) => item !== items[index])
     if (changed) setItems(nextItems)
-  }, [items, defaultFontName, categoryFieldSettings, productFieldOverrides, products]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [items, defaultFontName, categoryFieldSettings, productFieldOverrides, products, nameLinesOnlyMode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // คำนวณราคารวมจากรายการสินค้า
   function calculateItemsTotal() {
@@ -4201,6 +4209,27 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     return getCondoLayerCount(name) > 0
   }
 
+  function isCondoItem(item: Partial<OrderItem>) {
+    if (item.is_detail_row === true || !!item.parent_item_id) return true
+    const product = products.find((p) =>
+      String(p.id) === String(item.product_id || '') ||
+      normalizeProductName(p.product_name) === normalizeProductName(item.product_name),
+    )
+    const category = String(product?.product_category || '').trim().toUpperCase()
+    return category.startsWith('CONDO STAMP') || String(item.product_name || '').trim().startsWith('ตรายางคอนโด')
+  }
+
+  function getCondoLayerOptions(item: Partial<OrderItem>) {
+    const configuredCount = getCondoLayerCount(item.product_name)
+    const sameProductLayerCount = items.reduce((max, candidate) => {
+      if (String(candidate.product_id || '') !== String(item.product_id || '')) return max
+      const layer = Number(String(candidate.product_type || '').replace(/\D/g, '')) || 0
+      return Math.max(max, layer)
+    }, 0)
+    const layerCount = Math.max(configuredCount, sameProductLayerCount, 1)
+    return Array.from({ length: Math.min(layerCount, 5) }, (_, layer) => `ชั้น${layer + 1}`)
+  }
+
   /** ตรวจว่าแถวนี้เป็นแถวย่อยของสินค้าคอนโด (ชั้น2-5) ที่ต้องล็อคราคา/หน่วย */
   function isCondoSubRow(item: Partial<OrderItem>) {
     return item.is_detail_row === true || (isCondoProduct(item.product_name) && item.product_type !== 'ชั้น1')
@@ -4637,9 +4666,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     return list.slice().sort((a, b) => (a.pattern_name || '').localeCompare(b.pattern_name || ''))
   }
 
-  /** โหมดดูอย่างเดียว (ตรวจสอบแล้ว/ยกเลิก): บล็อกทุกฟิลด์และป้องกันการลบสลิป; nameLinesOnly ล็อกทุกอย่างยกเว้นบรรทัดชื่อ */
+  /** โหมดดูอย่างเดียว (ตรวจสอบแล้ว/ยกเลิก): บล็อกทุกฟิลด์และป้องกันการลบสลิป */
   const formDisabled = readOnly || viewOnly || nameLinesOnlyMode
   const limitedReferenceFieldsEnabled = nameLinesOnlyMode && !readOnly && !viewOnly
+  const limitedProductionFieldsEnabled = nameLinesOnlyMode && !readOnly && !viewOnly
   const showExpressReceiptField = Boolean(
     order?.requires_express_receipt_number ||
     formData.express_receipt_number.trim() ||
@@ -4670,6 +4700,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           .filter((it) => it.item_uid != null && String(it.item_uid).trim() !== '')
           .map((it) => ({
             item_uid: String(it.item_uid),
+            ink_color: it.ink_color != null && String(it.ink_color).trim() !== '' ? String(it.ink_color) : null,
+            product_type: it.product_type != null && String(it.product_type).trim() !== '' ? String(it.product_type) : null,
+            cartoon_pattern: it.cartoon_pattern != null && String(it.cartoon_pattern).trim() !== '' ? String(it.cartoon_pattern) : null,
+            font: it.font != null && String(it.font).trim() !== '' ? String(it.font) : null,
+            no_name_line: !!it.no_name_line,
             line_1: it.line_1 != null && String(it.line_1).trim() !== '' ? String(it.line_1) : null,
             line_2: it.line_2 != null && String(it.line_2).trim() !== '' ? String(it.line_2) : null,
             line_3: it.line_3 != null && String(it.line_3).trim() !== '' ? String(it.line_3) : null,
@@ -4691,7 +4726,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         )}
         {nameLinesOnlyMode && order && (
           <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
-            <strong>แก้ไขบรรทัดชื่อ (1–3) และข้อมูลจัดส่ง</strong> — ระบบจะแสดงเฉพาะช่องข้อมูลจัดส่งที่ใช้กับบิลนี้ และแก้ไขได้จนกว่าจะจัดส่ง
+            <strong>แก้ไขข้อมูลผลิตและข้อมูลจัดส่ง</strong> — แก้สีหมึก ลาย ฟอนต์ ไม่รับชื่อ บรรทัด 1–3 และชั้นสำหรับตรายางคอนโดได้จนกว่าจะจัดส่ง
           </div>
         )}
         <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
@@ -5188,7 +5223,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 <th className="border p-1.5 w-24">ลาย</th>
                 {/* คอลัมน์เส้นซ่อนไว้ — เปิดใช้งานได้ในอนาคต */}
                 {/* <th className="border p-1.5 w-16">เส้น</th> */}
-                <th className="border p-1.5 w-16">ฟอนต์</th>
+                <th className="border p-1.5 w-24">ฟอนต์</th>
                 <th className="border p-1 text-center w-14 text-[10px] leading-tight whitespace-nowrap">ไม่รับชื่อ</th>
                 <th className="border p-1.5">บรรทัด 1</th>
                 <th className="border p-1.5">บรรทัด 2</th>
@@ -5367,6 +5402,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         const selectedInk = e.target.value
                         updateItem(index, 'ink_color', selectedInk)
 
+                        // โหมดแก้ไขแบบจำกัดเปลี่ยนเฉพาะข้อมูลผลิต ห้ามเพิ่ม/ลบแถวสินค้าแถม
+                        if (nameLinesOnlyMode) return
+
                         // รวมชื่อสินค้าหมึกแฟลชพลาสติกทั้งหมด (ใช้หาแถวแถมที่มีอยู่แล้ว)
                         const allBonusNames = new Set(Object.values(PLASTIC_INK_BONUS_MAP).map(b => b.product_name))
 
@@ -5425,8 +5463,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                           }
                         }
                       }}
-                      disabled={formDisabled || !isFieldEnabled(index, 'ink_color')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs ${(formDisabled || !isFieldEnabled(index, 'ink_color')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['ink_color'] ?? reviewErrorFields?.ink_color) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      disabled={(formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'ink_color')}
+                      className={`w-full px-1.5 py-1 border rounded text-xs ${((formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'ink_color')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['ink_color'] ?? reviewErrorFields?.ink_color) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     >
                       <option value="">เลือกสี</option>
                       {inkTypes.map((ink) => (
@@ -5437,9 +5475,22 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     </select>
                   </td>
                   <td className="border p-1.5">
-                    <div className="w-full px-1.5 py-1 border rounded text-xs bg-gray-100 text-gray-500 text-center">
-                      {item.product_type || 'ชั้น1'}
-                    </div>
+                    {limitedProductionFieldsEnabled && isCondoItem(item) ? (
+                      <select
+                        value={item.product_type || 'ชั้น1'}
+                        onChange={(e) => updateItem(index, 'product_type', e.target.value)}
+                        className="w-full px-1 py-1 border rounded text-xs bg-white"
+                        title="แก้ไขชั้นได้เฉพาะตรายางคอนโด"
+                      >
+                        {getCondoLayerOptions(item).map((layer) => (
+                          <option key={layer} value={layer}>{layer}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <div className="w-full px-1.5 py-1 border rounded text-xs bg-gray-100 text-gray-500 text-center">
+                        {item.product_type || 'ชั้น1'}
+                      </div>
+                    )}
                   </td>
                   <td className="border p-1.5">
                     <div className="relative">
@@ -5491,8 +5542,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                             setPatternSearchTerm({ ...patternSearchTerm, [index]: '' })
                           }
                         }}
-                        disabled={formDisabled || !isFieldEnabled(index, 'cartoon_pattern')}
-                        className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[12rem] ${(formDisabled || !isFieldEnabled(index, 'cartoon_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['cartoon_pattern'] ?? reviewErrorFields?.cartoon_pattern) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                        disabled={(formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'cartoon_pattern')}
+                        className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[12rem] ${((formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'cartoon_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['cartoon_pattern'] ?? reviewErrorFields?.cartoon_pattern) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                         placeholder="ลาย"
                         autoComplete="off"
                       />
@@ -5562,8 +5613,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                             setFontSearchTerm({ ...fontSearchTerm, [index]: '' })
                           }
                         }}
-                        disabled={formDisabled || !isFieldEnabled(index, 'font')}
-                        className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'font')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['font'] ?? reviewErrorFields?.font) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                        disabled={(formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'font')}
+                        className={`w-full min-w-[88px] px-1.5 py-1 border rounded text-xs ${((formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'font')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['font'] ?? reviewErrorFields?.font) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                         placeholder="ฟอนต์"
                         autoComplete="off"
                       />
@@ -5586,7 +5637,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         type="checkbox"
                         checked={!!(item as { no_name_line?: boolean }).no_name_line}
                         onChange={(e) => updateItem(index, 'no_name_line', e.target.checked)}
-                        disabled={formDisabled}
+                        disabled={formDisabled && !limitedProductionFieldsEnabled}
                         title="ติ๊ก = ไม่รับข้อความบรรทัด 1–3"
                         className="w-4 h-4 rounded border-gray-300"
                       />
