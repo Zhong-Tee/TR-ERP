@@ -85,6 +85,9 @@ export default function IssueBoard({
   const [billSearchResults, setBillSearchResults] = useState<Order[]>([])
   const [billSearching, setBillSearching] = useState(false)
   const billSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const issueRealtimeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const loadIssuesRef = useRef<(options?: { silent?: boolean }) => Promise<void>>(async () => {})
+  const hasLoadedIssuesRef = useRef(false)
   const [unreadByIssue, setUnreadByIssue] = useState<Record<string, number>>({})
   const [deliveryByIssue, setDeliveryByIssue] = useState<Record<string, ChatDeliveryStatus>>({})
   const issuesWithUnread = useMemo(
@@ -175,12 +178,21 @@ export default function IssueBoard({
   }, [])
 
   useEffect(() => {
+    const scheduleIssuesRefresh = () => {
+      if (issueRealtimeTimerRef.current) clearTimeout(issueRealtimeTimerRef.current)
+      issueRealtimeTimerRef.current = setTimeout(() => {
+        issueRealtimeTimerRef.current = null
+        void loadIssuesRef.current({ silent: true })
+      }, 300)
+    }
     const channel = supabase
       .channel(`issue-board-${scope}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'or_issues' }, (payload) => {
-        const row = payload.new as Issue
-        if (row.status === 'On') setNewIssueCount((prev) => prev + 1)
-        loadIssues()
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_issues' }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          const row = payload.new as Issue
+          if (row.status === 'On') setNewIssueCount((prev) => prev + 1)
+        }
+        scheduleIssuesRefresh()
       })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'or_issue_messages' }, (payload) => {
         const row = payload.new as IssueMessage
@@ -222,9 +234,11 @@ export default function IssueBoard({
       })
       .subscribe()
     return () => {
+      if (issueRealtimeTimerRef.current) clearTimeout(issueRealtimeTimerRef.current)
+      issueRealtimeTimerRef.current = null
       supabase.removeChannel(channel)
     }
-  }, [scope, workOrderOptions, chatIssue, user])
+  }, [scope, chatIssue?.id, user?.id])
 
   async function loadTypes() {
     try {
@@ -240,8 +254,9 @@ export default function IssueBoard({
     }
   }
 
-  async function loadIssues() {
-    setLoading(true)
+  async function loadIssues(options?: { silent?: boolean }) {
+    const showBlockingLoader = !options?.silent && !hasLoadedIssuesRef.current
+    if (showBlockingLoader) setLoading(true)
     try {
       let salesTrTeamSet: Set<string> | null = null
       if (user && isSalesTrTeamRole(user.role)) {
@@ -326,9 +341,12 @@ export default function IssueBoard({
     } catch (error) {
       console.error('Error loading issues:', error)
     } finally {
-      setLoading(false)
+      hasLoadedIssuesRef.current = true
+      if (showBlockingLoader) setLoading(false)
     }
   }
+
+  loadIssuesRef.current = loadIssues
 
   async function loadUnreadCounts(issueIds: string[]) {
     if (!user || issueIds.length === 0) {
@@ -529,7 +547,7 @@ export default function IssueBoard({
         }).catch(() => {})
       }
       setDetailIssue(null)
-      await loadIssues()
+      await loadIssues({ silent: true })
     } catch (error: any) {
       console.error('Error updating issue status:', error)
       alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
@@ -611,7 +629,7 @@ export default function IssueBoard({
       setPreferStopProduction(false)
       setBillSearch('')
       setBillSearchResults([])
-      await loadIssues()
+      await loadIssues({ silent: true })
     } catch (error: any) {
       console.error('Error creating issue:', error)
       alert('เกิดข้อผิดพลาด: ' + (error?.message || error))

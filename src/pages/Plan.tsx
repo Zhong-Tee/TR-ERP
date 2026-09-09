@@ -2,7 +2,7 @@
  * Plan (แผนผลิต – Production Planner)
  * อ้างอิงจาก Order_MS/plan.html – ใช้กับ TR-ERP ผ่าน Supabase
  */
-import { useState, useEffect, useCallback, useRef, Fragment } from 'react'
+import { useState, useEffect, useCallback, useRef, useSyncExternalStore, Fragment } from 'react'
 import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { supabase } from '../lib/supabase'
@@ -17,7 +17,7 @@ import { isAdminOrSuperadmin, isOperationalIssueRole, isRoleInAllowedList } from
 import { getProductImageUrl } from '../components/wms/wmsUtils'
 import { localISODate } from '../lib/localDate'
 import { getCutReadySec, getQcReadySec } from '../lib/planScheduling'
-import { ISSUE_ON_COUNT_EVENT } from '../lib/issueOnCountBroadcast'
+import { getIssueOnCountSnapshot, subscribeIssueOnCount } from '../lib/issueOnCountBroadcast'
 import type { Order } from '../types'
 import OrderDetailView from '../components/order/OrderDetailView'
 import { STOP_PRODUCTION_ISSUE_SLUG } from '../lib/issueTypeSlugs'
@@ -727,16 +727,11 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const [_dbStatus, setDbStatus] = useState('กำลังโหลด...')
   const [currentView, setCurrentView] = useState<ViewKey>('dash')
   const [dashboardSubView, setDashboardSubView] = useState<DashboardSubView>('schedule')
-  const [issueOpenCount, setIssueOpenCount] = useState(0)
-
-  useEffect(() => {
-    const onIssueOn = (e: Event) => {
-      const c = (e as CustomEvent<{ count?: number }>).detail?.count
-      if (typeof c === 'number') setIssueOpenCount(c)
-    }
-    window.addEventListener(ISSUE_ON_COUNT_EVENT, onIssueOn)
-    return () => window.removeEventListener(ISSUE_ON_COUNT_EVENT, onIssueOn)
-  }, [])
+  const issueOpenCount = useSyncExternalStore(
+    subscribeIssueOnCount,
+    getIssueOnCountSnapshot,
+    getIssueOnCountSnapshot,
+  )
   const [issueWorkOrders, setIssueWorkOrders] = useState<Array<{ work_order_name: string }>>([])
   const [workOrdersCount, setWorkOrdersCount] = useState(0)
   const [manageNewCount, setManageNewCount] = useState(0)
@@ -1037,37 +1032,67 @@ export default function Plan({ tvMode = false }: PlanProps) {
     }
     ;(async () => {
       try {
-        const { data: orders, error: ordersError } = await supabase
-          .from('or_orders')
-          .select('work_order_id, or_order_items(product_id, quantity)')
-          .in('work_order_id', workOrderIds)
-        if (ordersError) throw ordersError
+        type OrderQtyRow = {
+          id: string
+          work_order_id: string | null
+          or_order_items: Array<{ product_id: string | null; quantity: number | null }> | null
+        }
+
+        // PostgREST limits a result set to 1,000 rows by default. Loading every
+        // historical work order in one request can therefore drop whole work
+        // orders, or cut a work order in the middle, which makes its live
+        // department quantity become zero. Fetch deterministic pages in small
+        // work-order batches so Master Plan and the department queue see every
+        // linked order.
+        const orders: OrderQtyRow[] = []
+        const workOrderBatchSize = 50
+        const orderPageSize = 1000
+        for (let batchStart = 0; batchStart < workOrderIds.length; batchStart += workOrderBatchSize) {
+          const workOrderBatch = workOrderIds.slice(batchStart, batchStart + workOrderBatchSize)
+          for (let pageStart = 0; ; pageStart += orderPageSize) {
+            const { data: orderPage, error: ordersError } = await supabase
+              .from('or_orders')
+              .select('id, work_order_id, or_order_items(product_id, quantity)')
+              .in('work_order_id', workOrderBatch)
+              .order('id', { ascending: true })
+              .range(pageStart, pageStart + orderPageSize - 1)
+            if (ordersError) throw ordersError
+            if (cancelled) return
+            const page = (orderPage || []) as OrderQtyRow[]
+            orders.push(...page)
+            if (page.length < orderPageSize) break
+          }
+        }
         const productIds = Array.from(
           new Set(
-            (orders || [])
-              .flatMap((o: any) => (o.or_order_items || []).map((i: any) => String(i.product_id || '')))
+            orders
+              .flatMap((order) =>
+                (order.or_order_items || []).map((item) => String(item.product_id || ''))
+              )
               .filter((id) => id !== '')
           )
         )
         const productCategoryById: Record<string, string> = {}
-        if (productIds.length > 0) {
+        const productBatchSize = 200
+        for (let batchStart = 0; batchStart < productIds.length; batchStart += productBatchSize) {
           const { data: products, error: productsError } = await supabase
             .from('pr_products')
             .select('id, product_category')
-            .in('id', productIds)
+            .in('id', productIds.slice(batchStart, batchStart + productBatchSize))
           if (productsError) throw productsError
-          ;(products || []).forEach((p: any) => {
+          if (cancelled) return
+          ;(products || []).forEach((p: { id: string; product_category: string | null }) => {
             const id = String(p.id || '')
             const category = String(p.product_category || '').trim()
             if (id && category) productCategoryById[id] = category
           })
         }
         const categoryQtyByWorkOrder: Record<string, Record<string, number>> = {}
-        ;(orders || []).forEach((order: any) => {
+        orders.forEach((order) => {
           const workOrderId = String(order.work_order_id || '')
           if (!workOrderId) return
           categoryQtyByWorkOrder[workOrderId] = categoryQtyByWorkOrder[workOrderId] || {}
-          ;(order.or_order_items || []).forEach((item: any) => {
+          ;(order.or_order_items || []).forEach((item) => {
             const productId = String(item.product_id || '')
             const category = productCategoryById[productId]
             if (!category) return

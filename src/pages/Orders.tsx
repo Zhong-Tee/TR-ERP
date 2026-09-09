@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { useAuthContext } from '../contexts/AuthContext'
 import OrderList from '../components/order/OrderList'
@@ -93,6 +93,7 @@ export default function Orders() {
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [adminUsers, setAdminUsers] = useState<string[]>([])
   const [listRefreshKey, setListRefreshKey] = useState(0)
+  const realtimeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   /** นับบิล REQ ที่รอกรอกที่อยู่ ตั้งแต่เข้าหน้าออเดอร์ (ไม่ต้องเปิดแท็บบิลเคลมก่อน) + อัปเดตเรียลไทม์ */
   useEffect(() => {
@@ -528,20 +529,28 @@ export default function Orders() {
       }
     }
 
+    function scheduleRealtimeRefresh() {
+      if (realtimeRefreshTimerRef.current) clearTimeout(realtimeRefreshTimerRef.current)
+      realtimeRefreshTimerRef.current = setTimeout(() => {
+        realtimeRefreshTimerRef.current = null
+        void loadCounts()
+        setListRefreshKey((k) => k + 1)
+      }, 300)
+    }
+
     loadCounts()
 
     const channel = supabase
       .channel('orders-count-updates')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
-        loadCounts()
-        setListRefreshKey((k) => k + 1)
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, scheduleRealtimeRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => loadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_issues' }, () => loadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_claim_requests' }, () => loadCounts())
       .subscribe()
 
     return () => {
+      if (realtimeRefreshTimerRef.current) clearTimeout(realtimeRefreshTimerRef.current)
+      realtimeRefreshTimerRef.current = null
       supabase.removeChannel(channel)
     }
   }, [searchTerm, channelFilter])

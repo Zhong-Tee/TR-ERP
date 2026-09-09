@@ -120,6 +120,13 @@ export default function OrderList({
   const [failurePage, setFailurePage] = useState(1)
   /** ป้องกัน request เก่าที่ตอบช้ากว่าเขียนทับผลจากตัวกรองล่าสุด */
   const loadRequestRef = useRef(0)
+  const hasLoadedOrdersRef = useRef(false)
+  const previousRefreshTriggerRef = useRef(refreshTrigger)
+
+  useEffect(() => () => {
+    // ทำให้ request ที่ยังค้างอยู่หมดอายุเมื่อสลับออกจากแท็บนี้
+    loadRequestRef.current += 1
+  }, [])
 
   const exportTrackingCsv = async () => {
     if (orders.length === 0) return
@@ -250,7 +257,9 @@ export default function OrderList({
   }
 
   useEffect(() => {
-    loadOrders()
+    const isRealtimeRefresh = refreshTrigger !== previousRefreshTriggerRef.current
+    previousRefreshTriggerRef.current = refreshTrigger
+    void loadOrders({ silent: isRealtimeRefresh, reportError: !isRealtimeRefresh })
   }, [
     status,
     searchTerm,
@@ -300,16 +309,18 @@ export default function OrderList({
       : query.is('failed_queue_archived_at', null)
   }
 
-  async function loadOrders() {
+  async function loadOrders(options?: { silent?: boolean; reportError?: boolean }) {
     const requestId = ++loadRequestRef.current
     const isLatestRequest = () => requestId === loadRequestRef.current
+    const isInitialLoad = !hasLoadedOrdersRef.current
+    const showBlockingLoader = !options?.silent && isInitialLoad
     const commitEmptyResult = () => {
       if (!isLatestRequest()) return
       setOrders([])
       onCountChange?.(0)
-      setLoading(false)
+      if (isInitialLoad) setLoading(false)
     }
-    setLoading(true)
+    if (showBlockingLoader) setLoading(true)
     try {
       let filteredData: any[] = []
       const orderSelect = loadOrderRelations ? '*, or_order_items(*), or_order_reviews(*)' : '*'
@@ -502,7 +513,7 @@ export default function OrderList({
       if (!isLatestRequest()) return
       setOrders(filteredData)
       onCountChange?.(filteredData.length)
-      setLoading(false)
+      if (isInitialLoad) setLoading(false)
       
       // Load verification statuses for each order
       const orderIds = filteredData.map((o: any) => o.id)
@@ -681,9 +692,14 @@ export default function OrderList({
     } catch (error: any) {
       if (!isLatestRequest()) return
       console.error('Error loading orders:', error)
-      alert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
+      if (options?.reportError !== false) {
+        alert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
+      }
     } finally {
-      if (isLatestRequest()) setLoading(false)
+      if (isLatestRequest()) {
+        hasLoadedOrdersRef.current = true
+        if (isInitialLoad) setLoading(false)
+      }
     }
   }
 

@@ -402,6 +402,8 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   const [salesTrTeamScopeReady, setSalesTrTeamScopeReady] = useState(false)
   const salesTrTeamSetRef = useRef<Set<string>>(new Set())
   const realtimeReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hasLoadedBoardRef = useRef(false)
+  const loadAllRef = useRef<(options?: { silent?: boolean }) => Promise<void>>(async () => {})
 
   useEffect(() => {
     salesTrTeamSetRef.current = new Set(
@@ -484,7 +486,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
         if (realtimeReloadTimerRef.current) clearTimeout(realtimeReloadTimerRef.current)
         realtimeReloadTimerRef.current = setTimeout(() => {
           realtimeReloadTimerRef.current = null
-          void loadAll()
+          void loadAllRef.current({ silent: true })
         }, 300)
       })
       .subscribe()
@@ -655,8 +657,9 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     }
   }
 
-  async function loadAll() {
-    setLoading(true)
+  async function loadAll(options?: { silent?: boolean }) {
+    const showBlockingLoader = !options?.silent && !hasLoadedBoardRef.current
+    if (showBlockingLoader) setLoading(true)
     try {
       const groupedOrders = await loadConfirmOrders()
       const newOrders = groupedOrders.new
@@ -694,9 +697,12 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     } catch (error) {
       console.error('Error loading confirm orders:', error)
     } finally {
-      setLoading(false)
+      hasLoadedBoardRef.current = true
+      if (showBlockingLoader) setLoading(false)
     }
   }
+
+  loadAllRef.current = loadAll
 
   async function loadConfirmOrders(): Promise<Record<ConfirmColumnKey, Order[]>> {
     const statuses: OrderStatus[] = [

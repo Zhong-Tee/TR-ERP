@@ -5220,10 +5220,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 <th className="border p-1 text-center w-14 text-[10px] leading-tight whitespace-nowrap">OH</th>
                 <th className="border p-1.5 w-32">สีหมึก</th>
                 <th className="border p-1.5 w-16">ชั้น</th>
-                <th className="border p-1.5 w-24">ลาย</th>
+                <th className="border p-1.5 w-28 min-w-[7rem]">ลาย</th>
                 {/* คอลัมน์เส้นซ่อนไว้ — เปิดใช้งานได้ในอนาคต */}
                 {/* <th className="border p-1.5 w-16">เส้น</th> */}
-                <th className="border p-1.5 w-24">ฟอนต์</th>
+                <th className="border p-1.5 w-[6.25rem] min-w-[6.25rem]">ฟอนต์</th>
                 <th className="border p-1 text-center w-14 text-[10px] leading-tight whitespace-nowrap">ไม่รับชื่อ</th>
                 <th className="border p-1.5">บรรทัด 1</th>
                 <th className="border p-1.5">บรรทัด 2</th>
@@ -5492,7 +5492,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       </div>
                     )}
                   </td>
-                  <td className="border p-1.5">
+                  <td className="border p-1.5 w-28 min-w-[7rem]">
                     <div className="relative">
                       <input
                         type="text"
@@ -5565,7 +5565,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       placeholder="เส้น"
                     />
                   </td> */}
-                  <td className="border p-1.5">
+                  <td className="border p-1.5 w-[6.25rem] min-w-[6.25rem]">
                     <div className="relative">
                       <input
                         type="text"
@@ -5614,7 +5614,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                           }
                         }}
                         disabled={(formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'font')}
-                        className={`w-full min-w-[88px] px-1.5 py-1 border rounded text-xs ${((formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'font')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['font'] ?? reviewErrorFields?.font) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                        className={`w-full min-w-0 max-w-[12rem] px-1.5 py-1 border rounded text-xs ${((formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'font')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['font'] ?? reviewErrorFields?.font) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                         placeholder="ฟอนต์"
                         autoComplete="off"
                       />

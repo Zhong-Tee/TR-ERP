@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, ReactNode } from 'react'
+import { useState, useEffect, useCallback, useRef, useSyncExternalStore, ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { useMenuAccess } from '../../contexts/MenuAccessContext'
@@ -9,7 +9,7 @@ import { loadWmsTabCounts } from '../wms/wmsUtils'
 import { fetchWorkOrdersWithProgress } from '../../lib/qcApi'
 import { loadPurchaseBadgeCounts } from '../../lib/purchaseApi'
 import { isAdminOrSuperadmin, resolveOwnerScopeAdminName } from '../../config/accessPolicy'
-import { ISSUE_ON_COUNT_EVENT } from '../../lib/issueOnCountBroadcast'
+import { getIssueOnCountSnapshot, subscribeIssueOnCount } from '../../lib/issueOnCountBroadcast'
 import { HR_MY_OPEN_TASK_COUNT_EVENT, loadHrMyOpenTaskCount } from '../../lib/hrTaskBadge'
 import {
   FiCheckCircle,
@@ -226,18 +226,13 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     hr: 0,
   })
   /** นับ Issue สถานะ On (จาก TopBar broadcast — ไม่ query เพิ่ม) */
-  const [planIssueOnCount, setPlanIssueOnCount] = useState(0)
+  const planIssueOnCount = useSyncExternalStore(
+    subscribeIssueOnCount,
+    getIssueOnCountSnapshot,
+    getIssueOnCountSnapshot,
+  )
   const [hrMyOpenTaskCount, setHrMyOpenTaskCount] = useState(0)
   const { hasAccess } = useMenuAccess()
-
-  useEffect(() => {
-    const onIssueOn = (e: Event) => {
-      const c = (e as CustomEvent<{ count?: number }>).detail?.count
-      if (typeof c === 'number') setPlanIssueOnCount(c)
-    }
-    window.addEventListener(ISSUE_ON_COUNT_EVENT, onIssueOn)
-    return () => window.removeEventListener(ISSUE_ON_COUNT_EVENT, onIssueOn)
-  }, [])
 
   useEffect(() => {
     if (!hasAccess('hr-tasks') || !user?.id) {
