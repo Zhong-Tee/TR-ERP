@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
 import { FiDownload, FiSearch } from 'react-icons/fi'
 import { WMS_FULFILLMENT_PICK_OR_LEGACY } from '../components/wms/wmsUtils'
+import { fetchAllSupabasePages } from '../lib/supabasePagination'
 import {
   fetchMachines,
   fetchEventsOverlappingRange,
@@ -301,26 +302,40 @@ export default function KPIDashboard() {
     const tsTo = to + 'T23:59:59'
 
     const [sales, wms, wmsOrd, qc, qcAttempts, pack, prod, issues, audits, requisitions, requisitionItems, machMachines, machEvents] = await Promise.all([
-      supabase.from('or_orders')
-        .select('channel_code, total_amount, entry_date, admin_user, status, or_order_items(quantity, unit_price, is_free)')
-        .gte('entry_date', from).lte('entry_date', to).in('status', ['จัดส่งแล้ว', 'เสร็จสิ้น']),
+      fetchAllSupabasePages<SalesOrder>((pageFrom, pageTo) =>
+        supabase.from('or_orders')
+          .select('channel_code, total_amount, entry_date, admin_user, status, or_order_items(quantity, unit_price, is_free)')
+          .gte('entry_date', from).lte('entry_date', to).in('status', ['จัดส่งแล้ว', 'เสร็จสิ้น'])
+          .order('id', { ascending: true })
+          .range(pageFrom, pageTo)
+      ).then((data) => ({ data })),
       supabase.from('wms_order_summaries')
         .select('order_id, picker_id, total_items, correct_at_first_check, wrong_at_first_check, not_find_at_first_check, accuracy_percent, checked_at, us_users!picker_id(username)')
         .gte('checked_at', tsFrom).lte('checked_at', tsTo),
-      supabase
-        .from('wms_orders')
-        .select('order_id, created_at, end_time')
-        .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
-        .gte('created_at', tsFrom)
-        .lte('created_at', tsTo),
+      fetchAllSupabasePages<WmsOrder>((pageFrom, pageTo) =>
+        supabase
+          .from('wms_orders')
+          .select('order_id, created_at, end_time')
+          .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+          .gte('created_at', tsFrom)
+          .lte('created_at', tsTo)
+          .order('created_at', { ascending: true })
+          .order('id', { ascending: true })
+          .range(pageFrom, pageTo)
+      ).then((data) => ({ data })),
       supabase.from('qc_sessions')
         .select('id, username, start_time, end_time, total_items, pass_count, fail_count, skipped_count, kpi_score')
         .not('end_time', 'is', null)
         .gte('start_time', tsFrom).lte('start_time', tsTo),
       fetchQcAttemptsForRange(tsFrom, tsTo),
-      supabase.from('pk_packing_logs')
-        .select('packed_by, packed_at, order_id')
-        .gte('packed_at', tsFrom).lte('packed_at', tsTo),
+      fetchAllSupabasePages<PackLog>((pageFrom, pageTo) =>
+        supabase.from('pk_packing_logs')
+          .select('packed_by, packed_at, order_id')
+          .gte('packed_at', tsFrom).lte('packed_at', tsTo)
+          .order('packed_at', { ascending: true })
+          .order('id', { ascending: true })
+          .range(pageFrom, pageTo)
+      ).then((data) => ({ data })),
       supabase.from('plan_jobs')
         .select('name, tracks, date')
         .gte('date', from).lte('date', to),

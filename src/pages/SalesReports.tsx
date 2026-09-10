@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
 import { FiDownload, FiSearch, FiChevronUp, FiChevronDown } from 'react-icons/fi'
+import { fetchAllSupabasePages } from '../lib/supabasePagination'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -253,12 +254,14 @@ export default function SalesReports() {
       if (data) setChannels(data)
     })()
     ;(async () => {
-      const { data } = await supabase
-        .from('or_orders')
-        .select('admin_user')
-      if (data) {
-        const unique = [...new Set(data.map((d: any) => d.admin_user as string).filter(Boolean))].sort()
+      try {
+        const data = await fetchAllSupabasePages<{ id: string; admin_user: string | null }>((from, to) =>
+          supabase.from('or_orders').select('id, admin_user').order('id', { ascending: true }).range(from, to)
+        )
+        const unique = [...new Set(data.map((d) => d.admin_user).filter((name): name is string => Boolean(name)))].sort()
         setAdminUsers(unique)
+      } catch (error) {
+        console.error('Error loading sales admins:', error)
       }
     })()
   }, [])
@@ -270,24 +273,24 @@ export default function SalesReports() {
   }, [])
 
   const fetchOrders = useCallback(async (from: string, to: string, channel: string, status: string, admin: string) => {
-    let q = supabase
-      .from('or_orders')
-      .select(
-        `channel_code, bill_no, work_order_name, total_amount, price, shipping_cost, discount,
-         entry_date, admin_user, status, payment_method, promotion, customer_name,
-         or_order_items(product_name, product_id, product_type, quantity, unit_price, is_free)`
-      )
-      .gte('entry_date', from)
-      .lte('entry_date', to)
-      .order('entry_date', { ascending: false })
+    return fetchAllSupabasePages<RawOrder>((pageFrom, pageTo) => {
+      let q = supabase
+        .from('or_orders')
+        .select(
+          `channel_code, bill_no, work_order_name, total_amount, price, shipping_cost, discount,
+           entry_date, admin_user, status, payment_method, promotion, customer_name,
+           or_order_items(product_name, product_id, product_type, quantity, unit_price, is_free)`
+        )
+        .gte('entry_date', from)
+        .lte('entry_date', to)
+        .order('entry_date', { ascending: false })
+        .order('id', { ascending: false })
 
-    if (status) q = q.eq('status', status)
-    if (channel) q = q.eq('channel_code', channel)
-    if (admin) q = q.eq('admin_user', admin)
-
-    const { data, error } = await q
-    if (error) throw error
-    return (data || []) as RawOrder[]
+      if (status) q = q.eq('status', status)
+      if (channel) q = q.eq('channel_code', channel)
+      if (admin) q = q.eq('admin_user', admin)
+      return q.range(pageFrom, pageTo)
+    })
   }, [])
 
   async function handleSearch() {

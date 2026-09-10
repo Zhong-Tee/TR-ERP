@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, forwardRef, useImperativeHandle } from 'react'
 import { supabase } from '../../lib/supabase'
+import { fetchAllSupabasePagesResult } from '../../lib/supabasePagination'
 import { Order, OrderItem, OrderStatus, Product, CartoonPattern, BankSetting } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { uploadMultipleToStorage, verifyMultipleSlipsFromStorage } from '../../lib/slipVerification'
@@ -24,6 +25,7 @@ import { isSelfPickupBill, isSelfPickupChannel } from '../../lib/channelBehavior
 import { getMissingCustomerShippingFields } from '../../lib/orderCustomerValidation'
 import {
   evaluatePromotions,
+  promotionMatchesChannel,
   totalPromotionDiscount,
   type PromotionDefinition,
   type PromotionEvaluation,
@@ -1526,15 +1528,15 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   async function loadInitialData() {
     try {
       const [productsRes, patternsRes, channelsRes, inkTypesRes, fontsRes, categorySettingsRes, promotionsRes, productOverridesRes, stockBalancesRes, orderNoPrefixesRes] = await Promise.all([
-        supabase.from('pr_products').select('*').eq('is_active', true).in('product_type', ['FG', 'PP']),
-        supabase.from('cp_cartoon_patterns').select('*').eq('is_active', true),
+        fetchAllSupabasePagesResult((from, to) => supabase.from('pr_products').select('*').eq('is_active', true).in('product_type', ['FG', 'PP']).order('id').range(from, to)),
+        fetchAllSupabasePagesResult((from, to) => supabase.from('cp_cartoon_patterns').select('*').eq('is_active', true).order('id').range(from, to)),
         supabase.from('channels').select('channel_code, channel_name'),
         supabase.from('ink_types').select('id, ink_name').order('ink_name'),
         supabase.from('fonts').select('font_code, font_name').eq('is_active', true),
         supabase.from('pr_category_field_settings').select('*'),
         supabase.from('promotion').select('*').eq('is_active', true),
         supabase.from('pr_product_field_overrides').select('*'),
-        supabase.from('inv_stock_balances').select('product_id, on_hand, reserved, safety_stock'),
+        fetchAllSupabasePagesResult((from, to) => supabase.from('inv_stock_balances').select('product_id, on_hand, reserved, safety_stock').order('product_id').range(from, to)),
         supabase.from('or_channel_order_no_prefixes').select('channel_code, prefix, is_active').eq('is_active', true),
       ])
 
@@ -1783,6 +1785,18 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     }))
   }
 
+  useEffect(() => {
+    const channelCode = formData.channel_code || ''
+    if (!channelCode || selectedPromotionIds.length === 0) return
+    const allowedIds = selectedPromotionIds.filter((id) => {
+      const promotion = promotions.find((item) => item.id === id)
+      return !!promotion && promotionMatchesChannel(promotion, channelCode)
+    })
+    if (allowedIds.length !== selectedPromotionIds.length) updateSelectedPromotions(allowedIds)
+    // การเปลี่ยนช่องทางต้องถอนโปรโมชั่นที่ไม่ร่วมรายการออกจากบิลทันที
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formData.channel_code, promotions])
+
   function renderPromotionChoice(promotion: PromotionDefinition, showStar = false) {
     const checked = selectedPromotionIds.includes(promotion.id)
     const result = livePromotionResults.find((item) => item.promotion_id === promotion.id)
@@ -1829,8 +1843,12 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   )
   const automaticShippingActive = hasFreeShippingPromotion || shippingFeeSettings.auto_calculate_enabled
   const promotionsForSelection = useMemo(
-    () => [...promotions].sort((a, b) => Number(selectedPromotionIds.includes(b.id)) - Number(selectedPromotionIds.includes(a.id))),
-    [promotions, selectedPromotionIds],
+    () => promotions
+      .filter((promotion) => {
+        return promotionMatchesChannel(promotion, formData.channel_code || '')
+      })
+      .sort((a, b) => Number(selectedPromotionIds.includes(b.id)) - Number(selectedPromotionIds.includes(a.id))),
+    [promotions, selectedPromotionIds, formData.channel_code],
   )
   const featuredPromotions = useMemo(
     () => promotionsForSelection.filter((promotion) => promotion.is_featured === true),

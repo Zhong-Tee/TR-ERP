@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
 import ModalCloseButton from '../components/ui/ModalCloseButton'
+import { fetchAllSupabasePages } from '../lib/supabasePagination'
 
 interface InventoryHistoryRow {
   product_id: string
@@ -45,9 +46,14 @@ export default function InventoryBalanceHistory() {
     setLoading(true)
     setError('')
     try {
-      const { data, error: queryError } = await supabase.rpc('rpc_inventory_balances_as_of', { p_as_of_date: date })
-      if (queryError) throw queryError
-      setRows(((data || []) as InventoryHistoryRow[]).map((row) => ({
+      const data = await fetchAllSupabasePages<InventoryHistoryRow>((from, to) =>
+        supabase
+          .rpc('rpc_inventory_balances_as_of', { p_as_of_date: date })
+          .order('product_code', { ascending: true })
+          .order('product_id', { ascending: true })
+          .range(from, to)
+      )
+      setRows(data.map((row) => ({
         ...row,
         on_hand: Number(row.on_hand || 0),
         safety_stock: Number(row.safety_stock || 0),

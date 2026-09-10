@@ -8,6 +8,7 @@ import { formatDateTime } from '../../lib/utils'
 import UrgencyBadge from '../common/UrgencyBadge'
 import type { User } from '../../types'
 import type { MpOrder, MpOrderItem, MpSalesUser } from '../../types/marketplace'
+import { fetchAllSupabasePagesResult } from '../../lib/supabasePagination'
 
 interface ProductOption {
   id: string
@@ -137,18 +138,22 @@ export default function MarketplaceOrderModal({
       try {
         const [itemsRes, productsRes, rules, inkRes, fontRes, patternRes] = await Promise.all([
           supabase.from('mp_order_items').select('*').eq('mp_order_id', mpOrder.id).order('line_index'),
-          supabase
+          fetchAllSupabasePagesResult<ProductOption>((from, to) => supabase
             .from('pr_products')
             .select('id, product_code, product_name, product_category')
             .eq('is_active', true)
-            .in('product_type', ['FG', 'PP']),
+            .in('product_type', ['FG', 'PP'])
+            .order('id', { ascending: true })
+            .range(from, to)),
           loadFieldRuleMaps(),
           supabase.from('ink_types').select('id, ink_name').order('ink_name'),
           supabase.from('fonts').select('font_code, font_name').eq('is_active', true),
-          supabase
+          fetchAllSupabasePagesResult((from, to) => supabase
             .from('cp_cartoon_patterns')
             .select('id, pattern_name, product_categories')
-            .eq('is_active', true),
+            .eq('is_active', true)
+            .order('id', { ascending: true })
+            .range(from, to)),
         ])
         if (cancelled) return
         const draftItems = ((itemsRes.data || []) as MpOrderItem[]).map((it) => ({

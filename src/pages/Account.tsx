@@ -16,6 +16,7 @@ import TrialBalanceSection from '../components/account/TrialBalanceSection'
 import EcommerceSection from '../components/account/EcommerceSection'
 import PromotionAuditReport from '../components/account/PromotionAuditReport'
 import PayrollSection from '../components/account/PayrollSection'
+import { fetchAllSupabasePages, fetchAllSupabasePagesResult } from '../lib/supabasePagination'
 import AmendmentSection from '../components/account/AmendmentSection'
 import ClaimApprovalSection from '../components/account/ClaimApprovalSection'
 import { SLIP_BANK_APPS_30D, SLIP_BANK_APPS_7D, bankLogoUrl } from '../config/thaiBanks'
@@ -377,13 +378,12 @@ export default function Account() {
   async function loadVerifiedSlipsList() {
     setVerifiedSlipsLoading(true)
     try {
-      const { data: slipsData, error: slipsError } = await supabase
+      const slips = await fetchAllSupabasePages<Omit<VerifiedSlipRow, 'or_orders'>>((from, to) => supabase
         .from('ac_verified_slips')
         .select('id, order_id, verified_amount, verified_at, easyslip_date, easyslip_response, easyslip_receiver_account, validation_status, validation_errors, expected_amount, is_deleted, deletion_reason')
         .order('created_at', { ascending: false })
-        .limit(2000)
-      if (slipsError) throw slipsError
-      const slips = (slipsData || []) as Omit<VerifiedSlipRow, 'or_orders'>[]
+        .order('id', { ascending: false })
+        .range(from, to))
       const orderIds = [...new Set(slips.map((s) => s.order_id).filter(Boolean))]
       const orderMap: Record<string, { bill_no: string | null; channel_code: string | null; admin_user: string | null }> = {}
       if (orderIds.length > 0) {
@@ -669,16 +669,16 @@ export default function Account() {
     if (!initialLoadDone.current) setBillingLoading(true)
     try {
       const excludeBillingStatuses = '("รอลงข้อมูล","ลงข้อมูลผิด","ตรวจสอบไม่ผ่าน","ตรวจสอบไม่สำเร็จ")'
-      const { data: taxData, error: taxError } = await supabase
+      const taxData = await fetchAllSupabasePages<BillingRequestOrder>((from, to) => supabase
         .from('or_orders')
         .select('id, bill_no, customer_name, total_amount, shipping_cost, discount, status, created_at, billing_details, claim_type, channel_code, channel_order_no')
         .contains('billing_details', { request_tax_invoice: true })
         .not('status', 'in', excludeBillingStatuses)
         .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .range(from, to))
 
-      if (taxError) throw taxError
-
-      const filteredTax = ((taxData || []) as BillingRequestOrder[]).filter((o: BillingRequestOrder) => {
+      const filteredTax = taxData.filter((o) => {
         const bd = o.billing_details || {}
         return !bd.account_confirmed_tax
       })
@@ -764,24 +764,30 @@ export default function Account() {
     try {
       const historyExcludeStatuses = '("ตรวจสอบไม่ผ่าน","รอลงข้อมูล","ลงข้อมูลผิด")'
       const [taxRes, refundRes, claimRes] = await Promise.all([
-        supabase
+        fetchAllSupabasePagesResult((from, to) => supabase
           .from('or_orders')
           .select('id, bill_no, customer_name, total_amount, shipping_cost, discount, status, created_at, billing_details, claim_type, channel_code, channel_order_no')
           .contains('billing_details', { request_tax_invoice: true })
           .not('status', 'in', historyExcludeStatuses)
-          .order('created_at', { ascending: false }),
-        supabase
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to)),
+        fetchAllSupabasePagesResult((from, to) => supabase
           .from('ac_refunds')
           .select('*, or_orders(bill_no, customer_name, customer_address)')
           .in('status', ['approved', 'rejected'])
-          .order('created_at', { ascending: false }),
-        supabase
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to)),
+        fetchAllSupabasePagesResult((from, to) => supabase
           .from('or_claim_requests')
           .select(
             'id, ref_order_id, claim_type, status, created_at, reviewed_at, rejected_reason, created_claim_order_id, ref_snapshot',
           )
           .in('status', ['approved', 'rejected'])
-          .order('reviewed_at', { ascending: false }),
+          .order('reviewed_at', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to)),
       ])
 
       if ((taxRes as any).error) throw (taxRes as any).error

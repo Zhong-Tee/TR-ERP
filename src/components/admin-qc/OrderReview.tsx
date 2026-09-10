@@ -4,6 +4,7 @@ import { Order } from '../../types'
 import { formatDateTime } from '../../lib/utils'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { sortOrderItemsForExport } from '../../lib/orderItemExportSort'
+import { fetchAllSupabasePages } from '../../lib/supabasePagination'
 
 export default function OrderReview() {
   const { user } = useAuthContext()
@@ -19,14 +20,14 @@ export default function OrderReview() {
   async function loadPendingOrders() {
     setLoading(true)
     try {
-      const { data, error } = await supabase
+      const data = await fetchAllSupabasePages<Order>((from, to) => supabase
         .from('or_orders')
         .select('*, or_order_items(*)')
         .eq('status', 'รอตรวจคำสั่งซื้อ')
         .order('created_at', { ascending: false })
-
-      if (error) throw error
-      setOrders(data || [])
+        .order('id', { ascending: false })
+        .range(from, to))
+      setOrders(data)
     } catch (error: any) {
       console.error('Error loading orders:', error)
       alert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)

@@ -4,6 +4,7 @@ import { useAuthContext } from '../../../contexts/AuthContext'
 import { isRoleInAllowedList } from '../../../config/accessPolicy'
 import Modal from '../../ui/Modal'
 import { enrichWmsNotificationsWithOrderDetails } from '../../../lib/wmsNotificationEnrichment'
+import { fetchAllSupabasePages } from '../../../lib/supabasePagination'
 
 const PAGE_SIZE = 50
 
@@ -124,12 +125,13 @@ export default function NotificationSection() {
 
       // Fallback: ดึง cancelled ทั้งหมดแล้วเทียบ key แบบ normalize
       if (rows.length === 0) {
-        const { data: fallback } = await supabase
+        const fallback = await fetchAllSupabasePages<any>((from, to) => supabase
           .from('wms_orders')
           .select('id, order_id, source_order_id, product_code, product_name, location, qty, status, stock_action')
           .eq('status', 'cancelled')
-          .limit(5000)
-        rows = (fallback || []).filter((r: any) => normalizeOrderKey(r.order_id) === targetNorm)
+          .order('id', { ascending: true })
+          .range(from, to))
+        rows = fallback.filter((r: any) => normalizeOrderKey(r.order_id) === targetNorm)
       }
 
       // ถ้าไม่มี targetOrderId (เช่น ยกเลิกบางรายการที่บิลหลักยังไม่สถานะยกเลิก)

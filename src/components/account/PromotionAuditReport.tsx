@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../lib/supabase'
+import { fetchAllSupabasePages } from '../../lib/supabasePagination'
 import Modal from '../ui/Modal'
 import { formatDateTime } from '../../lib/utils'
 
@@ -66,17 +67,18 @@ export default function PromotionAuditReport() {
     setLoading(true)
     setError('')
     try {
-      let query = supabase
-        .from('or_promotion_audits')
-        .select('*')
-        .gte('evaluated_at', `${fromDate}T00:00:00+07:00`)
-        .lte('evaluated_at', `${toDate}T23:59:59.999+07:00`)
-        .order('evaluated_at', { ascending: false })
-        .limit(2000)
-      if (status) query = query.eq('validation_status', status)
-      const { data, error: queryError } = await query
-      if (queryError) throw queryError
-      setRows((data || []) as PromotionAudit[])
+      const data = await fetchAllSupabasePages<PromotionAudit>((from, to) => {
+        let query = supabase
+          .from('or_promotion_audits')
+          .select('*')
+          .gte('evaluated_at', `${fromDate}T00:00:00+07:00`)
+          .lte('evaluated_at', `${toDate}T23:59:59.999+07:00`)
+          .order('evaluated_at', { ascending: false })
+          .order('id', { ascending: false })
+        if (status) query = query.eq('validation_status', status)
+        return query.range(from, to)
+      })
+      setRows(data)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'โหลดรายงานโปรโมชั่นไม่สำเร็จ')
     } finally {

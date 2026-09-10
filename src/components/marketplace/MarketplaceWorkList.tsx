@@ -10,6 +10,7 @@ import UrgencyBadge from '../common/UrgencyBadge'
 import MarketplaceOrderModal from './MarketplaceOrderModal'
 import { useWmsModal } from '../wms/useWmsModal'
 import type { User } from '../../types'
+import { fetchAllSupabasePages } from '../../lib/supabasePagination'
 import type { MpChannelConfig, MpOrder, MpOrderStatus, MpSalesUser } from '../../types/marketplace'
 
 const STATUS_TITLES: Record<Exclude<MpOrderStatus, 'new'>, string> = {
@@ -137,10 +138,17 @@ export default function MarketplaceWorkList({
       if (status === 'assigned' && user.role !== 'superadmin') {
         query = query.or(`assigned_to.eq.${user.id},assigned_by.eq.${user.id}`)
       }
-      const { data, error, count } = await query
-      if (error) throw error
+      let rows: MpOrder[]
+      let count: number | null = null
+      if (status === 'done') {
+        const result = await query
+        if (result.error) throw result.error
+        rows = (result.data || []) as MpOrder[]
+        count = result.count
+      } else {
+        rows = await fetchAllSupabasePages<MpOrder>((from, to) => query.range(from, to))
+      }
       if (requestId !== loadRequestRef.current) return
-      const rows = (data || []) as MpOrder[]
       const billedOrderIds = [...new Set(rows.map((row) => row.billed_order_id).filter((id): id is string => Boolean(id)))]
       let shippedTimeByOrderId = new Map<string, string | null>()
       for (let start = 0; start < billedOrderIds.length; start += 200) {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { FiEdit3, FiLink, FiMessageCircle, FiPlus, FiTrash2, FiX } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../lib/supabase'
+import { fetchAllSupabasePages } from '../../lib/supabasePagination'
 import { getChatEnterToSendPref, setChatEnterToSendPref } from '../../lib/chatEnterToSendPrefs'
 import { formatDateTime, getBangkokCalendarDayUtcBoundsISO } from '../../lib/utils'
 import { buildBillLineItemsExportMulti, buildProductionLikeExportMulti } from '../../lib/orderProductionExcel'
@@ -729,8 +730,8 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
         : query.in('admin_user', salesTrTeamAdminValues)
     }
 
-    const { data, error } = await query
-    if (error) throw error
+    query = query.order('id', { ascending: true })
+    const data = await fetchAllSupabasePages<Order>((from, to) => query.range(from, to))
 
     const grouped: Record<ConfirmColumnKey, Order[]> = {
       new: [], noDesign: [], design: [], designed: [], waiting: [], confirmed: [], completed: [],
@@ -744,7 +745,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       'คอนเฟิร์มแล้ว': 'confirmed',
       'เสร็จสิ้น': 'completed',
     }
-    for (const order of (data || []) as Order[]) {
+    for (const order of data) {
       const key = statusToKey[order.status]
       if (key) grouped[key].push(order)
     }

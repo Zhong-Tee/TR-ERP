@@ -5,6 +5,7 @@ import Modal from '../components/ui/Modal'
 import { getProductImageUrl } from '../components/wms/wmsUtils'
 import { useAuthContext } from '../contexts/AuthContext'
 import { InventoryAdjustment, InventoryAdjustmentItem, Product } from '../types'
+import { fetchAllSupabasePagesResult } from '../lib/supabasePagination'
 
 interface DraftItem {
   product_id: string
@@ -124,8 +125,8 @@ export default function WarehouseAdjust() {
     try {
       const [adjustRes, productRes, balanceRes, usersRes, itemCountRes, specialTrackedRes, rollConfigRes, rollRmRes] = await Promise.all([
         supabase.from('inv_adjustments').select('*').order('created_at', { ascending: false }),
-        supabase.from('pr_products').select('id, product_code, product_name, order_point, unit_name').eq('is_active', true).order('product_code', { ascending: true }),
-        supabase.from('inv_stock_balances').select('product_id, on_hand, safety_stock'),
+        fetchAllSupabasePagesResult((from, to) => supabase.from('pr_products').select('id, product_code, product_name, order_point, unit_name').eq('is_active', true).order('product_code', { ascending: true }).order('id').range(from, to)),
+        fetchAllSupabasePagesResult((from, to) => supabase.from('inv_stock_balances').select('product_id, on_hand, safety_stock').order('product_id').range(from, to)),
         supabase.from('us_users').select('id, username'),
         supabase.rpc('rpc_inventory_adjustment_item_counts'),
         supabase.from('wh_sub_wms_map_spares').select('product_id'),

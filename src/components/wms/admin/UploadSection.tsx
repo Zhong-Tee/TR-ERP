@@ -4,6 +4,7 @@ import { calculateDuration, WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
 import { consolidateCondoStampWmsDisplayRows } from '../../../lib/wmsCondoStampConsolidation'
 import OrderDetailModal from './OrderDetailModal'
 import CancelledBillStockModal, { type CancelledBillSummary } from './CancelledBillStockModal'
+import { fetchAllSupabasePages } from '../../../lib/supabasePagination'
 
 type UserRow = { id: string; username: string | null; role: string }
 
@@ -102,15 +103,19 @@ export default function UploadSection() {
       q = q.eq('assigned_to', filterUser)
     }
 
-    const { data, error } = await q.order('created_at', { ascending: false })
-    if (requestId !== loadRequestRef.current) return
-    if (error) {
+    q = q.order('created_at', { ascending: false }).order('id', { ascending: false })
+    let data: Record<string, unknown>[]
+    try {
+      data = await fetchAllSupabasePages<Record<string, unknown>>((from, to) => q.range(from, to))
+    } catch (error) {
       console.error('Load WMS work-order dashboard failed:', error)
-      setOrders([])
-      setLoading(false)
+      if (requestId === loadRequestRef.current) {
+        setOrders([])
+        setLoading(false)
+      }
       return
     }
-    if (!data) { setLoading(false); return }
+    if (requestId !== loadRequestRef.current) return
 
     const grouped = (data as any[]).reduce((acc: Record<string, any>, obj) => {
       const woId = (obj.work_order_id as string | null | undefined) ?? null

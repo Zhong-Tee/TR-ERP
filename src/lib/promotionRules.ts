@@ -6,6 +6,7 @@ export type PromotionRuleType =
   | 'buy_get'
   | 'spend_get'
   | 'quantity_get'
+  | 'quantity_fixed'
 
 export type PromotionSelector =
   | { selector_type: 'category'; category: string; product_id?: never }
@@ -218,6 +219,19 @@ export function evaluatePromotion(
         const value = Math.max(0, Number(config.discount_value) || 0)
         expectedDiscount = promotion.rule_type === 'spend_percent' ? subtotal * (value / 100) : value
       }
+    } else if (promotion.rule_type === 'quantity_fixed') {
+      if (!conditionGroups.length) messages.push('ยังไม่ได้กำหนดกลุ่มสินค้าฝั่งซื้อ')
+      const allocation = allocateGroups(paidItems, conditionGroups)
+      if (conditionGroups.length && !allocation.passed) messages.push(...allocation.missing)
+      else {
+        const discountValue = Math.max(0, Number(config.discount_value) || 0)
+        if (conditionGroups.length && discountValue > 0) {
+          applicationCount = 1
+          expectedDiscount = discountValue
+        } else if (discountValue <= 0) {
+          messages.push('ยังไม่ได้กำหนดส่วนลด')
+        }
+      }
     } else if (promotion.rule_type === 'bundle_fixed_price') {
       const allocation = allocateGroups(paidItems, conditionGroups)
       if (!allocation.passed) messages.push(...allocation.missing)
@@ -271,6 +285,11 @@ export function totalPromotionDiscount(results: PromotionEvaluation[]): number {
   return money(results.reduce((sum, result) => sum + (result.passed ? result.expected_discount : 0), 0))
 }
 
+export function promotionMatchesChannel(promotion: PromotionDefinition, channelCode: string): boolean {
+  const allowedChannels = promotion.channel_codes || []
+  return !channelCode || allowedChannels.length === 0 || allowedChannels.includes(channelCode)
+}
+
 export const PROMOTION_RULE_LABELS: Record<PromotionRuleType, string> = {
   legacy: 'รายการเดิม (ไม่ตรวจเงื่อนไข)',
   bundle_fixed_price: 'เซ็ตหลายรายการ ราคาพิเศษ',
@@ -279,4 +298,5 @@ export const PROMOTION_RULE_LABELS: Record<PromotionRuleType, string> = {
   buy_get: 'ซื้อ X แถม Y',
   spend_get: 'ซื้อครบ X บาท รับของแถม',
   quantity_get: 'ซื้อสินค้าที่กำหนด X ชิ้น รับของแถม',
+  quantity_fixed: 'ซื้อ X สินค้า ลด X บาท',
 }

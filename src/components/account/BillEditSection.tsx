@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
+import { fetchAllSupabasePages } from '../../lib/supabasePagination'
 import { buildIlikeOr } from '../../lib/searchFilter'
 import { Order, OrderStatus } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -161,14 +162,14 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
       if (filterEditedOnly) {
         const startIso = new Date(`${filterDateFrom}T00:00:00`).toISOString()
         const endIso = new Date(`${filterDateTo}T23:59:59.999`).toISOString()
-        const { data: logRows, error: logErr } = await supabase
+        const logRows = await fetchAllSupabasePages<{ id: string; order_id: string }>((from, to) => supabase
           .from('ac_bill_edit_logs')
-          .select('order_id')
+          .select('id, order_id')
           .gte('edited_at', startIso)
           .lte('edited_at', endIso)
-          .limit(8000)
-        if (logErr) throw logErr
-        const editedOrderIds = [...new Set((logRows || []).map((row: { order_id: string }) => row.order_id).filter(Boolean))]
+          .order('id', { ascending: true })
+          .range(from, to))
+        const editedOrderIds = [...new Set(logRows.map((row) => row.order_id).filter(Boolean))]
         if (editedOrderIds.length === 0) {
           setSearchResults([])
           setSearchStats({ matched: 0, shown: 0, editedOnly: true })

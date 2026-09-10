@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
+import { fetchAllSupabasePagesResult } from '../lib/supabasePagination'
 import {
   FiPackage,
   FiCheckCircle,
@@ -75,12 +76,11 @@ export default function Dashboard() {
     setLoading(true)
     try {
       const [ordersRes, topOrdersRes, productsRes, issuesRes, itemsRes] = await Promise.all([
-        // Fetch ALL orders with only the columns needed for summary/breakdown
-        // No .limit() cap -- use large limit to override Supabase default of 1000
-        supabase
+        fetchAllSupabasePagesResult((from, to) => supabase
           .from('or_orders')
-          .select('status, total_amount, channel_code, entry_date')
-          .limit(500000),
+          .select('id, status, total_amount, channel_code, entry_date')
+          .order('id', { ascending: true })
+          .range(from, to)),
         // Top 10 revenue orders (small, specific query)
         supabase
           .from('or_orders')
@@ -88,18 +88,20 @@ export default function Dashboard() {
           .neq('status', 'ยกเลิก')
           .order('total_amount', { ascending: false })
           .limit(10),
-        supabase
+        fetchAllSupabasePagesResult((from, to) => supabase
           .from('pr_products')
           .select('id, product_category')
-          .eq('is_active', true),
+          .eq('is_active', true)
+          .order('id', { ascending: true })
+          .range(from, to)),
         supabase
           .from('or_issues')
           .select('id, status'),
-        // Fetch ALL order items for top-selling calculation
-        supabase
+        fetchAllSupabasePagesResult((from, to) => supabase
           .from('or_order_items')
-          .select('product_name, quantity')
-          .limit(500000),
+          .select('id, product_name, quantity')
+          .order('id', { ascending: true })
+          .range(from, to)),
       ])
       if (ordersRes.data) setOrders(ordersRes.data as OrderRow[])
       if (topOrdersRes.data) setTopOrders(topOrdersRes.data as TopOrder[])

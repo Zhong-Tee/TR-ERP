@@ -2,6 +2,7 @@ import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { FiCalendar, FiFileText, FiImage, FiSearch, FiUpload, FiX } from 'react-icons/fi'
 import { supabase } from '../lib/supabase'
 import Modal from '../components/ui/Modal'
+import { fetchAllSupabasePagesResult } from '../lib/supabasePagination'
 
 type ProductRow = {
   id: string
@@ -73,9 +74,9 @@ export default function ProductInformation() {
   async function load() {
     setLoading(true)
     const [{ data: productData, error }, { data: infoData }, { data: assetData }] = await Promise.all([
-      supabase.from('pr_products').select('id,product_code,product_name,product_type,product_category,is_active').order('product_code').limit(5000),
-      supabase.from('pr_product_marketing_info').select('product_id,highlights,launch_date'),
-      supabase.from('pr_product_marketing_assets').select('id,product_id,asset_type,file_name,storage_path,mime_type,uploaded_at').order('uploaded_at', { ascending: false }),
+      fetchAllSupabasePagesResult((from, to) => supabase.from('pr_products').select('id,product_code,product_name,product_type,product_category,is_active').order('product_code').order('id').range(from, to)),
+      fetchAllSupabasePagesResult((from, to) => supabase.from('pr_product_marketing_info').select('product_id,highlights,launch_date').order('product_id').range(from, to)),
+      fetchAllSupabasePagesResult((from, to) => supabase.from('pr_product_marketing_assets').select('id,product_id,asset_type,file_name,storage_path,mime_type,uploaded_at').order('uploaded_at', { ascending: false }).order('id').range(from, to)),
     ])
     if (error) setNotice(`โหลดรายการสินค้าไม่สำเร็จ: ${error.message}`)
     const infoMap = new Map((infoData || []).map((row) => [row.product_id, row as MarketingInfo]))

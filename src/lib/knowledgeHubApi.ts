@@ -1,4 +1,5 @@
 import { supabase } from './supabase'
+import { fetchAllSupabasePages } from './supabasePagination'
 
 export const KNOWLEDGE_BUCKET = 'knowledge-hub'
 
@@ -121,18 +122,29 @@ async function hydrateItems(rows: any[]): Promise<KnowledgeItem[]> {
 }
 
 export async function fetchKnowledgeItems(): Promise<KnowledgeItem[]> {
-  let { data, error } = await supabase
-    .from('kb_items')
-    .select(ITEM_COLUMNS)
-    .order('updated_at', { ascending: false })
-    .limit(2000)
-  if (error?.code === '42703') {
-    const fallback = await supabase.from('kb_items').select(LEGACY_ITEM_COLUMNS).order('updated_at', { ascending: false }).limit(2000)
-    data = fallback.data?.map((row) => ({ ...row, active_version_id: null })) as typeof data
-    error = fallback.error
+  let data: any[]
+  try {
+    data = await fetchAllSupabasePages<any>((from, to) => supabase
+      .from('kb_items')
+      .select(ITEM_COLUMNS)
+      .order('updated_at', { ascending: false })
+      .order('id', { ascending: false })
+      .range(from, to))
+  } catch (error) {
+    if (!error || typeof error !== 'object' || !('code' in error) || error.code !== '42703') throw error
+    const legacy = await fetchAllSupabasePages<any>((from, to) => supabase
+      .from('kb_items')
+      .select(LEGACY_ITEM_COLUMNS)
+      .order('updated_at', { ascending: false })
+      .order('id', { ascending: false })
+      .range(from, to))
+    data = legacy.map((row) => ({ ...row, active_version_id: null }))
   }
-  if (error) throw error
-  return hydrateItems(data || [])
+  const hydrated: KnowledgeItem[] = []
+  for (let start = 0; start < data.length; start += 200) {
+    hydrated.push(...await hydrateItems(data.slice(start, start + 200)))
+  }
+  return hydrated
 }
 
 export async function fetchKnowledgeItem(id: string): Promise<KnowledgeItem> {

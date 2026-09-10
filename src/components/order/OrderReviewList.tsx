@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '../../lib/supabase'
+import { fetchAllSupabasePages } from '../../lib/supabasePagination'
 import { getPublicUrl } from '../../lib/qcApi'
 import { Order } from '../../types'
 import { formatDateTime } from '../../lib/utils'
@@ -480,10 +481,8 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
       if (channelFilter && channelFilter.trim() !== '') {
         query = query.eq('channel_code', channelFilter.trim())
       }
-      const { data, error } = await query
-
-      if (error) throw error
-      const list = data || []
+      query = query.order('id', { ascending: true })
+      const list = await fetchAllSupabasePages<Order>((from, to) => query.range(from, to))
       setOrders(list)
       const visibleList = filterReviewOrders(list, search)
       // เลือกบิลแรกถ้ายังไม่มี หรือถ้าบิลที่เลือกไม่อยู่ในรายการที่กรองแล้ว

@@ -1,4 +1,5 @@
 import { supabase } from './supabase'
+import { fetchAllSupabasePages } from './supabasePagination'
 import type {
   Product,
   PpRecipe,
@@ -12,16 +13,16 @@ import type {
 // ── PP Products ──────────────────────────────────────────────
 
 export async function fetchPPProducts() {
-  const { data: products, error: pErr } = await supabase
+  const products = await fetchAllSupabasePages<Product>((from, to) => supabase
     .from('pr_products')
     .select('*')
     .eq('product_type', 'PP')
     .eq('is_active', true)
     .order('product_code')
+    .order('id')
+    .range(from, to))
 
-  if (pErr) throw pErr
-
-  const ids = (products ?? []).map((p: Product) => p.id)
+  const ids = products.map((p) => p.id)
   if (ids.length === 0) return []
 
   const { data: balances } = await supabase
@@ -191,14 +192,14 @@ export async function validateProductionItems(
 // ── Fetch all FG/RM products (for recipe selection) ─────────
 
 export async function fetchFgRmProducts() {
-  const { data, error } = await supabase
+  const products = await fetchAllSupabasePages<Product>((from, to) => supabase
     .from('pr_products')
     .select('*')
     .in('product_type', ['FG', 'RM'])
     .eq('is_active', true)
     .order('product_code')
-  if (error) throw error
-  const products = (data ?? []) as Product[]
+    .order('id')
+    .range(from, to))
   if (products.length === 0) return []
 
   const { data: balances, error: balanceError } = await supabase

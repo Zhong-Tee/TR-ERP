@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
+import { fetchAllSupabasePages } from '../lib/supabasePagination'
 import { getPublicUrl } from '../lib/qcApi'
 import Modal from '../components/ui/Modal'
 import { CartoonPattern } from '../types'
@@ -400,14 +401,15 @@ export default function CartoonPatterns() {
 
   async function downloadPatternsExcel() {
     try {
-      const { data, error } = await supabase
+      const data = await fetchAllSupabasePages((from, to) => supabase
         .from('cp_cartoon_patterns')
         .select(
           'pattern_name, product_categories, line_count, line_1_max_chars, line_2_max_chars, line_3_max_chars'
         )
         .eq('is_active', true)
         .order('pattern_name', { ascending: true })
-      if (error) throw error
+        .order('id', { ascending: true })
+        .range(from, to))
       const headers = [
         'pattern_name',
         'product_categories',
@@ -416,7 +418,7 @@ export default function CartoonPatterns() {
         EXCEL_MAX_CHARS.line2,
         EXCEL_MAX_CHARS.line3,
       ]
-      const rows = (data || []).map((p: any) => {
+      const rows = data.map((p: any) => {
         const cats = Array.isArray(p.product_categories) ? p.product_categories.join(', ') : ''
         return [
           p.pattern_name ?? '',
@@ -514,14 +516,16 @@ export default function CartoonPatterns() {
       const dupInFile = parsed.length - deduped.length
 
       // ดึงข้อมูลลายที่มีอยู่ในระบบ (พร้อมข้อมูลเพื่อเปรียบเทียบ)
-      const { data: existingPatterns } = await supabase
+      const existingPatterns = await fetchAllSupabasePages((from, to) => supabase
         .from('cp_cartoon_patterns')
         .select(
           'id, pattern_name, product_categories, line_count, line_1_max_chars, line_2_max_chars, line_3_max_chars'
         )
         .eq('is_active', true)
+        .order('id', { ascending: true })
+        .range(from, to))
       const existingMap = new Map(
-        (existingPatterns || []).map((p) => [p.pattern_name.toLowerCase(), p])
+        existingPatterns.map((p) => [p.pattern_name.toLowerCase(), p])
       )
 
       // แยกรายการใหม่ vs รายการที่ต้องอัปเดต vs ไม่มีการเปลี่ยนแปลง

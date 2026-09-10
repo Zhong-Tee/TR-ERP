@@ -1,5 +1,6 @@
 import { getPublicUrl } from '../../lib/qcApi'
 import { supabase } from '../../lib/supabase'
+import { fetchAllSupabasePages } from '../../lib/supabasePagination'
 
 /** แถวที่ต้องหยิบจริง — ซ่อน system_complete จาก Picker / ตรวจสินค้า / รายการหยิบ */
 export const WMS_FULFILLMENT_PICK_OR_LEGACY =
@@ -31,30 +32,46 @@ export function isWmsReviewVisibleRow(row: { status?: string | null; stock_actio
 
 /**
  * ชื่อใบงาน (work_order_name) ที่มีแถว wms_orders มอบหมายแล้ว
- * รองรับทั้ง work_order_id และแถว legacy ที่ work_order_id ว่าง (ใช้ order_id → or_orders.work_order_id)
+ * รองรับทั้ง work_order_id และแถว legacy ที่ work_order_id ว่าง โดย order_id เก็บชื่อใบงาน
+ * และแบ่งหน้าการอ่านเพื่อไม่ให้รายการเกินเพดาน 1,000 แถวของ Supabase
  */
 export async function fetchWorkOrderNamesWithWmsAssigned(): Promise<Set<string>> {
-  const { data: wmsRows } = await supabase
-    .from('wms_orders')
-    .select('work_order_id, order_id')
-    .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
-    .neq('status', 'cancelled')
+  const wmsRows = await fetchAllSupabasePages<{ work_order_id: string | null; order_id: string | null }>((from, to) =>
+    supabase
+      .from('wms_orders')
+      .select('work_order_id, order_id')
+      .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+      .neq('status', 'cancelled')
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
 
   const woIds = new Set<string>()
-  const orderIds: string[] = []
-  for (const r of wmsRows || []) {
+  const assignedNames = new Set<string>()
+  for (const r of wmsRows) {
     if (r.work_order_id) woIds.add(r.work_order_id as string)
-    else if (r.order_id) orderIds.push(r.order_id as string)
+    // wms_orders.order_id stores the work-order name, including on legacy rows
+    // where work_order_id is null. Keep it as a fallback instead of treating it
+    // as an or_orders UUID.
+    const legacyName = String(r.order_id || '').trim()
+    if (legacyName) assignedNames.add(legacyName)
   }
-  if (orderIds.length > 0) {
-    const { data: ors } = await supabase.from('or_orders').select('work_order_id').in('id', orderIds)
-    for (const o of ors || []) {
-      if (o.work_order_id) woIds.add(o.work_order_id as string)
+
+  const ids = Array.from(woIds)
+  const idBatchSize = 200
+  for (let from = 0; from < ids.length; from += idBatchSize) {
+    const { data, error } = await supabase
+      .from('or_work_orders')
+      .select('work_order_name')
+      .in('id', ids.slice(from, from + idBatchSize))
+    if (error) throw error
+    for (const row of data || []) {
+      const name = String((row as { work_order_name?: string | null }).work_order_name || '').trim()
+      if (name) assignedNames.add(name)
     }
   }
-  if (woIds.size === 0) return new Set()
-  const { data: wos } = await supabase.from('or_work_orders').select('work_order_name').in('id', Array.from(woIds))
-  return new Set((wos || []).map((w: { work_order_name?: string }) => w.work_order_name).filter(Boolean) as string[])
+  return assignedNames
 }
 
 /** key ของเมนูย่อย WMS — ต้องตรงกับ st_user_menus (Settings) ที่ใช้ wms-* prefix */

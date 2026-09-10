@@ -12,6 +12,7 @@ import {
 import { useWmsModal } from '../useWmsModal'
 import { fetchPlanDeptSettings, type PlanDeptSettings } from '../../../lib/planPickingDepartments'
 import { enrichWmsRowsWithPickingDepartment, getDepartmentOptionsForWmsRows } from '../../../lib/wmsPickingDepartmentEnrichment'
+import { fetchAllSupabasePages } from '../../../lib/supabasePagination'
 import {
   consolidateCondoStampWmsDisplayRows,
   getWmsConsolidatedRowIds,
@@ -165,25 +166,29 @@ export default function ReviewSection() {
     const requestId = ++reviewLoadRequestRef.current
     if (showLoading) setReviewDropdownLoading(true)
 
-    const { data, error } = await supabase
-      .from('wms_orders')
-      .select(
-        'id, work_order_id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released, stock_action'
+    let data: any[]
+    try {
+      data = await fetchAllSupabasePages<any>((from, to) =>
+        supabase
+          .from('wms_orders')
+          .select(
+            'id, work_order_id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released, stock_action'
+          )
+          .or(WMS_REVIEW_INCLUDE_CANCELLED_RECALLED_OR)
+          .gte('created_at', reviewDate + 'T00:00:00')
+          .lte('created_at', reviewDate + 'T23:59:59')
+          .order('created_at', { ascending: true })
+          .order('id', { ascending: true })
+          .range(from, to)
       )
-      .or(WMS_REVIEW_INCLUDE_CANCELLED_RECALLED_OR)
-      .gte('created_at', reviewDate + 'T00:00:00')
-      .lte('created_at', reviewDate + 'T23:59:59')
-      .order('created_at', { ascending: true })
-      .order('id', { ascending: true })
-
-    if (error || !data) {
+    } catch (error) {
       if (requestId === reviewLoadRequestRef.current) {
         setRowsByWorkOrder({})
         setOrderOptions([{ value: '', label: 'โหลดรายการไม่สำเร็จ — กรุณาลองใหม่' }])
         setReviewPendingOrders([])
         setReviewDropdownLoading(false)
       }
-      if (error) console.error('loadReviewDropdown error:', error)
+      console.error('loadReviewDropdown error:', error)
       return
     }
     if (requestId !== reviewLoadRequestRef.current) return

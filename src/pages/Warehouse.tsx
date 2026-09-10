@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
+import { fetchAllSupabasePages } from '../lib/supabasePagination'
 import { getPublicUrl } from '../lib/qcApi'
 import { useAuthContext } from '../contexts/AuthContext'
 import { Product, ProductType, StockBalance } from '../types'
@@ -93,13 +94,14 @@ export default function Warehouse() {
   async function loadProducts() {
     setLoading(true)
     try {
-      const { data, error } = await supabase
+      const data = await fetchAllSupabasePages((from, to) => supabase
         .from('pr_products')
         .select('id, product_code, product_name, product_category, product_type, order_point, order_point_days, seller_name, landed_cost, unit_name, is_hold')
         .eq('is_active', true)
         .order('product_code', { ascending: true })
-      if (error) throw error
-      setProducts((data || []) as Product[])
+        .order('id', { ascending: true })
+        .range(from, to))
+      setProducts(data as Product[])
     } catch (e) {
       console.error('Load products failed:', e)
     } finally {
@@ -109,13 +111,14 @@ export default function Warehouse() {
 
   async function loadBalances() {
     try {
-      const { data, error } = await supabase
+      const data = await fetchAllSupabasePages<StockBalance>((from, to) => supabase
         .from('inv_stock_balances')
         .select('id, product_id, on_hand, reserved, safety_stock, created_at, updated_at')
-      if (error) throw error
+        .order('product_id', { ascending: true })
+        .range(from, to))
       const map: Record<string, StockBalance> = {}
-      ;(data || []).forEach((row) => {
-        map[row.product_id] = row as StockBalance
+      data.forEach((row) => {
+        map[row.product_id] = row
       })
       setBalances(map)
     } catch (e) {
@@ -153,15 +156,16 @@ export default function Warehouse() {
     }
 
     try {
-      const { data, error } = await supabase
+      const data = await fetchAllSupabasePages<{ id: string; product_id: string; qty_remaining: number | null }>((from, to) => supabase
         .from('inv_stock_lots')
-        .select('product_id, qty_remaining')
+        .select('id, product_id, qty_remaining')
         .gt('qty_remaining', 0)
         .eq('is_safety_stock', false)
-      if (error) throw error
+        .order('id', { ascending: true })
+        .range(from, to))
 
       const map: Record<string, FifoStatus> = {}
-      ;(data || []).forEach((row: { product_id: string; qty_remaining: number | null }) => {
+      data.forEach((row) => {
         const current = map[row.product_id] || { sellableLotCount: 0, sellableLotQty: 0 }
         current.sellableLotCount += 1
         current.sellableLotQty += Number(row.qty_remaining || 0)

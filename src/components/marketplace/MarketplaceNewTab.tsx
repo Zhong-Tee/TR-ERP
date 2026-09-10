@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FiArrowDown, FiArrowUp } from 'react-icons/fi'
 import { supabase } from '../../lib/supabase'
+import { fetchAllSupabasePages } from '../../lib/supabasePagination'
 import { useWmsModal } from '../wms/useWmsModal'
 import {
   buildMpItemRows,
@@ -60,24 +61,26 @@ export default function MarketplaceNewTab({
   const loadOrders = useCallback(async () => {
     setLoading(true)
     try {
-      const { data, error } = await supabase
+      const rows = await fetchAllSupabasePages<MpOrder>((from, to) => supabase
         .from('mp_orders')
         .select('*')
         .eq('status', 'new')
         .order('payment_time', { ascending: true, nullsFirst: false })
-      if (error) throw error
-      const rows = (data || []) as MpOrder[]
+        .order('id', { ascending: true })
+        .range(from, to))
       setOrders(rows)
       setSelected((prev) => new Set([...prev].filter((id) => rows.some((r) => r.id === id))))
 
       // จำนวนรายการสินค้าต่อออเดอร์
       const counts: Record<string, number> = {}
       for (const ids of chunked(rows.map((r) => r.id), CHUNK)) {
-        const { data: items } = await supabase
+        const items = await fetchAllSupabasePages<{ id: string; mp_order_id: string }>((from, to) => supabase
           .from('mp_order_items')
-          .select('mp_order_id')
+          .select('id, mp_order_id')
           .in('mp_order_id', ids)
-        ;(items || []).forEach((it: { mp_order_id: string }) => {
+          .order('id', { ascending: true })
+          .range(from, to))
+        items.forEach((it) => {
           counts[it.mp_order_id] = (counts[it.mp_order_id] || 0) + 1
         })
       }

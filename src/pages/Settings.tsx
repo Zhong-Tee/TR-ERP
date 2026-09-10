@@ -19,6 +19,7 @@ import { pumpVerifiedRoutingStatus } from '../lib/pumpConfirmRouting'
 import { MOBILE_MODE_ROLES, MOBILE_MODE_INFO, getMobileAccess, type MobileMode } from '../lib/mobileMode'
 import { authErrorMessage } from '../lib/authErrorMessage'
 import PromotionSettingsPanel from '../components/settings/PromotionSettingsPanel'
+import { fetchAllSupabasePages } from '../lib/supabasePagination'
 
 const SETTINGS_TABS = [
   { key: 'users', label: 'จัดการสิทธิ์ผู้ใช้' },
@@ -1452,16 +1453,16 @@ export default function Settings() {
 
   async function loadProductCategories() {
     try {
-      const { data, error } = await supabase
+      const data = await fetchAllSupabasePages<{ id: string; product_category: string | null }>((from, to) => supabase
         .from('pr_products')
-        .select('product_category')
+        .select('id, product_category')
         .eq('is_active', true)
         .not('product_category', 'is', null)
-
-      if (error) throw error
+        .order('id', { ascending: true })
+        .range(from, to))
       const categories = Array.from(
         new Set(
-          (data || [])
+          data
             .map((r: { product_category: string | null }) => r.product_category)
             .filter((c): c is string => !!c && String(c).trim() !== '')
         )
@@ -1573,15 +1574,16 @@ export default function Settings() {
   // --- Product-level field overrides ---
   async function loadAllProducts() {
     try {
-      const { data, error } = await supabase
+      const data = await fetchAllSupabasePages((from, to) => supabase
         .from('pr_products')
         .select('id, product_name, product_code, product_category')
         .eq('is_active', true)
         // ชนิดสินค้าที่ขายได้ — ต้องตรงกับตัวกรองในฟอร์มเปิดบิล (OrderForm/MarketplaceOrderModal)
         .in('product_type', ['FG', 'PP'])
         .order('product_name')
-      if (error) throw error
-      setAllProducts(data || [])
+        .order('id', { ascending: true })
+        .range(from, to))
+      setAllProducts(data)
     } catch (error: any) {
       console.error('Error loading products for overrides:', error)
       setAllProducts([])
@@ -2372,17 +2374,26 @@ export default function Settings() {
       })
 
       // 3. โหลดบิลทั้งหมด
-      const { data: allOrders, error: ordersError } = await supabase
-        .from('or_orders')
-        .select('id, bill_no, status, total_amount, channel_code, requires_confirm_design')
-
-      if (ordersError) throw ordersError
+      const allOrders = await fetchAllSupabasePages<{
+        id: string
+        bill_no: string
+        status: string
+        total_amount: number
+        channel_code: string
+        requires_confirm_design: boolean | null
+      }>((from, to) =>
+        supabase
+          .from('or_orders')
+          .select('id, bill_no, status, total_amount, channel_code, requires_confirm_design')
+          .order('id', { ascending: true })
+          .range(from, to)
+      )
 
       // 4. ตรวจสอบและแก้ไขสถานะ
       const updates: Array<{ id: string; bill_no: string; currentStatus: string; newStatus: string; reason: string }> = []
       const errors: string[] = []
 
-      for (const order of allOrders || []) {
+      for (const order of allOrders) {
         const verification = orderVerificationMap.get(order.id)
         
         // ถ้ามี slip verification records

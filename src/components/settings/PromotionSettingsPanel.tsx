@@ -171,7 +171,7 @@ function RuleGroupsEditor({
       </div>
       {groups.length === 0 && <div className="rounded-lg border border-dashed bg-white p-4 text-center text-sm text-slate-400">ยังไม่มีกลุ่ม</div>}
       {groups.map((group, groupIndex) => (
-        <div key={`${group.id}-${groupIndex}`} className="rounded-xl border bg-white p-3 space-y-3">
+        <div key={`${title}-${groupIndex}`} className="rounded-xl border bg-white p-3 space-y-3">
           <div className="flex flex-wrap items-end gap-3">
             <label className="flex-1 min-w-[180px] text-sm font-medium text-slate-700">
               ชื่อกลุ่ม
@@ -284,27 +284,27 @@ export default function PromotionSettingsPanel() {
       return
     }
     const config = editor.rule_config || {}
-    const requiredGroups = editor.rule_type === 'bundle_fixed_price' || editor.rule_type === 'buy_get' || editor.rule_type === 'quantity_get'
+    const requiredGroups = editor.rule_type === 'bundle_fixed_price' || editor.rule_type === 'buy_get' || editor.rule_type === 'quantity_get' || editor.rule_type === 'quantity_fixed'
     const requiredRewards = editor.rule_type === 'buy_get' || editor.rule_type === 'spend_get' || editor.rule_type === 'quantity_get'
-    if (editor.validation_enabled && requiredGroups && !(config.condition_groups || []).length) {
+    if (requiredGroups && !(config.condition_groups || []).length) {
       setError('กรุณาเพิ่มกลุ่มสินค้าฝั่งซื้ออย่างน้อย 1 กลุ่ม')
       return
     }
-    if (editor.validation_enabled && requiredRewards && !(config.reward_groups || []).length) {
+    if (requiredRewards && !(config.reward_groups || []).length) {
       setError('กรุณาเพิ่มกลุ่มของแถมอย่างน้อย 1 กลุ่ม')
       return
     }
     const invalidSelector = [...(config.condition_groups || []), ...(config.reward_groups || [])]
       .some((group) => !group.options.length || group.options.some((option) => option.selector_type === 'sku' ? !option.product_id : !option.category))
-    if (editor.validation_enabled && invalidSelector) {
+    if (editor.rule_type !== 'legacy' && invalidSelector) {
       setError('กรุณาเลือกหมวดหมู่หรือ SKU ให้ครบทุกตัวเลือกในกติกา')
       return
     }
-    if (editor.validation_enabled && ['spend_percent', 'spend_fixed', 'spend_get'].includes(editor.rule_type) && Number(config.threshold_amount || 0) <= 0) {
+    if (['spend_percent', 'spend_fixed', 'spend_get'].includes(editor.rule_type) && Number(config.threshold_amount || 0) <= 0) {
       setError('กรุณากำหนดยอดซื้อขั้นต่ำให้มากกว่า 0 บาท')
       return
     }
-    if (editor.validation_enabled && ['spend_percent', 'spend_fixed'].includes(editor.rule_type) && Number(config.discount_value || 0) <= 0) {
+    if (['spend_percent', 'spend_fixed', 'quantity_fixed'].includes(editor.rule_type) && Number(config.discount_value || 0) <= 0) {
       setError('กรุณากำหนดส่วนลดให้มากกว่า 0')
       return
     }
@@ -413,8 +413,8 @@ export default function PromotionSettingsPanel() {
   const updateConfig = (updates: Partial<PromotionRuleConfig>) => setEditor((current) => current ? ({ ...current, rule_config: { ...(current.rule_config || {}), ...updates } }) : current)
   const config = editor?.rule_config || {}
   const needsThreshold = editor && ['spend_percent', 'spend_fixed', 'spend_get'].includes(editor.rule_type)
-  const needsDiscount = editor && ['spend_percent', 'spend_fixed'].includes(editor.rule_type)
-  const needsConditions = editor && ['bundle_fixed_price', 'buy_get', 'quantity_get'].includes(editor.rule_type)
+  const needsDiscount = editor && ['spend_percent', 'spend_fixed', 'quantity_fixed'].includes(editor.rule_type)
+  const needsConditions = editor && ['bundle_fixed_price', 'buy_get', 'quantity_get', 'quantity_fixed'].includes(editor.rule_type)
   const needsRewards = editor && ['buy_get', 'spend_get', 'quantity_get'].includes(editor.rule_type)
 
   return (

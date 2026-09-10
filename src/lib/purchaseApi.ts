@@ -4,6 +4,7 @@
  * All complex write operations use RPC functions (1 API call).
  */
 import { supabase } from './supabase'
+import { fetchAllSupabasePages } from './supabasePagination'
 import type {
   InventoryPR,
   InventoryPO,
@@ -35,13 +36,14 @@ export async function loadUserDisplayNames(userIds: string[]): Promise<Record<st
 const PRODUCT_PURCHASE_SAFE_COLUMNS = 'id, product_code, product_name, seller_name, product_name_cn, order_point, order_point_days, product_category, product_type, rubber_code, storage_location, safety_stock, unit_name, unit_multiplier, is_hold, hold_reason, hold_at, hold_by, is_active, created_at, updated_at'
 
 export async function loadProductsWithLastPrice(includeCost = false): Promise<(Product & { last_price?: number | null })[]> {
-  const { data, error } = await supabase
+  const data = await fetchAllSupabasePages((from, to) => supabase
     .from('pr_products')
     .select(includeCost ? '*, v_product_last_price(last_price)' : PRODUCT_PURCHASE_SAFE_COLUMNS)
     .eq('is_active', true)
     .order('product_code')
-  if (error) throw error
-  return (data || []).map((p: any) => ({
+    .order('id')
+    .range(from, to))
+  return data.map((p: any) => ({
     ...p,
     last_price: p.v_product_last_price?.last_price ?? null,
   }))
@@ -50,12 +52,13 @@ export async function loadProductsWithLastPrice(includeCost = false): Promise<(P
 /* ──────────────── Stock Balances ──────────────── */
 
 export async function loadStockBalances(): Promise<Record<string, number>> {
-  const { data, error } = await supabase
+  const data = await fetchAllSupabasePages<{ product_id: string; on_hand: number | null }>((from, to) => supabase
     .from('inv_stock_balances')
     .select('product_id, on_hand')
-  if (error) throw error
+    .order('product_id')
+    .range(from, to))
   const map: Record<string, number> = {}
-  for (const row of (data || [])) {
+  for (const row of data) {
     map[row.product_id] = Number(row.on_hand) || 0
   }
   return map

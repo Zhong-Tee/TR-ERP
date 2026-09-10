@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabase'
+import { fetchAllSupabasePages } from '../../lib/supabasePagination'
 import { getPublicUrl } from '../../lib/qcApi'
 import { fetchDistinctCategories, fetchDistinctLocations } from '../../lib/auditApi'
 import type { AuditType } from '../../types'
@@ -68,14 +69,15 @@ export default function ScopeSelector({
   useEffect(() => {
     if (auditType === 'custom' && !productsLoaded) {
       setProductsLoading(true)
-      supabase
+      fetchAllSupabasePages<ProductOption>((from, to) => supabase
         .from('pr_products')
         .select('id, product_code, product_name, product_category, storage_location')
         .eq('is_active', true)
         .order('product_code', { ascending: true })
-        .then(({ data, error }) => {
-          if (error) console.error(error)
-          if (!error && data) setProducts(data as ProductOption[])
+        .order('id')
+        .range(from, to))
+        .then((data) => {
+          setProducts(data)
           setProductsLoaded(true)
           setProductsLoading(false)
         })

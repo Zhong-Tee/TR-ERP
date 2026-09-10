@@ -9,6 +9,7 @@ import ClaimReqOrdersTab from '../components/order/ClaimReqOrdersTab'
 import RefundReturnList from '../components/order/RefundReturnList'
 import { Order, OrderStatus } from '../types'
 import { supabase } from '../lib/supabase'
+import { fetchAllSupabasePages } from '../lib/supabasePagination'
 import {
   canSeeOfficeChannel,
   isSalesPumpOwnerScopedRole,
@@ -498,15 +499,14 @@ export default function Orders() {
 
     async function loadAdminUsers() {
       try {
-        const { data, error } = await supabase
+        const data = await fetchAllSupabasePages<{ id: string; admin_user: string | null }>((from, to) => supabase
           .from('or_orders')
-          .select('admin_user')
+          .select('id, admin_user')
           .not('admin_user', 'is', null)
           .order('admin_user', { ascending: true })
-          .limit(2000)
-
-        if (error) throw error
-        const uniqueUsers = Array.from(new Set((data || [])
+          .order('id', { ascending: true })
+          .range(from, to))
+        const uniqueUsers = Array.from(new Set(data
           .map((row: { admin_user?: string | null }) => row.admin_user?.trim())
           .filter((name): name is string => !!name)))
         setAdminUsers(uniqueUsers)

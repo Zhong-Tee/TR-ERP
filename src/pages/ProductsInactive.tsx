@@ -3,6 +3,7 @@ import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
 import { getPublicUrl } from '../lib/qcApi'
 import { ProductType } from '../types'
+import { fetchAllSupabasePages } from '../lib/supabasePagination'
 
 const BUCKET_PRODUCT_IMAGES = 'product-images'
 const SEARCH_DEBOUNCE_MS = 400
@@ -112,9 +113,10 @@ export default function ProductsInactive() {
       } else {
         params.p_days = selectedDays ?? 30
       }
-      const { data, error } = await supabase.rpc('get_inactive_products', params)
-      if (error) throw error
-      setProducts((data as InactiveProduct[]) || [])
+      const data = await fetchAllSupabasePages<InactiveProduct>((from, to) =>
+        supabase.rpc('get_inactive_products', params).order('id', { ascending: true }).range(from, to)
+      )
+      setProducts(data)
     } catch (error: any) {
       console.error('Error loading inactive products:', error)
     } finally {

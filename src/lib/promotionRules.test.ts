@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { evaluatePromotion, evaluatePromotions, type PromotionDefinition } from './promotionRules'
+import { evaluatePromotion, evaluatePromotions, promotionMatchesChannel, type PromotionDefinition } from './promotionRules'
 
 const base: PromotionDefinition = {
   id: 'p1', name: 'โปรทดสอบ', is_active: true, validation_enabled: true,
@@ -68,6 +68,23 @@ describe('promotion rules', () => {
     expect(result.expected_discount).toBe(400)
   })
 
+  it('ซื้อ X สินค้า ลด X บาท ให้ส่วนลดครั้งเดียวเมื่อจำนวนครบ', () => {
+    const promo: PromotionDefinition = {
+      ...base,
+      rule_type: 'quantity_fixed',
+      rule_config: {
+        discount_value: 120,
+        condition_groups: [{ id: 'แก้ว 2 ใบ', quantity: 2, options: [{ selector_type: 'category', category: 'แก้ว' }] }],
+      },
+    }
+    const failed = evaluatePromotion(promo, [{ ...items[0], quantity: 1 }], { channel_code: 'FBTR' })
+    const passed = evaluatePromotion(promo, [{ ...items[0], quantity: 4 }], { channel_code: 'FBTR' })
+    expect(failed.passed).toBe(false)
+    expect(passed.passed).toBe(true)
+    expect(passed.application_count).toBe(1)
+    expect(passed.expected_discount).toBe(120)
+  })
+
   it('เลือกสินค้าราคาสูงสุดโดยยังจัดสรรครบทุกกลุ่มที่เงื่อนไขซ้อนกัน', () => {
     const promo: PromotionDefinition = {
       ...base,
@@ -106,5 +123,11 @@ describe('promotion rules', () => {
   it('บล็อกการซ้อนเมื่อมีโปรโมชั่นใดไม่อนุญาต', () => {
     const results = evaluatePromotions([base, { ...base, id: 'p2', allow_stack: false }], items, { channel_code: 'FBTR' })
     expect(results.every((result) => !result.passed)).toBe(true)
+  })
+
+  it('กรองโปรโมชั่นรายการเดิมตามช่องทางที่ตั้งค่าไว้', () => {
+    const legacy: PromotionDefinition = { ...base, rule_type: 'legacy', channel_codes: ['FSPTR', 'LZTR'] }
+    expect(promotionMatchesChannel(legacy, 'FSPTR')).toBe(true)
+    expect(promotionMatchesChannel(legacy, 'FBTR')).toBe(false)
   })
 })

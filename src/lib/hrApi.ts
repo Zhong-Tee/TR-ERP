@@ -18,6 +18,7 @@ import type {
   HRTimeCertification, HRScoreEvent, HRScorePeriod, HRScoreAppeal, HRScoreSettings,
 } from '../types'
 import type { AttendanceFact, ScoreCategory, ScoreEventDraft, ScoreRule, ScoreSummary } from './workScore'
+import { fetchAllSupabasePages } from './supabasePagination'
 
 export const HR_TASK_SELECT = `*, category:hr_task_categories(*), creator:hr_employees!created_by(id,employee_code,first_name,last_name,nickname,photo_url,phone), participants:hr_task_participants(*,employee:hr_employees!employee_id(id,employee_code,first_name,last_name,nickname,photo_url,phone)), checklist:hr_task_checklist_items(*), evaluations:hr_task_evaluations(*)`
 
@@ -1810,17 +1811,17 @@ export async function fetchTimeEntries(filters?: {
   entry_type?: string
   limit?: number
 }) {
-  let q = supabase.from('hr_time_entries')
-    .select(TIME_ENTRY_SELECT)
-    .order('entry_time', { ascending: false })
-  if (filters?.employee_id) q = q.eq('employee_id', filters.employee_id)
-  if (filters?.date_from) q = q.gte('work_date', filters.date_from)
-  if (filters?.date_to) q = q.lte('work_date', filters.date_to)
-  if (filters?.entry_type) q = q.eq('entry_type', filters.entry_type)
-  q = q.limit(filters?.limit ?? 1000)
-  const { data, error } = await q
-  if (error) pgError(error)
-  return data as HRTimeEntry[]
+  return fetchAllSupabasePages<HRTimeEntry>((from, to) => {
+    let q = supabase.from('hr_time_entries')
+      .select(TIME_ENTRY_SELECT)
+      .order('entry_time', { ascending: false })
+      .order('id', { ascending: false })
+    if (filters?.employee_id) q = q.eq('employee_id', filters.employee_id)
+    if (filters?.date_from) q = q.gte('work_date', filters.date_from)
+    if (filters?.date_to) q = q.lte('work_date', filters.date_to)
+    if (filters?.entry_type) q = q.eq('entry_type', filters.entry_type)
+    return q.range(from, to)
+  }, { maxRows: filters?.limit ?? 1000 })
 }
 
 /** รายการลงเวลาวันนี้สำหรับ Employee Portal — ขอบเขตข้อมูลถูกบังคับใน RPC */

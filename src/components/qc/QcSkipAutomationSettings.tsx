@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { supabase } from '../../lib/supabase'
+import { fetchAllSupabasePagesResult } from '../../lib/supabasePagination'
 import { fetchQcProductCategories } from '../../lib/qcApi'
 
 type SkipSettings = {
@@ -47,7 +48,7 @@ export default function QcSkipAutomationSettings() {
       supabase.from('qc_mandatory_rules').select('*').order('rule_type').order('label'),
       supabase.from('qc_channel_pickup_schedules').select('*').order('channel_code').order('day_of_week').order('pickup_time'),
       supabase.from('channels').select('channel_code,channel_name').order('channel_code'),
-      supabase.from('pr_products').select('id,product_code,product_name,product_category').eq('is_active', true).order('product_code').limit(1000),
+      fetchAllSupabasePagesResult((from, to) => supabase.from('pr_products').select('id,product_code,product_name,product_category').eq('is_active', true).order('product_code').order('id').range(from, to)),
       fetchQcProductCategories(),
     ])
     const error = settingsRes.error || rulesRes.error || schedulesRes.error || channelsRes.error || productsRes.error

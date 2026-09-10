@@ -3,6 +3,7 @@ import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { getPublicUrl, fetchInkTypes } from '../lib/qcApi'
 import { supabase } from '../lib/supabase'
+import { fetchAllSupabasePages } from '../lib/supabasePagination'
 import { Order, OrderItem, WorkOrder, InkType, PackingMeta } from '../types'
 import { flatBillUnitUid, normalizedLineQuantity, stableOrderItemUnitKey } from '../lib/productionUnits'
 import { sortOrderItemsForExport } from '../lib/orderItemExportSort'
@@ -2129,13 +2130,16 @@ export default function Packing() {
         setPlanStartTimes({})
       }
 
-      const { data: shippedData, error: shippedError } = await supabase
-        .from('or_orders')
-        .select('id, work_order_name, shipped_time, channel_code, shipped_by, bill_no, customer_name, tracking_number, express_receipt_number')
-        .eq('status', 'จัดส่งแล้ว')
-        .not('work_order_name', 'is', null)
-      if (shippedError) throw shippedError
-      setShippedOrders((shippedData || []) as typeof shippedOrders)
+      const shippedData = await fetchAllSupabasePages<(typeof shippedOrders)[number]>((from, to) =>
+        supabase
+          .from('or_orders')
+          .select('id, work_order_name, shipped_time, channel_code, shipped_by, bill_no, customer_name, tracking_number, express_receipt_number')
+          .eq('status', 'จัดส่งแล้ว')
+          .not('work_order_name', 'is', null)
+          .order('id', { ascending: true })
+          .range(from, to)
+      )
+      setShippedOrders(shippedData)
     } catch (error: any) {
       console.error('Error loading work orders:', error)
       openAlert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)

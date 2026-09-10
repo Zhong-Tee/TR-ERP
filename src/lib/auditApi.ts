@@ -1,4 +1,5 @@
 import { supabase } from './supabase'
+import { fetchAllSupabasePages } from './supabasePagination'
 import type { AuditType, InventoryAudit, InventoryAuditItem } from '../types'
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -188,9 +189,9 @@ export async function createAudit(input: CreateAuditInput) {
     productQuery = productQuery.in('id', input.scopeFilter.product_ids)
   }
 
-  const { data: products, error: prodErr } = await productQuery
-  if (prodErr) throw prodErr
-  if (!products?.length) throw new Error('ไม่พบสินค้าตามเงื่อนไขที่เลือก')
+  productQuery = productQuery.order('id', { ascending: true })
+  const products = await fetchAllSupabasePages((from, to) => productQuery.range(from, to))
+  if (!products.length) throw new Error('ไม่พบสินค้าตามเงื่อนไขที่เลือก')
 
   // 3. ดึง stock balance + safety stock
   const productIds = products.map((p) => p.id)

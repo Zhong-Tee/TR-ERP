@@ -4,6 +4,7 @@ import { localISODate } from '../../lib/localDate'
 import Modal from '../ui/Modal'
 import { RESPONSIBILITY_LABELS, SKILL_LEVEL_LABELS, assignmentCandidates, compareManpowerSkills, effectiveOperatorCount, effectiveRequiredHeadcount, isSkillUsable, manpowerScore, operatorSkillCandidates, skillLevelOf, type EmployeeProfile, type EmployeeSkill, type ManpowerEmployee, type OperationRequirement, type QualificationStatus, type ResponsibilityLevel } from '../../lib/planManpower'
 import { canAcceptManpowerAssignment } from '../../lib/planAssignmentCapacity'
+import { fetchAllSupabasePagesResult } from '../../lib/supabasePagination'
 
 type ProcessVisualState='pending'|'progress'|'done'|'late'
 type WorkOrderSummary={id:string;name:string;date?:string;departments:string[];lineAssignments:Record<string,number>;schedules:Record<string,{start:string;end:string}>;processStates?:Record<string,ProcessVisualState>;finalFinish?:string;manpowerLockedAt?:string|null}
@@ -283,7 +284,7 @@ export default function ManpowerPanel({mode,departments,processes,selectedDate,c
   supabase.from('hr_leave_requests').select('employee_id,leave_mode,start_time,end_time').eq('status','approved').lte('start_date',selectedDate).gte('end_date',selectedDate),
   supabase.from('hr_time_entries').select('employee_id,entry_type,entry_time').eq('work_date',selectedDate).order('entry_time',{ascending:false}),
   supabase.from('plan_worker_assignments').select('*').lt('planned_start',`${selectedDate}T23:59:59+07:00`).gt('planned_end',`${selectedDate}T00:00:00+07:00`).not('status','in','(cancelled,completed)'),
-  supabase.from('plan_worker_assignments').select('*').order('planned_start',{ascending:false}).limit(2000),
+  fetchAllSupabasePagesResult((from,to)=>supabase.from('plan_worker_assignments').select('*').order('planned_start',{ascending:false}).order('id',{ascending:false}).range(from,to)),
   supabase.rpc('plan_list_employees'),
    supabase.from('plan_jobs').select('id,name,date,qty').order('date',{ascending:false}),
    supabase.from('plan_settings').select('data').eq('id',1).maybeSingle()])

@@ -3,6 +3,7 @@ import { supabase } from '../../lib/supabase'
 import UrgencyBadge from '../common/UrgencyBadge'
 import { getUrgencyBadge } from '../../lib/shipDueBadge'
 import type { MpOrder, MpSalesUser } from '../../types/marketplace'
+import { fetchAllSupabasePages } from '../../lib/supabasePagination'
 
 interface UserStat {
   userId: string | null
@@ -55,9 +56,10 @@ export default function MarketplaceDashboard({
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const { data, error } = await supabase.from('mp_orders').select('*')
-      if (error) throw error
-      setOrders((data || []) as MpOrder[])
+      const data = await fetchAllSupabasePages<MpOrder>((from, to) =>
+        supabase.from('mp_orders').select('*').order('id', { ascending: true }).range(from, to)
+      )
+      setOrders(data)
     } catch (err) {
       console.error('Error loading dashboard:', err)
     } finally {

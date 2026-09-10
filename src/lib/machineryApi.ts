@@ -1,4 +1,5 @@
 import { supabase } from './supabase'
+import { fetchAllSupabasePages } from './supabasePagination'
 
 export type PrMachineryStatus =
   | 'working'
@@ -52,13 +53,14 @@ export interface MachineryProductOption {
 }
 
 export async function fetchMachineryProductOptions(): Promise<MachineryProductOption[]> {
-  const { data, error } = await supabase
+  const data = await fetchAllSupabasePages<MachineryProductOption>((from, to) => supabase
     .from('pr_products')
     .select('id, product_code, product_name, product_category, product_type')
     .eq('is_active', true)
     .order('product_code')
-  if (error) throw error
-  return ((data || []) as MachineryProductOption[]).filter(
+    .order('id')
+    .range(from, to))
+  return data.filter(
     (product) => String(product.product_type || '').trim().toUpperCase() !== 'RM',
   )
 }

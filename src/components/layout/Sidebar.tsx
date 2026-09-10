@@ -499,7 +499,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
           )}
         </div>
         {isOpen && (
-          <span className="absolute bottom-1 right-2 text-[10px] leading-none text-slate-400">v{__APP_VERSION__}</span>
+          <span className="absolute bottom-1 right-2 text-[10px] leading-none text-slate-400">V {__APP_VERSION__}</span>
         )}
       </div>
 

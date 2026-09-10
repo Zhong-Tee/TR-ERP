@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback, useRef, useSyncExternalStore, Fragmen
 import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { supabase } from '../lib/supabase'
+import { fetchAllSupabasePages, fetchAllSupabasePagesResult } from '../lib/supabasePagination'
 import { PLAN_WORK_QUEUE_POSTGREST_FILTER } from '../lib/planWorkQueue'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../lib/orderFlowFilter'
 import * as XLSX from 'xlsx'
@@ -1324,15 +1325,19 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const loadCancelledOrders = useCallback(async () => {
     try {
       const [{ data: cancelledOrders }, { data: cancelledItems }] = await Promise.all([
-        supabase
+        fetchAllSupabasePagesResult((from, to) => supabase
           .from('or_orders')
           .select('id, bill_no, channel_order_no, customer_name, work_order_id')
           .eq('status', 'ยกเลิก')
-          .not('work_order_id', 'is', null),
-        supabase
+          .not('work_order_id', 'is', null)
+          .order('id', { ascending: true })
+          .range(from, to)),
+        fetchAllSupabasePagesResult((from, to) => supabase
           .from('or_order_items')
           .select('order_id')
-          .not('cancellation_stock_action', 'is', null),
+          .not('cancellation_stock_action', 'is', null)
+          .order('id', { ascending: true })
+          .range(from, to)),
       ])
       const partialOrderIds = [...new Set((cancelledItems || []).map((r: any) => r.order_id).filter(Boolean))]
       const { data: partialOrders } = partialOrderIds.length > 0
@@ -1386,12 +1391,14 @@ export default function Plan({ tvMode = false }: PlanProps) {
 
   const loadReleasedOrders = useCallback(async () => {
     try {
-      const { data } = await supabase
+      const data = await fetchAllSupabasePages((from, to) => supabase
         .from('or_orders')
         .select('id, bill_no, customer_name, plan_released_from_work_order, plan_released_from_work_order_id')
         .in('status', ['ใบสั่งงาน', 'ย้ายจากใบงาน'])
         .not('plan_released_from_work_order_id', 'is', null)
-      if (data) {
+        .order('id', { ascending: true })
+        .range(from, to))
+      if (data.length) {
         const map: Record<string, { id: string; bill_no: string; customer_name: string; wo_name?: string }[]> = {}
         ;(data as any[]).forEach((o: any) => {
           const woId = String(o.plan_released_from_work_order_id || '')
