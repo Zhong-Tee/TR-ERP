@@ -18,6 +18,7 @@ import { getRoleLookupCandidates, normalizeRole } from '../config/accessPolicy'
 import { pumpVerifiedRoutingStatus } from '../lib/pumpConfirmRouting'
 import { MOBILE_MODE_ROLES, MOBILE_MODE_INFO, getMobileAccess, type MobileMode } from '../lib/mobileMode'
 import { authErrorMessage } from '../lib/authErrorMessage'
+import PromotionSettingsPanel from '../components/settings/PromotionSettingsPanel'
 
 const SETTINGS_TABS = [
   { key: 'users', label: 'จัดการสิทธิ์ผู้ใช้' },
@@ -27,7 +28,7 @@ const SETTINGS_TABS = [
   { key: 'product-settings', label: 'ตั้งค่าสินค้า' },
   { key: 'bill-channel-map', label: 'ตั้งค่าเลขบิล-ช่องทาง' },
   { key: 'sellers', label: 'ผู้ขาย' },
-  { key: 'promotions', label: 'โปรโมชั่น' },
+  { key: 'promotions', label: 'โปรโมชั่น/ค่าส่ง' },
   { key: 'issue-types', label: 'ประเภท Issue' },
   { key: 'chat-history', label: 'ประวัติแชท' },
   { key: 'easyslip', label: 'API EasySlip' },
@@ -77,15 +78,6 @@ const MOBILE_ROLE_ACCESS = [
     note: 'เห็นข้อมูลของตนเองตาม Employee Portal; WFH แสดงเฉพาะพนักงาน Hybrid',
   },
 ] as const
-
-/** เรียงโปรโมชั่นตามลำดับที่จัดไว้ แล้วค่อยตามชื่อ — รองรับแถวที่ยังไม่มี sort_order */
-function sortPromotions<T extends { name: string; sort_order?: number | null }>(rows: T[]): T[] {
-  return [...rows].sort(
-    (a, b) =>
-      (a.sort_order ?? Number.MAX_SAFE_INTEGER) - (b.sort_order ?? Number.MAX_SAFE_INTEGER) ||
-      a.name.localeCompare(b.name),
-  )
-}
 
 export default function Settings() {
   const { user: currentUser } = useAuthContext()
@@ -290,14 +282,6 @@ export default function Settings() {
   /** กรองการมองเห็น: ใช้งาน / ซ่อน / ทั้งหมด */
   const [sellerVisibilityFilter, setSellerVisibilityFilter] = useState<'active' | 'hidden' | 'all'>('active')
   const [sellerTogglingId, setSellerTogglingId] = useState<string | null>(null)
-  // โปรโมชั่น (Promotions)
-  const [promotionsList, setPromotionsList] = useState<{ id: string; name: string; is_active: boolean; sort_order?: number }[]>([])
-  const [promotionName, setPromotionName] = useState('')
-  const [promotionSaving, setPromotionSaving] = useState(false)
-  const [promotionEditingId, setPromotionEditingId] = useState<string | null>(null)
-  /** index ของแถวโปรโมชั่นที่กำลังลากจัดลำดับ; null = ไม่ได้ลาก */
-  const [draggedPromotionIndex, setDraggedPromotionIndex] = useState<number | null>(null)
-
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   const sellerHiddenCount = useMemo(
@@ -361,9 +345,6 @@ export default function Settings() {
     }
     if (activeTab === 'sellers') {
       loadSellers()
-    }
-    if (activeTab === 'promotions') {
-      loadPromotions()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab])
@@ -817,6 +798,7 @@ export default function Settings() {
     { key: 'account-tax-invoice', label: 'ขอใบกำกับภาษี', group: 'account' },
     { key: 'account-approvals', label: 'รายการอนุมัติ', group: 'account' },
     { key: 'account-ecommerce', label: 'Ecommerce', group: 'account' },
+    { key: 'account-promotion-audit', label: 'ตรวจโปรโมชั่น', group: 'account' },
     { key: 'account-payroll', label: 'เงินเดือน', group: 'account' },
     { key: 'account-trial-balance', label: 'งบต้นทุนขาย', group: 'account' },
     // ── สินค้า ──
@@ -878,7 +860,7 @@ export default function Settings() {
     { key: 'settings-product-settings', label: 'ตั้งค่าสินค้า', group: 'settings' },
     { key: 'settings-bill-channel-map', label: 'ตั้งค่าเลขบิล-ช่องทาง', group: 'settings' },
     { key: 'settings-sellers', label: 'ผู้ขาย', group: 'settings' },
-    { key: 'settings-promotions', label: 'โปรโมชั่น', group: 'settings' },
+    { key: 'settings-promotions', label: 'โปรโมชั่น/ค่าส่ง', group: 'settings' },
     { key: 'settings-issue-types', label: 'ประเภท Issue', group: 'settings' },
     { key: 'settings-chat-history', label: 'ประวัติแชท', group: 'settings' },
     { key: 'settings-easyslip', label: 'API EasySlip', group: 'settings' },
@@ -1312,90 +1294,6 @@ export default function Settings() {
       showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
     } finally {
       setSellerTogglingId(null)
-    }
-  }
-
-  // ===== Promotions CRUD =====
-  async function loadPromotions() {
-    try {
-      const { data, error } = await supabase
-        .from('promotion')
-        .select('*')
-        .eq('is_active', true)
-      if (error) throw error
-      setPromotionsList(sortPromotions(data || []))
-    } catch (error: any) {
-      console.error('Error loading promotions:', error)
-    }
-  }
-
-  async function savePromotion() {
-    if (!promotionName.trim()) {
-      showMessage({ message: 'กรุณากรอกชื่อโปรโมชั่น' })
-      return
-    }
-    setPromotionSaving(true)
-    try {
-      const payload = { name: promotionName.trim() }
-      if (promotionEditingId) {
-        const { error } = await supabase
-          .from('promotion')
-          .update(payload)
-          .eq('id', promotionEditingId)
-        if (error) throw error
-      } else {
-        // รายการใหม่ต่อท้ายลำดับปัจจุบันเสมอ
-        const withOrder = promotionsList.some((p) => p.sort_order != null)
-        const { error } = await supabase
-          .from('promotion')
-          .insert(withOrder ? { ...payload, sort_order: promotionsList.length + 1 } : payload)
-        if (error) throw error
-      }
-      setPromotionName('')
-      setPromotionEditingId(null)
-      loadPromotions()
-    } catch (error: any) {
-      console.error('Error saving promotion:', error)
-      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
-    } finally {
-      setPromotionSaving(false)
-    }
-  }
-
-  async function deletePromotion(id: string) {
-    const ok = await showConfirm({ title: 'ลบโปรโมชั่น', message: 'ต้องการลบโปรโมชั่นนี้หรือไม่?' })
-    if (!ok) return
-    try {
-      const { error } = await supabase
-        .from('promotion')
-        .update({ is_active: false })
-        .eq('id', id)
-      if (error) throw error
-      setPromotionsList((prev) => prev.filter((p) => p.id !== id))
-    } catch (error: any) {
-      console.error('Error deleting promotion:', error)
-      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
-    }
-  }
-
-  /** ลากจัดลำดับโปรโมชั่น — สลับตำแหน่งบนจอทันที แล้วบันทึกลำดับใหม่ทั้งชุด */
-  async function movePromotion(from: number, to: number) {
-    if (from === to) return
-    const previous = promotionsList
-    const next = [...promotionsList]
-    const [moved] = next.splice(from, 1)
-    next.splice(to, 0, moved)
-    setPromotionsList(next)
-    try {
-      const results = await Promise.all(
-        next.map((p, i) => supabase.from('promotion').update({ sort_order: i + 1 }).eq('id', p.id)),
-      )
-      const failed = results.find((r) => r.error)
-      if (failed?.error) throw failed.error
-    } catch (error: any) {
-      console.error('Error saving promotion order:', error)
-      setPromotionsList(previous)
-      showMessage({ title: 'ผิดพลาด', message: 'บันทึกลำดับไม่สำเร็จ: ' + error.message })
     }
   }
 
@@ -4502,110 +4400,7 @@ export default function Settings() {
 
       {/* โปรโมชั่น Tab */}
       {activeTab === 'promotions' && hasAccess('settings-promotions') && (
-        <div className="bg-white p-6 rounded-lg shadow space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-xl font-bold">จัดการโปรโมชั่น</h2>
-              <p className="text-sm text-gray-500 mt-1">ลากไอคอนซ้ายมือเพื่อจัดลำดับ — ลำดับนี้ใช้กับตัวเลือกโปรโมชั่นในฟอร์มเปิดบิล</p>
-            </div>
-          </div>
-          <div className="flex gap-2 items-end flex-wrap">
-            <div className="flex-1 min-w-[220px]">
-              <label className="block text-sm font-semibold text-gray-700 mb-1">ชื่อโปรโมชั่น</label>
-              <input
-                type="text"
-                value={promotionName}
-                onChange={(e) => setPromotionName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') savePromotion() }}
-                placeholder="กรอกชื่อโปรโมชั่น"
-                className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
-              />
-            </div>
-            <button
-              onClick={savePromotion}
-              disabled={promotionSaving}
-              className="px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold disabled:opacity-50"
-            >
-              {promotionSaving ? 'กำลังบันทึก...' : promotionEditingId ? 'อัปเดต' : 'เพิ่ม'}
-            </button>
-            {promotionEditingId && (
-              <button
-                onClick={() => { setPromotionEditingId(null); setPromotionName('') }}
-                className="px-4 py-2 border border-gray-300 rounded-xl hover:bg-gray-100"
-              >
-                ยกเลิก
-              </button>
-            )}
-          </div>
-          {promotionsList.length === 0 ? (
-            <p className="text-gray-400 italic text-center py-8">ยังไม่มีข้อมูลโปรโมชั่น</p>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-blue-600 text-white">
-                  <th className="px-2 py-2.5 rounded-tl-xl w-10" aria-label="จัดลำดับ" />
-                  <th className="px-4 py-2.5 text-left font-semibold w-12">#</th>
-                  <th className="px-4 py-2.5 text-left font-semibold">ชื่อโปรโมชั่น</th>
-                  <th className="px-4 py-2.5 text-right font-semibold rounded-tr-xl w-40">การจัดการ</th>
-                </tr>
-              </thead>
-              <tbody>
-                {promotionsList.map((p, idx) => (
-                  <tr
-                    key={p.id}
-                    onDragOver={(e) => { if (draggedPromotionIndex != null) e.preventDefault() }}
-                    onDrop={(e) => {
-                      e.preventDefault()
-                      if (draggedPromotionIndex != null) movePromotion(draggedPromotionIndex, idx)
-                      setDraggedPromotionIndex(null)
-                    }}
-                    className={`border-t hover:bg-blue-50 transition-colors ${
-                      draggedPromotionIndex === idx ? 'bg-blue-50 opacity-60' : idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'
-                    }`}
-                  >
-                    <td className="px-2 py-2.5 text-center">
-                      <button
-                        type="button"
-                        draggable
-                        onDragStart={(e) => {
-                          setDraggedPromotionIndex(idx)
-                          e.dataTransfer.effectAllowed = 'move'
-                          e.dataTransfer.setData('text/plain', String(idx))
-                        }}
-                        onDragEnd={() => setDraggedPromotionIndex(null)}
-                        title="ลากเพื่อจัดลำดับ"
-                        aria-label={`ลากเพื่อจัดลำดับ ${p.name}`}
-                        className="inline-flex p-1.5 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50 cursor-grab active:cursor-grabbing"
-                      >
-                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
-                        </svg>
-                      </button>
-                    </td>
-                    <td className="px-4 py-2.5 text-gray-400">{idx + 1}</td>
-                    <td className="px-4 py-2.5 font-semibold">{p.name}</td>
-                    <td className="px-4 py-2.5 text-right">
-                      <div className="flex gap-2 justify-end">
-                        <button
-                          onClick={() => { setPromotionEditingId(p.id); setPromotionName(p.name) }}
-                          className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs font-semibold"
-                        >
-                          แก้ไข
-                        </button>
-                        <button
-                          onClick={() => deletePromotion(p.id)}
-                          className="px-3 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 text-xs font-semibold"
-                        >
-                          ลบ
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+        <PromotionSettingsPanel />
       )}
 
       {activeTab === 'issue-types' && hasAccess('settings-issue-types') && (

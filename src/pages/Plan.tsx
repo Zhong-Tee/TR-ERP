@@ -1267,18 +1267,34 @@ export default function Plan({ tvMode = false }: PlanProps) {
     }
 
     try {
-      const { data, error } = await supabase
-        .from('or_orders')
-        .select('work_order_id')
-        .in('work_order_id', workOrderIds)
-        .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
-      if (error) throw error
-
       const next: Record<string, number> = {}
-      for (const row of data || []) {
-        const workOrderId = String((row as { work_order_id: string | null }).work_order_id || '')
-        if (!workOrderId) continue
-        next[workOrderId] = (next[workOrderId] || 0) + 1
+
+      // Supabase/PostgREST caps each response at 1,000 rows by default. Query
+      // small work-order batches and page deterministically so the dashboard
+      // count includes every active bill, even when all visible jobs together
+      // contain more than 1,000 orders.
+      const workOrderBatchSize = 50
+      const orderPageSize = 1000
+      for (let batchStart = 0; batchStart < workOrderIds.length; batchStart += workOrderBatchSize) {
+        const workOrderBatch = workOrderIds.slice(batchStart, batchStart + workOrderBatchSize)
+        for (let pageStart = 0; ; pageStart += orderPageSize) {
+          const { data, error } = await supabase
+            .from('or_orders')
+            .select('id, work_order_id')
+            .in('work_order_id', workOrderBatch)
+            .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
+            .order('id', { ascending: true })
+            .range(pageStart, pageStart + orderPageSize - 1)
+          if (error) throw error
+
+          const page = (data || []) as Array<{ id: string; work_order_id: string | null }>
+          for (const row of page) {
+            const workOrderId = String(row.work_order_id || '')
+            if (!workOrderId) continue
+            next[workOrderId] = (next[workOrderId] || 0) + 1
+          }
+          if (page.length < orderPageSize) break
+        }
       }
       setDashBillCountByWorkOrderId(next)
     } catch (error) {

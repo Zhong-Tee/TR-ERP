@@ -254,14 +254,24 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl border border-gray-200 p-5 flex items-center gap-4 shadow-sm">
-          <div className="w-12 h-12 rounded-xl bg-amber-100 flex items-center justify-center text-amber-600">
-            <FiAlertCircle className="w-6 h-6" />
+        <div className="grid grid-cols-2 divide-x divide-gray-200 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+          <div className="flex min-w-0 items-center gap-3 p-4">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-600">
+              <FiAlertCircle className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-gray-500">รอดำเนินการ</div>
+              <div className="text-2xl font-black text-gray-900">{stats.pending.toLocaleString()}</div>
+            </div>
           </div>
-          <div>
-            <div className="text-sm text-gray-500 font-medium">รอดำเนินการ</div>
-            <div className="text-2xl font-black text-gray-900">{stats.pending.toLocaleString()}</div>
-            <div className="text-xs text-amber-600 font-semibold">{stats.openIssues} Issue เปิดอยู่</div>
+          <div className="flex min-w-0 items-center gap-3 p-4">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-100 text-orange-600">
+              <FiAlertCircle className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-gray-500">Issue เปิดอยู่</div>
+              <div className="text-2xl font-black text-gray-900">{stats.openIssues.toLocaleString()}</div>
+            </div>
           </div>
         </div>
       </div>

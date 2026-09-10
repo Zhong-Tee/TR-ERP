@@ -79,11 +79,17 @@ describe('condo stamp item detection', () => {
       { id: 'blue-5', product_id: 'blue', product_name: 'ตรายางคอนโด CDAB2 นกฮูกฟ้า 5ชั้น', product_type: 'ชั้น5', parent_item_id: 'blue-1', is_detail_row: true, created_at: '2026-09-04T01:09:00Z' },
     ]
 
-    const sorted = sortOrderItemsForBillDisplay(items)
-
-    expect(sorted.map((item) => item.id)).toEqual([
+    const expectedOrder = [
       'pink-1', 'pink-2', 'pink-3', 'pink-4', 'pink-5',
       'blue-1', 'blue-2', 'blue-3', 'blue-4', 'blue-5',
-    ])
+    ]
+    const sorted = sortOrderItemsForBillDisplay(items)
+    const exportSorted = sortOrderItemsForExport([...items].reverse())
+
+    expect(sorted.map((item) => item.id)).toEqual(expectedOrder)
+    expect(exportSorted.map((item) => item.id)).toEqual(expectedOrder)
+    expect(exportSorted.map((item, index) => `${flatBillUnitUid('PUMP26090021', index + 1)}:${item.id}`)).toEqual(
+      expectedOrder.map((id, index) => `PUMP26090021-${index + 1}:${id}`),
+    )
   })
 })

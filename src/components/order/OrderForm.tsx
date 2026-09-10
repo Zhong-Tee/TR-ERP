@@ -22,6 +22,13 @@ import { calculateChargeableItemsTotal } from '../../lib/orderItemPricing'
 import { buildIlikeOr } from '../../lib/searchFilter'
 import { isSelfPickupBill, isSelfPickupChannel } from '../../lib/channelBehavior'
 import { getMissingCustomerShippingFields } from '../../lib/orderCustomerValidation'
+import {
+  evaluatePromotions,
+  totalPromotionDiscount,
+  type PromotionDefinition,
+  type PromotionEvaluation,
+  type PromotionOrderItem,
+} from '../../lib/promotionRules'
 
 // Component for uploading slips without immediate verification
 function SlipUploadSimple({
@@ -687,7 +694,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   /** metadata ช่องทางจาก migration 280 (โหลดแยกแบบ fail-safe — ถ้า migration ยังไม่รันจะว่าง แล้ว fallback พฤติกรรมเดิม) */
   const [channelMeta, setChannelMeta] = useState<Record<string, { is_active: boolean; receive_transfer: boolean; is_self_pickup: boolean; roles: string[] }>>({})
   const [channelOrderNoPrefixMap, setChannelOrderNoPrefixMap] = useState<Record<string, string[]>>({})
-  const [promotions, setPromotions] = useState<{ id: string; name: string }[]>([])
+  const [promotions, setPromotions] = useState<PromotionDefinition[]>([])
+  const [selectedPromotionIds, setSelectedPromotionIds] = useState<string[]>([])
+  const [shippingFeeSettings, setShippingFeeSettings] = useState({ auto_calculate_enabled: false, charge_promotion_orders: true })
+  const [shippingFeeRanges, setShippingFeeRanges] = useState<Array<{ min_amount: number; max_amount: number | null; shipping_fee: number }>>([])
   const [inkTypes, setInkTypes] = useState<{ id: number; ink_name: string }[]>([])
   const [fonts, setFonts] = useState<{ font_code: string; font_name: string }[]>([])
   const [items, setItems] = useState<Partial<OrderItem>[]>([])
@@ -735,6 +745,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     title: string
     message: string
     itemsToSave: Partial<OrderItem>[]
+  } | null>(null)
+  const [promotionWarning, setPromotionWarning] = useState<{
+    itemsToSave: Partial<OrderItem>[]
+    results: PromotionEvaluation[]
+    overrideReason: string
   } | null>(null)
   const [importModalOpen, setImportModalOpen] = useState(false)
   const [importMode, setImportMode] = useState<'standard-pgtr' | 'wy'>('standard-pgtr')
@@ -1030,8 +1045,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     loadInitialData()
     loadBankSettings()
     loadChannelMeta()
+    loadShippingFeeRules()
     async function loadOrderData() {
       if (order) {
+        setSelectedPromotionIds([])
         const bd = order.billing_details as { address_line?: string; sub_district?: string; district?: string; province?: string; postal_code?: string; mobile_phone?: string; original_customer_address?: string } | undefined
         const hasAddressParts = bd?.address_line != null || bd?.sub_district != null || bd?.province != null || bd?.postal_code != null
         const customerAddress = hasAddressParts
@@ -1074,6 +1091,13 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           payment_time: order.payment_time || '',
         })
         setOriginalCustomerAddress((bd?.original_customer_address || order.customer_address || '').trim())
+        const { data: linkedPromotions, error: linkedPromotionsError } = await supabase
+          .from('or_order_promotions')
+          .select('promotion_id')
+          .eq('order_id', order.id)
+        if (!linkedPromotionsError && linkedPromotions) {
+          setSelectedPromotionIds(linkedPromotions.map((row: { promotion_id: string }) => row.promotion_id))
+        }
         {
           const oc = ((order as Order).channel_code ?? '').trim()
           setRequiresConfirmDesign(
@@ -1131,6 +1155,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           setUploadedSlipPaths([])
         }
       } else {
+        setSelectedPromotionIds([])
         setItems([{ product_type: 'ชั้น1', quantity: 1 }])
         setOriginalCustomerAddress('')
         setUploadedSlipPaths([])
@@ -1139,6 +1164,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     }
     loadOrderData()
   }, [order])
+
+  // บิลเก่าที่เก็บชื่อโปรโมชั่นเป็น TEXT: จับคู่กลับเป็น id เพื่อแก้ไขต่อได้
+  useEffect(() => {
+    if (!order?.promotion || selectedPromotionIds.length > 0 || promotions.length === 0) return
+    const names = String(order.promotion).split(',').map((name) => name.trim()).filter(Boolean)
+    const matched = promotions.filter((promotion) => names.includes(promotion.name)).map((promotion) => promotion.id)
+    if (matched.length) setSelectedPromotionIds(matched)
+  }, [order?.promotion, promotions, selectedPromotionIds.length])
 
   // โหลด review (error_fields + rejection_reason) เมื่อออเดอร์สถานะ "ลงข้อมูลผิด"
   useEffect(() => {
@@ -1527,7 +1560,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       if (channelsRes.data) setChannels(channelsRes.data)
       if (promotionsRes.data) {
         // ลำดับตามที่จัดไว้ในหน้าตั้งค่า (แถวที่ยังไม่มี sort_order ตกไปท้ายและเรียงตามชื่อ)
-        const rows = promotionsRes.data as { id: string; name: string; sort_order?: number | null }[]
+        const rows = promotionsRes.data as PromotionDefinition[]
         setPromotions(
           [...rows].sort(
             (a, b) =>
@@ -1642,6 +1675,30 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     return v === true || v === 'true'
   }
 
+  async function loadShippingFeeRules() {
+    try {
+      const [settingsResult, rangesResult] = await Promise.all([
+        supabase.from('or_shipping_fee_settings').select('auto_calculate_enabled, charge_promotion_orders').eq('id', 1).maybeSingle(),
+        supabase.from('or_shipping_fee_ranges').select('min_amount, max_amount, shipping_fee').order('sort_order').order('min_amount'),
+      ])
+      if (settingsResult.error) throw settingsResult.error
+      if (rangesResult.error) throw rangesResult.error
+      if (settingsResult.data) setShippingFeeSettings({
+        auto_calculate_enabled: settingsResult.data.auto_calculate_enabled === true,
+        charge_promotion_orders: settingsResult.data.charge_promotion_orders !== false,
+      })
+      setShippingFeeRanges((rangesResult.data || []).map((row) => ({
+        min_amount: Number(row.min_amount || 0),
+        max_amount: row.max_amount == null ? null : Number(row.max_amount),
+        shipping_fee: Number(row.shipping_fee || 0),
+      })))
+    } catch (error) {
+      console.warn('[OrderForm] shipping fee rules unavailable (migration 528 not applied?):', error)
+      setShippingFeeSettings({ auto_calculate_enabled: false, charge_promotion_orders: true })
+      setShippingFeeRanges([])
+    }
+  }
+
   /** เช็คสถานะ Override เปิด (บังคับกรอก) ของสินค้าในแถว */
   function isFieldRequired(itemIndex: number, fieldKey: string): boolean {
     const item = items[itemIndex]
@@ -1682,6 +1739,133 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   function calculateItemsTotal() {
     return calculateChargeableItemsTotal(items, isCondoSubRow)
   }
+
+  function promotionItems(sourceItems: typeof items): PromotionOrderItem[] {
+    return sourceItems
+      .filter((item) => !isCondoSubRow(item))
+      .map((item) => {
+        const product = products.find((candidate) => candidate.id === item.product_id)
+        return {
+          product_id: item.product_id || null,
+          product_name: item.product_name || product?.product_name || null,
+          product_category: product?.product_category || null,
+          quantity: item.quantity || 0,
+          unit_price: item.unit_price || 0,
+          is_free: !!(item as { is_free?: boolean }).is_free,
+        }
+      })
+  }
+
+  function getPromotionEvaluations(sourceItems: typeof items, selectedIds = selectedPromotionIds) {
+    const selected = selectedIds.map((id) => promotions.find((promotion) => promotion.id === id)).filter(Boolean) as PromotionDefinition[]
+    const subtotal = CHANNELS_MANUAL_PRICE.includes(formData.channel_code || '')
+      ? Number(formData.price || 0)
+      : calculateChargeableItemsTotal(sourceItems, isCondoSubRow)
+    return evaluatePromotions(selected, promotionItems(sourceItems), {
+      channel_code: formData.channel_code || '',
+      // วันธุรกิจประเทศไทย (UTC+7) เพื่อไม่ให้ช่วง 00:00–06:59 ถูกนับเป็นวันก่อนหน้า
+      order_date: new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10),
+      order_subtotal: subtotal,
+    })
+  }
+
+  function updateSelectedPromotions(nextIds: string[]) {
+    setSelectedPromotionIds(nextIds)
+    const selected = nextIds.map((id) => promotions.find((promotion) => promotion.id === id)).filter(Boolean) as PromotionDefinition[]
+    const results = getPromotionEvaluations(items, nextIds)
+    const hasRuleBasedPromotion = selected.some((promotion) => promotion.rule_type !== 'legacy')
+    const automaticDiscount = totalPromotionDiscount(results)
+    setDiscountType('baht')
+    setFormData((current) => ({
+      ...current,
+      promotion: selected.map((promotion) => promotion.name).join(', '),
+      discount: hasRuleBasedPromotion ? automaticDiscount : (nextIds.length ? current.discount : 0),
+    }))
+  }
+
+  function renderPromotionChoice(promotion: PromotionDefinition, showStar = false) {
+    const checked = selectedPromotionIds.includes(promotion.id)
+    const result = livePromotionResults.find((item) => item.promotion_id === promotion.id)
+    return (
+      <label key={promotion.id} className={`flex items-start gap-2 rounded-md px-2 py-1.5 text-sm ${formDisabled ? '' : 'cursor-pointer hover:bg-blue-50'}`}>
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={formDisabled}
+          onChange={(event) => updateSelectedPromotions(event.target.checked
+            ? [...selectedPromotionIds, promotion.id]
+            : selectedPromotionIds.filter((id) => id !== promotion.id))}
+          className="mt-0.5 h-4 w-4 rounded border-gray-300 accent-blue-600"
+        />
+        <span className="min-w-0 flex-1">
+          <span className="font-medium">{showStar && <span className="mr-1 text-amber-500">★</span>}{promotion.name}</span>
+          {checked && result?.checked && (
+            <span className={`ml-2 text-xs font-semibold ${result.passed ? 'text-emerald-600' : 'text-red-600'}`}>
+              {result.passed ? 'ผ่าน' : 'ไม่ผ่าน'}
+            </span>
+          )}
+        </span>
+      </label>
+    )
+  }
+
+  const livePromotionResults = useMemo(
+    () => getPromotionEvaluations(items),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [items, products, promotions, selectedPromotionIds, formData.channel_code, formData.price],
+  )
+  const promotionDiscountLocked = selectedPromotionIds.some((id) => {
+    const promotion = promotions.find((item) => item.id === id)
+    return !!promotion && promotion.rule_type !== 'legacy'
+  })
+  const selectedPromotionDefinitions = useMemo(
+    () => selectedPromotionIds
+      .map((id) => promotions.find((promotion) => promotion.id === id))
+      .filter(Boolean) as PromotionDefinition[],
+    [promotions, selectedPromotionIds],
+  )
+  const hasFreeShippingPromotion = selectedPromotionDefinitions.some((promotion) =>
+    promotion.free_shipping === true && livePromotionResults.some((result) => result.promotion_id === promotion.id && result.passed),
+  )
+  const automaticShippingActive = hasFreeShippingPromotion || shippingFeeSettings.auto_calculate_enabled
+  const promotionsForSelection = useMemo(
+    () => [...promotions].sort((a, b) => Number(selectedPromotionIds.includes(b.id)) - Number(selectedPromotionIds.includes(a.id))),
+    [promotions, selectedPromotionIds],
+  )
+  const featuredPromotions = useMemo(
+    () => promotionsForSelection.filter((promotion) => promotion.is_featured === true),
+    [promotionsForSelection],
+  )
+
+  useEffect(() => {
+    if (!selectedPromotionIds.length) return
+    const selected = selectedPromotionIds.map((id) => promotions.find((promotion) => promotion.id === id)).filter(Boolean) as PromotionDefinition[]
+    if (!selected.some((promotion) => promotion.rule_type !== 'legacy')) return
+    const expected = totalPromotionDiscount(livePromotionResults)
+    setDiscountType('baht')
+    setFormData((current) => current.discount === expected ? current : { ...current, discount: expected })
+  }, [livePromotionResults, promotions, selectedPromotionIds])
+
+  useEffect(() => {
+    let nextShipping: number | null = null
+    if (hasFreeShippingPromotion) {
+      nextShipping = 0
+    } else if (shippingFeeSettings.auto_calculate_enabled) {
+      if (selectedPromotionIds.length > 0 && !shippingFeeSettings.charge_promotion_orders) {
+        nextShipping = 0
+      } else {
+        const orderSubtotal = CHANNELS_MANUAL_PRICE.includes(formData.channel_code || '')
+          ? Number(formData.price || 0)
+          : calculateChargeableItemsTotal(items, isCondoSubRow)
+        const matchedRange = shippingFeeRanges.find((range) =>
+          orderSubtotal >= range.min_amount && (range.max_amount == null || orderSubtotal <= range.max_amount),
+        )
+        nextShipping = matchedRange ? matchedRange.shipping_fee : 0
+      }
+    }
+    if (nextShipping == null) return
+    setFormData((current) => current.shipping_cost === nextShipping ? current : { ...current, shipping_cost: nextShipping })
+  }, [hasFreeShippingPromotion, shippingFeeSettings, shippingFeeRanges, selectedPromotionIds.length, items, formData.channel_code, formData.price])
 
   const isManualPriceChannel = CHANNELS_MANUAL_PRICE.includes(formData.channel_code || '')
 
@@ -1915,7 +2099,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   async function handleSubmitInternal(
     itemsToSave: typeof items,
     targetStatus: OrderStatus = 'รอลงข้อมูล',
-    skipDesignAttachmentConfirmation = false
+    skipDesignAttachmentConfirmation = false,
+    skipPromotionValidation = false,
+    promotionOverrideReason = '',
   ) {
     if (!user) {
       console.error('User not found')
@@ -2000,6 +2186,15 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         message: 'กรุณาเลือกโปรโมชั่นเมื่อมีการกรอกส่วนลด',
       })
       return
+    }
+
+    if (targetStatus === 'ลงข้อมูลเสร็จสิ้น' && selectedPromotionIds.length > 0 && !skipPromotionValidation) {
+      const promotionResults = getPromotionEvaluations(itemsToSave)
+      const failedResults = promotionResults.filter((result) => result.checked && !result.passed)
+      if (failedResults.length > 0) {
+        setPromotionWarning({ itemsToSave, results: promotionResults, overrideReason: '' })
+        return
+      }
     }
 
     const stockErrors = validateItemsAgainstStock(itemsToSave)
@@ -2123,6 +2318,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       const currentUserName = user.username || user.email
       const orderData = {
         ...formDataForDb,
+        // คงคอลัมน์ TEXT เดิมไว้สำหรับหน้ารายละเอียด/รายงานเก่า; ตารางเชื่อมเป็น source of truth
+        promotion: selectedPromotionIds
+          .map((id) => promotions.find((promotion) => promotion.id === id)?.name)
+          .filter(Boolean)
+          .join(', ') || null,
         fulfillment_method: order?.fulfillment_method || (isSelfPickupChannel(channelCodeForSave, channelMeta) ? 'self_pickup' : 'shipping'),
         // ช่องทางรับสินค้าเองต้องไม่มีเลขพัสดุ แม้บิลเก่าจะเคยมีค่าค้างอยู่
         tracking_number: isCurrentBillSelfPickup(channelCodeForSave) ? null : formDataForDb.tracking_number,
@@ -2262,6 +2462,62 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         if (targetStatus !== 'รอลงข้อมูล') {
           alert('กรุณาเพิ่มรายการสินค้าก่อนบันทึก')
         }
+      }
+
+      // บันทึกโปรโมชั่นหลายรายการที่เลือกเป็นข้อมูลปัจจุบันของบิล
+      const selectedPromotions = selectedPromotionIds
+        .map((id) => promotions.find((promotion) => promotion.id === id))
+        .filter(Boolean) as PromotionDefinition[]
+      const promotionResultsForSave = getPromotionEvaluations(itemsToSave)
+      const { error: clearPromotionLinksError } = await supabase
+        .from('or_order_promotions')
+        .delete()
+        .eq('order_id', orderId)
+      if (clearPromotionLinksError) throw clearPromotionLinksError
+      if (selectedPromotions.length > 0) {
+        const { error: promotionLinksError } = await supabase.from('or_order_promotions').insert(
+          selectedPromotions.map((promotion) => ({
+            order_id: orderId,
+            promotion_id: promotion.id,
+            promotion_name_snapshot: promotion.name,
+            promotion_version: Number(promotion.version || 1),
+            rule_snapshot: promotion,
+            selected_by: currentUserName,
+          })),
+        )
+        if (promotionLinksError) throw promotionLinksError
+      }
+
+      // Audit เป็น append-only เฉพาะตอนยืนยันข้อมูลครบ เพื่อดูย้อนหลังแม้กติกาจะถูกแก้ภายหลัง
+      if (targetStatus === 'ลงข้อมูลเสร็จสิ้น' && selectedPromotions.length > 0) {
+        const snapshotItems = promotionItems(itemsToSave)
+        const resultById = new Map(promotionResultsForSave.map((result) => [result.promotion_id, result]))
+        const { error: promotionAuditError } = await supabase.from('or_promotion_audits').insert(
+          selectedPromotions.map((promotion) => {
+            const result = resultById.get(promotion.id)
+            const wasOverridden = !!result?.checked && !result.passed && skipPromotionValidation
+            return {
+              order_id: orderId,
+              bill_no: currentBillNo || order?.bill_no || '-',
+              channel_code: channelCodeForSave,
+              order_admin_user: order?.admin_user || currentUserName,
+              promotion_id: promotion.id,
+              promotion_name: promotion.name,
+              promotion_version: Number(promotion.version || 1),
+              validation_status: !result?.checked ? 'not_checked' : result.passed ? 'passed' : wasOverridden ? 'overridden' : 'failed',
+              validation_messages: result?.messages || [],
+              expected_discount: result?.expected_discount || 0,
+              expected_total_discount: totalPromotionDiscount(promotionResultsForSave),
+              actual_total_discount: discountBahtForSave,
+              application_count: result?.application_count || 0,
+              rule_snapshot: promotion,
+              order_snapshot: { price: calculatedPrice, shipping_cost: formData.shipping_cost, discount: discountBahtForSave, items: snapshotItems },
+              override_reason: wasOverridden ? promotionOverrideReason.trim() : null,
+              evaluated_by: currentUserName,
+            }
+          }),
+        )
+        if (promotionAuditError) throw promotionAuditError
       }
 
       // ถ้าเป็น "ลงข้อมูลเสร็จสิ้น" ให้ตรวจสอบสลิป (เฉพาะเมื่อช่องทางมีในข้อมูลธนาคารสำหรับตรวจสลิป)
@@ -5982,7 +6238,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           {/* ฝั่งขวา: ข้อมูลการชำระเงิน */}
           <div className="space-y-4">
             <h3 className="text-xl font-bold mb-2">ข้อมูลการชำระเงิน</h3>
-            <div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="min-w-0">
               <label className="block text-sm font-medium mb-1">ราคารวม</label>
               <input
                 type="number"
@@ -6002,7 +6259,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 <p className="text-xs text-amber-600 font-medium mt-1">กรุณากรอกราคาก่อนบันทึก</p>
               )}
             </div>
-            <div>
+            <div className="min-w-0">
               <label className="block text-sm font-medium mb-1">ค่าส่ง</label>
               <input
                 type="number"
@@ -6021,13 +6278,16 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 }}
                 step="0.01"
                 placeholder="0"
-                disabled={formDisabled}
-                className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${
+                disabled={formDisabled || automaticShippingActive}
+                className={`w-full px-3 py-2 border rounded-lg ${(formDisabled || automaticShippingActive) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${
                   formData.shipping_cost === 0 ? 'text-gray-400' : ''
                 }`}
               />
+              {automaticShippingActive && <p className="mt-1 text-xs text-sky-600">{hasFreeShippingPromotion ? 'ฟรีค่าส่งจากโปรโมชั่นที่เลือก' : selectedPromotionIds.length > 0 && !shippingFeeSettings.charge_promotion_orders ? 'ตั้งค่าไม่คิดค่าส่งเมื่อบิลมีโปรโมชั่น' : 'คำนวณอัตโนมัติตามช่วงยอดซื้อ'}</p>}
             </div>
-            <div>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="min-w-0">
               <label className="block text-sm font-medium mb-1">
                 รูปแบบการลด
               </label>
@@ -6035,30 +6295,30 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 <button
                   type="button"
                   onClick={() => setDiscountType('baht')}
-                  disabled={formDisabled}
+                  disabled={formDisabled || promotionDiscountLocked}
                   className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
                     discountType === 'baht'
                       ? 'bg-blue-500 text-white'
                       : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
-                  } ${formDisabled ? 'cursor-not-allowed opacity-60' : ''}`}
+                  } ${(formDisabled || promotionDiscountLocked) ? 'cursor-not-allowed opacity-60' : ''}`}
                 >
                   บาท
                 </button>
                 <button
                   type="button"
                   onClick={() => setDiscountType('percent')}
-                  disabled={formDisabled}
+                  disabled={formDisabled || promotionDiscountLocked}
                   className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
                     discountType === 'percent'
                       ? 'bg-blue-500 text-white'
                       : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
-                  } ${formDisabled ? 'cursor-not-allowed opacity-60' : ''}`}
+                  } ${(formDisabled || promotionDiscountLocked) ? 'cursor-not-allowed opacity-60' : ''}`}
                 >
                   %
                 </button>
               </div>
             </div>
-            <div>
+            <div className="min-w-0">
               <label className="block text-sm font-medium mb-1">
                 ส่วนลด {discountType === 'percent' ? '(%)' : '(บาท)'}
               </label>
@@ -6086,32 +6346,91 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 min="0"
                 max={discountType === 'percent' ? '100' : undefined}
                 placeholder="0"
-                disabled={formDisabled}
-                className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${
+                disabled={formDisabled || promotionDiscountLocked}
+                className={`w-full px-3 py-2 border rounded-lg ${(formDisabled || promotionDiscountLocked) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${
                   formData.discount === 0 ? 'text-gray-400' : ''
                 }`}
               />
+              {promotionDiscountLocked && <p className="mt-1 text-xs font-medium text-blue-600">คำนวณอัตโนมัติจากโปรโมชั่นที่เลือก</p>}
               {discountType === 'percent' && formData.discount > 0 && (
                 <p className="text-xs text-gray-500 mt-1">
                   = {getDiscountInBaht(formData.price || 0, formData.discount, 'percent').toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท
                 </p>
               )}
             </div>
+            </div>
             <div>
-              <label className="block text-sm font-medium mb-1">โปรโมชั่น</label>
-              <select
-                value={formData.promotion}
-                onChange={(e) => setFormData({ ...formData, promotion: e.target.value })}
-                disabled={formDisabled}
-                className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
-              >
-                <option value="">-- เลือกโปรโมชั่น --</option>
-                {promotions.map((p) => (
-                  <option key={p.id} value={p.name}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <label className="block text-sm font-medium">โปรโมชั่น</label>
+                <span className={`rounded-full px-3 py-1 text-xs font-bold ${selectedPromotionIds.length > 0 ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
+                  เลือกแล้ว {selectedPromotionIds.length} โปรฯ
+                </span>
+              </div>
+              <div className={`rounded-xl border p-3 ${formDisabled ? 'bg-gray-100 text-gray-500' : 'bg-white'}`}>
+                <div className="mb-3">
+                  <p className="mb-1.5 text-xs font-semibold text-gray-500">โปรโมชั่นที่เลือก</p>
+                  {selectedPromotionDefinitions.length === 0 ? (
+                    <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-gray-400">ยังไม่ได้เลือกโปรโมชั่น</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {selectedPromotionDefinitions.map((promotion) => {
+                        const result = livePromotionResults.find((item) => item.promotion_id === promotion.id)
+                        return (
+                          <span key={promotion.id} className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold ${result?.checked && !result.passed ? 'border-red-200 bg-red-50 text-red-700' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>
+                            {promotion.name}
+                            {!formDisabled && (
+                              <button
+                                type="button"
+                                onClick={() => updateSelectedPromotions(selectedPromotionIds.filter((id) => id !== promotion.id))}
+                                className="ml-0.5 rounded-full px-1 text-sm leading-none hover:bg-white/80"
+                                aria-label={`ยกเลิกโปรโมชั่น ${promotion.name}`}
+                                title="ยกเลิกโปรโมชั่นนี้"
+                              >
+                                ×
+                              </button>
+                            )}
+                          </span>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                  <div className="min-w-0">
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <p className="text-xs font-bold text-amber-700">★ โปรฯ ติดดาว</p>
+                      <span className="text-[10px] text-amber-600">{featuredPromotions.length} รายการ</span>
+                    </div>
+                    <div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border border-amber-200 bg-amber-50/40 p-1">
+                      {featuredPromotions.length === 0
+                        ? <p className="px-2 py-4 text-center text-xs text-gray-400">ยังไม่มีโปรฯ ติดดาว</p>
+                        : featuredPromotions.map((promotion) => renderPromotionChoice(promotion, true))}
+                    </div>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <p className="text-xs font-bold text-gray-600">รายการโปรฯ ทั้งหมด</p>
+                      <span className="text-[10px] text-gray-400">{promotions.length} รายการ</span>
+                    </div>
+                    <div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border bg-white p-1">
+                      {promotions.length === 0
+                        ? <p className="px-2 py-4 text-center text-xs text-gray-400">ยังไม่มีโปรโมชั่นที่เปิดใช้งาน</p>
+                        : promotionsForSelection.map((promotion) => renderPromotionChoice(promotion, promotion.is_featured === true))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              {selectedPromotionIds.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {livePromotionResults.filter((result) => result.checked).map((result) => (
+                    <p key={result.promotion_id} className={`text-xs ${result.passed ? 'text-emerald-600' : 'text-red-600'}`}>
+                      {result.promotion_name}: {result.passed
+                        ? `ผ่าน${result.expected_discount > 0 ? ` · ส่วนลด ${result.expected_discount.toLocaleString('th-TH')} บาท` : ''}`
+                        : result.messages.join(' · ')}
+                    </p>
+                  ))}
+                </div>
+              )}
               {Number(formData.discount || 0) > 0 && !String(formData.promotion || '').trim() && (
                 <p className="text-xs text-amber-600 font-medium mt-1">กรุณาเลือกโปรโมชั่นเมื่อมีส่วนลด</p>
               )}
@@ -7102,6 +7421,57 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             className="px-4 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 transition-colors"
           >
             ยืนยันเปิดบิล
+          </button>
+        </div>
+      </div>
+    </Modal>
+
+    {/* ผลตรวจโปรโมชั่นก่อนยืนยันข้อมูลครบ */}
+    <Modal
+      open={promotionWarning != null}
+      onClose={() => setPromotionWarning(null)}
+      contentClassName="max-w-2xl"
+    >
+      <div className="p-6 space-y-4">
+        <div>
+          <h3 className="text-lg font-bold text-red-700">เงื่อนไขโปรโมชั่นไม่ครบ</h3>
+          <p className="mt-1 text-sm text-gray-600">ตรวจพบโปรโมชั่นที่ไม่สัมพันธ์กับสินค้า ช่องทาง หรือช่วงเวลาในบิลนี้</p>
+        </div>
+        <div className="max-h-72 space-y-3 overflow-y-auto">
+          {promotionWarning?.results.map((result) => (
+            <div key={result.promotion_id} className={`rounded-xl border p-3 ${!result.checked ? 'border-gray-200 bg-gray-50' : result.passed ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}`}>
+              <div className="flex items-center justify-between gap-3">
+                <b className="text-sm text-gray-900">{result.promotion_name}</b>
+                <span className={`text-xs font-bold ${!result.checked ? 'text-gray-500' : result.passed ? 'text-emerald-700' : 'text-red-700'}`}>{!result.checked ? 'ไม่ได้เปิดการตรวจ' : result.passed ? 'ผ่าน' : 'ไม่ผ่าน'}</span>
+              </div>
+              {result.messages.length > 0 && <ul className="mt-2 list-disc pl-5 text-sm text-red-700">{result.messages.map((message, index) => <li key={index}>{message}</li>)}</ul>}
+            </div>
+          ))}
+        </div>
+        <label className="block text-sm font-semibold text-gray-700">
+          เหตุผลที่ยืนยันเปิดบิลต่อ <span className="text-red-500">*</span>
+          <textarea
+            value={promotionWarning?.overrideReason || ''}
+            onChange={(e) => setPromotionWarning((current) => current ? { ...current, overrideReason: e.target.value } : current)}
+            rows={3}
+            placeholder="ระบุเหตุผลเพื่อให้บัญชีตรวจสอบย้อนหลัง"
+            className="mt-1 w-full rounded-xl border px-3 py-2 font-normal"
+          />
+        </label>
+        <div className="flex flex-wrap justify-end gap-3 border-t pt-4">
+          <button type="button" onClick={() => setPromotionWarning(null)} className="rounded-xl border px-4 py-2 font-semibold text-gray-700 hover:bg-gray-50">กลับไปแก้ไข</button>
+          <button
+            type="button"
+            disabled={!promotionWarning?.overrideReason.trim() || loading}
+            onClick={async () => {
+              if (!promotionWarning?.overrideReason.trim()) return
+              const pending = promotionWarning
+              setPromotionWarning(null)
+              await handleSubmitInternal(pending.itemsToSave, 'ลงข้อมูลเสร็จสิ้น', true, true, pending.overrideReason)
+            }}
+            className="rounded-xl bg-amber-600 px-4 py-2 font-semibold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            ยืนยันและบันทึกเหตุผล
           </button>
         </div>
       </div>

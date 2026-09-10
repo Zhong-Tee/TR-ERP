@@ -51,6 +51,15 @@ function compareItems(a: ExportSortableItem, b: ExportSortableItem, aCondo: bool
   return String(a.item_uid || '').localeCompare(String(b.item_uid || ''))
 }
 
+function compareSourceOrder(a: ExportSortableItem, b: ExportSortableItem): number {
+  const ta = new Date(a.created_at || 0).getTime()
+  const tb = new Date(b.created_at || 0).getTime()
+  if (ta !== tb) return ta - tb
+  const idCmp = String(a.id || '').localeCompare(String(b.id || ''))
+  if (idCmp !== 0) return idCmp
+  return String(a.item_uid || '').localeCompare(String(b.item_uid || ''))
+}
+
 export function compareExportOrderItems(a: ExportSortableItem, b: ExportSortableItem): number {
   const aC = isCondoTierExportProduct(a.product_name)
   const bC = isCondoTierExportProduct(b.product_name)
@@ -58,19 +67,14 @@ export function compareExportOrderItems(a: ExportSortableItem, b: ExportSortable
 }
 
 export function sortOrderItemsForExport<T extends ExportSortableItem>(items: T[]): T[] {
-  const condoStampItems = identifyCondoStampItems(items)
-  return [...items].sort((a, b) => compareItems(
-    a,
-    b,
-    isCondoStampItem(a, condoStampItems),
-    isCondoStampItem(b, condoStampItems),
-  ))
+  return sortOrderItemsForBillDisplay(items)
 }
 
 /**
- * ใช้เฉพาะหน้ารายละเอียดบิล: ตรายางคอนโดหลายชิ้นต้องแสดงเป็นชุด
+ * ลำดับมาตรฐานสำหรับรายละเอียดบิล / QC / แพ็ค / Export:
+ * ตรายางคอนโดหลายชิ้นต้องแสดงเป็นชุด
  * (ชุดแรก ชั้น 1→5 แล้วจึงชุดถัดไป ชั้น 1→5) เพื่อไม่ให้ชั้นเดียวกัน
- * ของคนละชิ้นสลับกัน ส่วนลำดับสำหรับ QC/แพ็ค/Export ยังคงใช้ฟังก์ชันเดิม
+ * ของคนละชิ้นสลับกัน
  */
 export function sortOrderItemsForBillDisplay<T extends ExportSortableItem>(items: T[]): T[] {
   const condoStampItems = identifyCondoStampItems(items)
@@ -96,10 +100,13 @@ export function sortOrderItemsForBillDisplay<T extends ExportSortableItem>(items
   }
 
   const groupFirstIndex = new Map<string, number>()
+  const groupAnchor = new Map<string, T>()
   items.forEach((item, index) => {
     if (!isCondoStampItem(item, condoStampItems)) return
     const key = groupKey(item)
     if (!groupFirstIndex.has(key)) groupFirstIndex.set(key, index)
+    const currentAnchor = groupAnchor.get(key)
+    if (!currentAnchor || compareSourceOrder(item, currentAnchor) < 0) groupAnchor.set(key, item)
   })
 
   return [...items].sort((a, b) => {
@@ -108,7 +115,12 @@ export function sortOrderItemsForBillDisplay<T extends ExportSortableItem>(items
     if (aCondo !== bCondo) return aCondo ? -1 : 1
 
     if (aCondo && bCondo) {
-      const groupDiff = (groupFirstIndex.get(groupKey(a)) ?? 0) - (groupFirstIndex.get(groupKey(b)) ?? 0)
+      const aGroupKey = groupKey(a)
+      const bGroupKey = groupKey(b)
+      const aAnchor = groupAnchor.get(aGroupKey) || a
+      const bAnchor = groupAnchor.get(bGroupKey) || b
+      const groupDiff = compareSourceOrder(aAnchor, bAnchor) ||
+        (groupFirstIndex.get(aGroupKey) ?? 0) - (groupFirstIndex.get(bGroupKey) ?? 0)
       if (groupDiff !== 0) return groupDiff
 
       const floorDiff = condoFloorSortKey(a.product_type) - condoFloorSortKey(b.product_type)

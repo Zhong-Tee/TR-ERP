@@ -236,6 +236,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'packing-tagSearch': 'packing',
   'account-claim-approval': 'account',
   'account-ecommerce': 'account',
+  'account-promotion-audit': 'account',
 }
 
 export function resolveMenuKeyFromPath(pathname: string): string | null {
