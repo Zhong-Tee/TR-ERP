@@ -882,7 +882,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     items_note: '',
   })
   const [autoFillAddressLoading, setAutoFillAddressLoading] = useState(false)
-  const [originalCustomerAddress, setOriginalCustomerAddress] = useState('')
   /** เบอร์โทรที่ parse ได้หลายเบอร์ (จาก Auto fill) — แสดง dropdown ให้เลือก */
   const [mobilePhoneCandidates, setMobilePhoneCandidates] = useState<string[]>([])
   /** รายการแขวง/ตำบล + เขต (จาก Auto fill) — แสดง dropdown แขวง/เขต */
@@ -895,9 +894,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     setAutoFillAddressLoading(true)
     try {
       const rawAddress = String(addressText ?? formData.customer_address ?? '').trim()
-      if (rawAddress) {
-        setOriginalCustomerAddress((current) => current.trim() || rawAddress)
-      }
       const parsed = await parseAddressText(rawAddress, supabase)
       setMobilePhoneCandidates(parsed.mobilePhoneCandidates ?? [])
       setSubDistrictOptions(parsed.subDistrictOptions ?? [])
@@ -1051,11 +1047,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     async function loadOrderData() {
       if (order) {
         setSelectedPromotionIds([])
-        const bd = order.billing_details as { address_line?: string; sub_district?: string; district?: string; province?: string; postal_code?: string; mobile_phone?: string; original_customer_address?: string } | undefined
+        const bd = order.billing_details as { address_line?: string; sub_district?: string; district?: string; province?: string; postal_code?: string; mobile_phone?: string } | undefined
         const hasAddressParts = bd?.address_line != null || bd?.sub_district != null || bd?.province != null || bd?.postal_code != null
-        const customerAddress = hasAddressParts
+        const customerAddress = order.customer_address || (hasAddressParts
           ? [bd?.address_line, bd?.sub_district, bd?.district, bd?.province, bd?.postal_code].filter(Boolean).join(' ')
-          : order.customer_address
+          : '')
         const orderAny = order as { channel_order_no?: string | null; recipient_name?: string | null; scheduled_pickup_at?: string | null }
         const sp = orderAny.scheduled_pickup_at
         const scheduledPickupLocal = sp ? (() => {
@@ -1092,7 +1088,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           payment_date: order.payment_date || '',
           payment_time: order.payment_time || '',
         })
-        setOriginalCustomerAddress((bd?.original_customer_address || order.customer_address || '').trim())
         const { data: linkedPromotions, error: linkedPromotionsError } = await supabase
           .from('or_order_promotions')
           .select('promotion_id')
@@ -1159,7 +1154,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       } else {
         setSelectedPromotionIds([])
         setItems([{ product_type: 'ชั้น1', quantity: 1 }])
-        setOriginalCustomerAddress('')
         setUploadedSlipPaths([])
         setRequiresConfirmDesign(false)
       }
@@ -2135,7 +2129,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         !CHANNELS_BLOCK_ADDRESS.includes(channelCode) &&
         !CHANNELS_SKIP_CUSTOMER_FIELDS.includes(channelCode)
       const missingFields = requiresCustomerShipping
-        ? getMissingCustomerShippingFields(formData)
+        ? getMissingCustomerShippingFields(formData, {
+            requireRecipientName: CHANNELS_SHOW_CHANNEL_NAME.includes(channelCode),
+          })
         : []
 
       if (missingFields.length > 0) {
@@ -2251,11 +2247,18 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       
       // เตรียมข้อมูล billing_details (รวม address parts สำหรับที่อยู่ลูกค้า)
       const hasAddressParts = !!(formData.address_line?.trim() || formData.sub_district?.trim() || formData.district?.trim() || formData.province?.trim() || formData.postal_code?.trim() || formData.mobile_phone?.trim())
-      const customerAddressToSave = hasAddressParts
-        ? [formData.address_line, formData.sub_district, formData.district, formData.province, formData.postal_code].filter(Boolean).join(' ')
-        : (formData.customer_address || '')
+      // customer_address keeps the latest text entered/pasted by the user.
+      // Structured shipping fields remain in billing_details and are the source
+      // of truth for the actual waybill address.
+      const structuredCustomerAddress = [formData.address_line, formData.sub_district, formData.district, formData.province, formData.postal_code]
+        .filter(Boolean).join(' ')
+      const customerAddressToSave = formData.customer_address?.trim() || structuredCustomerAddress
+      const existingBillingDetails: Record<string, unknown> = order?.billing_details && typeof order.billing_details === 'object'
+        ? { ...order.billing_details as unknown as Record<string, unknown> }
+        : {}
+      delete existingBillingDetails.original_customer_address
       const billingDetails = {
-        ...(order?.billing_details && typeof order.billing_details === 'object' ? order.billing_details : {}),
+        ...existingBillingDetails,
         request_tax_invoice: showTaxInvoice,
         request_cash_bill: false,
         tax_customer_name: showTaxInvoice ? taxInvoiceData.company_name : null,
@@ -2274,7 +2277,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         province: formData.province?.trim() || null,
         postal_code: formData.postal_code?.trim() || null,
         mobile_phone: formData.mobile_phone?.trim() || null,
-        original_customer_address: originalCustomerAddress.trim() || formData.customer_address?.trim() || null,
       }
 
       // บิลที่บันทึก "ข้อมูลครบ": ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED → สถานะ "ตรวจสอบแล้ว" โดยตรง
@@ -2353,7 +2355,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         payment_time: paymentTime,
         status: statusToSave,
         entry_date: new Date().toISOString().slice(0, 10),
-        billing_details: (showTaxInvoice || hasAddressParts || !!originalCustomerAddress.trim()) ? billingDetails : (order?.billing_details ?? null),
+        billing_details: (showTaxInvoice || hasAddressParts || Object.keys(existingBillingDetails).length > 0) ? billingDetails : null,
         scheduled_pickup_at: formData.scheduled_pickup_at?.trim() ? new Date(formData.scheduled_pickup_at.trim()).toISOString() : null,
       }
 
@@ -6750,7 +6752,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               const isAddressBlockedSave = CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)
               const isSkipCustomerFields = CHANNELS_SKIP_CUSTOMER_FIELDS.includes(formData.channel_code)
               const missingCustomerShippingFields = !isAddressBlockedSave && !isSkipCustomerFields
-                ? getMissingCustomerShippingFields(formData)
+                ? getMissingCustomerShippingFields(formData, {
+                    requireRecipientName: CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code),
+                  })
                 : []
               if (missingCustomerShippingFields.length > 0) {
                 setMessageModal({

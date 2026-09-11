@@ -1,4 +1,5 @@
 export type CustomerShippingDetails = {
+  recipient_name?: string | null
   address_line?: string | null
   sub_district?: string | null
   district?: string | null
@@ -20,8 +21,15 @@ const REQUIRED_CUSTOMER_SHIPPING_FIELDS: Array<{
 ]
 
 /** รายการข้อมูลจัดส่งที่ยังว่าง สำหรับป้องกันการบันทึกออเดอร์เป็น "ข้อมูลครบ" */
-export function getMissingCustomerShippingFields(details: CustomerShippingDetails): string[] {
-  return REQUIRED_CUSTOMER_SHIPPING_FIELDS
+export function getMissingCustomerShippingFields(
+  details: CustomerShippingDetails,
+  options: { requireRecipientName?: boolean } = {},
+): string[] {
+  const missing = REQUIRED_CUSTOMER_SHIPPING_FIELDS
     .filter(({ key }) => !String(details[key] ?? '').trim())
     .map(({ label }) => label)
+  if (options.requireRecipientName && !String(details.recipient_name ?? '').trim()) {
+    missing.unshift('ชื่อผู้รับ')
+  }
+  return missing
 }

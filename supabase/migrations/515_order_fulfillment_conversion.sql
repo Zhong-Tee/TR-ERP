@@ -187,14 +187,13 @@ BEGIN
       converted_from_self_pickup_by = COALESCE(NULLIF(btrim(COALESCE(p_changed_by, '')), ''), 'unknown'),
       recipient_name = btrim(p_recipient_name),
       customer_address = v_customer_address,
-      billing_details = COALESCE(v_order.billing_details, '{}'::jsonb) || jsonb_build_object(
+      billing_details = (COALESCE(v_order.billing_details, '{}'::jsonb) - 'original_customer_address') || jsonb_build_object(
         'address_line', NULLIF(btrim(COALESCE(p_address_line, '')), ''),
         'sub_district', NULLIF(btrim(COALESCE(p_sub_district, '')), ''),
         'district', NULLIF(btrim(COALESCE(p_district, '')), ''),
         'province', NULLIF(btrim(COALESCE(p_province, '')), ''),
         'postal_code', NULLIF(btrim(COALESCE(p_postal_code, '')), ''),
-        'mobile_phone', NULLIF(btrim(COALESCE(p_mobile_phone, '')), ''),
-        'original_customer_address', COALESCE(NULLIF(btrim(COALESCE(p_original_address, '')), ''), v_customer_address)
+        'mobile_phone', NULLIF(btrim(COALESCE(p_mobile_phone, '')), '')
       ),
       tracking_number = NULL,
       packing_meta = v_tag,

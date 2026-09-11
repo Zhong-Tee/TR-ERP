@@ -23,4 +23,16 @@ describe('getMissingCustomerShippingFields', () => {
       mobile_phone: '0963924385',
     })).toEqual(['แขวง/ตำบล', 'เขต/อำเภอ', 'จังหวัด', 'รหัสไปรษณีย์'])
   })
+
+  it('บังคับชื่อผู้รับสำหรับช่องทางที่แยกชื่อช่องทางออกจากชื่อผู้รับ', () => {
+    expect(getMissingCustomerShippingFields({
+      recipient_name: '   ',
+      address_line: '29/15 ซอยแปประสานสุข',
+      sub_district: 'สะเตง',
+      district: 'เมืองยะลา',
+      province: 'ยะลา',
+      postal_code: '95000',
+      mobile_phone: '0848608431',
+    }, { requireRecipientName: true })).toEqual(['ชื่อผู้รับ'])
+  })
 })

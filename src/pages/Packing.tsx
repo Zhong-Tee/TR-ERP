@@ -1335,7 +1335,7 @@ export default function Packing() {
         billNo: data.bill_no || '',
         isShipped: data.status === 'จัดส่งแล้ว',
         recipientName: data.recipient_name || data.customer_name || '',
-        originalAddress: billing.original_customer_address || data.customer_address || '',
+        originalAddress: data.customer_address || '',
         addressLine: billing.address_line || '',
         subDistrict: billing.sub_district || '',
         district: billing.district || '',

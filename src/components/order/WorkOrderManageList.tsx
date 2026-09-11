@@ -8,6 +8,7 @@ import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import OrderDetailView from './OrderDetailView'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
+import { FiChevronLeft, FiChevronRight } from 'react-icons/fi'
 import { extractPhonesFromText, e164ToLocal } from '../../lib/thaiPhone'
 import { isRoleInAllowedList } from '../../config/accessPolicy'
 import {
@@ -26,6 +27,7 @@ import {
   isStampDepartmentName,
 } from '../../lib/planPickingDepartments'
 import { downloadFlashWaybillXlsx } from '../../lib/flashWaybillExport'
+import { resolveWaybillCustomer } from '../../lib/waybillCustomer'
 
 function pickSpareQtyForLine(lineQty: number, rawCategory: string): number {
   if (String(rawCategory || '').toUpperCase().includes('CONDO STAMP')) return Math.ceil(lineQty / 5)
@@ -401,6 +403,7 @@ export default function WorkOrderManageList({
   const [trackingConflictChoices, setTrackingConflictChoices] = useState<Record<string, string>>({})
   const [waybillSorterModal, setWaybillSorterModal] = useState<WaybillSorterModal>({ open: false, workOrderName: null, trackingNumbers: [] })
   const [waybillPreviewModal, setWaybillPreviewModal] = useState<WaybillPreviewModal>({ open: false, workOrderName: null, rows: [] })
+  const [showWaybillRawAddress, setShowWaybillRawAddress] = useState(true)
   const [wsLog, setWsLog] = useState<string[]>([])
   const [wsStatPdf, setWsStatPdf] = useState<string>('--')
   const [wsStatFound, setWsStatFound] = useState<string>('--')
@@ -1267,18 +1270,16 @@ export default function WorkOrderManageList({
       }
       const rows: WaybillPreviewRow[] = []
       for (const order of orders) {
-        const addressRaw = (order.billing_details?.original_customer_address || order.customer_address || '').trim()
+        // customer_address is the latest text entered/pasted for this order.
+        // Never prefer a historical value from billing_details: it can belong
+        // to an earlier paste and produce a mixed-recipient waybill.
+        const addressRaw = (order.customer_address || '').trim()
 
         // 1. ดึงเบอร์โทรออกจากข้อความ + ใช้ billing_details.mobile_phone เป็น fallback
         const { candidates: phoneCandidates, rest: textAfterPhones } = extractPhonesFromText(addressRaw)
-        const localPhones = phoneCandidates.map(e164ToLocal)
-        // ถ้าไม่เจอเบอร์ในที่อยู่ ให้ใช้เบอร์จาก billing_details
-        const billingPhone = (order.billing_details?.mobile_phone || '').trim()
-        if (localPhones.length === 0 && billingPhone) {
-          localPhones.push(billingPhone)
-        } else if (localPhones.length === 1 && billingPhone && billingPhone !== localPhones[0]) {
-          localPhones.push(billingPhone)
-        }
+        const parsedPhones = phoneCandidates.map(e164ToLocal)
+        // Structured fields are the latest reviewed shipping values. Keep the
+        // phone parsed from the pasted text only as an optional second number.
 
         // 2. ดึงรหัสไปรษณีย์ (เลข 5 หลักตัวสุดท้าย)
         const postcodeMatches = [...textAfterPhones.matchAll(/\b(\d{5})\b/g)]
@@ -1317,24 +1318,23 @@ export default function WorkOrderManageList({
         addressClean = addressClean.replace(/^[\s,;:|/\-]+/, '').replace(/[\s,;:|/\-]+$/, '').trim()
 
         // 4. ใช้ billing_details เป็น fallback สำหรับ postalCode / address
-        const bd = order.billing_details
-        let finalPostalCode = postalCode || (bd?.postal_code || '')
-        let finalAddress = addressClean
-        // ถ้า billing_details มีที่อยู่ structured ให้ใช้ประกอบ
-        if (!finalAddress && bd?.address_line) {
-          finalAddress = [bd.address_line, bd.sub_district, bd.district, bd.province].filter(Boolean).join(' ')
-        }
-        // ถ้าชื่อยังว่าง ลอง billing
-        if (!consigneeName) {
-          consigneeName = (order.recipient_name || order.customer_name || '').trim()
-        }
+        const resolvedCustomer = resolveWaybillCustomer({
+          customerAddress: addressRaw,
+          recipientName: consigneeName,
+          customerName: order.customer_name,
+          billingDetails: order.billing_details,
+          parsedAddress: addressClean,
+          parsedPostalCode: postalCode,
+          parsedPhones,
+        })
 
         // 5. COD
         const isCod = (order.payment_method || '').toLowerCase().includes('cod')
         const cod = isCod ? String(order.total_amount ?? 0) : '0'
 
-        rows.push({ billNo: order.bill_no, addressRaw, consigneeName, address: finalAddress, postalCode: finalPostalCode, phone1: localPhones[0] || '', phone2: localPhones[1] || '', cod })
+        rows.push({ billNo: order.bill_no, ...resolvedCustomer, cod })
       }
+      setShowWaybillRawAddress(true)
       setWaybillPreviewModal({ open: true, workOrderName, rows })
     } catch (err: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + (err?.message ?? err) })
@@ -2519,9 +2519,32 @@ export default function WorkOrderManageList({
                 <tr>
                   <th className="px-2 py-3 bg-gray-100 border-b border-gray-200 text-left text-sm font-bold text-gray-600 uppercase tracking-wide w-8">#</th>
                   {WAYBILL_PREVIEW_COLS.map(col => (
-                    <th key={col.key} className={`px-2 py-3 bg-gray-100 border-b border-gray-200 text-left text-sm font-bold text-gray-600 uppercase tracking-wide ${col.width}`}>
-                      {col.label}
-                      {col.required && <span className="text-red-400 ml-0.5">*</span>}
+                    <th
+                      key={col.key}
+                      className={`px-2 py-3 bg-gray-100 border-b border-gray-200 text-left text-sm font-bold text-gray-600 uppercase tracking-wide ${col.key === 'addressRaw' && !showWaybillRawAddress ? 'min-w-[52px] w-[52px]' : col.width}`}
+                    >
+                      {col.key === 'addressRaw' ? (
+                        <div className="flex items-center justify-between gap-2">
+                          {showWaybillRawAddress && <span>{col.label}</span>}
+                          <button
+                            type="button"
+                            onClick={() => setShowWaybillRawAddress((visible) => !visible)}
+                            aria-expanded={showWaybillRawAddress}
+                            aria-label={showWaybillRawAddress ? 'หุบคอลัมน์ Address (ต้นฉบับ)' : 'กางคอลัมน์ Address (ต้นฉบับ)'}
+                            title={showWaybillRawAddress ? 'หุบคอลัมน์' : 'กางคอลัมน์'}
+                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
+                          >
+                            {showWaybillRawAddress
+                              ? <FiChevronLeft className="h-4 w-4" aria-hidden="true" />
+                              : <FiChevronRight className="h-4 w-4" aria-hidden="true" />}
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          {col.label}
+                          {col.required && <span className="text-red-400 ml-0.5">*</span>}
+                        </>
+                      )}
                     </th>
                   ))}
                 </tr>
@@ -2540,9 +2563,11 @@ export default function WorkOrderManageList({
                         const isReadOnly = col.key === 'addressRaw'
                         const isMultiLine = col.key === 'address' || col.key === 'addressRaw' || col.key === 'consigneeName'
                         return (
-                          <td key={col.key} className={`px-1.5 py-1.5 border-b border-gray-100 align-top ${col.width}`}>
+                          <td key={col.key} className={`px-1.5 py-1.5 border-b border-gray-100 align-top ${col.key === 'addressRaw' && !showWaybillRawAddress ? 'min-w-[52px] w-[52px]' : col.width}`}>
                             {isReadOnly ? (
-                              <div className="px-2 py-2 text-base text-gray-600 whitespace-pre-line leading-relaxed max-h-32 overflow-y-auto">{val}</div>
+                              showWaybillRawAddress
+                                ? <div className="px-2 py-2 text-base text-gray-600 whitespace-pre-line leading-relaxed max-h-32 overflow-y-auto">{val}</div>
+                                : null
                             ) : (
                               <textarea
                                 value={val}
