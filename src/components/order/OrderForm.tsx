@@ -714,6 +714,12 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const [channelCodesWithSlipVerification, setChannelCodesWithSlipVerification] = useState<Set<string>>(new Set())
   const isCurrentBillSelfPickup = (channelCode: string | null | undefined = formData.channel_code) =>
     isSelfPickupBill(order?.fulfillment_method, channelCode, channelMeta)
+  const isCustomerAddressDisabled = (channelCode: string | null | undefined = formData.channel_code) =>
+    CHANNELS_BLOCK_ADDRESS.includes(String(channelCode || '').trim().toUpperCase())
+    || isCurrentBillSelfPickup(channelCode)
+  const shouldShowChannelName = (channelCode: string | null | undefined = formData.channel_code) =>
+    CHANNELS_SHOW_CHANNEL_NAME.includes(String(channelCode || '').trim().toUpperCase())
+    || isCurrentBillSelfPickup(channelCode)
   const [creatingBill, setCreatingBill] = useState(false)
   const [verificationModal, setVerificationModal] = useState<{
     type: VerificationResultType
@@ -2126,7 +2132,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     if (targetStatus === 'ลงข้อมูลเสร็จสิ้น') {
       const channelCode = formData.channel_code?.trim() || ''
       const requiresCustomerShipping =
-        !CHANNELS_BLOCK_ADDRESS.includes(channelCode) &&
+        !isCustomerAddressDisabled(channelCode) &&
         !CHANNELS_SKIP_CUSTOMER_FIELDS.includes(channelCode)
       const missingFields = requiresCustomerShipping
         ? getMissingCustomerShippingFields(formData, {
@@ -2246,13 +2252,16 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         : null
       
       // เตรียมข้อมูล billing_details (รวม address parts สำหรับที่อยู่ลูกค้า)
-      const hasAddressParts = !!(formData.address_line?.trim() || formData.sub_district?.trim() || formData.district?.trim() || formData.province?.trim() || formData.postal_code?.trim() || formData.mobile_phone?.trim())
+      const selfPickupForSave = isCurrentBillSelfPickup(formData.channel_code)
+      const hasAddressParts = !selfPickupForSave && !!(formData.address_line?.trim() || formData.sub_district?.trim() || formData.district?.trim() || formData.province?.trim() || formData.postal_code?.trim() || formData.mobile_phone?.trim())
       // customer_address keeps the latest text entered/pasted by the user.
       // Structured shipping fields remain in billing_details and are the source
       // of truth for the actual waybill address.
       const structuredCustomerAddress = [formData.address_line, formData.sub_district, formData.district, formData.province, formData.postal_code]
         .filter(Boolean).join(' ')
-      const customerAddressToSave = formData.customer_address?.trim() || structuredCustomerAddress
+      const customerAddressToSave = selfPickupForSave
+        ? ''
+        : formData.customer_address?.trim() || structuredCustomerAddress
       const existingBillingDetails: Record<string, unknown> = order?.billing_details && typeof order.billing_details === 'object'
         ? { ...order.billing_details as unknown as Record<string, unknown> }
         : {}
@@ -2271,12 +2280,12 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             quantity: item.quantity || 1,
             unit_price: item.unit_price || 0,
           })) : [],
-        address_line: formData.address_line?.trim() || null,
-        sub_district: formData.sub_district?.trim() || null,
-        district: formData.district?.trim() || null,
-        province: formData.province?.trim() || null,
-        postal_code: formData.postal_code?.trim() || null,
-        mobile_phone: formData.mobile_phone?.trim() || null,
+        address_line: selfPickupForSave ? null : formData.address_line?.trim() || null,
+        sub_district: selfPickupForSave ? null : formData.sub_district?.trim() || null,
+        district: selfPickupForSave ? null : formData.district?.trim() || null,
+        province: selfPickupForSave ? null : formData.province?.trim() || null,
+        postal_code: selfPickupForSave ? null : formData.postal_code?.trim() || null,
+        mobile_phone: selfPickupForSave ? null : formData.mobile_phone?.trim() || null,
       }
 
       // บิลที่บันทึก "ข้อมูลครบ": ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED → สถานะ "ตรวจสอบแล้ว" โดยตรง
@@ -2356,7 +2365,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         status: statusToSave,
         entry_date: new Date().toISOString().slice(0, 10),
         billing_details: (showTaxInvoice || hasAddressParts || Object.keys(existingBillingDetails).length > 0) ? billingDetails : null,
-        scheduled_pickup_at: formData.scheduled_pickup_at?.trim() ? new Date(formData.scheduled_pickup_at.trim()).toISOString() : null,
+        scheduled_pickup_at: selfPickupForSave && formData.scheduled_pickup_at?.trim()
+          ? new Date(formData.scheduled_pickup_at.trim()).toISOString()
+          : null,
       }
 
       let orderId: string
@@ -5116,7 +5127,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               <button
                 type="button"
                 onClick={() => handleAutoFillAddress()}
-                disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled || autoFillAddressLoading}
+                disabled={isCustomerAddressDisabled() || formDisabled || autoFillAddressLoading}
                 className="text-sm px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {autoFillAddressLoading ? 'กำลังแยก...' : 'Auto fill'}
@@ -5135,28 +5146,28 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 void handleAutoFillAddress(next)
               }}
               placeholder="วางที่อยู่พร้อมเบอร์โทรทั้งหมด แล้วแยกข้อมูลให้อัตโนมัติ"
-              required={!CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)}
-              disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
+              required={!isCustomerAddressDisabled()}
+              disabled={isCustomerAddressDisabled() || formDisabled}
               rows={3}
-              className={`w-full px-3 py-2 border rounded-lg ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.address ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+              className={`w-full px-3 py-2 border rounded-lg ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.address ? 'ring-2 ring-red-500 border-red-500' : ''}`}
             />
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {(CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code) || CHANNELS_SHOW_ORDER_NO.includes(formData.channel_code)) && (
+              {(shouldShowChannelName() || CHANNELS_SHOW_ORDER_NO.includes(formData.channel_code)) && (
                 <div className="sm:col-span-2 lg:col-span-3">
                   <label className="block text-xs text-gray-500 mb-0.5">ชื่อลูกค้า</label>
                   <input
                     type="text"
-                    value={CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code) ? formData.recipient_name : formData.customer_name}
+                    value={shouldShowChannelName() ? formData.recipient_name : formData.customer_name}
                     onChange={(e) => {
-                      if (CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code)) {
+                      if (shouldShowChannelName()) {
                         setFormData({ ...formData, recipient_name: e.target.value })
                       } else {
                         setFormData({ ...formData, customer_name: e.target.value })
                       }
                     }}
                     required={CHANNELS_SHOW_ORDER_NO.includes(formData.channel_code) && !CHANNELS_COMPLETE_TO_VERIFIED.includes(formData.channel_code)}
-                    disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
-                    className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.customer_name ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                    disabled={isCustomerAddressDisabled() || formDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.customer_name ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                   />
                 </div>
               )}
@@ -5166,8 +5177,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   type="text"
                   value={formData.address_line}
                   onChange={(e) => setFormData({ ...formData, address_line: e.target.value })}
-                  disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
-                  className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                  disabled={isCustomerAddressDisabled() || formDisabled}
+                  className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
                 />
               </div>
               <div>
@@ -5185,8 +5196,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       const o = subDistrictOptions[i]
                       if (o) setFormData((prev) => ({ ...prev, sub_district: o.subDistrict, district: o.district }))
                     }}
-                    disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
-                    className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                    disabled={isCustomerAddressDisabled() || formDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
                   >
                     <option value="">-- เลือกแขวง/ตำบล --</option>
                     {subDistrictOptions.map((o, i) => (
@@ -5198,8 +5209,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     type="text"
                     value={formData.sub_district}
                     onChange={(e) => setFormData({ ...formData, sub_district: e.target.value })}
-                    disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
-                    className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                    disabled={isCustomerAddressDisabled() || formDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
                   />
                 )}
               </div>
@@ -5209,8 +5220,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   <select
                     value={formData.district}
                     onChange={(e) => setFormData({ ...formData, district: e.target.value })}
-                    disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
-                    className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                    disabled={isCustomerAddressDisabled() || formDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
                   >
                     <option value="">-- เลือกเขต/อำเภอ --</option>
                     {Array.from(new Set(
@@ -5227,8 +5238,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     type="text"
                     value={formData.district}
                     onChange={(e) => setFormData({ ...formData, district: e.target.value })}
-                    disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
-                    className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                    disabled={isCustomerAddressDisabled() || formDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
                   />
                 )}
               </div>
@@ -5238,8 +5249,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   type="text"
                   value={formData.province}
                   onChange={(e) => setFormData({ ...formData, province: e.target.value })}
-                  disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
-                  className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                  disabled={isCustomerAddressDisabled() || formDisabled}
+                  className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
                 />
               </div>
               <div>
@@ -5248,8 +5259,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   type="text"
                   value={formData.postal_code}
                   onChange={(e) => setFormData({ ...formData, postal_code: e.target.value })}
-                  disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
-                  className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                  disabled={isCustomerAddressDisabled() || formDisabled}
+                  className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
                 />
               </div>
               <div>
@@ -5258,8 +5269,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   <select
                     value={formData.mobile_phone}
                     onChange={(e) => setFormData({ ...formData, mobile_phone: e.target.value })}
-                    disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
-                    className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                    disabled={isCustomerAddressDisabled() || formDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
                   >
                     {mobilePhoneCandidates.map((p) => (
                       <option key={p} value={p}>{p}</option>
@@ -5274,8 +5285,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       if (mobilePhoneCandidates.length > 0) setMobilePhoneCandidates([])
                     }}
                     placeholder="0 ตามด้วย 9 หลัก (06-09)"
-                    disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
-                    className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                    disabled={isCustomerAddressDisabled() || formDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
                   />
                 )}
               </div>
@@ -5283,7 +5294,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           </div>
           <div className="flex flex-col gap-4">
             {/* ชื่อช่องทาง / เลขคำสั่งซื้อ — แสดงเฉพาะหลังสร้างบิล */}
-            {CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code) && (
+            {shouldShowChannelName() && (
               <div>
                 <label className="block text-sm font-medium mb-1">ชื่อช่องทาง</label>
                 <input
@@ -5323,7 +5334,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 />
               </div>
             )}
-            {formData.channel_code === 'SHOPP' && (
+            {isCurrentBillSelfPickup() && (
               <div>
                 <label className="block text-sm font-medium mb-1">วันที่ เวลา นัดรับ <span className="text-red-500">*</span></label>
                 <div
@@ -6686,7 +6697,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 return
               }
 
-              if (CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code)) {
+              if (shouldShowChannelName()) {
                 if (!formData.customer_name || formData.customer_name.trim() === '') {
                   setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกชื่อช่องทาง' })
                   return
@@ -6717,7 +6728,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 }
               }
 
-              if (formData.channel_code === 'SHOPP') {
+              if (isCurrentBillSelfPickup()) {
                 if (!formData.scheduled_pickup_at || !formData.scheduled_pickup_at.trim()) {
                   setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเลือกวันที่ เวลา นัดรับ' })
                   return
@@ -6749,7 +6760,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 }
               }
 
-              const isAddressBlockedSave = CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)
+              const isAddressBlockedSave = isCustomerAddressDisabled()
               const isSkipCustomerFields = CHANNELS_SKIP_CUSTOMER_FIELDS.includes(formData.channel_code)
               const missingCustomerShippingFields = !isAddressBlockedSave && !isSkipCustomerFields
                 ? getMissingCustomerShippingFields(formData, {

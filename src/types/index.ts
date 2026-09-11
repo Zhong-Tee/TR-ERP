@@ -39,6 +39,7 @@ export type OrderStatus =
   | 'ลงข้อมูลผิด'
   | 'ตรวจสอบไม่ผ่าน'
   | 'ตรวจสอบไม่สำเร็จ'
+  | 'รออนุมัติเคลม'
   | 'ตรวจสอบแล้ว'
   | 'รอออกแบบ'
   | 'ไม่ต้องออกแบบ'
@@ -996,6 +997,7 @@ export interface BankSetting {
   bank_name: string | null
   account_name: string | null
   is_active: boolean
+  use_for_claim_slips: boolean
   bill_header_id: string | null
   created_at: string
   updated_at: string

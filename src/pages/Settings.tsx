@@ -145,6 +145,7 @@ export default function Settings() {
     bank_name: '',
     account_name: '',
     is_active: true,
+    use_for_claim_slips: false,
     selectedChannels: [] as string[],
   })
 
@@ -1992,6 +1993,7 @@ export default function Settings() {
         bank_name: bank.bank_name || '',
         account_name: bank.account_name || '',
         is_active: bank.is_active,
+        use_for_claim_slips: bank.use_for_claim_slips === true,
         selectedChannels,
       })
     } else {
@@ -2002,6 +2004,7 @@ export default function Settings() {
         bank_name: '',
         account_name: '',
         is_active: true,
+        use_for_claim_slips: false,
         selectedChannels: [],
       })
     }
@@ -2017,6 +2020,7 @@ export default function Settings() {
       bank_name: '',
       account_name: '',
       is_active: true,
+      use_for_claim_slips: false,
       selectedChannels: [],
     })
   }
@@ -2028,8 +2032,8 @@ export default function Settings() {
         return
       }
 
-      if (bankFormData.selectedChannels.length === 0) {
-        showMessage({ message: 'กรุณาเลือกช่องทางการขายอย่างน้อย 1 ช่องทาง' })
+      if (bankFormData.selectedChannels.length === 0 && !bankFormData.use_for_claim_slips) {
+        showMessage({ message: 'กรุณาเลือกช่องทางการขายหรือบิลเคลมอย่างน้อย 1 รายการ' })
         return
       }
 
@@ -2045,6 +2049,18 @@ export default function Settings() {
         bank_code: bankFormData.bank_code,
         bank_name: bankName,
         is_active: bankFormData.is_active,
+        use_for_claim_slips: bankFormData.use_for_claim_slips,
+      }
+
+      // บิลเคลมใช้บัญชีได้เพียงบัญชีเดียว ปลดบัญชีเดิมก่อนบันทึกบัญชีใหม่
+      if (bankFormData.use_for_claim_slips) {
+        let clearClaimBankQuery = supabase
+          .from('bank_settings')
+          .update({ use_for_claim_slips: false })
+          .eq('use_for_claim_slips', true)
+        if (editingBank) clearClaimBankQuery = clearClaimBankQuery.neq('id', editingBank.id)
+        const { error: clearClaimBankError } = await clearClaimBankQuery
+        if (clearClaimBankError) throw clearClaimBankError
       }
 
       // Only include account_name if migration has been run
@@ -3241,9 +3257,14 @@ export default function Settings() {
                         <td className="p-3">{bank.bank_code}</td>
                         <td className="p-3">{bank.bank_name || '-'}</td>
                         <td className="p-3">
-                          {bank.channels && bank.channels.length > 0 ? (
+                          {(bank.use_for_claim_slips || (bank.channels && bank.channels.length > 0)) ? (
                             <div className="flex flex-wrap gap-1">
-                              {bank.channels.map((ch, idx) => (
+                              {bank.use_for_claim_slips && (
+                                <span className="px-2 py-1 bg-amber-100 text-amber-800 rounded text-xs">
+                                  บิลเคลม (REQ)
+                                </span>
+                              )}
+                              {(bank.channels || []).map((ch, idx) => (
                                 <span
                                   key={idx}
                                   className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs"
@@ -3376,6 +3397,19 @@ export default function Settings() {
                       ช่องทางการขาย <span className="text-red-500">*</span>
                     </label>
                     <div className="border rounded-lg p-3 max-h-48 overflow-y-auto">
+                      <label className="flex items-center mb-2 rounded-md bg-amber-50 px-2 py-2">
+                        <input
+                          type="checkbox"
+                          checked={bankFormData.use_for_claim_slips}
+                          onChange={(e) => setBankFormData({
+                            ...bankFormData,
+                            use_for_claim_slips: e.target.checked,
+                          })}
+                          className="mr-2"
+                        />
+                        <span className="text-sm font-medium text-amber-900">บิลเคลม (REQ)</span>
+                      </label>
+                      <div className="mb-2 border-t border-gray-200" />
                       {channels.map((channel) => (
                         <label key={channel.channel_code} className="flex items-center mb-2">
                           <input

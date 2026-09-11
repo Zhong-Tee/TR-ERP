@@ -9,6 +9,8 @@ import OrderForm, { type OrderFormRef } from '../order/OrderForm'
 import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import Modal from '../ui/Modal'
 
+const CLAIM_REQ_FILTER = '__CLAIM_REQ__'
+
 const ALL_STATUSES: OrderStatus[] = [
   'รอลงข้อมูล',
   'รอตรวจคำสั่งซื้อ',
@@ -81,6 +83,7 @@ type SearchResult = {
   work_order_id: string | null
   work_order_name: string | null
   shipped_time: string | null
+  claim_type: string | null
   has_edit_log?: boolean
   revision_no?: number
 }
@@ -142,11 +145,15 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
     setSearchStats(null)
     try {
       const selectOrderFields =
-        'id, bill_no, channel_order_no, channel_code, customer_name, customer_address, express_receipt_number, status, total_amount, created_at, entry_date, billing_details, revision_no, work_order_id, work_order_name, shipped_time'
+        'id, bill_no, channel_order_no, channel_code, customer_name, customer_address, express_receipt_number, status, total_amount, created_at, entry_date, billing_details, revision_no, work_order_id, work_order_name, shipped_time, claim_type'
 
       /** รองรับทั้ง select(...) และ select(..., { count, head }) — ห้ามใช้ ReturnType<typeof supabase.from> (เป็น QueryBuilder ก่อน select) */
       const applyOrderFilters = <
-        Q extends { or: (filters: string) => Q; eq: (column: string, value: string) => Q },
+        Q extends {
+          or: (filters: string) => Q
+          eq: (column: string, value: string) => Q
+          ilike: (column: string, pattern: string) => Q
+        },
       >(
         q: Q,
       ): Q => {
@@ -155,7 +162,11 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
           const s = searchQuery.trim()
           query = query.or(buildIlikeOr(s, ['bill_no', 'channel_order_no', 'customer_name', 'customer_address', 'express_receipt_number']))
         }
-        if (filterChannel) query = query.eq('channel_code', filterChannel)
+        if (filterChannel === CLAIM_REQ_FILTER) {
+          query = query.ilike('bill_no', 'REQ%')
+        } else if (filterChannel) {
+          query = query.eq('channel_code', filterChannel)
+        }
         return query
       }
 
@@ -648,6 +659,7 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
             <select value={filterChannel} onChange={(e) => setFilterChannel(e.target.value)}
               className="h-10 w-full rounded-lg border bg-white px-3 text-sm">
               <option value="">ทั้งหมด</option>
+              <option value={CLAIM_REQ_FILTER}>บิลเคลม (REQ)</option>
               {channels.map((ch) => (
                 <option key={ch.channel_code} value={ch.channel_code}>{ch.channel_code} - {ch.channel_name}</option>
               ))}
@@ -751,6 +763,11 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
                               {r.bill_no}
                               <ExpressReceiptNumberInline value={r.express_receipt_number} />
                             </span>
+                            {(r.claim_type != null || r.bill_no.startsWith('REQ')) && (
+                              <span className="rounded border border-amber-200 bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
+                                บิลเคลม
+                              </span>
+                            )}
                             {r.has_edit_log && (
                               <span
                                 className="text-xs px-2 py-0.5 rounded-full font-semibold bg-teal-100 text-teal-800 border border-teal-200"

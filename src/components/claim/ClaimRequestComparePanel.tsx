@@ -263,10 +263,6 @@ export default function ClaimRequestComparePanel({
           <span>ยอดรายการ: {fmtMoney(propPrice)}</span>
           <span className="text-gray-500">|</span>
           <span>ค่าขนส่ง: {fmtMoney(propShipping)}</span>
-          <span className="text-gray-500">|</span>
-          <span>
-            ยอดรวมเสนอ: <strong>{fmtMoney(propTotal)}</strong>
-          </span>
           {refOrder && (
             <span
               className={
@@ -283,6 +279,11 @@ export default function ClaimRequestComparePanel({
           )}
         </p>
         <FullItemsTable items={proposedItems} />
+        <div className="flex items-center justify-end border-t border-amber-100 bg-amber-50/40 px-3 py-2 text-sm">
+          <span>
+            ยอดรวมเสนอ: <strong>{fmtMoney(propTotal)}</strong>
+          </span>
+        </div>
       </div>
     </div>
   )

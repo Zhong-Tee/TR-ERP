@@ -12,42 +12,23 @@ export type ClaimSlipVerifyResult = {
   errors: string[]
 }
 
-/** บัญชีรับโอนของช่องทาง (ตรรกะเดียวกับตรวจสลิปปกติใน OrderForm) */
-async function loadBankSettingForChannel(
-  channelCode: string | null,
-): Promise<{ bankAccount?: string; bankCode?: string }> {
-  try {
-    if (channelCode) {
-      const { data: bankChannels } = await supabase
-        .from('bank_settings_channels')
-        .select('bank_setting_id')
-        .eq('channel_code', channelCode)
-      const ids = (bankChannels || []).map((r: { bank_setting_id: string }) => r.bank_setting_id)
-      if (ids.length > 0) {
-        const { data: settings } = await supabase
-          .from('bank_settings')
-          .select('account_number, bank_code, is_active')
-          .in('id', ids)
-          .eq('is_active', true)
-          .limit(1)
-        if (settings && settings.length > 0) {
-          return { bankAccount: settings[0].account_number, bankCode: settings[0].bank_code }
-        }
-      }
-    }
-    // Fallback: บัญชี active ใดก็ได้
-    const { data: anyActive } = await supabase
-      .from('bank_settings')
-      .select('account_number, bank_code')
-      .eq('is_active', true)
-      .limit(1)
-    if (anyActive && anyActive.length > 0) {
-      return { bankAccount: anyActive[0].account_number, bankCode: anyActive[0].bank_code }
-    }
-  } catch (e) {
-    console.warn('claimSlipVerification: load bank settings', e)
+/** บัญชีรับโอนที่ผู้ดูแลเลือกไว้สำหรับบิลเคลมโดยเฉพาะ */
+async function loadClaimBankSetting(): Promise<{ bankAccount: string; bankCode: string }> {
+  const { data, error } = await supabase
+    .from('bank_settings')
+    .select('account_number, bank_code')
+    .eq('use_for_claim_slips', true)
+    .eq('is_active', true)
+    .limit(2)
+
+  if (error) throw new Error(`โหลดบัญชีสำหรับตรวจสลิปบิลเคลมไม่สำเร็จ: ${error.message}`)
+  if (!data || data.length === 0) {
+    throw new Error('ยังไม่ได้ตั้งค่าบัญชีสำหรับบิลเคลม กรุณาไปที่ ตั้งค่า → ข้อมูลธนาคาร แล้วเลือก “บิลเคลม (REQ)”')
   }
-  return {}
+  if (data.length > 1) {
+    throw new Error('พบบัญชีสำหรับบิลเคลมมากกว่า 1 บัญชี กรุณาเลือกให้เหลือเพียงบัญชีเดียว')
+  }
+  return { bankAccount: data[0].account_number, bankCode: data[0].bank_code }
 }
 
 /**
@@ -63,11 +44,11 @@ export async function verifyAndSaveClaimSlips(params: {
   files: File[]
   verifiedBy: string | null
 }): Promise<ClaimSlipVerifyResult> {
-  const { orderId, billNo, channelCode, expectedAmount, files, verifiedBy } = params
+  const { orderId, billNo, expectedAmount, files, verifiedBy } = params
 
+  // ตรวจการตั้งค่าก่อนอัปโหลด เพื่อไม่ให้เกิดไฟล์ค้างเมื่อยังไม่ได้เลือกบัญชีบิลเคลม
+  const { bankAccount, bankCode } = await loadClaimBankSetting()
   const storagePaths = await uploadMultipleToStorage(files, 'slip-images', `slip${billNo}`)
-
-  const { bankAccount, bankCode } = await loadBankSettingForChannel(channelCode)
 
   const results = await verifyMultipleSlipsFromStorage(storagePaths, expectedAmount, bankAccount, bankCode)
 

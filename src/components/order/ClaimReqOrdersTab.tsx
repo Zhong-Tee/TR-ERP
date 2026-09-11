@@ -651,7 +651,10 @@ export default function ClaimReqOrdersTab({
             })
           }
         }
-        const cidList = [...new Set([...bestByRef.values()].map((v) => v.created_claim_order_id))]
+        const cidList = [...new Set([
+          ...[...bestByRef.values()].map((v) => v.created_claim_order_id),
+          ...pBase.map((r) => r.created_claim_order_id).filter((id): id is string => Boolean(id)),
+        ])]
         const billById: Record<string, string> = {}
         for (let i = 0; i < cidList.length; i += CHUNK) {
           const ch = cidList.slice(i, i + CHUNK)
@@ -670,6 +673,11 @@ export default function ClaimReqOrdersTab({
         for (const [refId, v] of bestByRef) {
           const bn = billById[v.created_claim_order_id]
           if (bn) latestReqByRef[refId] = bn
+        }
+        for (const request of pBase) {
+          if (!request.created_claim_order_id) continue
+          const bn = billById[request.created_claim_order_id]
+          if (bn) latestReqByRef[request.ref_order_id] = bn
         }
       }
       setLatestReqBillByRefOrderId(latestReqByRef)
@@ -1186,6 +1194,7 @@ export default function ClaimReqOrdersTab({
                             <div>
                               <div className="font-mono font-semibold text-gray-900">{reqLatest}</div>
                               <div className="text-xs text-gray-500 mt-0.5">บิลต้น {baseBill}</div>
+                              {c.created_claim_order_id && <div className="mt-1 text-xs font-semibold text-amber-700">รออนุมัติการแก้ไข</div>}
                             </div>
                           ) : (
                             <span className="font-mono">{baseBill}</span>

@@ -3,11 +3,15 @@ import type { Order } from '../../types'
 import { supabase } from '../../lib/supabase'
 import { verifyAndSaveClaimSlips } from '../../lib/claimSlipVerification'
 import { useAuthContext } from '../../contexts/AuthContext'
+import { fetchAllSupabasePagesResult } from '../../lib/supabasePagination'
+import { buildClaimRevisionSnapshot, claimRevisionFingerprint } from '../../lib/claimReapproval'
 import Modal from '../ui/Modal'
 import VerificationResultModal, { type AmountStatus } from '../order/VerificationResultModal'
 
 type ItemRow = {
-  id: string
+  id?: string
+  edit_key: string
+  product_id?: string | null
   product_name?: string | null
   ink_color?: string | null
   cartoon_pattern?: string | null
@@ -19,6 +23,18 @@ type ItemRow = {
   quantity?: number | null
   unit_price?: number | null
   is_free?: boolean | null
+  product_type?: string | null
+  no_name_line?: boolean | null
+  notes?: string | null
+  file_attachment?: string | null
+  attachment_name?: string | null
+}
+
+type ProductOption = {
+  id: string
+  product_code: string
+  product_name: string
+  product_type?: string | null
 }
 
 type SlipRow = { id: string; url: string; name: string }
@@ -34,8 +50,10 @@ export default function FailedClaimEditModal({
 }) {
   const { user } = useAuthContext()
   const [rows, setRows] = useState<ItemRow[]>([])
-  const [initialIds, setInitialIds] = useState<string[]>([])
+  const [initialRevision, setInitialRevision] = useState('')
+  const [products, setProducts] = useState<ProductOption[]>([])
   const [shipping, setShipping] = useState(0)
+  const [discount, setDiscount] = useState(0)
   const [slips, setSlips] = useState<SlipRow[]>([])
   const [newFiles, setNewFiles] = useState<File[]>([])
   const [newPreviews, setNewPreviews] = useState<string[]>([])
@@ -56,6 +74,14 @@ export default function FailedClaimEditModal({
     statusMessage: string
   } | null>(null)
 
+  function revisionPayload(sourceRows: ItemRow[], sourceShipping: number) {
+    return buildClaimRevisionSnapshot(sourceRows, sourceShipping, discount)
+  }
+
+  function revisionFingerprint(sourceRows: ItemRow[], sourceShipping: number) {
+    return claimRevisionFingerprint(sourceRows, sourceShipping, discount)
+  }
+
   useEffect(() => {
     const urls = newFiles.map(URL.createObjectURL)
     setNewPreviews(urls)
@@ -70,13 +96,50 @@ export default function FailedClaimEditModal({
       setError('')
       setNewFiles([])
       try {
-        const [{ data: itemData, error: itemErr }, { data: slipData, error: slipErr }] = await Promise.all([
-          supabase.from('or_order_items').select('id, product_name, ink_color, cartoon_pattern, line_pattern, font, line_1, line_2, line_3, quantity, unit_price, is_free').eq('order_id', order.id).order('created_at'),
+        const [{ data: itemData, error: itemErr }, { data: slipData, error: slipErr }, productResult, { data: claimRequest, error: claimError }] = await Promise.all([
+          supabase.from('or_order_items').select('id, product_id, product_name, ink_color, cartoon_pattern, line_pattern, font, line_1, line_2, line_3, quantity, unit_price, is_free, product_type, no_name_line, notes, file_attachment, attachment_name').eq('order_id', order.id).order('created_at'),
           supabase.from('ac_verified_slips').select('id, slip_image_url, slip_storage_path').eq('order_id', order.id).or('is_deleted.is.null,is_deleted.eq.false').order('created_at'),
+          fetchAllSupabasePagesResult((from, to) => supabase
+            .from('pr_products')
+            .select('id, product_code, product_name, product_type')
+            .eq('is_active', true)
+            .in('product_type', ['FG', 'PP'])
+            .order('product_code')
+            .order('id')
+            .range(from, to)),
+          supabase
+            .from('or_claim_requests')
+            .select('proposed_snapshot')
+            .eq('created_claim_order_id', order.id)
+            .eq('status', 'approved')
+            .order('reviewed_at', { ascending: false })
+            .limit(1)
+            .maybeSingle(),
         ])
         if (itemErr) throw itemErr
         if (slipErr) throw slipErr
-        const loadedRows = (itemData || []) as ItemRow[]
+        if (productResult.error) throw productResult.error
+        if (claimError) throw claimError
+        const approvedSnapshot = claimRequest?.proposed_snapshot as {
+          order?: { shipping_cost?: unknown; discount?: unknown }
+          items?: Omit<ItemRow, 'edit_key'>[]
+        } | null
+        // The approved request is the source of truth for what account
+        // approved. Older REQ rows may have been created with zeroed monetary
+        // values, so prefer its snapshot and fall back to the order itself.
+        const persistedItems = (itemData || []) as Omit<ItemRow, 'edit_key'>[]
+        const approvedItems = Array.isArray(approvedSnapshot?.items) && approvedSnapshot.items.length > 0
+          ? approvedSnapshot.items.map((snapshotItem, index) => ({
+              ...persistedItems[index],
+              ...snapshotItem,
+              product_id: snapshotItem.product_id || persistedItems[index]?.product_id || null,
+              product_name: snapshotItem.product_name || persistedItems[index]?.product_name || '',
+            }))
+          : persistedItems
+        const loadedRows = approvedItems.map((row) => ({
+          ...row,
+          edit_key: row.id || crypto.randomUUID(),
+        }))
         const loadedSlips: SlipRow[] = []
         for (const raw of (slipData || []) as { id: string; slip_image_url?: string | null; slip_storage_path?: string | null }[]) {
           let url = raw.slip_image_url || ''
@@ -89,8 +152,18 @@ export default function FailedClaimEditModal({
         }
         if (!cancelled) {
           setRows(loadedRows)
-          setInitialIds(loadedRows.map((r) => r.id))
-          setShipping(Number(order.shipping_cost) || 0)
+          const approvedShipping = Number(approvedSnapshot?.order?.shipping_cost)
+          const loadedShipping = Number.isFinite(approvedShipping)
+            ? approvedShipping
+            : Number(order.shipping_cost) || 0
+          const approvedDiscount = Number(approvedSnapshot?.order?.discount)
+          const loadedDiscount = Number.isFinite(approvedDiscount)
+            ? approvedDiscount
+            : Number(order.discount) || 0
+          setShipping(loadedShipping)
+          setDiscount(loadedDiscount)
+          setInitialRevision(claimRevisionFingerprint(loadedRows, loadedShipping, loadedDiscount))
+          setProducts((productResult.data || []) as ProductOption[])
           setSlips(loadedSlips)
         }
       } catch (e) {
@@ -103,7 +176,21 @@ export default function FailedClaimEditModal({
   }, [order])
 
   const itemsTotal = rows.reduce((sum, r) => sum + (r.is_free ? 0 : (Number(r.quantity) || 0) * (Number(r.unit_price) || 0)), 0)
-  const total = itemsTotal + (Number(shipping) || 0) - (Number(order?.discount) || 0)
+  const total = itemsTotal + (Number(shipping) || 0) - discount
+  const billChanged = !!initialRevision && revisionFingerprint(rows, shipping) !== initialRevision
+
+  function addItem() {
+    setRows((prev) => [...prev, {
+      edit_key: crypto.randomUUID(),
+      product_id: null,
+      product_name: '',
+      quantity: 1,
+      unit_price: 0,
+      product_type: 'ชั้น1',
+      is_free: false,
+      no_name_line: false,
+    }])
+  }
 
   async function removeSlip(slip: SlipRow) {
     setDeletingSlip(true)
@@ -123,22 +210,23 @@ export default function FailedClaimEditModal({
   async function save() {
     if (!order || rows.length === 0) return
     if (rows.some((r) => (Number(r.quantity) || 0) < 1)) { setError('จำนวนสินค้าต้องไม่น้อยกว่า 1'); return }
+    if (rows.some((r) => !String(r.product_name || '').trim())) { setError('กรุณาเลือกสินค้าให้ครบทุกรายการ'); return }
     setSaving(true)
     setError('')
     try {
-      const currentIds = new Set(rows.map((r) => r.id))
-      const removedIds = initialIds.filter((id) => !currentIds.has(id))
-      if (removedIds.length) {
-        const { error: delErr } = await supabase.from('or_order_items').delete().in('id', removedIds)
-        if (delErr) throw delErr
+      if (billChanged) {
+        const { error: revisionError } = await supabase.rpc('rpc_submit_claim_order_revision', {
+          p_order_id: order.id,
+          p_proposed_snapshot: revisionPayload(rows, shipping),
+        })
+        if (revisionError) throw revisionError
+        setNewFiles([])
+        await onSaved()
+        window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+        window.dispatchEvent(new CustomEvent('account-refresh-history'))
+        onClose()
+        return
       }
-      for (const row of rows) {
-        const { id, ...values } = row
-        const { error: rowErr } = await supabase.from('or_order_items').update(values).eq('id', id)
-        if (rowErr) throw rowErr
-      }
-      const { error: orderErr } = await supabase.from('or_orders').update({ price: itemsTotal, shipping_cost: Number(shipping) || 0, total_amount: total }).eq('id', order.id)
-      if (orderErr) throw orderErr
 
       if (newFiles.length > 0) {
         const outcome = await verifyAndSaveClaimSlips({
@@ -177,8 +265,7 @@ export default function FailedClaimEditModal({
         onClose()
         return
       }
-      await onSaved()
-      onClose()
+      setError('ยังไม่มีการแก้ไขข้อมูลหรือสลิปใหม่')
     } catch (e) {
       setError((e as Error)?.message || String(e))
     } finally {
@@ -191,17 +278,46 @@ export default function FailedClaimEditModal({
       <Modal open={!!order} onClose={() => !saving && onClose()} contentClassName="max-w-7xl w-full max-h-[92vh] flex flex-col" closeOnBackdropClick={false}>
         <div className="flex min-h-0 flex-1 flex-col p-5">
           <h3 className="text-lg font-bold">แก้ไขบิลเคลม</h3>
-          <p className="mb-3 text-sm text-gray-600">บิลเคลม: <strong className="font-mono">{order?.bill_no}</strong> — แก้ไขและส่งสลิปตรวจ EasySlip ซ้ำ</p>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-gray-600">
+              บิลเคลม: <strong className="font-mono">{order?.bill_no}</strong> — แก้ข้อมูลบิลเพื่อส่งอนุมัติใหม่ หรืออัปสลิปใหม่เพื่อตรวจ EasySlip ซ้ำ
+            </p>
+            <button type="button" onClick={addItem} disabled={loading || saving} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+              + เพิ่มสินค้า
+            </button>
+          </div>
           {loading ? <div className="py-12 text-center text-gray-500">กำลังโหลด...</div> : (
             <>
               <div className="mb-3 max-h-[38vh] min-h-[150px] overflow-auto rounded-lg border">
                 <table className="w-full min-w-[1100px] text-xs sm:text-sm">
-                  <thead className="sticky top-0 bg-gray-100"><tr>{['สินค้า','สีหมึก','ลาย','เส้น','ฟอนต์','บรรทัด 1','บรรทัด 2','บรรทัด 3','จำนวน','ราคา/หน่วย',''].map((h) => <th key={h} className="p-2 text-left">{h}</th>)}</tr></thead>
-                  <tbody>{rows.map((row, idx) => <tr key={row.id} className="border-t">
-                    <td className="p-2">{row.product_name || '–'}</td>
+                  <thead className="sticky top-0 bg-gray-100"><tr>{['สินค้า','สีหมึก','ลาย','เส้น','ฟอนต์','บรรทัด 1','บรรทัด 2','บรรทัด 3','จำนวน','ราคา/หน่วย',''].map((h) => <th key={h} className={`p-2 text-left ${h === 'ราคา/หน่วย' ? 'min-w-[120px]' : ''}`}>{h}</th>)}</tr></thead>
+                  <tbody>{rows.map((row, idx) => <tr key={row.edit_key} className="border-t">
+                    <td className="p-1 min-w-[190px]">
+                      <select
+                        className="w-full rounded border px-2 py-1"
+                        value={row.product_id || ''}
+                        onChange={(e) => {
+                          const product = products.find((p) => p.id === e.target.value)
+                          setRows((prev) => prev.map((item, i) => i === idx ? {
+                            ...item,
+                            product_id: product?.id || null,
+                            product_name: product?.product_name || '',
+                            product_type: item.product_type || 'ชั้น1',
+                          } : item))
+                        }}
+                      >
+                        <option value="">-- เลือกสินค้า --</option>
+                        {row.product_id && !products.some((p) => p.id === row.product_id) && (
+                          <option value={row.product_id}>{row.product_name || row.product_id}</option>
+                        )}
+                        {products.map((product) => (
+                          <option key={product.id} value={product.id}>{product.product_code} — {product.product_name}</option>
+                        ))}
+                      </select>
+                    </td>
                     {(['ink_color','cartoon_pattern','line_pattern','font','line_1','line_2','line_3'] as const).map((field) => <td key={field} className="p-1"><input className="w-full rounded border px-2 py-1" value={row[field] || ''} onChange={(e) => setRows((p) => p.map((r,i) => i === idx ? {...r,[field]:e.target.value} : r))} /></td>)}
                     <td className="p-1"><input type="number" min={1} className="w-16 rounded border px-2 py-1" value={Number(row.quantity)||1} onChange={(e) => setRows((p) => p.map((r,i) => i===idx ? {...r,quantity:Number(e.target.value)} : r))}/></td>
-                    <td className="p-1"><input type="number" min={0} step="0.01" className="w-20 rounded border px-2 py-1" value={Number(row.unit_price)||0} onChange={(e) => setRows((p) => p.map((r,i) => i===idx ? {...r,unit_price:Number(e.target.value),is_free:false} : r))}/></td>
+                    <td className="min-w-[120px] p-1"><input type="number" min={0} step="0.01" className="w-28 rounded border px-2 py-1" value={Number(row.unit_price)||0} onChange={(e) => setRows((p) => p.map((r,i) => i===idx ? {...r,unit_price:Number(e.target.value),is_free:false} : r))}/></td>
                     <td className="p-1"><button type="button" className="text-red-600" onClick={() => setRows((p) => p.filter((_,i) => i!==idx))}>ลบ</button></td>
                   </tr>)}</tbody>
                 </table>
@@ -209,6 +325,11 @@ export default function FailedClaimEditModal({
               <div className="mb-3 grid gap-4 lg:grid-cols-[1fr_320px]">
                 <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3">
                   <div className="mb-2 flex items-center justify-between"><strong>สลิปโอน</strong><label className="cursor-pointer rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700">อัปสลิปใหม่<input type="file" accept="image/*" multiple className="sr-only" onChange={(e) => setNewFiles(Array.from(e.target.files || []))}/></label></div>
+                  {billChanged && (
+                    <p className="mb-2 rounded-lg bg-amber-100 px-3 py-2 text-xs font-medium text-amber-800">
+                      ข้อมูลบิลมีการเปลี่ยนแปลง — ระบบจะส่งอนุมัติใหม่ก่อน และยังไม่ส่งสลิปตรวจ EasySlip
+                    </p>
+                  )}
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
                     {slips.map((slip) => <div key={slip.id} className="overflow-hidden rounded border bg-white"><button type="button" onClick={() => setZoomUrl(slip.url)} className="block w-full"><img src={slip.url} alt={slip.name} className="h-36 w-full object-contain"/></button><button type="button" onClick={() => setDeleteSlipTarget(slip)} className="w-full border-t py-1 text-xs text-red-600">ลบสลิป</button></div>)}
                     {newPreviews.map((url,i) => <div key={url} className="overflow-hidden rounded border border-blue-300 bg-white"><button type="button" onClick={() => setZoomUrl(url)} className="block w-full"><img src={url} alt={`สลิปใหม่ ${i+1}`} className="h-36 w-full object-contain"/></button><button type="button" onClick={() => setNewFiles((p) => p.filter((_,x) => x!==i))} className="w-full border-t py-1 text-xs text-red-600">ลบ</button></div>)}
@@ -219,7 +340,13 @@ export default function FailedClaimEditModal({
             </>
           )}
           {error && <p className="mb-2 text-sm text-red-600">{error}</p>}
-          <div className="flex justify-end gap-2"><button type="button" disabled={saving} onClick={onClose} className="rounded-lg border px-4 py-2">ยกเลิก</button><button type="button" disabled={saving || loading || rows.length===0} onClick={() => void save()} className="rounded-lg bg-amber-500 px-4 py-2 font-medium text-white disabled:opacity-50">{saving ? (newFiles.length ? 'กำลังตรวจ EasySlip...' : 'กำลังบันทึก...') : newFiles.length ? 'บันทึกและตรวจ EasySlip' : 'บันทึกการแก้ไข'}</button></div>
+          <div className="flex justify-end">
+            <button type="button" disabled={saving || loading || rows.length===0 || (!billChanged && newFiles.length===0)} onClick={() => void save()} className="rounded-lg bg-amber-500 px-4 py-2 font-medium text-white disabled:opacity-50">
+              {saving
+                ? (billChanged ? 'กำลังส่งอนุมัติใหม่...' : 'กำลังตรวจ EasySlip...')
+                : billChanged ? 'บันทึกและส่งอนุมัติใหม่' : 'บันทึกและตรวจ EasySlip'}
+            </button>
+          </div>
         </div>
       </Modal>
       {verifyResult && (

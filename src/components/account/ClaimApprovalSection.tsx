@@ -46,7 +46,7 @@ export default function ClaimApprovalSection() {
       const { data, error } = await supabase
         .from('or_claim_requests')
         .select(
-          'id, ref_order_id, claim_type, proposed_snapshot, ref_snapshot, status, created_at, submitted_by, rejected_reason, supporting_url, claim_description',
+          'id, ref_order_id, claim_type, proposed_snapshot, ref_snapshot, status, created_at, submitted_by, rejected_reason, supporting_url, claim_description, created_claim_order_id',
         )
         .eq('status', 'pending')
         .order('created_at', { ascending: false })
@@ -113,7 +113,10 @@ export default function ClaimApprovalSection() {
             })
           }
         }
-        const cidList = [...new Set([...bestByRef.values()].map((v) => v.created_claim_order_id))]
+        const cidList = [...new Set([
+          ...[...bestByRef.values()].map((v) => v.created_claim_order_id),
+          ...base.map((r) => r.created_claim_order_id).filter((id): id is string => Boolean(id)),
+        ])]
         const billById: Record<string, string> = {}
         for (let i = 0; i < cidList.length; i += CHUNK) {
           const ch = cidList.slice(i, i + CHUNK)
@@ -132,6 +135,13 @@ export default function ClaimApprovalSection() {
         for (const [refId, v] of bestByRef) {
           const bn = billById[v.created_claim_order_id]
           if (bn) latestReqByRef[refId] = bn
+        }
+        // A reapproval request already owns an existing REQ bill. Prefer that
+        // bill number over an older approved claim for the same reference.
+        for (const request of base) {
+          if (!request.created_claim_order_id) continue
+          const bn = billById[request.created_claim_order_id]
+          if (bn) latestReqByRef[request.ref_order_id] = bn
         }
       }
       setLatestReqBillByRefOrderId(latestReqByRef)
@@ -272,15 +282,21 @@ export default function ClaimApprovalSection() {
     if (!detail || !canApprove) return
     setActionBusy('approve')
     try {
-      const { data, error } = await supabase.rpc('rpc_approve_claim_request', { p_request_id: detail.id })
+      const rpcName = detail.created_claim_order_id
+        ? 'rpc_approve_revised_claim_request'
+        : 'rpc_approve_claim_request'
+      const { data, error } = await supabase.rpc(rpcName, { p_request_id: detail.id })
       if (error) throw error
-      const billNo = (data as { bill_no?: string })?.bill_no || ''
+      const result = data as { bill_no?: string; reapproved?: boolean } | null
+      const billNo = result?.bill_no || ''
       setDetail(null)
       await load()
       setResultMsg({
         open: true,
         title: 'อนุมัติแล้ว',
-        message: billNo ? 'สร้างบิลเคลม ' + billNo + ' เรียบร้อย' : 'อนุมัติเรียบร้อย',
+        message: result?.reapproved
+          ? `อนุมัติการแก้ไขบิลเคลม ${billNo || ''} เรียบร้อย — ส่งกลับฝ่ายขายเพื่อตรวจสลิปและยืนยันที่อยู่`
+          : billNo ? 'สร้างบิลเคลม ' + billNo + ' เรียบร้อย' : 'อนุมัติเรียบร้อย',
       })
       window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
       window.dispatchEvent(new CustomEvent('account-refresh-history'))
@@ -366,6 +382,7 @@ export default function ClaimApprovalSection() {
                         <div>
                           <div className="font-mono font-semibold text-gray-900 whitespace-nowrap">{reqLatest}</div>
                           <div className="text-xs text-gray-500 mt-0.5 whitespace-nowrap">บิลต้น {baseBill}</div>
+                          {r.created_claim_order_id && <div className="mt-1 text-xs font-semibold text-amber-700">ขออนุมัติการแก้ไข</div>}
                         </div>
                       ) : (
                         <span className="font-medium font-mono whitespace-nowrap">{baseBill}</span>
