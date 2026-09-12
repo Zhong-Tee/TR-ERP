@@ -1,0 +1,1091 @@
+import { useEffect, useMemo, useState } from 'react'
+import { supabase } from '../../lib/supabase'
+import { formatDateTime } from '../../lib/utils'
+import { BillingDetails, Order, OrderItem, IssueType } from '../../types'
+import { parseAddressText, ParsedAddress, splitAddressParts } from '../../lib/thaiAddress'
+import { e164ToLocal } from '../../lib/thaiPhone'
+import * as XLSX from 'xlsx'
+import { buildProductionLikeExport } from '../../lib/orderProductionExcel'
+import { useAuthContext } from '../../contexts/AuthContext'
+import { useMenuAccess } from '../../contexts/MenuAccessContext'
+import UrgencyBadge from '../common/UrgencyBadge'
+import Modal from '../ui/Modal'
+import { sortOrderItemsForBillDisplay } from '../../lib/orderItemExportSort'
+import { STOP_PRODUCTION_ISSUE_SLUG } from '../../lib/issueTypeSlugs'
+import { identifyCondoStampItems, isCondoStampItem } from '../../lib/condoStamp'
+
+/** Helper: แสดงเฉพาะฟิลด์ที่มีค่า */
+function InfoRow({ label, value }: { label: string; value?: string | number | null }) {
+  if (value === null || value === undefined || value === '') return null
+  return (
+    <div className="flex gap-2 py-1.5">
+      <dt className="text-gray-500 text-sm shrink-0 w-28">{label}</dt>
+      <dd className="text-sm text-gray-900 font-medium select-all break-all">{value}</dd>
+    </div>
+  )
+}
+
+type TaxRequestBillingDetails = BillingDetails & {
+  account_confirmed_tax?: boolean
+  account_confirmed_tax_at?: string | null
+  account_confirmed_tax_by?: string | null
+  tax_request_closed?: boolean
+  tax_request_closed_reason?: string | null
+  tax_requested_at?: string | null
+  tax_requested_by?: string | null
+}
+
+type LateTaxInvoiceForm = {
+  customerName: string
+  address: string
+  taxId: string
+  phone: string
+}
+
+export default function OrderDetailView({
+  order: initialOrder,
+  onClose,
+  readOnly = false,
+}: {
+  order: Order
+  onClose: () => void
+  readOnly?: boolean
+}) {
+  const { user } = useAuthContext()
+  const { hasAccess } = useMenuAccess()
+  const [fullOrder, setFullOrder] = useState<Order | null>(null)
+  const [loadedItems, setLoadedItems] = useState<OrderItem[] | null>(null)
+  const [issueTypes, setIssueTypes] = useState<IssueType[]>([])
+  const [ticketOpen, setTicketOpen] = useState(false)
+  const [ticketTypeId, setTicketTypeId] = useState('')
+  const [ticketPreferStopProduction, setTicketPreferStopProduction] = useState(false)
+  const [ticketTitle, setTicketTitle] = useState('')
+  const [ticketCreating, setTicketCreating] = useState(false)
+  const [ticketSuccessOpen, setTicketSuccessOpen] = useState(false)
+  const [ticketWorkOrderName, setTicketWorkOrderName] = useState<string | null>(null)
+  const [ticketWorkOrderLoading, setTicketWorkOrderLoading] = useState(false)
+  const [feedbackModal, setFeedbackModal] = useState<{ open: boolean; title: string; message: string }>({
+    open: false,
+    title: '',
+    message: '',
+  })
+  const [billingOverride, setBillingOverride] = useState<TaxRequestBillingDetails | null>(null)
+  const [taxRequestOpen, setTaxRequestOpen] = useState(false)
+  const [taxRequestSaving, setTaxRequestSaving] = useState(false)
+  const [taxRequestError, setTaxRequestError] = useState('')
+  const [taxRequestForm, setTaxRequestForm] = useState<LateTaxInvoiceForm>({
+    customerName: '',
+    address: '',
+    taxId: '',
+    phone: '',
+  })
+  const [workflowActors, setWorkflowActors] = useState<{ qc: string[]; packing: string[] }>({ qc: [], packing: [] })
+
+  /* ── Edit attachment link ── */
+  const [editLinkItem, setEditLinkItem] = useState<{ itemId: string; displayIndex: number; productName: string; value: string; name: string } | null>(null)
+  const [editLinkSaving, setEditLinkSaving] = useState(false)
+  const [editLinkError, setEditLinkError] = useState('')
+
+  function handleEditLinkOpen(item: OrderItem, displayIndex: number) {
+    if (readOnly) return
+    setEditLinkError('')
+    setEditLinkItem({
+      itemId: item.id,
+      displayIndex,
+      productName: item.product_name || '',
+      value: item.file_attachment || '',
+      name: item.attachment_name || '',
+    })
+  }
+
+  async function handleEditLinkSave() {
+    if (readOnly) return
+    if (!editLinkItem) return
+    const item = items.find((candidate) => candidate.id === editLinkItem.itemId)
+    if (!item?.id) return
+    const linkValue = editLinkItem.value.trim()
+    if (linkValue && !/^https?:\/\/\S+$/i.test(linkValue)) {
+      setEditLinkError('กรุณากรอกลิงก์ที่ขึ้นต้นด้วย http:// หรือ https://')
+      return
+    }
+    setEditLinkError('')
+    setEditLinkSaving(true)
+    try {
+      const attachmentName = editLinkItem.name.trim() || null
+      const { error } = user?.role === 'production'
+        ? await supabase.rpc('rpc_update_order_item_attachment', {
+            p_item_id: item.id,
+            p_file_attachment: linkValue || null,
+            p_attachment_name: attachmentName,
+          })
+        : await supabase
+            .from('or_order_items')
+            .update({
+              file_attachment: linkValue || null,
+              attachment_name: attachmentName,
+            })
+            .eq('id', item.id)
+      if (error) throw error
+      // Update local state
+      if (loadedItems) {
+        setLoadedItems(prev => prev!.map((it) => {
+          if (it.id === item.id) return { ...it, file_attachment: linkValue || null, attachment_name: attachmentName } as OrderItem
+          return it
+        }))
+      }
+      // Also update inline if present
+      const inl = ((order as any).or_order_items || []) as OrderItem[]
+      if (inl.length > 0) {
+        const updated = inl.map(it => it.id === item.id ? { ...it, file_attachment: linkValue || null, attachment_name: attachmentName } : it)
+        ;(order as any).or_order_items = updated
+      }
+      setEditLinkItem(null)
+    } catch (err) {
+      console.error('Error saving link:', err)
+      alert('ไม่สามารถบันทึกลิงค์ได้')
+    } finally {
+      setEditLinkSaving(false)
+    }
+  }
+
+  // โหลดบิลเต็มเมื่อ payload ไม่ครบ — รวมกรณี WorkOrderManageList (มี status/ที่อยู่ แต่ไม่ select billing_details)
+  const isPartial =
+    (!initialOrder.status && !initialOrder.customer_address) ||
+    initialOrder.billing_details === undefined ||
+    initialOrder.fulfillment_method === undefined
+
+  const order = (isPartial && fullOrder) ? fullOrder : initialOrder
+
+  const inlineItems = ((order as any).or_order_items || []) as OrderItem[]
+  const billing = (billingOverride || order.billing_details || null) as TaxRequestBillingDetails | null
+  const billingPhone =
+    (typeof billing?.mobile_phone === 'string' && billing.mobile_phone.trim()) ||
+    (billing && typeof (billing as { mobilePhone?: unknown }).mobilePhone === 'string'
+      ? String((billing as { mobilePhone?: string }).mobilePhone).trim()
+      : '')
+
+  // Parse ที่อยู่เพื่อดึงเบอร์จากข้อความเมื่อยังไม่มี mobile_phone ใน billing (เช่น billing มีแต่จังหวัดจากบิลอ้างอิง)
+  const [parsedAddr, setParsedAddr] = useState<ParsedAddress | null>(null)
+  useEffect(() => {
+    if (!order.customer_address?.trim() || billingPhone) {
+      setParsedAddr(null)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      const parsed = await parseAddressText(order.customer_address, supabase)
+      if (!cancelled) setParsedAddr(parsed)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [order.customer_address, billingPhone])
+
+  // ค่าที่จะแสดง: ใช้ billing ก่อน ถ้าไม่มีให้ใช้ parsed
+  const displaySubDistrict = billing?.sub_district || parsedAddr?.subDistrict || null
+  const displayDistrict = billing?.district || parsedAddr?.district || null
+  const displayProvince = billing?.province || parsedAddr?.province || null
+  const displayPostalCode = billing?.postal_code || parsedAddr?.postalCode || null
+  const displayPhone =
+    billingPhone ||
+    (parsedAddr?.mobilePhoneCandidates?.[0]
+      ? e164ToLocal(parsedAddr.mobilePhoneCandidates[0])
+      : parsedAddr?.mobilePhone) ||
+    null
+
+  // แยก ชื่อผู้รับ / ที่อยู่ / เบอร์โทร ออกจากก้อนที่อยู่เพื่อแสดงผลให้อ่านง่าย
+  const addressParts = splitAddressParts(order.customer_address, order.recipient_name)
+  const displayRecipientName = order.recipient_name?.trim() || addressParts.recipientName || null
+  const displayAddress = addressParts.address || order.customer_address || null
+
+  useEffect(() => {
+    setFullOrder(null)
+    setLoadedItems(null)
+    setBillingOverride(null)
+    setTaxRequestOpen(false)
+    setTaxRequestError('')
+  }, [initialOrder.id])
+
+  // Lazy-load full order เมื่อได้ข้อมูลไม่ครบ
+  useEffect(() => {
+    if (!isPartial || !initialOrder.id) return
+    let cancelled = false
+    ;(async () => {
+      const { data } = await supabase
+        .from('or_orders')
+        .select('*, or_order_items(*)')
+        .eq('id', initialOrder.id)
+        .single()
+      if (!cancelled && data) {
+        setFullOrder(data as Order)
+        setLoadedItems(((data as any).or_order_items || []) as OrderItem[])
+      }
+    })()
+    return () => { cancelled = true }
+  }, [initialOrder.id, isPartial])
+
+  // Lazy-load items เมื่อ order ไม่มี or_order_items
+  useEffect(() => {
+    if (inlineItems.length > 0 || !order.id || isPartial) {
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      const { data } = await supabase
+        .from('or_order_items')
+        .select('*')
+        .eq('order_id', order.id)
+        .order('created_at', { ascending: true })
+      if (!cancelled) setLoadedItems((data || []) as OrderItem[])
+    })()
+    return () => { cancelled = true }
+  }, [order.id, inlineItems.length, isPartial])
+
+  // ผู้ปฏิบัติงานไม่ได้เก็บซ้ำไว้ในบิล: QC ผูกด้วยเลขใบงาน และผู้แพ็คผูกด้วย order_id
+  useEffect(() => {
+    if (!order.id) {
+      setWorkflowActors({ qc: [], packing: [] })
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      const qcQuery = order.work_order_name
+        ? supabase
+            .from('qc_sessions')
+            .select('username')
+            .eq('filename', `WO-${order.work_order_name}`)
+            .order('created_at', { ascending: false })
+        : Promise.resolve({ data: [], error: null })
+      const [qcResult, packingResult] = await Promise.all([
+        qcQuery,
+        supabase
+          .from('pk_packing_logs')
+          .select('packed_by')
+          .eq('order_id', order.id)
+          .order('packed_at', { ascending: false }),
+      ])
+      if (cancelled) return
+      if (qcResult.error) console.warn('Unable to load QC users for order detail:', qcResult.error)
+      if (packingResult.error) console.warn('Unable to load packing users for order detail:', packingResult.error)
+      const uniqueNames = (values: Array<string | null | undefined>) =>
+        Array.from(new Set(values.map((value) => value?.trim()).filter((value): value is string => !!value)))
+      setWorkflowActors({
+        qc: uniqueNames((qcResult.data || []).map((row) => row.username)),
+        packing: uniqueNames((packingResult.data || []).map((row) => row.packed_by)),
+      })
+    })()
+    return () => { cancelled = true }
+  }, [order.id, order.work_order_name])
+
+  const items = inlineItems.length > 0 ? inlineItems : (loadedItems || [])
+  const displayItems = useMemo(() => sortOrderItemsForBillDisplay(items as any[]), [items])
+  const canOpenTicket = !!user && (hasAccess('orders-issue') || hasAccess('plan-issue'))
+  const canManageTaxRequest = !!user && hasAccess('orders-create')
+  const taxRequestAlreadyConfirmed = billing?.account_confirmed_tax === true && billing?.tax_request_closed !== true
+
+  function openTaxRequestForm() {
+    setTaxRequestError('')
+    setTaxRequestForm({
+      customerName: billing?.tax_customer_name?.trim() || order.customer_name?.trim() || '',
+      address: billing?.tax_customer_address?.trim() || order.customer_address?.trim() || '',
+      taxId: billing?.tax_id?.trim() || '',
+      phone: billing?.tax_customer_phone?.trim() || displayPhone || '',
+    })
+    setTaxRequestOpen(true)
+  }
+
+  async function saveLateTaxInvoiceRequest() {
+    if (!user || !order.id || taxRequestSaving) return
+    const customerName = taxRequestForm.customerName.trim()
+    const address = taxRequestForm.address.trim()
+    const taxId = taxRequestForm.taxId.trim()
+    const phone = taxRequestForm.phone.trim()
+    if (!customerName || !address || !taxId) {
+      setTaxRequestError('กรุณากรอกชื่อ ที่อยู่ และเลขประจำตัวผู้เสียภาษีให้ครบ')
+      return
+    }
+
+    setTaxRequestSaving(true)
+    setTaxRequestError('')
+    try {
+      // อ่านค่าล่าสุดก่อนบันทึก ป้องกันการเขียนทับกรณีบัญชีเพิ่งยืนยันพร้อมกัน
+      const [latestOrderResult, latestItemsResult] = await Promise.all([
+        supabase
+          .from('or_orders')
+          .select('status, billing_details')
+          .eq('id', order.id)
+          .single(),
+        supabase
+          .from('or_order_items')
+          .select('product_name, quantity, unit_price, is_detail_row, is_free')
+          .eq('order_id', order.id)
+          .order('created_at', { ascending: true }),
+      ])
+      const { data: latestOrder, error: loadError } = latestOrderResult
+      if (loadError) throw loadError
+      if (latestItemsResult.error) throw latestItemsResult.error
+      if (latestOrder.status === 'ยกเลิก') {
+        throw new Error('บิลถูกยกเลิกแล้ว ไม่สามารถส่งคำขอใบกำกับภาษีได้')
+      }
+
+      const latestBilling = (latestOrder.billing_details || {}) as TaxRequestBillingDetails
+      if (latestBilling.account_confirmed_tax === true && latestBilling.tax_request_closed !== true) {
+        throw new Error('ฝ่ายบัญชียืนยันใบกำกับภาษีรายการนี้แล้ว ไม่สามารถแก้ไขคำขอได้')
+      }
+
+      const latestItems = (latestItemsResult.data || []) as Array<{
+        product_name: string | null
+        quantity: number | null
+        unit_price: number | null
+        is_detail_row: boolean | null
+        is_free: boolean | null
+      }>
+      const taxItems = latestItems
+        .filter((item) => !item.is_detail_row && !item.is_free)
+        .map((item) => ({
+          product_name: item.product_name || '',
+          quantity: Number(item.quantity || 1),
+          unit_price: Number(item.unit_price || 0),
+        }))
+      const nextBilling: TaxRequestBillingDetails = {
+        ...latestBilling,
+        request_tax_invoice: true,
+        tax_customer_name: customerName,
+        tax_customer_address: address,
+        tax_customer_phone: phone || null,
+        tax_id: taxId,
+        tax_items: taxItems,
+        account_confirmed_tax: false,
+        account_confirmed_tax_at: null,
+        account_confirmed_tax_by: null,
+        tax_request_closed: false,
+        tax_request_closed_reason: null,
+        tax_requested_at: new Date().toISOString(),
+        tax_requested_by: user.id,
+      }
+      const { error: saveError } = await supabase
+        .from('or_orders')
+        .update({
+          billing_details: nextBilling,
+          last_edited_by: user.username || user.email,
+        })
+        .eq('id', order.id)
+      if (saveError) throw saveError
+
+      setBillingOverride(nextBilling)
+      setTaxRequestOpen(false)
+      setFeedbackModal({
+        open: true,
+        title: 'ส่งคำขอเรียบร้อย',
+        message: `ส่งคำขอใบกำกับภาษีของบิล ${order.bill_no || ''} ไปยังฝ่ายบัญชีแล้ว`,
+      })
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'บันทึกคำขอใบกำกับภาษีไม่สำเร็จ'
+      setTaxRequestError(message)
+    } finally {
+      setTaxRequestSaving(false)
+    }
+  }
+
+  const stopProductionTicketTypeId = useMemo(
+    () => issueTypes.find((t) => (t.slug || '').trim() === STOP_PRODUCTION_ISSUE_SLUG)?.id ?? '',
+    [issueTypes]
+  )
+
+  useEffect(() => {
+    if (!ticketOpen) setTicketPreferStopProduction(false)
+  }, [ticketOpen])
+
+  const fmt = (n: number | null | undefined) =>
+    Number(n || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+  useEffect(() => {
+    if (!ticketOpen) return
+    let cancelled = false
+    ;(async () => {
+      const { data, error } = await supabase
+        .from('or_issue_types')
+        .select('*')
+        .eq('is_active', true)
+        .order('created_at', { ascending: true })
+      if (!cancelled && !error) setIssueTypes((data || []) as IssueType[])
+    })()
+    return () => { cancelled = true }
+  }, [ticketOpen])
+
+  useEffect(() => {
+    if (!ticketOpen) return
+    let cancelled = false
+    ;(async () => {
+      setTicketWorkOrderLoading(true)
+      try {
+        let wo = order.work_order_name || null
+        if (!wo && order.id) {
+          const { data } = await supabase
+            .from('or_orders')
+            .select('work_order_name')
+            .eq('id', order.id)
+            .single()
+          wo = (data as { work_order_name?: string | null } | null)?.work_order_name || null
+        }
+        if (!cancelled) setTicketWorkOrderName(wo)
+      } finally {
+        if (!cancelled) setTicketWorkOrderLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [ticketOpen, order.id, order.work_order_name])
+
+  async function handleCreateTicket() {
+    if (!user) return
+    if (!ticketWorkOrderName) {
+      alert('ไม่พบเลขใบงานของบิลนี้ กรุณาตรวจสอบใบงานก่อนเปิด Ticket')
+      return
+    }
+    if (!ticketTitle.trim()) {
+      alert('กรุณากรอกหัวข้อ')
+      return
+    }
+    if (ticketPreferStopProduction && !stopProductionTicketTypeId) {
+      alert('ไม่พบประเภท "หยุดผลิต" ในระบบ กรุณารัน migration หรือติดต่อผู้ดูแล')
+      return
+    }
+    setTicketCreating(true)
+    try {
+      const { data: created, error } = await supabase.from('or_issues').insert({
+        order_id: order.id,
+        work_order_name: ticketWorkOrderName,
+        type_id: ticketTypeId || null,
+        title: ticketTitle.trim(),
+        status: 'On',
+        created_by: user.id,
+      }).select('id').single()
+      if (error) throw error
+      supabase.functions.invoke('issue-notify', { body: { issue_id: created.id } }).catch(() => {})
+      setTicketOpen(false)
+      setTicketTitle('')
+      setTicketTypeId('')
+      setTicketPreferStopProduction(false)
+      setTicketSuccessOpen(true)
+    } catch (error: any) {
+      console.error('Error creating issue:', error)
+      alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
+    } finally {
+      setTicketCreating(false)
+    }
+  }
+
+  /* ── Excel Download (หัวตารางร่วมกับ lib/orderProductionExcel) ── */
+  async function handleCopyProductionData() {
+    try {
+      const { dataRows } = await buildProductionLikeExport(supabase, order, items)
+      const clipboardText = dataRows
+        .map((row) => row.map((value) => String(value ?? '').replace(/\r?\n/g, ' ').replace(/\t/g, ' ')).join('\t'))
+        .join('\n')
+      await navigator.clipboard.writeText(clipboardText)
+      setFeedbackModal({
+        open: true,
+        title: 'คัดลอกสำเร็จ',
+        message: `คัดลอกข้อมูลเรียบร้อย ${dataRows.length} แถว (ไม่รวมหัวตาราง)`,
+      })
+    } catch (error: any) {
+      console.error('Error copying production-like data:', error)
+      setFeedbackModal({
+        open: true,
+        title: 'คัดลอกไม่สำเร็จ',
+        message: 'คัดลอกไม่สำเร็จ: ' + (error?.message || error),
+      })
+    }
+  }
+
+  async function handleDownloadExcel() {
+    try {
+      const { headers, dataRows } = await buildProductionLikeExport(supabase, order, items)
+      const wsItems = XLSX.utils.aoa_to_sheet([headers, ...dataRows])
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, wsItems, 'ProductionData')
+      XLSX.writeFile(wb, `${order.bill_no || 'order'}.xlsx`)
+    } catch (error: any) {
+      console.error('Error downloading production-like excel:', error)
+      setFeedbackModal({
+        open: true,
+        title: 'ดาวน์โหลดไม่สำเร็จ',
+        message: 'ดาวน์โหลด Excel ไม่สำเร็จ: ' + (error?.message || error),
+      })
+    }
+  }
+
+  return (
+    <div className="flex flex-col max-h-[85vh]">
+      {/* Header */}
+      <div className="p-4 border-b bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between shrink-0">
+        <div>
+          <h3 className="text-lg font-bold">รายละเอียดบิล</h3>
+          <p className="text-sm text-blue-200 select-all">
+            {order.bill_no}
+            <UrgencyBadge order={order} className="ml-2" />
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {canOpenTicket && (
+            <button
+              type="button"
+              onClick={() => setTicketOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/90 hover:bg-emerald-500 border border-emerald-200/40 rounded-lg text-sm font-medium text-white transition-colors"
+            >
+              เปิด Ticket
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleCopyProductionData}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 border border-white/30 rounded-lg text-sm font-medium text-white transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16h8M8 12h8m-8-4h5m-5 12h8a2 2 0 002-2V6a2 2 0 00-2-2h-8a2 2 0 00-2 2v12a2 2 0 002 2zm-4-4V8a2 2 0 012-2h2" />
+            </svg>
+            คัดลอก
+          </button>
+          <button
+            type="button"
+            onClick={handleDownloadExcel}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 border border-white/30 rounded-lg text-sm font-medium text-white transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            ดาวน์โหลด Excel
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            title="ปิดหน้าต่าง"
+            aria-label="ปิดหน้าต่าง"
+            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-500 text-white shadow-sm ring-2 ring-white/40 transition-colors hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-white"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto p-5 space-y-5 select-text">
+        {/* ── ข้อมูลลูกค้า ── */}
+        <section>
+          <h4 className="text-sm font-bold text-gray-800 border-b border-gray-200 pb-1.5 mb-2">ข้อมูลลูกค้า</h4>
+          <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
+            <InfoRow label="เลขบิล" value={order.bill_no} />
+            <InfoRow label="ช่องทาง" value={order.channel_code} />
+            {order.converted_from_self_pickup_at && (
+              <div className="flex gap-2 py-1.5">
+                <dt className="w-28 shrink-0 text-sm text-gray-500">การรับสินค้า</dt>
+                <dd className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="inline-flex rounded-full bg-orange-100 px-2.5 py-0.5 font-bold text-orange-700">เปลี่ยนเป็นจัดส่ง</span>
+                  <span className="text-xs text-gray-500">
+                    {formatDateTime(order.converted_from_self_pickup_at)}
+                    {order.converted_from_self_pickup_by ? ` โดย ${order.converted_from_self_pickup_by}` : ''}
+                  </span>
+                </dd>
+              </div>
+            )}
+            <InfoRow label="สถานะ" value={order.status} />
+            <InfoRow label="ชื่อลูกค้า" value={order.customer_name} />
+            <InfoRow label="ชื่อผู้รับ" value={displayRecipientName} />
+            <InfoRow label="เบอร์โทร" value={displayPhone || addressParts.phone} />
+            <InfoRow label="เลขคำสั่งซื้อ" value={order.channel_order_no} />
+            <InfoRow label="เลขพัสดุ" value={order.tracking_number} />
+            <InfoRow label="เลขรับพัสดุด่วน" value={order.express_receipt_number} />
+            {order.channel_code === 'SHOPP' && (
+              <InfoRow
+                label="วันที่ เวลา นัดรับ"
+                value={(() => {
+                  if (!order.scheduled_pickup_at) return '–'
+                  const d = new Date(order.scheduled_pickup_at)
+                  if (isNaN(d.getTime())) return '–'
+                  const day = String(d.getDate()).padStart(2, '0')
+                  const month = String(d.getMonth() + 1).padStart(2, '0')
+                  const year = d.getFullYear() + 543
+                  const h = String(d.getHours()).padStart(2, '0')
+                  const m = String(d.getMinutes()).padStart(2, '0')
+                  return `${day}/${month}/${year} ${h}:${m} น.`
+                })()}
+              />
+            )}
+            <div className="md:col-span-2">
+              <InfoRow label="ที่อยู่" value={displayAddress} />
+            </div>
+            <InfoRow label="แขวง/ตำบล" value={displaySubDistrict} />
+            <InfoRow label="เขต/อำเภอ" value={displayDistrict} />
+            <InfoRow label="จังหวัด" value={displayProvince} />
+            <InfoRow label="รหัสไปรษณีย์" value={displayPostalCode} />
+            <InfoRow label="โปรโมชั่น" value={order.promotion} />
+            <InfoRow label="ผู้สร้างบิล" value={order.admin_user} />
+            <InfoRow label="ผู้แก้ไขล่าสุด" value={order.last_edited_by ?? null} />
+            <InfoRow label="ผู้ QC" value={workflowActors.qc.length ? workflowActors.qc.join(', ') : '-'} />
+            <InfoRow label="ผู้แพ็คสินค้า" value={workflowActors.packing.length ? workflowActors.packing.join(', ') : '-'} />
+            <InfoRow label="วันที่สร้าง" value={order.created_at ? formatDateTime(order.created_at) : null} />
+          </dl>
+        </section>
+
+        {/* ── ยอดเงิน ── */}
+        <section>
+          <h4 className="text-sm font-bold text-gray-800 border-b border-gray-200 pb-1.5 mb-2">ยอดเงิน</h4>
+          <dl className="grid grid-cols-2 md:grid-cols-4 gap-x-8">
+            <InfoRow label="ราคาสินค้า" value={`฿${fmt(order.price)}`} />
+            <InfoRow label="ค่าส่ง" value={`฿${fmt(order.shipping_cost)}`} />
+            <InfoRow label="ส่วนลด" value={`฿${fmt(order.discount)}`} />
+            <div className="py-1.5 flex gap-2">
+              <dt className="text-gray-500 text-sm shrink-0 w-28">ยอดรวม</dt>
+              <dd className="text-sm font-bold text-emerald-600 select-all">฿{fmt(order.total_amount)}</dd>
+            </div>
+          </dl>
+          <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-8 mt-1">
+            <InfoRow label="ชำระโดย" value={order.payment_method} />
+            <InfoRow label="วันที่ชำระ" value={order.payment_date ? `${order.payment_date}${order.payment_time ? ` ${order.payment_time}` : ''}` : null} />
+          </dl>
+        </section>
+
+        {/* ── หมายเหตุ ── */}
+        {order.confirm_note && (
+          <section>
+            <h4 className="text-sm font-bold text-gray-800 border-b border-gray-200 pb-1.5 mb-2">หมายเหตุ</h4>
+            <p className="text-sm text-gray-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 whitespace-pre-wrap select-all">{order.confirm_note}</p>
+          </section>
+        )}
+
+        {/* ── รายการสินค้า ── */}
+        {displayItems.length > 0 && (() => {
+          const condoStampItems = identifyCondoStampItems(displayItems)
+          const hasAnyTierProduct = displayItems.some((item) => isCondoStampItem(item, condoStampItems))
+          const condoParentIds = new Set(
+            displayItems.map((item) => String(item.parent_item_id || '').trim()).filter(Boolean),
+          )
+          const condoSetIndexByKey = new Map<string, number>()
+          const condoSetToneByRow = displayItems.map((item, index) => {
+            if (!isCondoStampItem(item, condoStampItems)) return ''
+            const parentId = String(item.parent_item_id || '').trim()
+            const itemId = String(item.id || '').trim()
+            const productId = String(item.product_id || '').trim()
+            const setKey = parentId
+              ? `parent:${parentId}`
+              : itemId && condoParentIds.has(itemId)
+                ? `parent:${itemId}`
+                : productId
+                  ? `product:${productId}`
+                  : `row:${index}`
+            if (!condoSetIndexByKey.has(setKey)) condoSetIndexByKey.set(setKey, condoSetIndexByKey.size)
+            return (condoSetIndexByKey.get(setKey) || 0) % 2 === 0
+              ? 'bg-sky-50/80 hover:bg-sky-100/80'
+              : 'bg-amber-50/80 hover:bg-amber-100/80'
+          })
+          const hasAnyFileAttachment = displayItems.some((item) => item.file_attachment && item.file_attachment.trim() !== '')
+          const showAttachmentColumn = hasAnyFileAttachment || !readOnly
+          const attachmentOrder = new Map(
+            displayItems
+              .filter((item) => item.file_attachment && item.file_attachment.trim() !== '')
+              .map((item, index) => [item.id, index + 1]),
+          )
+          return (
+          <section>
+            <h4 className="text-sm font-bold text-gray-800 border-b border-gray-200 pb-1.5 mb-3">
+              รายการสินค้า <span className="text-gray-400 font-normal">({displayItems.length} รายการ)</span>
+            </h4>
+            <div className="overflow-x-auto rounded-lg border border-gray-200">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 text-gray-600 text-xs">
+                    <th className="px-3 py-2 text-left font-semibold w-8">#</th>
+                    <th className="px-3 py-2 text-left font-semibold">ชื่อสินค้า</th>
+                    <th className="px-3 py-2 text-left font-semibold">สีหมึก</th>
+                    {hasAnyTierProduct && <th className="px-3 py-2 text-left font-semibold">ชั้น</th>}
+                    <th className="px-3 py-2 text-left font-semibold">ลาย</th>
+                    <th className="px-3 py-2 text-left font-semibold">เส้น</th>
+                    <th className="px-3 py-2 text-left font-semibold">ฟอนต์</th>
+                    <th className="px-3 py-2 text-left font-semibold">บรรทัด 1</th>
+                    <th className="px-3 py-2 text-left font-semibold">บรรทัด 2</th>
+                    <th className="px-3 py-2 text-left font-semibold">บรรทัด 3</th>
+                    <th className="px-3 py-2 text-right font-semibold">จำนวน</th>
+                    <th className="px-3 py-2 text-right font-semibold">ราคา/หน่วย</th>
+                    <th className="px-3 py-2 text-left font-semibold">หมายเหตุ</th>
+                    {showAttachmentColumn && <th className="px-3 py-2 text-center font-semibold">ไฟล์แนบ</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {displayItems.map((item, idx) => {
+                    const isTierProduct = isCondoStampItem(item, condoStampItems)
+                    const hasFile = item.file_attachment && item.file_attachment.trim() !== ''
+                    const attachmentLabel = item.attachment_name?.trim() || `ไฟล์ ${attachmentOrder.get(item.id) || 1}`
+                    return (
+                    <tr
+                      key={item.id}
+                      className={`${isTierProduct ? condoSetToneByRow[idx] : 'hover:bg-blue-50/40'} transition-colors`}
+                    >
+                      <td className="px-3 py-2 text-gray-400">{idx + 1}</td>
+                      <td className="px-3 py-2 font-medium text-gray-900 select-all">{item.product_name}</td>
+                      <td className="px-3 py-2 text-gray-700 select-all">{item.ink_color || '-'}</td>
+                      {hasAnyTierProduct && <td className="px-3 py-2 text-gray-700 select-all">{isTierProduct ? (item.product_type || '-') : '-'}</td>}
+                      <td className="px-3 py-2 text-gray-700 select-all">{item.cartoon_pattern || '-'}</td>
+                      <td className="px-3 py-2 text-gray-700 select-all">{item.line_pattern || '-'}</td>
+                      <td className="px-3 py-2 text-gray-700 select-all">{item.font || '-'}</td>
+                      <td className="px-3 py-2 text-gray-700 select-all">{item.line_1 || '-'}</td>
+                      <td className="px-3 py-2 text-gray-700 select-all">{item.line_2 || '-'}</td>
+                      <td className="px-3 py-2 text-gray-700 select-all">{item.line_3 || '-'}</td>
+                      <td className="px-3 py-2 text-right font-medium text-gray-900">{item.quantity}</td>
+                      <td className="px-3 py-2 text-right text-gray-700">฿{fmt(item.unit_price)}</td>
+                      <td className="px-3 py-2 text-gray-600 text-xs">
+                        {item.no_name_line ? <span className="text-red-500 font-medium">ไม่รับชื่อ</span> : (item.notes || '-')}
+                      </td>
+                      {showAttachmentColumn && (
+                        <td className="px-3 py-2 text-center">
+                          <div className="inline-grid grid-cols-[6rem_2rem] items-center gap-1.5">
+                          {hasFile && (
+                            <a
+                              href={item.file_attachment!}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex w-24 items-center justify-center gap-1.5 overflow-hidden whitespace-nowrap px-2.5 py-1.5 rounded-lg bg-cyan-50 text-cyan-700 hover:bg-cyan-100 hover:text-cyan-800 transition-colors"
+                              title={`เปิดไฟล์แนบ: ${attachmentLabel}`}
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                              </svg>
+                              <span className="truncate">{attachmentLabel}</span>
+                            </a>
+                          )}
+                          {!hasFile && !readOnly && <span className="block w-24" aria-hidden="true" />}
+                          {!readOnly && (
+                            <button
+                              type="button"
+                              onClick={() => handleEditLinkOpen(item, idx)}
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 hover:text-blue-700 transition-colors"
+                              title="แก้ไขลิงก์และชื่อไฟล์แนบ"
+                              aria-label={`แก้ไขไฟล์แนบรายการ ${idx + 1}`}
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7m-1.414-9.414a2 2 0 112.828 2.828L11.828 16H8v-3.828l10.586-10.586z" />
+                              </svg>
+                            </button>
+                          )}
+                          {!hasFile && readOnly && <span className="text-gray-300">-</span>}
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
+          )
+        })()}
+
+        {/* ── ข้อมูล/คำขอใบกำกับภาษี ── */}
+        {(canManageTaxRequest || billing?.request_tax_invoice) && (
+          <section>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 pb-2">
+              <h4 className="text-sm font-bold text-gray-800">ใบกำกับภาษี</h4>
+              {canManageTaxRequest && order.status !== 'ยกเลิก' && !taxRequestAlreadyConfirmed && (
+                <button
+                  type="button"
+                  onClick={openTaxRequestForm}
+                  className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
+                >
+                  {billing?.request_tax_invoice ? 'แก้ไขข้อมูลคำขอ' : '+ ขอใบกำกับภาษี'}
+                </button>
+              )}
+              {taxRequestAlreadyConfirmed && (
+                <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
+                  ฝ่ายบัญชียืนยันแล้ว
+                </span>
+              )}
+              {order.status === 'ยกเลิก' && (
+                <span className="rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-700">
+                  ไม่สามารถขอได้ เนื่องจากบิลถูกยกเลิก
+                </span>
+              )}
+            </div>
+            {billing?.request_tax_invoice ? (
+              <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
+                <InfoRow label="ชื่อ" value={billing.tax_customer_name} />
+                <InfoRow label="เลข Tax ID" value={billing.tax_id} />
+                <div className="md:col-span-2">
+                  <InfoRow label="ที่อยู่" value={billing.tax_customer_address} />
+                </div>
+                <InfoRow label="เบอร์โทร" value={billing.tax_customer_phone} />
+              </dl>
+            ) : (
+              <p className="text-sm text-gray-500">ยังไม่มีคำขอใบกำกับภาษีสำหรับบิลนี้</p>
+            )}
+          </section>
+        )}
+      </div>
+
+      {/* ── Late tax invoice request dialog ── */}
+      {taxRequestOpen && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40 p-4" onClick={() => !taxRequestSaving && setTaxRequestOpen(false)}>
+          <div className="w-full max-w-2xl rounded-xl bg-white p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="mb-4">
+              <h4 className="text-lg font-bold text-gray-900">
+                {billing?.request_tax_invoice ? 'แก้ไขคำขอใบกำกับภาษี' : 'ขอใบกำกับภาษี'}
+              </h4>
+              <p className="mt-1 text-sm text-gray-500">บิล {order.bill_no} · การบันทึกนี้ไม่เปลี่ยนยอดเงินหรือสถานะบิล</p>
+            </div>
+            <div className="space-y-3">
+              <label className="block text-sm font-medium text-gray-700">
+                ชื่อลูกค้า/บริษัท <span className="text-red-500">*</span>
+                <input
+                  type="text"
+                  value={taxRequestForm.customerName}
+                  onChange={(event) => setTaxRequestForm((current) => ({ ...current, customerName: event.target.value }))}
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </label>
+              <label className="block text-sm font-medium text-gray-700">
+                ที่อยู่ <span className="text-red-500">*</span>
+                <textarea
+                  rows={3}
+                  value={taxRequestForm.address}
+                  onChange={(event) => setTaxRequestForm((current) => ({ ...current, address: event.target.value }))}
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </label>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block text-sm font-medium text-gray-700">
+                  เลขประจำตัวผู้เสียภาษี <span className="text-red-500">*</span>
+                  <input
+                    type="text"
+                    value={taxRequestForm.taxId}
+                    onChange={(event) => setTaxRequestForm((current) => ({ ...current, taxId: event.target.value }))}
+                    placeholder="เช่น 0-0000-00000-00-0"
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </label>
+                <label className="block text-sm font-medium text-gray-700">
+                  เบอร์โทร
+                  <input
+                    type="text"
+                    value={taxRequestForm.phone}
+                    onChange={(event) => setTaxRequestForm((current) => ({ ...current, phone: event.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </label>
+              </div>
+            </div>
+            {taxRequestError && (
+              <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{taxRequestError}</p>
+            )}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setTaxRequestOpen(false)}
+                disabled={taxRequestSaving}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={() => void saveLateTaxInvoiceRequest()}
+                disabled={taxRequestSaving}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {taxRequestSaving ? 'กำลังบันทึก...' : 'ส่งคำขอให้ฝ่ายบัญชี'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Edit Link Dialog ── */}
+      {editLinkItem && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40" onClick={() => !editLinkSaving && setEditLinkItem(null)}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 p-5" onClick={(e) => e.stopPropagation()}>
+            <h4 className="text-sm font-bold text-gray-800 mb-1">แก้ไขลิงค์ไฟล์แนบ</h4>
+            <p className="text-xs text-gray-500 mb-3">
+              รายการที่ {editLinkItem.displayIndex + 1}: {editLinkItem.productName}
+            </p>
+            <input
+              type="url"
+              autoFocus
+              value={editLinkItem.value}
+              onChange={(e) => {
+                setEditLinkItem({ ...editLinkItem, value: e.target.value })
+                if (editLinkError) setEditLinkError('')
+              }}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleEditLinkSave() }}
+              placeholder="https://..."
+              className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 ${editLinkError ? 'border-red-500 focus:ring-red-300' : 'border-gray-300 focus:ring-blue-500 focus:border-blue-500'}`}
+            />
+            {editLinkError && <p className="mt-1.5 text-xs text-red-600">{editLinkError}</p>}
+            <input
+              type="text"
+              value={editLinkItem.name}
+              onChange={(e) => setEditLinkItem({ ...editLinkItem, name: e.target.value })}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleEditLinkSave() }}
+              placeholder="ชื่อกำกับไฟล์ (ไม่บังคับ)"
+              className="w-full mt-2 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                type="button"
+                onClick={() => setEditLinkItem(null)}
+                disabled={editLinkSaving}
+                className="px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={handleEditLinkSave}
+                disabled={editLinkSaving}
+                className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+              >
+                {editLinkSaving ? 'กำลังบันทึก...' : 'บันทึก'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Create Ticket Dialog ── */}
+      {ticketOpen && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40" onClick={() => !ticketCreating && setTicketOpen(false)}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h4 className="text-sm font-bold text-gray-800">เปิด Ticket</h4>
+            <div className="text-xs text-gray-500 bg-gray-50 border rounded-lg p-2">
+              บิล: <span className="font-semibold text-gray-700">{order.bill_no || '-'}</span>
+                <span className="ml-2">
+                  ใบงาน:{' '}
+                  <span className="font-semibold text-gray-700">
+                    {ticketWorkOrderLoading ? 'กำลังโหลด...' : (ticketWorkOrderName || 'ไม่มีเลขใบงาน')}
+                  </span>
+                </span>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">ประเภท</label>
+              {ticketPreferStopProduction ? (
+                <div className="w-full px-3 py-2 border rounded-lg bg-amber-50 border-amber-200 text-amber-950 text-sm font-medium">
+                  หยุดผลิต
+                  {!stopProductionTicketTypeId && (
+                    <span className="block text-xs text-red-600 font-normal mt-1">ยังไม่มีประเภทนี้ในฐานข้อมูล</span>
+                  )}
+                </div>
+              ) : (
+                <select
+                  value={ticketTypeId}
+                  onChange={(e) => setTicketTypeId(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg bg-white"
+                >
+                  <option value="">-- ไม่ระบุ --</option>
+                  {issueTypes.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">หัวข้อ</label>
+              <input
+                value={ticketTitle}
+                onChange={(e) => setTicketTitle(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg"
+                placeholder="เช่น งานด่วน/ต้องแก้ไข"
+                onKeyDown={(e) => { if (e.key === 'Enter') handleCreateTicket() }}
+              />
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setTicketPreferStopProduction((prev) => {
+                    const next = !prev
+                    if (next) setTicketTypeId(stopProductionTicketTypeId || '')
+                    else setTicketTypeId('')
+                    return next
+                  })
+                }}
+                disabled={ticketCreating}
+                title="ตั้งประเภท Ticket เป็น หยุดผลิต (แสดงป้ายบน Plan)"
+                className={`px-4 py-1.5 text-sm font-semibold rounded-lg border transition-colors disabled:opacity-50 ${
+                  ticketPreferStopProduction
+                    ? 'bg-amber-800 text-white border-amber-950 ring-2 ring-amber-400'
+                    : 'bg-white text-amber-900 border-amber-700 hover:bg-amber-50'
+                }`}
+              >
+                หยุดผลิต
+              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTicketOpen(false)}
+                  disabled={ticketCreating}
+                  className="px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCreateTicket}
+                  disabled={
+                    ticketCreating ||
+                    ticketWorkOrderLoading ||
+                    !ticketWorkOrderName ||
+                    (ticketPreferStopProduction && !stopProductionTicketTypeId)
+                  }
+                  className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+                >
+                  {ticketCreating ? 'กำลังบันทึก...' : 'บันทึก'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <Modal
+        open={ticketSuccessOpen}
+        onClose={() => setTicketSuccessOpen(false)}
+        contentClassName="max-w-sm"
+      >
+        <div className="p-6 text-center">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-green-100 text-green-600">
+            <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <h4 className="text-base font-bold text-gray-800 mb-1">เปิด Ticket สำเร็จ</h4>
+          <p className="text-sm text-gray-500 mb-4">ระบบได้บันทึก Ticket เรียบร้อยแล้ว</p>
+          <button
+            type="button"
+            onClick={() => setTicketSuccessOpen(false)}
+            className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
+          >
+            ตกลง
+          </button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={feedbackModal.open}
+        onClose={() => setFeedbackModal({ open: false, title: '', message: '' })}
+        contentClassName="max-w-sm"
+      >
+        <div className="p-6 text-center">
+          <h4 className="text-base font-bold text-gray-800 mb-2">{feedbackModal.title}</h4>
+          <p className="text-sm text-gray-600 mb-4">{feedbackModal.message}</p>
+          <button
+            type="button"
+            onClick={() => setFeedbackModal({ open: false, title: '', message: '' })}
+            className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
+          >
+            ตกลง
+          </button>
+        </div>
+      </Modal>
+    </div>
+  )
+}

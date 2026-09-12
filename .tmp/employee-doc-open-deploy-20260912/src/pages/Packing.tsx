@@ -1,0 +1,5349 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useAuthContext } from '../contexts/AuthContext'
+import { useMenuAccess } from '../contexts/MenuAccessContext'
+import { getPublicUrl, fetchInkTypes } from '../lib/qcApi'
+import { supabase } from '../lib/supabase'
+import { fetchAllSupabasePages } from '../lib/supabasePagination'
+import { Order, OrderItem, WorkOrder, InkType, PackingMeta } from '../types'
+import { flatBillUnitUid, normalizedLineQuantity, stableOrderItemUnitKey } from '../lib/productionUnits'
+import { sortOrderItemsForExport } from '../lib/orderItemExportSort'
+import { isCondoStampProductName } from '../lib/condoStamp'
+import { SELF_PICKUP_CHANNELS } from '../lib/channelBehavior'
+import { parseAddressText } from '../lib/thaiAddress'
+import { downloadFlashWaybillXlsx } from '../lib/flashWaybillExport'
+import Modal from '../components/ui/Modal'
+import {
+  addQueueItem,
+  clearFolderHandle,
+  deleteQueueItem,
+  getFolderHandle,
+  getFolderPathNote,
+  getDeviceName,
+  getOrCreateDeviceId,
+  getVideoQualityProfile,
+  listQueueItems,
+  remapQueueDevice,
+  setAccessToken,
+  setDeviceId as persistDeviceId,
+  setFolderHandle,
+  setFolderPathNote,
+  setDeviceName,
+  setVideoQualityProfile,
+  setSupabaseConfig,
+  updateQueueItem,
+  type UploadQueueItem,
+  type VideoQualityProfileId,
+} from '../lib/packingQueue'
+import { isAdminOrSuperadmin } from '../config/accessPolicy'
+import {
+  FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN,
+  isOrderAllowedInFulfillmentFlow,
+  isOrderItemAllowedInFulfillmentFlow,
+} from '../lib/orderFlowFilter'
+import { claimTypeLabel, fetchClaimTypeLabelMap } from '../lib/claimTypeLabels'
+import UrgencyBadge, { WoUrgencyChips, type DueBillInfo } from '../components/common/UrgencyBadge'
+import ExpressReceiptNumberInline from '../components/common/ExpressReceiptNumberInline'
+import {
+  codecFromVideoMimeType,
+  getSupportedPackingVideoMimeTypes,
+  isPackingRecorderMimeCompatible,
+  isSafePackingRecorderMimeType,
+  videoFileExtension,
+} from '../lib/packingVideo'
+
+type OrderWithItems = Order & {
+  or_order_items?: (OrderItem & { pr_products?: { product_code?: string | null } })[]
+  order_items?: (OrderItem & { pr_products?: { product_code?: string | null } })[]
+}
+
+type PackingItem = {
+  bill_no: string
+  channel_code: string
+  is_self_pickup: boolean
+  fulfillment_method: 'self_pickup' | 'shipping'
+  converted_from_self_pickup_at: string | null
+  converted_from_self_pickup_by: string | null
+  tracking_number: string
+  channel_order_no: string | null
+  express_receipt_number: string
+  customer_name: string
+  order_id: string
+  product_name: string
+  product_code: string | null
+  details: string
+  ink_color: string | null
+  shelf_location: string | null
+  cartoon_pattern: string | null
+  line_pattern: string | null
+  font: string | null
+  /** Unit UID (bill_no-Seq) — scanned per-piece like QC */
+  unit_uid: string
+  /** Source line UID from or_order_items (for tracing only) */
+  source_line_uid: string | null
+  /** Source row in or_order_items, used to resolve WMS readiness per product line. */
+  source_order_item_id: string | null
+  scanned: boolean
+  parcelScanned: boolean
+  isOrderComplete: boolean
+  needsTaxInvoice: boolean
+  needsCashBill: boolean
+  claim_type: string | null
+  claim_details: string | null
+  file_attachment: string | null
+  notes: string | null
+  qc_status: 'pass' | 'fail' | 'skip' | null
+  /** สินค้าที่ต้อง Picker ถูกตรวจถูกและตัดสต๊อคครบแล้ว */
+  wmsReady: boolean
+  /** หมายเลข Tag ประจำวัน (เซ็ตเมื่อสแกนพัสดุสำเร็จ) */
+  packingTag: number | null
+  /** กำหนดส่ง/เวลาที่นับเป็นล่าช้า จากบิล — ใช้แสดงป้าย ส่งด่วน/ล่าช้า */
+  ship_due_at: string | null
+  overdue_at: string | null
+  shipped_time: string | null
+}
+
+type WorkOrderStatus = {
+  hasTracking: boolean
+  isPartiallyPacked: boolean
+  qcCompleted: boolean
+  qcSkipped: boolean
+  readyBills: number
+  totalItems: number
+  packedItems: number
+  totalBills: number
+  packedBills: number
+  /** กำหนดส่งของบิลในใบงาน (เฉพาะบิลจากเมนู Marketplace) — ใช้แสดงป้าย ส่งด่วน/ล่าช้า */
+  dueBills: DueBillInfo[]
+}
+
+function activePackingOrderItems(order: OrderWithItems | any): any[] {
+  return (order?.or_order_items || order?.order_items || []).filter((item: any) =>
+    isOrderItemAllowedInFulfillmentFlow(item?.cancellation_stock_action)
+  )
+}
+
+function sortedPackingOrderItems(order: OrderWithItems | any): any[] {
+  return sortOrderItemsForExport(activePackingOrderItems(order))
+}
+
+function isOrderPackableWithoutParcelNumber(
+  order: Pick<Order, 'channel_code' | 'fulfillment_method'>,
+  selfPickupChannelCodes: ReadonlySet<string>,
+): boolean {
+  if (order.fulfillment_method) return order.fulfillment_method === 'self_pickup'
+  return selfPickupChannelCodes.has(String(order.channel_code || '').trim().toUpperCase())
+}
+
+function hasPackingReference(
+  order: Pick<Order, 'channel_code' | 'tracking_number' | 'fulfillment_method' | 'converted_from_self_pickup_at'>,
+  selfPickupChannelCodes: ReadonlySet<string>,
+): boolean {
+  return isOrderPackableWithoutParcelNumber(order, selfPickupChannelCodes)
+    || Boolean(order.converted_from_self_pickup_at)
+    || Boolean(order.tracking_number?.trim())
+}
+
+async function fetchSelfPickupChannelCodes(): Promise<Set<string>> {
+  const { data, error } = await supabase
+    .from('channels')
+    .select('channel_code')
+    .eq('is_self_pickup', true)
+
+  if (error) {
+    // Keep SHOPP working during a staggered deployment where the migration has
+    // not reached the database yet. Once the query succeeds, DB config wins.
+    console.warn('Unable to load self-pickup channel settings:', error)
+    return new Set(SELF_PICKUP_CHANNELS)
+  }
+
+  return new Set((data || []).map((row: { channel_code: string }) => String(row.channel_code || '').trim().toUpperCase()).filter(Boolean))
+}
+
+function packingVideoReference(item: PackingItem): string {
+  if (item.is_self_pickup) return item.bill_no.trim() || item.order_id
+  return item.tracking_number.trim() || item.bill_no.trim() || item.order_id
+}
+
+function packingGroupLabel(item: PackingItem): string {
+  return item.is_self_pickup
+    ? `รับสินค้าเอง • ${item.bill_no}`
+    : formatParcelNo(item.tracking_number)
+}
+
+function resolvePackingQcStatus(
+  qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>,
+  unitUid: string,
+  sourceLineUid: string | null | undefined,
+  orderItemId: string | null | undefined,
+  unitIndex: number
+): 'pass' | 'fail' | 'skip' | null {
+  const stableStatus = orderItemId ? qcStatusMap[stableOrderItemUnitKey(orderItemId, unitIndex)] : undefined
+  return stableStatus ?? qcStatusMap[unitUid] ?? (sourceLineUid ? qcStatusMap[sourceLineUid] : undefined) ?? null
+}
+
+function buildPackingItemsFromOrder(
+  order: OrderWithItems,
+  qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>,
+  scannedUnitKeySet: Set<string>,
+  selfPickupChannelCodes: ReadonlySet<string>,
+  wmsReady = true,
+  wmsReadyByOrderItem: Record<string, boolean> = {}
+): PackingItem[] {
+  const isOrderShipped = order.status === 'จัดส่งแล้ว'
+  const isSelfPickup = isOrderPackableWithoutParcelNumber(order, selfPickupChannelCodes)
+  const isParcelScanned = isSelfPickup || order.packing_meta?.parcelScanned || false
+  const packingTag = order.packing_meta?.dailyPackingTag ?? null
+  const rows: PackingItem[] = []
+  // Keep the flattened bill UID aligned with the bill view: condo stamps must
+  // be ordered by floor (1 -> 5) before assigning bill-1, bill-2, ...
+  const sorted = sortedPackingOrderItems(order)
+
+  const bill = String(order.bill_no || '').trim() || '—'
+  let seq = 0
+  sorted.forEach((item: any) => {
+    const copies = normalizedLineQuantity(item.quantity)
+    for (let c = 0; c < copies; c += 1) {
+      seq += 1
+      const unitUid = flatBillUnitUid(bill, seq)
+      const key = `${order.id}\u0001${unitUid}`
+      // Legacy QC records can be keyed by the original order-line UID, while
+      // current records use bill-unit UID. Match the same fallback used by the
+      // QC Operation queue so Packing cannot disagree with a completed session.
+      const qcStatus = resolvePackingQcStatus(qcStatusMap, unitUid, item.item_uid, item.id, c + 1)
+      rows.push({
+        bill_no: order.bill_no || '',
+        channel_code: order.channel_code || '',
+        is_self_pickup: isSelfPickup,
+        fulfillment_method: isSelfPickup ? 'self_pickup' : 'shipping',
+        converted_from_self_pickup_at: order.converted_from_self_pickup_at || null,
+        converted_from_self_pickup_by: order.converted_from_self_pickup_by || null,
+        tracking_number: order.tracking_number || '',
+        channel_order_no: order.channel_order_no || null,
+        express_receipt_number: order.express_receipt_number || '',
+        customer_name: order.customer_name || '',
+        order_id: order.id,
+        product_name: item.product_name || '',
+        product_code: item.pr_products?.product_code || null,
+        details: [item.line_1, item.line_2, item.line_3].filter(Boolean).join(' // '),
+        ink_color: item.ink_color,
+        shelf_location: item.product_type,
+        cartoon_pattern: item.cartoon_pattern,
+        line_pattern: item.line_pattern,
+        font: item.font,
+        unit_uid: unitUid,
+        source_line_uid: item.item_uid ?? null,
+        source_order_item_id: item.id ?? null,
+        scanned: scannedUnitKeySet.has(key),
+        parcelScanned: isParcelScanned,
+        isOrderComplete: isOrderShipped,
+        needsTaxInvoice: order.billing_details?.request_tax_invoice || false,
+        needsCashBill: false,
+        claim_type: order.claim_type,
+        claim_details: order.claim_details,
+        file_attachment: item.file_attachment,
+        notes: item.notes,
+        qc_status: qcStatus,
+        wmsReady: item.id ? (wmsReadyByOrderItem[String(item.id)] ?? wmsReady) : wmsReady,
+        packingTag,
+        ship_due_at: order.ship_due_at ?? null,
+        overdue_at: order.overdue_at ?? null,
+        shipped_time: order.shipped_time ?? null,
+      })
+    }
+  })
+  return rows
+}
+
+async function fetchPackingUnitScanKeySet(orderIds: string[]): Promise<Set<string>> {
+  const set = new Set<string>()
+  const ids = Array.from(new Set(orderIds.filter((x) => !!x)))
+  if (ids.length === 0) return set
+  const { data, error } = await supabase
+    .from('pk_packing_unit_scans')
+    .select('order_id, unit_uid')
+    .in('order_id', ids)
+  if (error) {
+    console.warn('packing unit scans load error:', error)
+    return set
+  }
+  ;(data || []).forEach((r: any) => {
+    if (!r?.order_id || !r?.unit_uid) return
+    set.add(`${r.order_id}\u0001${String(r.unit_uid).trim()}`)
+  })
+  return set
+}
+
+type RecordingState = {
+  status: 'idle' | 'recording' | 'uploading' | 'error'
+  tracking: string | null
+  error?: string
+}
+
+const INACTIVITY_LIMIT = 60_000
+/** เก็บรายการคิวที่อัปโหลดเสร็จแล้วไว้กี่วันก่อนล้างอัตโนมัติ */
+const QUEUE_RETENTION_DAYS = 7
+const STALE_UPLOAD_MS = 10 * 60 * 1000
+const PACKING_DAILY_TAG_STORAGE_KEY = 'pk_daily_packing_tag_v1'
+
+type VideoQualityProfile = {
+  id: VideoQualityProfileId
+  label: string
+  description: string
+  width: number
+  height: number
+  fps: number
+  bitrate: number
+}
+
+const VIDEO_QUALITY_PROFILES: Record<VideoQualityProfileId, VideoQualityProfile> = {
+  original: { id: 'original', label: 'คมชัดสูงสุด', description: '1080p · 30 FPS · 8 Mbps (~60 MB/นาที)', width: 1920, height: 1080, fps: 30, bitrate: 8_000_000 },
+  ultra: { id: 'ultra', label: 'คมชัดพิเศษ', description: '1080p · 30 FPS · 6 Mbps (~45 MB/นาที)', width: 1920, height: 1080, fps: 30, bitrate: 6_000_000 },
+  very_high: { id: 'very_high', label: 'คมชัดมาก', description: '1080p · 24 FPS · 4 Mbps (~30 MB/นาที)', width: 1920, height: 1080, fps: 24, bitrate: 4_000_000 },
+  high: { id: 'high', label: '1080p — High Quality', description: '1080p · 30 FPS · 5 Mbps (~38 MB/นาที)', width: 1920, height: 1080, fps: 30, bitrate: 5_000_000 },
+  standard: { id: 'standard', label: '720p — Recommended', description: '720p · 30 FPS · 3 Mbps (~23 MB/นาที)', width: 1280, height: 720, fps: 30, bitrate: 3_000_000 },
+  balanced: { id: 'balanced', label: 'ไฟล์ขนาดกลาง', description: '720p · 20 FPS · 1.2 Mbps (~9 MB/นาที)', width: 1280, height: 720, fps: 20, bitrate: 1_200_000 },
+  data_saver: { id: 'data_saver', label: 'ประหยัดพื้นที่', description: '480p · 15 FPS · 0.65 Mbps (~5 MB/นาที)', width: 854, height: 480, fps: 15, bitrate: 650_000 },
+}
+
+const SELECTABLE_VIDEO_QUALITY_PROFILES: VideoQualityProfileId[] = ['standard', 'high']
+// ตัดวิดีโอที่บันทึกนานเป็นไฟล์ย่อยก่อนถึงเพดานอัปโหลดอัตโนมัติ 80 MB
+const RECORDING_SEGMENT_LIMIT_BYTES = 70 * 1024 * 1024
+const RECORDING_TIMESLICE_MS = 5_000
+
+const DEVICE_ONLINE_MS = 2 * 60 * 1000
+const UPLOAD_REPORT_PAGE_SIZE = 50
+const UPLOAD_REPORT_FETCH_BATCH_SIZE = 1000
+
+type PackingUploadReportRow = {
+  id: string
+  user_id: string
+  recorded_by: string
+  device_id: string
+  device_name: string
+  folder_name: string | null
+  folder_path: string | null
+  work_order_name: string
+  tracking_number: string
+  channel_order_no: string | null
+  filename: string
+  storage_path: string
+  file_size_bytes: number
+  duration_seconds: number | null
+  status: 'pending' | 'uploading' | 'success' | 'failed'
+  retry_count: number
+  last_error: string | null
+  local_deleted: boolean
+  client_created_at: string
+  client_updated_at: string
+  uploaded_at: string | null
+  reported_at: string
+  quality_profile: VideoQualityProfileId | 'imported' | null
+  requested_width: number | null
+  requested_height: number | null
+  requested_fps: number | null
+  requested_bitrate: number | null
+  actual_width: number | null
+  actual_height: number | null
+  actual_fps: number | null
+  mime_type: string | null
+  codec: string | null
+  recorder_bitrate: number | null
+  actual_bitrate: number | null
+}
+
+type PackingDeviceRow = {
+  device_id: string
+  user_id: string
+  device_name: string
+  last_username: string | null
+  is_active: boolean
+  quality_profile: VideoQualityProfileId
+  folder_name: string | null
+  folder_path: string | null
+  pending_count: number
+  uploading_count: number
+  failed_count: number
+  last_seen_at: string
+}
+
+type RecordingVideoMetadata = {
+  startedAt: string | null
+  qualityProfile: VideoQualityProfileId | 'imported'
+  requestedWidth: number | null
+  requestedHeight: number | null
+  requestedFps: number | null
+  requestedBitrate: number | null
+  actualWidth: number | null
+  actualHeight: number | null
+  actualFps: number | null
+  mimeType: string | null
+  codec: string | null
+  recorderBitrate: number | null
+  actualBitrate: number | null
+}
+
+function formatFileSize(bytes: number | null | undefined): string {
+  const value = Number(bytes || 0)
+  if (!Number.isFinite(value) || value <= 0) return '0 MB'
+  return `${(value / (1024 * 1024)).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MB`
+}
+
+function formatDuration(seconds: number | null | undefined): string {
+  const value = Math.max(0, Math.round(Number(seconds || 0)))
+  if (!value) return '-'
+  const minutes = Math.floor(value / 60)
+  const remainder = value % 60
+  return `${minutes}:${String(remainder).padStart(2, '0')} นาที`
+}
+
+function megabytesPerMinute(bytes: number | null | undefined, seconds: number | null | undefined): number | null {
+  const size = Number(bytes || 0)
+  const duration = Number(seconds || 0)
+  if (size <= 0 || duration <= 0) return null
+  return (size / (1024 * 1024)) / (duration / 60)
+}
+
+function formatBitrate(bitsPerSecond: number | null | undefined): string {
+  const value = Number(bitsPerSecond || 0)
+  if (value <= 0) return '-'
+  return `${(value / 1_000_000).toLocaleString('th-TH', { maximumFractionDigits: 2 })} Mbps`
+}
+
+function uploadRecoveryAdvice(row: PackingUploadReportRow, deviceOnline: boolean): string {
+  const error = String(row.last_error || '').toLowerCase()
+  if (!deviceOnline) return 'เครื่องต้นทางออฟไลน์: เปิดเครื่องและ Chrome profile เดิม แล้วเข้า “คิวอัปโหลด”'
+  if (/ไม่พบไฟล์|missing.*file|no.*file/.test(error)) return 'ไม่พบไฟล์ในคิว: ใช้ปุ่ม “นำไฟล์วิดีโอกลับเข้าคิว” ที่เครื่องต้นทาง'
+  if (/401|403|unauthor|jwt|token|session/.test(error)) return 'Session หมดอายุ: เข้าสู่ระบบใหม่ที่เครื่องต้นทาง แล้วกดอัปโหลดใหม่'
+  if (/failed to fetch|network|internet|connection|เชื่อมต่อ/.test(error)) return 'ตรวจอินเทอร์เน็ตของเครื่องต้นทาง แล้วกดอัปโหลดใหม่'
+  if (/413|too large|payload|ขนาด|ไฟล์ใหญ่|ขีดจำกัด/.test(error)) return 'ไฟล์ใหญ่เกินไป: ใช้ไฟล์สำรองในเครื่อง หรือระบบอัปโหลดไฟล์ขนาดใหญ่'
+  if (/google drive|timeout|timed out|500|502|503|504/.test(error)) return 'บริการปลายทางหรือเครือข่ายขัดข้อง: รอสักครู่แล้วกดอัปโหลดใหม่'
+  if (row.status === 'failed') return 'ไปที่เครื่องต้นทาง → คิวอัปโหลด → ตรวจ Error และกด “อัปโหลดใหม่”'
+  return 'เครื่องยังออนไลน์แต่คิวไม่ขยับ: เปิดแท็บคิวที่เครื่องต้นทางและสั่งอัปโหลดใหม่'
+}
+
+function isStaleQueueTimestamp(status: string, updatedAt: string | null | undefined): boolean {
+  if (status !== 'pending' && status !== 'uploading') return false
+  const time = new Date(updatedAt || '').getTime()
+  const limit = status === 'pending' ? 30 * 60 * 1000 : STALE_UPLOAD_MS
+  return !Number.isFinite(time) || Date.now() - time >= limit
+}
+
+type UploadStatusFilter = 'pending' | 'uploading' | 'success' | 'failed'
+
+type ConvertToShippingForm = {
+  orderId: string
+  billNo: string
+  isShipped: boolean
+  recipientName: string
+  originalAddress: string
+  addressLine: string
+  subDistrict: string
+  district: string
+  province: string
+  postalCode: string
+  mobilePhone: string
+  reason: string
+  cod: string
+}
+
+function UploadStatusCard({
+  label,
+  value,
+  className,
+  active = false,
+  onClick,
+}: {
+  label: string
+  value: number
+  className: string
+  active?: boolean
+  onClick?: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`w-full rounded-xl border p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${active ? 'ring-2 ring-blue-600 ring-offset-2' : ''} ${className}`}
+      title={active ? `ยกเลิกตัวกรอง ${label}` : `แสดงเฉพาะ ${label}`}
+    >
+      <div className="text-sm font-medium opacity-80">{label}</div>
+      <div className="mt-1 text-2xl font-bold tabular-nums">{value.toLocaleString('th-TH')}</div>
+    </button>
+  )
+}
+
+/** แสดงเลขพัสดุแบบไม่มีช่องว่าง */
+function formatParcelNo(value: string | null | undefined): string {
+  if (!value) return ''
+  return String(value).replace(/\s+/g, '')
+}
+
+function normalizeParcelScanInput(value: string): string {
+  return value.replace(/\s+/g, '').trim().toUpperCase()
+}
+
+function localCalendarDateKey(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/** สำรองหมายเลข Tag ต่อเนื่องจำนวน count ตัวในวันเดียวกัน (รีเซ็ตเมื่อเปลี่ยนวันตามเวลาท้องถิ่นของเครื่อง) */
+function reserveDailyPackingTags(count: number): number[] {
+  if (count <= 0) return []
+  const d = localCalendarDateKey()
+  try {
+    const raw = localStorage.getItem(PACKING_DAILY_TAG_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : {}
+    let seq = 1
+    if (parsed.date === d && typeof parsed.seq === 'number' && parsed.seq >= 1) {
+      seq = parsed.seq
+    }
+    const out: number[] = []
+    for (let i = 0; i < count; i += 1) {
+      out.push(seq + i)
+    }
+    localStorage.setItem(PACKING_DAILY_TAG_STORAGE_KEY, JSON.stringify({ date: d, seq: seq + count }))
+    return out
+  } catch {
+    return Array.from({ length: count }, (_, i) => i + 1)
+  }
+}
+
+function naturalSortCompare(a: string, b: string) {
+  const re = /(\d+)/g
+  const aParts = String(a).split(re)
+  const bParts = String(b).split(re)
+  for (let i = 0; i < Math.min(aParts.length, bParts.length); i += 1) {
+    const partA = aParts[i]
+    const partB = bParts[i]
+    if (i % 2 === 1) {
+      const numA = parseInt(partA, 10)
+      const numB = parseInt(partB, 10)
+      if (numA !== numB) return numA - numB
+    } else if (partA !== partB) {
+      return partA.localeCompare(partB)
+    }
+  }
+  return aParts.length - bParts.length
+}
+
+export default function Packing() {
+  const { user } = useAuthContext()
+  const { hasAccess } = useMenuAccess()
+  const roleViewOnly = isAdminOrSuperadmin(user?.role)
+  const [operationViewOnly, setOperationViewOnly] = useState(false)
+  const isViewOnly = roleViewOnly || operationViewOnly
+  const [workOrders, setWorkOrders] = useState<WorkOrder[]>([])
+  const [claimTypeLabels, setClaimTypeLabels] = useState<Record<string, string>>({})
+  const [workOrderStatus, setWorkOrderStatus] = useState<Record<string, WorkOrderStatus>>({})
+  const [planStartTimes, setPlanStartTimes] = useState<Record<string, string | null>>({})
+  const [loading, setLoading] = useState(true)
+  const { menuAccessLoading } = useMenuAccess()
+  const [view, setView] = useState<'selection' | 'main'>('selection')
+  const [selectionTab, setSelectionTab] = useState<'new' | 'shipped' | 'queue' | 'report' | 'tagSearch'>('new')
+  const [tagSearchInput, setTagSearchInput] = useState('')
+  const [tagSearchLoading, setTagSearchLoading] = useState(false)
+  const [tagSearchError, setTagSearchError] = useState('')
+  const [tagSearchMeta, setTagSearchMeta] = useState<{
+    workOrderName: string | null
+    tracking: string | null
+    packingTag: number | null
+  } | null>(null)
+  const [tagSearchRows, setTagSearchRows] = useState<PackingItem[] | null>(null)
+
+  useEffect(() => {
+    void fetchClaimTypeLabelMap().then(setClaimTypeLabels)
+  }, [])
+
+  useEffect(() => {
+    if (menuAccessLoading) return
+    if (!hasAccess(`packing-${selectionTab}`)) {
+      const first = (['new', 'shipped', 'queue', 'report', 'tagSearch'] as const).find((t) => hasAccess(`packing-${t}`))
+      if (first) setSelectionTab(first)
+    }
+  }, [menuAccessLoading, hasAccess, selectionTab])
+  const [shippedOrders, setShippedOrders] = useState<
+    Array<{
+      id: string
+      work_order_name: string | null
+      shipped_time: string | null
+      channel_code: string | null
+      shipped_by: string | null
+      bill_no: string | null
+      customer_name: string | null
+      tracking_number: string | null
+      express_receipt_number: string | null
+    }>
+  >([])
+  const [shippedDateFrom, setShippedDateFrom] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+  })
+  const [shippedDateTo, setShippedDateTo] = useState(() => new Date().toISOString().split('T')[0])
+  const [shippedChannelFilter, setShippedChannelFilter] = useState('')
+  const [shippedPackerFilter, setShippedPackerFilter] = useState('')
+  const [shippedSearch, setShippedSearch] = useState('')
+  const [aggregatedData, setAggregatedData] = useState<PackingItem[][]>([])
+  const [currentIndex, setCurrentIndex] = useState(-1)
+  const [currentWorkOrderName, setCurrentWorkOrderName] = useState<string | null>(null)
+  const [packStartTime, setPackStartTime] = useState<Date | null>(null)
+  const [statusMessage, setStatusMessage] = useState<{ text: string; type: '' | 'success' | 'error' }>({
+    text: '',
+    type: ''
+  })
+  const [searchTerm, setSearchTerm] = useState('')
+  const [showUnpackedOnly, setShowUnpackedOnly] = useState(false)
+  const [parcelScanValue, setParcelScanValue] = useState('')
+  const [itemScanValue, setItemScanValue] = useState('')
+  const [recordingState, setRecordingState] = useState<RecordingState>({ status: 'idle', tracking: null })
+  const [isLoadingOrders, setIsLoadingOrders] = useState(false)
+  const [previewModal, setPreviewModal] = useState<{ open: boolean; message: string }>({ open: false, message: '' })
+  const [convertShippingForm, setConvertShippingForm] = useState<ConvertToShippingForm | null>(null)
+  const [convertShippingLoading, setConvertShippingLoading] = useState(false)
+  const [convertAddressLoading, setConvertAddressLoading] = useState(false)
+  const [folderHandle, setFolderHandleState] = useState<FileSystemDirectoryHandle | null>(null)
+  const [folderPath, setFolderPath] = useState('')
+  const [deviceId, setDeviceId] = useState('')
+  const [deviceName, setDeviceNameState] = useState('')
+  const [videoQualityProfile, setVideoQualityProfileState] = useState<VideoQualityProfileId>('standard')
+  const [pendingHandle, setPendingHandle] = useState<FileSystemDirectoryHandle | null>(null)
+  const [reconnectOpen, setReconnectOpen] = useState(false)
+  const [pathModal, setPathModal] = useState<{ open: boolean; value: string }>({ open: false, value: '' })
+  const [queueItems, setQueueItems] = useState<UploadQueueItem[]>([])
+  const [queueStatusFilter, setQueueStatusFilter] = useState<UploadStatusFilter | null>(null)
+  const queueSignatureRef = useRef('')
+  const shouldPollQueueRef = useRef(true)
+  const [queueLoading, setQueueLoading] = useState(false)
+  const [clearingQueue, setClearingQueue] = useState(false)
+  const [uploadReportRows, setUploadReportRows] = useState<PackingUploadReportRow[]>([])
+  const [uploadReportLoading, setUploadReportLoading] = useState(false)
+  const [uploadReportSearch, setUploadReportSearch] = useState('')
+  const [uploadReportDeviceId, setUploadReportDeviceId] = useState('')
+  const [uploadReportDateFrom, setUploadReportDateFrom] = useState('')
+  const [uploadReportDateTo, setUploadReportDateTo] = useState('')
+  const [uploadReportPage, setUploadReportPage] = useState(1)
+  const [deletingUploadReportId, setDeletingUploadReportId] = useState<string | null>(null)
+  const [reportDeviceListFilter, setReportDeviceListFilter] = useState<'online' | 'offline' | null>(null)
+  const [reportStatusFilter, setReportStatusFilter] = useState<UploadStatusFilter | null>(null)
+  const [packingDevices, setPackingDevices] = useState<PackingDeviceRow[]>([])
+  const [stationClaimDeviceId, setStationClaimDeviceId] = useState('')
+  const [stationClaiming, setStationClaiming] = useState(false)
+  const [stationClaimMessage, setStationClaimMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [requeueImport, setRequeueImport] = useState<{
+    open: boolean
+    file: File | null
+    workOrderName: string
+    trackingNumber: string
+    durationSeconds: number | null
+    width: number | null
+    height: number | null
+    saving: boolean
+    error: string
+  }>({ open: false, file: null, workOrderName: '', trackingNumber: '', durationSeconds: null, width: null, height: null, saving: false, error: '' })
+  const [packingVideoUrl, setPackingVideoUrl] = useState<string | null>(null)
+  const [packingVideoLoading, setPackingVideoLoading] = useState(false)
+  const [dialog, setDialog] = useState<{
+    open: boolean
+    mode: 'alert' | 'confirm'
+    title: string
+    message: string
+    confirmText?: string
+    cancelText?: string
+    spacebarConfirm?: boolean
+  }>({ open: false, mode: 'alert', title: '', message: '' })
+  const [shippedEdit, setShippedEdit] = useState<{
+    open: boolean
+    workOrderName: string
+    shippedBy: string
+    shippedDate: string
+    shippedTime: string
+  } | null>(null)
+
+  const [billingCheckConfirmed, setBillingCheckConfirmed] = useState(false)
+
+  // Ink types for color display
+  const [inkTypes, setInkTypes] = useState<InkType[]>([])
+
+  // Hover zoom image state (fixed overlay to escape overflow clipping)
+  const [hoverImage, setHoverImage] = useState<{ url: string; rect: DOMRect } | null>(null)
+
+  function getInkColor(inkName: string | null | undefined): string {
+    if (!inkName) return '#ddd'
+    const ink = inkTypes.find((i) => i.ink_name === inkName)
+    return ink?.hex_code || '#ddd'
+  }
+
+  const parcelScanRef = useRef<HTMLInputElement>(null)
+  const itemScanRef = useRef<HTMLInputElement>(null)
+  const tagSearchInputRef = useRef<HTMLInputElement>(null)
+  const inactivityTimerRef = useRef<number | null>(null)
+  const currentIndexRef = useRef(currentIndex)
+  const aggregatedDataRef = useRef(aggregatedData)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const recordingChunksRef = useRef<Blob[]>([])
+  const recordingBytesRef = useRef(0)
+  const recordingStartRef = useRef<number | null>(null)
+  const recordingVideoMetadataRef = useRef<RecordingVideoMetadata | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const previewPromiseRef = useRef<Promise<boolean> | null>(null)
+  const recordingStartingRef = useRef(false)
+  const confirmActionRef = useRef<null | (() => void)>(null)
+  const stopAdvanceRef = useRef(false)
+  const requeueFileInputRef = useRef<HTMLInputElement | null>(null)
+
+  const ensurePlanDeptStart = async (workOrderName: string) => {
+    if (!workOrderName) return
+    const now = new Date().toISOString()
+    const { error } = await supabase.rpc('pk_start_work_order_packing', {
+      p_work_order_name: workOrderName,
+      p_started_at: now,
+    })
+    if (error) throw error
+  }
+
+  const checkAndMarkPackEnd = async (workOrderName: string) => {
+    if (!workOrderName) return
+    const { count, error: countError } = await supabase
+      .from('or_orders')
+      .select('id', { count: 'exact', head: true })
+      .eq('work_order_name', workOrderName)
+      .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
+      .neq('status', 'จัดส่งแล้ว')
+    if (countError) throw countError
+    if ((count || 0) !== 0) return
+    const now = new Date().toISOString()
+    const procNames = ['เริ่มแพ็ค', 'เสร็จแล้ว']
+    const patch: Record<string, Record<string, string>> = {}
+    procNames.forEach((p) => {
+      patch[p] = { start_if_null: now, end: now }
+    })
+    const { error } = await supabase.rpc('merge_plan_tracks_by_name', {
+      p_job_name: workOrderName,
+      p_dept: 'PACK',
+      p_patch: patch,
+    })
+    if (error) throw error
+  }
+
+  const finalizePackingWorkOrder = async (workOrderName: string, orderIds: string[]) => {
+    const shippedBy = user?.username || user?.email || 'unknown'
+    const { data, error } = await supabase.rpc('pk_finalize_work_order', {
+      p_work_order_name: workOrderName,
+      p_order_ids: orderIds,
+      p_shipped_by: shippedBy,
+    })
+    if (error) throw error
+    return data as { success: boolean; shipped_count: number; closed_at: string }
+  }
+
+  const handleSelectNewWorkOrder = async (workOrderName: string, hasTracking: boolean, hasBillsWithTracking: boolean, viewOnly = false) => {
+    if (!hasTracking) {
+      openAlert('ใบงานนี้ยังไม่มีเลขพัสดุ ไม่สามารถจัดของได้')
+      return
+    }
+    if (!hasBillsWithTracking) {
+      openAlert('ใบงานนี้ยังไม่มีบิลที่มีเลขพัสดุ')
+      return
+    }
+    const shouldViewOnly = roleViewOnly || viewOnly
+    setOperationViewOnly(shouldViewOnly)
+    if (!shouldViewOnly) {
+      try {
+        await ensurePlanDeptStart(workOrderName)
+      } catch (error: any) {
+        console.error('PACK ensurePlanDeptStart error:', error)
+        openAlert('เริ่มแพ็คไม่สำเร็จ: ไม่สามารถบันทึกเวลาเริ่ม PACK ได้\n' + (error?.message || error))
+        return
+      }
+    }
+
+    let startTime: Date | null = shouldViewOnly ? null : new Date()
+    const { data: planJob } = await supabase
+      .from('plan_jobs')
+      .select('tracks')
+      .eq('name', workOrderName)
+      .order('date', { ascending: false })
+      .limit(1)
+      .single()
+    const planStart = planJob?.tracks?.PACK?.['เริ่มแพ็ค']?.start
+    if (planStart && !shouldViewOnly) startTime = new Date(planStart)
+
+    setPackStartTime(startTime)
+    await loadPackingData(workOrderName, shouldViewOnly)
+  }
+
+  useEffect(() => {
+    currentIndexRef.current = currentIndex
+  }, [currentIndex])
+
+  useEffect(() => {
+    aggregatedDataRef.current = aggregatedData
+  }, [aggregatedData])
+
+  const isQcPassGroup = (group: PackingItem[]) => group.every((item) => item.qc_status === 'pass' || item.qc_status === 'skip')
+  const isWmsReadyGroup = (group: PackingItem[]) => group.every((item) => item.wmsReady)
+
+  const goToNextGroup = () => {
+    const nextIndex = aggregatedDataRef.current.findIndex(
+      (g, idx) =>
+        idx !== currentIndexRef.current &&
+        isWmsReadyGroup(g) &&
+        isQcPassGroup(g) &&
+        !g.every((item) => item.scanned) &&
+        !g[0].isOrderComplete
+    )
+    if (nextIndex !== -1) {
+      setCurrentIndex(nextIndex)
+    }
+  }
+
+  useEffect(() => {
+    loadWorkOrdersForPacking()
+    fetchInkTypes().then(setInkTypes).catch(() => null)
+    return () => {
+      cleanupRecording(true, true)
+      clearInactivityTimer()
+    }
+  }, [])
+
+  useEffect(() => {
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
+    const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
+    if (supabaseUrl && supabaseAnonKey) {
+      setSupabaseConfig(supabaseUrl, supabaseAnonKey).catch(() => null)
+    }
+    const syncToken = async () => {
+      const { data } = await supabase.auth.getSession()
+      const token = data.session?.access_token || null
+      await setAccessToken(token)
+      if (token) await requestQueueProcessing()
+    }
+    syncToken().catch(() => null)
+    const { data: authSub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAccessToken(session?.access_token || null)
+        .then(() => session?.access_token ? requestQueueProcessing() : undefined)
+        .catch(() => null)
+    })
+    loadFolderFromSettings().catch(() => null)
+    loadDeviceSettings().catch(() => null)
+    refreshQueue(true).catch(() => null)
+    const timer = window.setInterval(() => {
+      // poll เฉพาะตอนที่หน้าจอต้องใช้จริง ดูเงื่อนไขที่ effect ของ shouldPollQueueRef
+      if (!shouldPollQueueRef.current) return
+      refreshQueue(false).catch(() => null)
+    }, 5000)
+    return () => {
+      window.clearInterval(timer)
+      authSub?.subscription?.unsubscribe()
+    }
+  }, [])
+
+  // queryPermission ยังคืน granted จาก metadata ที่แคชไว้ แม้โฟลเดอร์จะถูกย้าย/ลบไปแล้ว
+  // จึงต้องแตะไดเรกทอรีจริงเพื่อยืนยันว่ายังใช้งานได้
+  async function isFolderHandleUsable(handle: FileSystemDirectoryHandle) {
+    try {
+      await (handle as any).values().next()
+      return true
+    } catch (_err) {
+      return false
+    }
+  }
+
+  function describeFolderError(error: any) {
+    const name = error?.name || ''
+    if (name === 'NotFoundError') {
+      return 'ไม่พบโฟลเดอร์ที่เลือกไว้ (อาจถูกย้าย เปลี่ยนชื่อ ลบ หรือไดรฟ์ถูกถอด)'
+    }
+    if (name === 'NotAllowedError' || name === 'SecurityError') {
+      return 'เบราว์เซอร์ไม่อนุญาตให้เขียนไฟล์ลงโฟลเดอร์ที่เลือกไว้'
+    }
+    if (name === 'QuotaExceededError') {
+      return 'พื้นที่ดิสก์ไม่พอสำหรับบันทึกไฟล์'
+    }
+    return error?.message || 'บันทึกไฟล์ลงโฟลเดอร์ไม่สำเร็จ'
+  }
+
+  async function forgetFolder() {
+    await clearFolderHandle().catch(() => null)
+    setFolderHandleState(null)
+  }
+
+  async function loadFolderFromSettings() {
+    setFolderPath(await getFolderPathNote().catch(() => ''))
+    const handle = await getFolderHandle()
+    if (!handle) return
+    const perm = await (handle as any).queryPermission?.({ mode: 'readwrite' })
+    if (perm !== 'granted') {
+      // ไม่เรียก requestPermission ตรงนี้ เพราะ Chrome จะเด้ง popup ขออนุญาตทันทีที่เปิดหน้า
+      // ให้ผู้ใช้กดยืนยันผ่าน modal ของเราก่อน popup จะได้มาแบบรู้ตัว
+      setPendingHandle(handle)
+      setReconnectOpen(true)
+      return
+    }
+    if (!(await isFolderHandleUsable(handle))) {
+      await forgetFolder()
+      return
+    }
+    setFolderHandleState(handle)
+  }
+
+  async function loadDeviceSettings() {
+    const [id, savedName, savedProfile] = await Promise.all([
+      getOrCreateDeviceId(),
+      getDeviceName(),
+      getVideoQualityProfile(),
+    ])
+    const name = savedName || `เครื่องแพ็ค-${id.slice(0, 6).toUpperCase()}`
+    if (!savedName) await setDeviceName(name)
+    setDeviceId(id)
+    setDeviceNameState(name)
+    setVideoQualityProfileState(savedProfile)
+  }
+
+  async function saveDeviceName() {
+    const next = deviceName.trim() || `เครื่องแพ็ค-${deviceId.slice(0, 6).toUpperCase()}`
+    await setDeviceName(next)
+    setDeviceNameState(next)
+  }
+
+  async function claimExistingPackingStation() {
+    const target = packingDevices.find((device) => device.device_id === stationClaimDeviceId)
+    if (!target || !deviceId) {
+      setStationClaimMessage({ type: 'error', text: 'กรุณาเลือกทะเบียนสถานีแพ็คเดิม' })
+      return
+    }
+    if (target.device_id === deviceId) {
+      setStationClaimMessage({ type: 'success', text: 'Browser นี้ใช้ทะเบียนสถานีดังกล่าวอยู่แล้ว' })
+      return
+    }
+    if (queueItems.some((item) => item.status === 'uploading')) {
+      setStationClaimMessage({ type: 'error', text: 'กรุณารอให้อัปโหลดไฟล์ปัจจุบันเสร็จก่อนเปลี่ยนทะเบียนสถานี' })
+      return
+    }
+
+    setStationClaiming(true)
+    setStationClaimMessage(null)
+    try {
+      const { data, error } = await supabase.rpc('rpc_claim_packing_device', {
+        p_target_device_id: target.device_id,
+        p_current_device_id: deviceId,
+        p_device_name: target.device_name,
+      })
+      if (error) throw error
+
+      const claimed = data as { device_id?: string; device_name?: string }
+      const nextId = claimed?.device_id || target.device_id
+      const nextName = claimed?.device_name || target.device_name
+      await remapQueueDevice(deviceId, nextId, nextName)
+      await persistDeviceId(nextId)
+      await setDeviceName(nextName)
+      setDeviceId(nextId)
+      setDeviceNameState(nextName)
+      setQueueItems(await listQueueItems())
+      setStationClaimDeviceId('')
+      setStationClaimMessage({ type: 'success', text: `ผูก Browser นี้กับสถานี ${nextName} แล้ว` })
+      await loadPackingDeviceRegistry()
+    } catch (error) {
+      const message = error && typeof error === 'object' && 'message' in error
+        ? String((error as { message?: unknown }).message || 'ผูกสถานีไม่สำเร็จ')
+        : String(error)
+      setStationClaimMessage({ type: 'error', text: message })
+    } finally {
+      setStationClaiming(false)
+    }
+  }
+
+  async function changeVideoQualityProfile(profile: VideoQualityProfileId) {
+    await setVideoQualityProfile(profile)
+    setVideoQualityProfileState(profile)
+    // ปิด stream เดิมเพื่อให้การบันทึกครั้งต่อไปขอค่ากล้องตามโปรไฟล์ใหม่
+    cleanupRecording(true, true)
+  }
+
+  async function confirmReconnect() {
+    const handle = pendingHandle
+    setReconnectOpen(false)
+    setPendingHandle(null)
+    if (!handle) return
+    const req = await (handle as any).requestPermission?.({ mode: 'readwrite' })
+    if (req !== 'granted') {
+      openAlert('ยังไม่ได้รับสิทธิ์เข้าถึงโฟลเดอร์\nกรุณากด "เลือกโฟลเดอร์จัดเก็บ" เพื่อเลือกใหม่ ก่อนเริ่มแพ็คงาน')
+      return
+    }
+    if (!(await isFolderHandleUsable(handle))) {
+      await forgetFolder()
+      openAlert('ไม่พบโฟลเดอร์เดิมแล้ว (อาจถูกย้าย เปลี่ยนชื่อ หรือลบ)\nกรุณากด "เลือกโฟลเดอร์จัดเก็บ" เพื่อเลือกใหม่')
+      return
+    }
+    setFolderHandleState(handle)
+  }
+
+  async function saveFolderPath(value: string) {
+    const next = value.trim()
+    await setFolderPathNote(next).catch(() => null)
+    setFolderPath(next)
+    setPathModal({ open: false, value: '' })
+  }
+
+  async function selectFolder() {
+    if (!('showDirectoryPicker' in window)) {
+      openAlert('เบราว์เซอร์นี้ไม่รองรับการเลือกโฟลเดอร์ (ต้องใช้ Chrome/Edge)')
+      return
+    }
+    try {
+      const handle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
+      await setFolderHandle(handle)
+      setFolderHandleState(handle)
+      setPathModal({ open: true, value: '' })
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return
+      openAlert('เลือกโฟลเดอร์ไม่สำเร็จ: ' + describeFolderError(error))
+    }
+  }
+
+  // poll ต่อเมื่อกำลังดูแท็บคิวอยู่ หรือยังมีงานที่สถานะเปลี่ยนเองได้ (service worker เป็นคนอัปเดต)
+  // รายการ failed ไม่นับ เพราะไม่ขยับเองจนกว่าจะสั่งอัปโหลดใหม่
+  useEffect(() => {
+    shouldPollQueueRef.current =
+      selectionTab === 'queue' ||
+      queueItems.some((i) => i.status === 'pending' || i.status === 'uploading')
+  }, [selectionTab, queueItems])
+
+  // ลายเซ็นของเฉพาะฟิลด์ที่หน้าจอใช้ ใช้เทียบว่าคิวเปลี่ยนจริงไหม
+  function queueSignature(items: UploadQueueItem[]) {
+    return items
+      .map((i) => `${i.id}:${i.status}:${i.updatedAt}:${i.localDeleted ? 1 : 0}:${i.lastError || ''}`)
+      .join('|')
+  }
+
+  // ล้างเฉพาะรายการที่อัปโหลดขึ้น Drive แล้ว ลบไฟล์ในเครื่องแล้ว และเก่าเกินกำหนด
+  // ข้อมูลตัวจริงอยู่ในตาราง pk_packing_videos บนเซิร์ฟเวอร์ คิวนี้เป็นแค่คิวงานชั่วคราว
+  async function purgeExpiredQueueItems(items: UploadQueueItem[]) {
+    const cutoff = Date.now() - QUEUE_RETENTION_DAYS * 24 * 60 * 60 * 1000
+    const expired = items.filter((i) => {
+      if (i.status !== 'success' || !i.localDeleted) return false
+      const created = new Date(i.createdAt || '').getTime()
+      // createdAt เพี้ยนหรืออ่านไม่ออก ไม่ต้องลบ ปลอดภัยไว้ก่อน
+      return Number.isFinite(created) && created < cutoff
+    })
+    if (!expired.length) return items
+    const expiredIds = new Set(expired.map((i) => i.id))
+    for (const item of expired) {
+      await deleteQueueItem(item.id).catch(() => null)
+    }
+    return items.filter((i) => !expiredIds.has(i.id))
+  }
+
+  async function refreshQueue(showLoading = false) {
+    if (showLoading) setQueueLoading(true)
+    let list = await listQueueItems()
+    const now = Date.now()
+    const staleUploading = list.filter((item) => {
+      if (item.status !== 'uploading') return false
+      const updatedAt = new Date(item.updatedAt || item.createdAt || 0).getTime()
+      return !Number.isFinite(updatedAt) || now - updatedAt >= STALE_UPLOAD_MS
+    })
+    if (staleUploading.length > 0) {
+      for (const item of staleUploading) {
+        await updateQueueItem(item.id, {
+          status: 'pending',
+          lastError: 'กู้คืนคิวอัตโนมัติ หลังการอัปโหลดถูกขัดจังหวะ',
+        })
+      }
+      const staleIds = new Set(staleUploading.map((item) => item.id))
+      list = list.map((item) => staleIds.has(item.id)
+        ? { ...item, status: 'pending', lastError: 'กู้คืนคิวอัตโนมัติ หลังการอัปโหลดถูกขัดจังหวะ', updatedAt: new Date().toISOString() }
+        : item)
+    }
+    const sorted = await purgeExpiredQueueItems(
+      list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+    )
+    // ตัด blob (ไฟล์วิดีโอ) ออกก่อนเก็บลง state เพราะหน้าจอใช้แค่ metadata
+    // ส่วน service worker อ่าน blob จาก IndexedDB โดยตรงอยู่แล้ว
+    const meta = sorted.map(({ blob: _blob, ...rest }) => rest as UploadQueueItem)
+    // ตัวจับเวลายิงทุก 5 วิ ถ้า set ทุกครั้งจะ re-render ทั้งหน้าแม้ข้อมูลไม่เปลี่ยน
+    const signature = queueSignature(meta)
+    if (signature !== queueSignatureRef.current) {
+      queueSignatureRef.current = signature
+      setQueueItems(meta)
+    }
+    if (showLoading) setQueueLoading(false)
+    if (folderHandle) {
+      await cleanupLocalFiles(folderHandle, sorted)
+    }
+  }
+
+  async function requestQueueProcessing() {
+    if (!('serviceWorker' in navigator)) return
+    const reg = await navigator.serviceWorker.ready
+    const regAny = reg as ServiceWorkerRegistration & { sync?: { register: (tag: string) => Promise<void> } }
+    if (regAny.sync?.register) await regAny.sync.register('packing-upload')
+    regAny.active?.postMessage({ type: 'sync-now' })
+  }
+
+  // ปุ่มชั่วคราวสำหรับล้างคิวเก่าที่เก็บใน IndexedDB และไฟล์สำรองของ Chrome เครื่องนี้
+  async function clearAllLocalQueueItems() {
+    if (clearingQueue) return
+    setClearingQueue(true)
+    try {
+      const items = await listQueueItems()
+      if (!folderHandle || !(await isFolderHandleUsable(folderHandle))) {
+        throw new Error('กรุณาเชื่อมต่อโฟลเดอร์จัดเก็บของเครื่องนี้ก่อน เพื่อให้ระบบลบไฟล์วิดีโอได้ครบ')
+      }
+
+      const filenames = Array.from(new Set(
+        items
+          .filter((item) => !item.localDeleted && item.filename)
+          .map((item) => item.filename),
+      ))
+      let deletedFileCount = 0
+      const deleteErrors: string[] = []
+      for (const filename of filenames) {
+        try {
+          await folderHandle.removeEntry(filename)
+          deletedFileCount += 1
+        } catch (error: any) {
+          // ไฟล์ที่ไม่พบถือว่าถูกลบไปแล้ว จึงไม่ต้องขวางการล้างคิว
+          if (error?.name !== 'NotFoundError') {
+            deleteErrors.push(`${filename}: ${describeFolderError(error)}`)
+          }
+        }
+      }
+      if (deleteErrors.length > 0) {
+        throw new Error(`ลบไฟล์สำรองไม่สำเร็จ ${deleteErrors.length.toLocaleString('th-TH')} ไฟล์\n${deleteErrors.slice(0, 3).join('\n')}`)
+      }
+
+      for (const item of items) {
+        await deleteQueueItem(item.id)
+      }
+      queueSignatureRef.current = ''
+      await refreshQueue()
+      openAlert(
+        `ล้างคิวในเครื่องนี้เรียบร้อย ${items.length.toLocaleString('th-TH')} รายการ\nลบไฟล์วิดีโอสำรองแล้ว ${deletedFileCount.toLocaleString('th-TH')} ไฟล์`,
+        'ล้างคิวสำเร็จ',
+      )
+    } catch (error: any) {
+      openAlert(`ล้างคิวไม่สำเร็จ: ${error?.message || error}`, 'เกิดข้อผิดพลาด')
+    } finally {
+      setClearingQueue(false)
+    }
+  }
+
+  async function syncQueueReports(items: UploadQueueItem[]) {
+    if (!user?.id || !deviceId || items.length === 0) return
+    const now = new Date().toISOString()
+    const ownItems = items.filter((item) => !item.recordedUserId || item.recordedUserId === user.id)
+    if (ownItems.length === 0) return
+    const payload = ownItems.map((item) => ({
+      id: item.id,
+      user_id: item.recordedUserId || user.id,
+      recorded_by: item.recordedBy || user.username || user.email || 'unknown',
+      device_id: item.deviceId || deviceId,
+      device_name: item.deviceId === deviceId ? (deviceName || item.deviceName) : (item.deviceName || deviceName) || 'ไม่ระบุชื่อเครื่อง',
+      folder_name: item.folderName || folderHandle?.name || null,
+      folder_path: item.folderPath || folderPath || null,
+      work_order_name: item.workOrderName,
+      tracking_number: item.trackingNumber,
+      channel_order_no: item.channelOrderNo || null,
+      filename: item.filename,
+      storage_path: item.storagePath,
+      file_size_bytes: Number(item.fileSize || 0),
+      duration_seconds: item.durationSeconds ?? null,
+      status: item.status,
+      retry_count: item.retryCount || 0,
+      last_error: item.lastError || null,
+      local_deleted: !!item.localDeleted,
+      quality_profile: item.qualityProfile || null,
+      requested_width: item.requestedWidth || null,
+      requested_height: item.requestedHeight || null,
+      requested_fps: item.requestedFps || null,
+      requested_bitrate: item.requestedBitrate || null,
+      actual_width: item.actualWidth || null,
+      actual_height: item.actualHeight || null,
+      actual_fps: item.actualFps || null,
+      mime_type: item.mimeType || item.fileType || null,
+      codec: item.codec || null,
+      recorder_bitrate: item.recorderBitrate || null,
+      actual_bitrate: item.actualBitrate || null,
+      recorded_at: item.recordedAt || item.createdAt,
+      client_created_at: item.createdAt,
+      client_updated_at: item.updatedAt,
+      reported_at: now,
+    }))
+    const { error } = await supabase
+      .from('pk_packing_upload_queue_reports')
+      .upsert(payload, { onConflict: 'id' })
+    if (error) console.warn('Packing upload report sync failed:', error.message)
+  }
+
+  async function loadPackingDeviceRegistry() {
+    const { data, error } = await supabase
+      .from('pk_packing_devices')
+      .select('device_id, user_id, device_name, last_username, is_active, quality_profile, folder_name, folder_path, pending_count, uploading_count, failed_count, last_seen_at')
+      .eq('is_active', true)
+      .order('last_seen_at', { ascending: false })
+    if (error) {
+      console.warn('Load packing devices failed:', error.message)
+      return [] as PackingDeviceRow[]
+    }
+    const rows = (data || []) as PackingDeviceRow[]
+    setPackingDevices(rows)
+    return rows
+  }
+
+  async function loadUploadReport(showLoading = false) {
+    if (showLoading) setUploadReportLoading(true)
+    const fetchAllReports = async () => {
+      const rows: PackingUploadReportRow[] = []
+      let from = 0
+      while (true) {
+        const { data, error } = await supabase
+          .from('pk_packing_upload_queue_reports')
+          .select('id, user_id, recorded_by, device_id, device_name, folder_name, folder_path, work_order_name, tracking_number, channel_order_no, filename, storage_path, file_size_bytes, duration_seconds, status, retry_count, last_error, local_deleted, client_created_at, client_updated_at, uploaded_at, reported_at, quality_profile, requested_width, requested_height, requested_fps, requested_bitrate, actual_width, actual_height, actual_fps, mime_type, codec, recorder_bitrate, actual_bitrate')
+          .is('dismissed_at', null)
+          .order('client_created_at', { ascending: false })
+          .range(from, from + UPLOAD_REPORT_FETCH_BATCH_SIZE - 1)
+        if (error) return { data: null, error }
+        const batch = (data || []) as PackingUploadReportRow[]
+        rows.push(...batch)
+        if (batch.length < UPLOAD_REPORT_FETCH_BATCH_SIZE) break
+        from += UPLOAD_REPORT_FETCH_BATCH_SIZE
+      }
+      return { data: rows, error: null }
+    }
+    const [reportResult, deviceResult] = await Promise.all([
+      fetchAllReports(),
+      supabase
+        .from('pk_packing_devices')
+        .select('device_id, user_id, device_name, last_username, is_active, quality_profile, folder_name, folder_path, pending_count, uploading_count, failed_count, last_seen_at')
+        .eq('is_active', true)
+        .order('last_seen_at', { ascending: false }),
+    ])
+    if (reportResult.error) console.warn('Load packing upload report failed:', reportResult.error.message)
+    else setUploadReportRows((reportResult.data || []) as PackingUploadReportRow[])
+    if (deviceResult.error) console.warn('Load packing devices failed:', deviceResult.error.message)
+    else setPackingDevices((deviceResult.data || []) as PackingDeviceRow[])
+    if (showLoading) setUploadReportLoading(false)
+  }
+
+  async function deleteProblemUploadReport(row: PackingUploadReportRow) {
+    if (deletingUploadReportId) return
+    setDeletingUploadReportId(row.id)
+    try {
+      const { error } = await supabase.rpc('rpc_dismiss_packing_upload_report', {
+        p_report_id: row.id,
+      })
+      if (error) throw error
+      setUploadReportRows((current) => current.filter((item) => item.id !== row.id))
+    } catch (error: any) {
+      openAlert(`ลบรายการไม่สำเร็จ: ${error?.message || error}`, 'เกิดข้อผิดพลาด')
+    } finally {
+      setDeletingUploadReportId(null)
+    }
+  }
+
+  async function syncDeviceHeartbeat() {
+    if (!user?.id || !deviceId) return
+    const { error } = await supabase.from('pk_packing_devices').upsert({
+      device_id: deviceId,
+      user_id: user.id,
+      last_username: user.username || user.email || 'unknown',
+      is_active: true,
+      device_name: deviceName || `เครื่องแพ็ค-${deviceId.slice(0, 6).toUpperCase()}`,
+      quality_profile: videoQualityProfile,
+      folder_name: folderHandle?.name || null,
+      folder_path: folderPath || null,
+      pending_count: queueItems.filter((item) => item.status === 'pending').length,
+      uploading_count: queueItems.filter((item) => item.status === 'uploading').length,
+      failed_count: queueItems.filter((item) => item.status === 'failed').length,
+      last_seen_at: new Date().toISOString(),
+    }, { onConflict: 'device_id' })
+    if (error) console.warn('Packing device heartbeat failed:', error.message)
+  }
+
+  useEffect(() => {
+    if (queueItems.length === 0 || !deviceId) return
+    void syncQueueReports(queueItems)
+    if (queueItems.some((item) => item.status === 'pending')) {
+      void requestQueueProcessing()
+    }
+  }, [queueItems, deviceId, deviceName, folderPath, folderHandle, user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!deviceId || !queueItems.some((item) => item.status === 'pending' || item.status === 'uploading')) return
+    const timer = window.setInterval(() => void syncQueueReports(queueItems), 60_000)
+    return () => window.clearInterval(timer)
+  }, [queueItems, deviceId, deviceName, folderPath, folderHandle, user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (selectionTab !== 'report') return
+    void loadUploadReport(true)
+    const timer = window.setInterval(() => void loadUploadReport(false), 10_000)
+    return () => window.clearInterval(timer)
+  }, [selectionTab]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (selectionTab !== 'queue') return
+    void loadPackingDeviceRegistry()
+  }, [selectionTab, deviceId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!user?.id || !deviceId) return
+    void syncDeviceHeartbeat()
+    const timer = window.setInterval(() => void syncDeviceHeartbeat(), 60_000)
+    return () => window.clearInterval(timer)
+  }, [user?.id, deviceId, deviceName, videoQualityProfile, folderPath, folderHandle, queueItems]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function cleanupLocalFiles(handle: FileSystemDirectoryHandle, items: UploadQueueItem[]) {
+    const targets = items.filter((i) => i.status === 'success' && !i.localDeleted)
+    for (const item of targets) {
+      try {
+        await handle.removeEntry(item.filename)
+        await updateQueueItem(item.id, { localDeleted: true })
+      } catch (_err) {
+        // ignore cleanup failure
+      }
+    }
+  }
+
+  async function requestNotificationPermission() {
+    if (!('Notification' in window)) return
+    if (Notification.permission === 'default') {
+      await Notification.requestPermission()
+    }
+  }
+
+  const openAlert = (message: string, title = 'แจ้งเตือน') => {
+    setDialog({ open: true, mode: 'alert', title, message, confirmText: 'รับทราบ' })
+  }
+
+  async function openConvertToShipping(orderId: string) {
+    if (isViewOnly) return
+    try {
+      setConvertShippingLoading(true)
+      const { data, error } = await supabase
+        .from('or_orders')
+        .select('id, bill_no, status, customer_name, recipient_name, customer_address, billing_details, payment_method, total_amount')
+        .eq('id', orderId)
+        .single()
+      if (error) throw error
+      const billing = (data.billing_details || {}) as Record<string, any>
+      setConvertShippingForm({
+        orderId: data.id,
+        billNo: data.bill_no || '',
+        isShipped: data.status === 'จัดส่งแล้ว',
+        recipientName: data.recipient_name || data.customer_name || '',
+        originalAddress: data.customer_address || '',
+        addressLine: billing.address_line || '',
+        subDistrict: billing.sub_district || '',
+        district: billing.district || '',
+        province: billing.province || '',
+        postalCode: billing.postal_code || '',
+        mobilePhone: billing.mobile_phone || '',
+        reason: data.status === 'จัดส่งแล้ว' ? '' : 'ลูกค้าเปลี่ยนจากรับสินค้าเองเป็นจัดส่ง',
+        cod: String(data.payment_method || '').toLowerCase().includes('cod') ? String(data.total_amount || 0) : '0',
+      })
+    } catch (error: any) {
+      openAlert('โหลดข้อมูลบิลไม่สำเร็จ: ' + (error?.message || error))
+    } finally {
+      setConvertShippingLoading(false)
+    }
+  }
+
+  async function autoFillConvertAddress() {
+    if (!convertShippingForm) return
+    setConvertAddressLoading(true)
+    try {
+      const parsed = await parseAddressText(convertShippingForm.originalAddress, supabase)
+      setConvertShippingForm((current) => current ? ({
+        ...current,
+        recipientName: parsed.recipientName?.trim() || current.recipientName,
+        addressLine: parsed.addressLine || current.addressLine,
+        subDistrict: parsed.subDistrict || current.subDistrict,
+        district: parsed.district || current.district,
+        province: parsed.province || current.province,
+        postalCode: parsed.postalCode || current.postalCode,
+        mobilePhone: parsed.mobilePhone || current.mobilePhone,
+      }) : current)
+    } catch (error: any) {
+      openAlert('แยกที่อยู่อัตโนมัติไม่สำเร็จ: ' + (error?.message || error))
+    } finally {
+      setConvertAddressLoading(false)
+    }
+  }
+
+  function waybillAddressFromForm(form: ConvertToShippingForm): string {
+    return [form.addressLine, form.subDistrict, form.district, form.province].filter(Boolean).join(' ').trim()
+  }
+
+  async function exportConvertedWaybill(orderId: string) {
+    const { data, error } = await supabase
+      .from('or_orders')
+      .select('bill_no, customer_name, recipient_name, customer_address, billing_details, payment_method, total_amount')
+      .eq('id', orderId)
+      .single()
+    if (error) throw error
+    const billing = (data.billing_details || {}) as Record<string, any>
+    const address = [billing.address_line, billing.sub_district, billing.district, billing.province]
+      .filter(Boolean).join(' ').trim() || data.customer_address || ''
+    await downloadFlashWaybillXlsx([{
+      billNo: data.bill_no || '',
+      consigneeName: data.recipient_name || data.customer_name || '',
+      address,
+      postalCode: billing.postal_code || '',
+      phone1: billing.mobile_phone || '',
+      cod: String(data.payment_method || '').toLowerCase().includes('cod') ? String(data.total_amount || 0) : '0',
+    }], data.bill_no || 'waybill')
+  }
+
+  async function saveConversionAndExport() {
+    if (isViewOnly) return
+    const form = convertShippingForm
+    if (!form) return
+    if (!form.recipientName.trim() || !form.addressLine.trim() || !form.province.trim() || !form.postalCode.trim() || !form.mobilePhone.trim()) {
+      openAlert('กรุณากรอกชื่อผู้รับ ที่อยู่ จังหวัด รหัสไปรษณีย์ และเบอร์โทรให้ครบ')
+      return
+    }
+    if (form.isShipped && !form.reason.trim()) {
+      openAlert('กรุณาระบุเหตุผลที่ยกเลิกการจัดส่งและเปลี่ยนเป็นจัดส่งใหม่')
+      return
+    }
+
+    let converted = false
+    setConvertShippingLoading(true)
+    try {
+      const { error } = await supabase.rpc('pk_convert_self_pickup_to_shipping', {
+        p_order_id: form.orderId,
+        p_recipient_name: form.recipientName.trim(),
+        p_original_address: form.originalAddress.trim(),
+        p_address_line: form.addressLine.trim(),
+        p_sub_district: form.subDistrict.trim(),
+        p_district: form.district.trim(),
+        p_province: form.province.trim(),
+        p_postal_code: form.postalCode.trim(),
+        p_mobile_phone: form.mobilePhone.trim(),
+        p_reason: form.reason.trim(),
+        p_changed_by: user?.username || user?.email || 'unknown',
+      })
+      if (error) throw error
+      converted = true
+      await downloadFlashWaybillXlsx([{
+        billNo: form.billNo,
+        consigneeName: form.recipientName.trim(),
+        address: waybillAddressFromForm(form),
+        postalCode: form.postalCode.trim(),
+        phone1: form.mobilePhone.trim(),
+        cod: form.cod,
+      }], form.billNo || 'waybill')
+      openAlert('เปลี่ยนเป็นจัดส่งและ Export ใบปะหน้าเรียบร้อยแล้ว กรุณาสแกนเลขพัสดุเพื่อแพ็คใหม่', 'สำเร็จ')
+    } catch (error: any) {
+      openAlert(
+        converted
+          ? 'เปลี่ยนบิลเป็นจัดส่งแล้ว แต่ Export ใบปะหน้าไม่สำเร็จ สามารถกด Export ใบปะหน้าอีกครั้งได้\n' + (error?.message || error)
+          : 'เปลี่ยนเป็นจัดส่งไม่สำเร็จ: ' + (error?.message || error),
+        converted ? 'Export ไม่สำเร็จ' : 'เกิดข้อผิดพลาด',
+      )
+    } finally {
+      setConvertShippingLoading(false)
+      if (converted) {
+        setConvertShippingForm(null)
+        if (currentWorkOrderName) await loadPackingData(currentWorkOrderName)
+      }
+    }
+  }
+
+  const openConfirm = (message: string, onConfirm: () => void, title = 'ยืนยันการทำรายการ', confirmText = 'ตกลง', cancelText = 'ยกเลิก') => {
+    confirmActionRef.current = onConfirm
+    setDialog({ open: true, mode: 'confirm', title, message, confirmText, cancelText })
+  }
+
+  const openBillingConfirm = (billType: string, onConfirm: () => void) => {
+    confirmActionRef.current = onConfirm
+    setDialog({
+      open: true,
+      mode: 'confirm',
+      title: `‼️ กรุณาใส่${billType}`,
+      message: `ออร์เดอร์นี้ต้องใส่${billType}ลงในกล่อง เมื่อใส่เรียบร้อยแล้ว\nกด Spacebar เพื่อยืนยัน แล้วเริ่มสแกนสินค้าได้ทันที`,
+      confirmText: `ใส่${billType}แล้ว`,
+      cancelText: 'ยังไม่ใส่',
+      spacebarConfirm: true,
+    })
+  }
+
+  const closeDialog = () => {
+    setDialog((prev) => ({ ...prev, open: false }))
+    confirmActionRef.current = null
+  }
+
+  useEffect(() => {
+    const isSpacebarConfirm =
+      dialog.open &&
+      dialog.mode === 'confirm' &&
+      (dialog.title === 'ยืนยันการแพ็คสินค้า' || dialog.spacebarConfirm === true)
+    if (!isSpacebarConfirm) return
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat) return
+      const target = event.target as HTMLElement | null
+      const tagName = target?.tagName?.toLowerCase()
+      if (tagName === 'input' || tagName === 'textarea' || target?.isContentEditable) return
+
+      if (event.code === 'Space' || event.key === ' ') {
+        event.preventDefault()
+        const action = confirmActionRef.current
+        closeDialog()
+        action?.()
+        return
+      }
+      if (event.code === 'Digit0' || event.code === 'Numpad0' || event.key === '0') {
+        event.preventDefault()
+        closeDialog()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [dialog.open, dialog.mode, dialog.title, dialog.spacebarConfirm])
+
+  const saveShippedEdit = async () => {
+    if (!shippedEdit) return
+    const { workOrderName, shippedBy, shippedDate, shippedTime } = shippedEdit
+    if (!workOrderName) return
+    let shippedTimeIso: string | null = null
+    if (shippedDate) {
+      const time = shippedTime && shippedTime.length === 5 ? shippedTime : '00:00'
+      shippedTimeIso = new Date(`${shippedDate}T${time}:00`).toISOString()
+    }
+    const { error } = await supabase
+      .from('or_orders')
+      .update({
+        shipped_by: shippedBy || null,
+        shipped_time: shippedTimeIso
+      })
+      .eq('work_order_name', workOrderName)
+      .eq('status', 'จัดส่งแล้ว')
+    if (error) {
+      openAlert('บันทึกการแก้ไขไม่สำเร็จ: ' + error.message)
+      return
+    }
+    setShippedOrders((prev) =>
+      prev.map((row) =>
+        row.work_order_name === workOrderName
+          ? { ...row, shipped_by: shippedBy || null, shipped_time: shippedTimeIso }
+          : row
+      )
+    )
+    setShippedEdit(null)
+    openAlert('บันทึกการแก้ไขเรียบร้อยแล้ว')
+  }
+
+  async function runTagSearchLookup() {
+    const q = tagSearchInput.trim().toUpperCase()
+    if (!q) {
+      openAlert('กรุณาสแกนหรือพิมพ์รหัสสินค้า / Item UID')
+      return
+    }
+    setTagSearchLoading(true)
+    setTagSearchError('')
+    setTagSearchRows(null)
+    setTagSearchMeta(null)
+    try {
+      let orderId: string | null = null
+
+      // Unit UID (bill_no-seq) like QC / Packing scan
+      const unitMatch = q.match(/^(.*)-(\d+)$/)
+      if (unitMatch) {
+        const billNo = String(unitMatch[1] || '').trim()
+        if (billNo) {
+          const { data: byBill, error: billErr } = await supabase
+            .from('or_orders')
+            .select('id, status')
+            .eq('bill_no', billNo)
+            .maybeSingle()
+          if (billErr) throw billErr
+          if (byBill?.id && isOrderAllowedInFulfillmentFlow(byBill.status)) orderId = byBill.id
+        }
+      }
+
+      const { data: byUid, error: uidErr } = await supabase
+        .from('or_order_items')
+        .select('order_id, cancellation_stock_action')
+        .eq('item_uid', q)
+        .maybeSingle()
+      if (uidErr) throw uidErr
+      if (byUid?.order_id && isOrderItemAllowedInFulfillmentFlow(byUid.cancellation_stock_action)) orderId = byUid.order_id
+
+      if (!orderId) {
+        const { data: prods, error: pErr } = await supabase.from('pr_products').select('id').eq('product_code', q).limit(1)
+        if (pErr) throw pErr
+        const pid = prods?.[0]?.id
+        if (pid) {
+          const { data: oiRows, error: oiErr } = await supabase
+            .from('or_order_items')
+            .select('order_id')
+            .eq('product_id', pid)
+            .is('cancellation_stock_action', null)
+          if (oiErr) throw oiErr
+          const unique = [...new Set((oiRows || []).map((r: { order_id: string }) => r.order_id).filter(Boolean))]
+          if (unique.length === 1) {
+            orderId = unique[0]!
+          } else if (unique.length > 1) {
+            setTagSearchError('พบหลายบิลที่มีรหัสสินค้านี้ กรุณาใช้ Item UID แทน')
+            setTagSearchLoading(false)
+            return
+          }
+        }
+      }
+
+      if (!orderId) {
+        setTagSearchError('ไม่พบรายการที่ตรงกับบาร์โค้ด')
+        setTagSearchLoading(false)
+        return
+      }
+
+      const { data: order, error: oErr } = await supabase
+        .from('or_orders')
+        .select('*, or_order_items(*, pr_products(product_code))')
+        .eq('id', orderId)
+        .single()
+      if (oErr || !order) throw oErr || new Error('ไม่พบออร์เดอร์')
+      if (!isOrderAllowedInFulfillmentFlow(order.status)) {
+        throw new Error('บิลนี้ถูกยกเลิกแล้ว ไม่สามารถนำเข้ากระบวนการ Packing ได้')
+      }
+
+      const ord = order as OrderWithItems
+      const scannedKeySet = await fetchPackingUnitScanKeySet([ord.id])
+      const totalUnits = sortedPackingOrderItems(ord).reduce(
+        (sum, it: any) => sum + normalizedLineQuantity(it.quantity),
+        0
+      )
+      const bill = String(ord.bill_no || '').trim() || '—'
+      const unitUids = Array.from({ length: totalUnits }, (_, i) => flatBillUnitUid(bill, i + 1))
+      const stableUnits: Array<{ orderItemId: string; unitIndex: number }> = []
+      sortedPackingOrderItems(ord).forEach((item: any) => {
+        if (item.item_uid) unitUids.push(item.item_uid)
+        for (let unitIndex = 1; unitIndex <= normalizedLineQuantity(item.quantity); unitIndex += 1) {
+          if (item.id) stableUnits.push({ orderItemId: item.id, unitIndex })
+        }
+      })
+      const qcStatusMap = await fetchQcStatusMap(unitUids, stableUnits)
+      const selfPickupChannelCodes = await fetchSelfPickupChannelCodes()
+      const rows = buildPackingItemsFromOrder(ord, qcStatusMap, scannedKeySet, selfPickupChannelCodes)
+      setTagSearchRows(rows)
+      setTagSearchMeta({
+        workOrderName: ord.work_order_name ?? null,
+        tracking: ord.tracking_number ?? null,
+        packingTag: ord.packing_meta?.dailyPackingTag ?? null,
+      })
+    } catch (e: any) {
+      setTagSearchError(e?.message || 'ค้นหาไม่สำเร็จ')
+    } finally {
+      setTagSearchLoading(false)
+    }
+  }
+
+  const completedIndices = useMemo(() => {
+    const set = new Set<number>()
+    aggregatedData.forEach((group, index) => {
+      // พร้อมจัดส่งเป็นรายบิล: QC ต้องผ่าน/ข้ามครบทุกชิ้น และแพ็คสแกนครบทั้งบิล
+      if (isWmsReadyGroup(group) && isQcPassGroup(group) && group.every((item) => item.scanned)) set.add(index)
+    })
+    return set
+  }, [aggregatedData])
+
+  const hasPendingCompleted = useMemo(() => {
+    let hasPending = false
+    completedIndices.forEach((idx) => {
+      const group = aggregatedData[idx]
+      if (group && !group[0].isOrderComplete) hasPending = true
+    })
+    return hasPending
+  }, [completedIndices, aggregatedData])
+
+  const allGroupsShipped = useMemo(() => {
+    if (aggregatedData.length === 0) return false
+    return aggregatedData.every((group) => group[0].isOrderComplete)
+  }, [aggregatedData])
+
+  const allGroupsScanned = useMemo(() => {
+    if (aggregatedData.length === 0) return false
+    return completedIndices.size === aggregatedData.length
+  }, [completedIndices, aggregatedData])
+
+  const currentGroup = useMemo(() => {
+    if (currentIndex < 0) return null
+    return aggregatedData[currentIndex] || null
+  }, [aggregatedData, currentIndex])
+
+  const currentGroupHasCondoStamp = useMemo(
+    () => currentGroup?.some((item) => isCondoStampProductName(item.product_name)) ?? false,
+    [currentGroup],
+  )
+
+  const tagSearchHasCondoStamp = useMemo(
+    () => tagSearchRows?.some((item) => isCondoStampProductName(item.product_name)) ?? false,
+    [tagSearchRows],
+  )
+
+  useEffect(() => {
+    if (view !== 'main') return
+    if (!currentGroup || currentGroup.length === 0) {
+      setPackingVideoUrl(null)
+      return
+    }
+    const orderId = currentGroup[0].order_id
+    const tracking = currentGroup[0].tracking_number
+    if (!orderId && !tracking) {
+      setPackingVideoUrl(null)
+      return
+    }
+
+    let cancelled = false
+    const run = async () => {
+      setPackingVideoLoading(true)
+      try {
+        // Prefer exact link by order_id; fallback to tracking_number for legacy rows.
+        const tryByOrder = async () => {
+          if (!orderId) return null
+          const { data, error } = await supabase
+            .from('pk_packing_videos')
+            .select('gdrive_url, created_at')
+            .eq('order_id', orderId)
+            .not('gdrive_url', 'is', null)
+            .order('created_at', { ascending: false })
+            .limit(1)
+          if (error) throw error
+          return (data && data[0]?.gdrive_url) ? String(data[0].gdrive_url) : null
+        }
+        const tryByTracking = async () => {
+          const t = (tracking || '').trim()
+          if (!t) return null
+          const { data, error } = await supabase
+            .from('pk_packing_videos')
+            .select('gdrive_url, created_at')
+            .eq('tracking_number', t)
+            .not('gdrive_url', 'is', null)
+            .order('created_at', { ascending: false })
+            .limit(1)
+          if (error) throw error
+          return (data && data[0]?.gdrive_url) ? String(data[0].gdrive_url) : null
+        }
+
+        const url = (await tryByOrder()) ?? (await tryByTracking())
+        if (!cancelled) setPackingVideoUrl(url)
+      } catch (_err) {
+        if (!cancelled) setPackingVideoUrl(null)
+      } finally {
+        if (!cancelled) setPackingVideoLoading(false)
+      }
+    }
+
+    run()
+    return () => {
+      cancelled = true
+    }
+  }, [view, currentGroup])
+
+  const newWorkOrders = useMemo(() => {
+    return workOrders
+  }, [workOrders])
+
+  // readyCount removed — unused
+
+  // แจ้ง Sidebar ทุกครั้งที่จำนวนใบงานใหม่ทั้งหมดเปลี่ยน
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('packing-ready-count', { detail: { count: workOrders.length } }))
+  }, [workOrders.length])
+
+  const shippedOrdersFiltered = useMemo(() => {
+    const base = shippedOrders.filter((row) => {
+      if (!row.work_order_name) return false
+      const date = row.shipped_time ? new Date(row.shipped_time).toISOString().slice(0, 10) : ''
+      if (shippedDateFrom && date < shippedDateFrom) return false
+      if (shippedDateTo && date > shippedDateTo) return false
+      if (shippedChannelFilter && row.channel_code !== shippedChannelFilter) return false
+      if (shippedPackerFilter && row.shipped_by !== shippedPackerFilter) return false
+      return true
+    })
+    const q = shippedSearch.trim().toLowerCase()
+    if (!q) return base
+    const qNoSpace = q.replace(/\s+/g, '')
+    const rowMatches = (row: (typeof shippedOrders)[number]) => {
+      const bill = (row.bill_no || '').toLowerCase()
+      const customer = (row.customer_name || '').toLowerCase()
+      const tracking = (row.tracking_number || '').toLowerCase().replace(/\s+/g, '')
+      const expressReceipt = (row.express_receipt_number || '').toLowerCase().replace(/\s+/g, '')
+      return bill.includes(q) || customer.includes(q) || (qNoSpace !== '' && (tracking.includes(qNoSpace) || expressReceipt.includes(qNoSpace)))
+    }
+    // แสดงทั้งใบงานที่มีบิลตรงคำค้นอย่างน้อย 1 บิล (จำนวนบิลบนการ์ดจึงยังครบ)
+    const matchedWo = new Set(base.filter(rowMatches).map((r) => r.work_order_name))
+    return base.filter((row) => matchedWo.has(row.work_order_name))
+  }, [shippedOrders, shippedDateFrom, shippedDateTo, shippedChannelFilter, shippedPackerFilter, shippedSearch])
+
+  const shippedWorkOrders = useMemo(() => {
+    const grouped = new Map<
+      string,
+      { work_order_name: string; order_count: number; shipped_time: string | null; channels: Set<string>; packers: Set<string> }
+    >()
+    shippedOrdersFiltered.forEach((row) => {
+      if (!row.work_order_name) return
+      const existing = grouped.get(row.work_order_name) || {
+        work_order_name: row.work_order_name,
+        order_count: 0,
+        shipped_time: null,
+        channels: new Set<string>(),
+        packers: new Set<string>()
+      }
+      existing.order_count += 1
+      if (row.shipped_time && (!existing.shipped_time || row.shipped_time > existing.shipped_time)) {
+        existing.shipped_time = row.shipped_time
+      }
+      if (row.channel_code) existing.channels.add(row.channel_code)
+      if (row.shipped_by) existing.packers.add(row.shipped_by)
+      grouped.set(row.work_order_name, existing)
+    })
+    return Array.from(grouped.values()).sort((a, b) => (a.shipped_time || '').localeCompare(b.shipped_time || ''))
+  }, [shippedOrdersFiltered])
+
+  useEffect(() => {
+    if (selectionTab !== 'tagSearch') return
+    setTagSearchInput('')
+    setTagSearchError('')
+    setTagSearchRows(null)
+    setTagSearchMeta(null)
+    requestAnimationFrame(() => {
+      tagSearchInputRef.current?.focus()
+      tagSearchInputRef.current?.select()
+    })
+  }, [selectionTab])
+
+  const tagSearchActiveItemUid = useMemo(() => {
+    if (!tagSearchRows || tagSearchRows.length === 0) return null
+    const q = tagSearchInput.trim().toUpperCase()
+    if (q) {
+      const exact = tagSearchRows.find((item) => item.unit_uid.toUpperCase() === q)
+      if (exact) return exact.unit_uid
+    }
+    const nextPending = tagSearchRows.find((item) => !item.scanned)
+    return nextPending?.unit_uid ?? null
+  }, [tagSearchRows, tagSearchInput])
+
+  const shippedChannels = useMemo(() => {
+    const values = shippedOrders
+      .map((row) => row.channel_code)
+      .filter((c): c is string => Boolean(c && c.trim()))
+    return Array.from(new Set(values)).sort()
+  }, [shippedOrders])
+
+  const shippedPackers = useMemo(() => {
+    const values = shippedOrders
+      .map((row) => row.shipped_by)
+      .filter((p): p is string => Boolean(p && p.trim()))
+    return Array.from(new Set(values)).sort()
+  }, [shippedOrders])
+
+  useEffect(() => {
+    if (!currentGroup || isViewOnly) return
+    const trackingNumber = packingVideoReference(currentGroup[0])
+    const parcelScanned = currentGroup[0].parcelScanned
+    const isFullyScanned = currentGroup.every((item) => item.scanned)
+    ensurePreview().catch(() => null)
+    if (recordingState.status === 'recording' && (recordingState.tracking !== trackingNumber || !parcelScanned)) {
+      stopRecording()
+    }
+    // Recovery path for an already-scanned order (page reload, segment rollover,
+    // or SHOP pickup). A fresh parcel scan starts the recorder directly in
+    // handleParcelScan, before any database round-trip.
+    if (recordingState.status === 'idle' && !recordingStartingRef.current && parcelScanned && !isFullyScanned && isWmsReadyGroup(currentGroup)) {
+      startRecording(trackingNumber).catch((error) => {
+        setRecordingState({ status: 'error', tracking: trackingNumber, error: error?.message || 'เริ่มบันทึกไม่สำเร็จ' })
+      })
+    }
+  }, [currentGroup, recordingState.status, recordingState.tracking, isViewOnly])
+
+  useEffect(() => {
+    if (!currentGroup) return
+    const isParcelScanned = currentGroup[0].parcelScanned
+    const isDone = currentGroup[0].isOrderComplete
+    const isFullyScanned = currentGroup.every((item) => item.scanned)
+
+    if (isDone) {
+      setStatusMessage({ text: '✅ จัดส่งเรียบร้อย', type: 'success' })
+    } else if (!isWmsReadyGroup(currentGroup)) {
+      setStatusMessage({ text: '⛔ ยังไม่ได้หยิบและตรวจสินค้าใน WMS ครบ จึงยังแพ็คไม่ได้', type: 'error' })
+    } else if (!isQcPassGroup(currentGroup)) {
+      setStatusMessage({ text: '⏳ รอ QC Pass ครบทุกชิ้นจึงจะสแกนได้', type: '' })
+    } else if (!isParcelScanned) {
+      setStatusMessage({ text: 'รอสแกนเลขพัสดุ...', type: '' })
+      parcelScanRef.current?.focus()
+    } else if (isFullyScanned) {
+      setStatusMessage({ text: '🟢 แสกนครบแล้ว!', type: 'success' })
+    } else if (
+      (currentGroup[0].needsTaxInvoice || currentGroup[0].needsCashBill) &&
+      !billingCheckConfirmed
+    ) {
+      const billType = currentGroup[0].needsTaxInvoice ? 'ใบกำกับภาษี' : 'บิลเงินสด'
+      setStatusMessage({ text: `⚠️ กรุณายืนยันว่าใส่${billType}ก่อนสแกนสินค้า`, type: 'error' })
+    } else {
+      setStatusMessage({ text: 'รอสแกนสินค้า...', type: '' })
+      itemScanRef.current?.focus()
+    }
+  }, [currentGroup])
+
+  useEffect(() => {
+    if (currentIndex >= 0 && !isViewOnly) startInactivityTimer()
+  }, [currentIndex, isViewOnly])
+
+  function clearInactivityTimer() {
+    if (inactivityTimerRef.current) {
+      clearTimeout(inactivityTimerRef.current)
+      inactivityTimerRef.current = null
+    }
+  }
+
+  function startInactivityTimer() {
+    clearInactivityTimer()
+    if (isViewOnly) return
+    const index = currentIndexRef.current
+    if (index < 0) return
+    const group = aggregatedDataRef.current[index]
+    if (!group || group.every((item) => item.scanned)) return
+
+    inactivityTimerRef.current = window.setTimeout(async () => {
+      const latestIndex = currentIndexRef.current
+      const latestGroup = aggregatedDataRef.current[latestIndex]
+      if (!latestGroup) return
+      if (latestGroup.every((item) => item.scanned)) return
+      const hasStarted = latestGroup.some((item) => item.scanned || item.parcelScanned)
+      if (hasStarted) {
+        await performResetAction(latestIndex)
+        setStatusMessage({ text: '⚠️ รีเซ็ตอัตโนมัติเนื่องจากไม่มีการเคลื่อนไหวเกิน 1 นาที', type: 'error' })
+      }
+    }, INACTIVITY_LIMIT)
+  }
+
+  async function loadWorkOrdersForPacking() {
+    clearInactivityTimer()
+    setLoading(true)
+    setView('selection')
+    setPackStartTime(null)
+    setOperationViewOnly(false)
+    try {
+      const selfPickupChannelCodes = await fetchSelfPickupChannelCodes()
+      const { data, error } = await supabase
+        .from('or_work_orders')
+        .select('*')
+        .eq('status', 'กำลังผลิต')
+        .order('created_at', { ascending: false })
+
+      if (error) throw error
+      const orders = data || []
+      setWorkOrders(orders)
+
+      if (orders.length > 0) {
+        const names = orders.map((wo) => wo.work_order_name)
+        const workOrderIds = orders.map((wo) => wo.id)
+        const packingOrderSelect = 'id, bill_no, channel_code, channel_order_no, work_order_id, work_order_name, tracking_number, fulfillment_method, converted_from_self_pickup_at, converted_from_self_pickup_by, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, shipped_time, or_order_items(id, item_uid, product_id, product_name, product_type, is_detail_row, parent_item_id, quantity, created_at, cancellation_stock_action)'
+        const [
+          { data: productionOrdersById, error: productionOrdersByIdError },
+          { data: productionOrdersByName, error: productionOrdersByNameError },
+          { data: finishedSessions },
+          { data: skipLogsData },
+        ] = await Promise.all([
+          supabase
+            .from('or_orders')
+            .select(packingOrderSelect)
+            .in('work_order_id', workOrderIds)
+            .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN),
+          supabase
+            .from('or_orders')
+            .select(packingOrderSelect)
+            .in('work_order_name', names)
+            .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN),
+          supabase
+            .from('qc_sessions')
+            .select('filename, total_items, pass_count, fail_count, skipped_count')
+            .not('end_time', 'is', null)
+            .in('filename', names.map((n) => `WO-${n}`)),
+          supabase
+            .from('qc_skip_logs')
+            .select('work_order_name')
+            .in('work_order_name', names),
+        ])
+        if (productionOrdersByIdError) throw productionOrdersByIdError
+        if (productionOrdersByNameError) throw productionOrdersByNameError
+        const allProductionOrders = Array.from(
+          new Map(
+            [...(productionOrdersById || []), ...(productionOrdersByName || [])]
+              .map((order: any) => [order.id, order] as const)
+          ).values()
+        )
+
+        const finishedWoSet = new Set(
+          (finishedSessions || [])
+            .filter((s: any) => Number(s.total_items) > 0
+              && Number(s.pass_count || 0) + Number(s.skipped_count || 0) === Number(s.total_items)
+              && Number(s.fail_count || 0) === 0)
+            .map((s: any) => (s.filename as string).replace(/^WO-/, ''))
+        )
+        const skippedWoSet = new Set(
+          (skipLogsData || []).map((s: any) => s.work_order_name as string)
+        )
+
+        const allUnitUids: string[] = []
+        const allStableUnits: Array<{ orderItemId: string; unitIndex: number }> = []
+        ;(allProductionOrders || []).forEach((o: any) => {
+          const bill = String(o.bill_no || '').trim() || '—'
+          let seq = 0
+          sortedPackingOrderItems(o).forEach((oi: any) => {
+            if (oi.item_uid) allUnitUids.push(oi.item_uid)
+            const n = normalizedLineQuantity(oi.quantity)
+            for (let i = 0; i < n; i += 1) {
+              seq += 1
+              allUnitUids.push(flatBillUnitUid(bill, seq))
+              if (oi.id) allStableUnits.push({ orderItemId: oi.id, unitIndex: i + 1 })
+            }
+          })
+        })
+        const qcStatusMap = await fetchQcStatusMap(allUnitUids, allStableUnits)
+
+        const allOrderIds = (allProductionOrders || []).map((o: any) => o.id).filter(Boolean)
+        const scannedKeySet = await fetchPackingUnitScanKeySet(allOrderIds)
+
+        const statusMap: Record<string, WorkOrderStatus> = {}
+        orders.forEach((wo) => {
+          const ordersInWo = (allProductionOrders || []).filter((o: any) => o.work_order_id === wo.id || o.work_order_name === wo.work_order_name)
+          // ช่องทางรับสินค้าเองถือว่าพร้อมเข้าแพ็คแม้ไม่มีเลขพัสดุ
+          const hasTracking = ordersInWo.some((o: any) => hasPackingReference(o, selfPickupChannelCodes))
+          const isPartiallyPacked = ordersInWo.some((o: any) => {
+            if (o.packing_meta?.parcelScanned) return true
+            const bill = String(o.bill_no || '').trim() || '—'
+            let seq = 0
+            const anyScanned = sortedPackingOrderItems(o).some((oi: any) => {
+              const n = normalizedLineQuantity(oi.quantity)
+              for (let i = 0; i < n; i += 1) {
+                seq += 1
+                const unitUid = flatBillUnitUid(bill, seq)
+                const key = `${o.id}\u0001${unitUid}`
+                if (scannedKeySet.has(key)) return true
+              }
+              return false
+            })
+            return anyScanned
+          })
+          let totalItems = 0
+          let packedItems = 0
+          let readyBills = 0
+          let packedBills = 0
+          const billsWithTracking = ordersInWo.filter((o: any) => hasPackingReference(o, selfPickupChannelCodes))
+          ordersInWo.forEach((o: any) => {
+            const items = sortedPackingOrderItems(o)
+            const bill = String(o.bill_no || '').trim() || '—'
+            let seq = 0
+            let unitTotal = 0
+            let unitReady = 0
+            let unitScanned = 0
+            items.forEach((oi: any) => {
+              const n = normalizedLineQuantity(oi.quantity)
+              unitTotal += n
+              for (let i = 0; i < n; i += 1) {
+                seq += 1
+                const unitUid = flatBillUnitUid(bill, seq)
+                const st = resolvePackingQcStatus(qcStatusMap, unitUid, oi.item_uid, oi.id, i + 1)
+                if (st === 'pass' || st === 'skip') unitReady += 1
+                const key = `${o.id}\u0001${unitUid}`
+                if (scannedKeySet.has(key)) unitScanned += 1
+              }
+            })
+            totalItems += unitTotal
+            packedItems += unitScanned
+            if (hasPackingReference(o, selfPickupChannelCodes)) {
+              const isReady = unitTotal > 0 && unitReady === unitTotal
+              if (isReady) readyBills++
+              if (unitTotal > 0 && unitScanned === unitTotal) packedBills++
+            }
+          })
+
+          // ตรวจว่า "ทุกชิ้นในใบงานถูกข้าม QC (skip)" หรือไม่ — ใช้เป็น fallback ของ qcSkipped
+          // เผื่อกรณี qc_skip_logs หาย/ชื่อไม่ตรง แต่ข้อมูลจริงใน qc_records บอกว่า skip ครบทุกชิ้น
+          // นับจากทุกบิลในใบงาน (ไม่จำกัดเฉพาะที่มีเลขพัสดุ) ให้ตรงกับป้าย "ไม่ต้อง QC" เดิม
+          let allUnitCount = 0
+          let skipUnitCount = 0
+          ordersInWo.forEach((o: any) => {
+            const bill = String(o.bill_no || '').trim() || '—'
+            let seq = 0
+            sortedPackingOrderItems(o).forEach((oi: any) => {
+              const n = normalizedLineQuantity(oi.quantity)
+              for (let i = 0; i < n; i += 1) {
+                seq += 1
+                allUnitCount += 1
+                if (resolvePackingQcStatus(qcStatusMap, flatBillUnitUid(bill, seq), oi.item_uid, oi.id, i + 1) === 'skip') skipUnitCount += 1
+              }
+            })
+          })
+          const allUnitsSkipped = allUnitCount > 0 && skipUnitCount === allUnitCount
+
+          statusMap[wo.work_order_name] = {
+            hasTracking,
+            isPartiallyPacked,
+            qcCompleted: finishedWoSet.has(wo.work_order_name),
+            qcSkipped: skippedWoSet.has(wo.work_order_name) || allUnitsSkipped,
+            readyBills,
+            totalItems,
+            packedItems,
+            totalBills: billsWithTracking.length,
+            packedBills,
+            dueBills: ordersInWo
+              .filter((o: any) => o.ship_due_at)
+              .map((o: any) => ({ ship_due_at: o.ship_due_at, overdue_at: o.overdue_at ?? null, shipped_time: o.shipped_time ?? null })),
+          }
+        })
+        setWorkOrderStatus(statusMap)
+
+        // OFFICE: auto-ship เมื่อ QC เสร็จ (ไม่ต้องจัดส่งจริง). View-only users must not mutate data while loading.
+        for (const wo of isViewOnly ? [] : orders) {
+          const st = statusMap[wo.work_order_name]
+          if (!st || !(st.qcCompleted || st.qcSkipped)) continue
+          const ordersInWo = (allProductionOrders || []).filter((o: any) => o.work_order_id === wo.id || o.work_order_name === wo.work_order_name)
+          const allOffice = ordersInWo.length > 0 && ordersInWo.every((o: any) => o.channel_code === 'OFFICE')
+          if (!allOffice) continue
+          const officeIds = ordersInWo.map((o: any) => o.id as string)
+          await finalizePackingWorkOrder(wo.work_order_name, officeIds)
+        }
+
+        const { data: planJobs } = await supabase
+          .from('plan_jobs')
+          .select('name, tracks')
+          .in('name', names)
+        const timeMap: Record<string, string | null> = {}
+        ;(planJobs || []).forEach((pj: any) => {
+          const start = pj.tracks?.PACK?.['เริ่มแพ็ค']?.start ?? null
+          if (start) timeMap[pj.name] = start
+        })
+        setPlanStartTimes(timeMap)
+      } else {
+        setWorkOrderStatus({})
+        setPlanStartTimes({})
+      }
+
+      const shippedData = await fetchAllSupabasePages<(typeof shippedOrders)[number]>((from, to) =>
+        supabase
+          .from('or_orders')
+          .select('id, work_order_name, shipped_time, channel_code, shipped_by, bill_no, customer_name, tracking_number, express_receipt_number')
+          .eq('status', 'จัดส่งแล้ว')
+          .not('work_order_name', 'is', null)
+          .order('id', { ascending: true })
+          .range(from, to)
+      )
+      setShippedOrders(shippedData)
+    } catch (error: any) {
+      console.error('Error loading work orders:', error)
+      openAlert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function loadPackingData(workOrderName: string, viewOnly = isViewOnly) {
+    setIsLoadingOrders(true)
+    setCurrentWorkOrderName(workOrderName)
+    try {
+      const selfPickupChannelCodes = await fetchSelfPickupChannelCodes()
+      const { data: workOrderHeader } = await supabase
+        .from('or_work_orders')
+        .select('id')
+        .eq('work_order_name', workOrderName)
+        .maybeSingle()
+      let ordersQuery = supabase
+        .from('or_orders')
+        .select('*, or_order_items(*, pr_products(product_code))')
+        .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
+        .order('bill_no', { ascending: true })
+      ordersQuery = workOrderHeader?.id
+        ? ordersQuery.eq('work_order_id', workOrderHeader.id)
+        : ordersQuery.eq('work_order_name', workOrderName)
+      const { data, error } = await ordersQuery
+
+      if (error) throw error
+      const orders = (data || []) as OrderWithItems[]
+      const ordersWithTracking = orders.filter((order) => hasPackingReference(order, selfPickupChannelCodes))
+      const wmsReadyByOrder: Record<string, boolean> = {}
+      const wmsReadyByOrderItem: Record<string, boolean> = {}
+      if (workOrderHeader?.id) {
+        const [orderReadinessResult, itemReadinessResult] = await Promise.all([
+          supabase.rpc('rpc_get_packing_wms_readiness', { p_work_order_id: workOrderHeader.id }),
+          supabase.rpc('rpc_get_packing_wms_item_readiness', { p_work_order_id: workOrderHeader.id }),
+        ])
+        const { data: readinessRows, error: readinessError } = orderReadinessResult
+        if (readinessError) throw readinessError
+        for (const row of readinessRows || []) {
+          wmsReadyByOrder[String(row.order_id)] = Boolean(row.ready)
+        }
+        if (itemReadinessResult.error) throw itemReadinessResult.error
+        for (const row of itemReadinessResult.data || []) {
+          wmsReadyByOrderItem[String(row.order_item_id)] = Boolean(row.ready)
+        }
+      }
+      const scannedKeySet = await fetchPackingUnitScanKeySet(ordersWithTracking.map((o) => o.id))
+      const unitUids: string[] = []
+      const stableUnits: Array<{ orderItemId: string; unitIndex: number }> = []
+      ordersWithTracking.forEach((order) => {
+        const bill = String(order.bill_no || '').trim() || '—'
+        const activeItems = sortedPackingOrderItems(order)
+        const totalUnits = activeItems.reduce(
+          (sum, it: any) => sum + normalizedLineQuantity(it.quantity),
+          0
+        )
+        for (let i = 0; i < totalUnits; i += 1) {
+          unitUids.push(flatBillUnitUid(bill, i + 1))
+        }
+        activeItems.forEach((item: any) => {
+          if (item.item_uid) unitUids.push(item.item_uid)
+          for (let unitIndex = 1; unitIndex <= normalizedLineQuantity(item.quantity); unitIndex += 1) {
+            if (item.id) stableUnits.push({ orderItemId: item.id, unitIndex })
+          }
+        })
+      })
+      const qcStatusMap = await fetchQcStatusMap(unitUids, stableUnits)
+      await prepareDataForPacking(
+        ordersWithTracking,
+        qcStatusMap,
+        scannedKeySet,
+        selfPickupChannelCodes,
+        wmsReadyByOrder,
+        wmsReadyByOrderItem,
+        viewOnly
+      )
+      setView('main')
+    } catch (error: any) {
+      openAlert('ดึงข้อมูลไม่ได้: ' + error.message)
+    } finally {
+      setIsLoadingOrders(false)
+    }
+  }
+
+  async function fetchQcStatusMap(
+    itemUids: Array<string | null | undefined>,
+    stableUnits: Array<{ orderItemId: string; unitIndex: number }> = []
+  ) {
+    const uniqueUids = Array.from(new Set(itemUids.filter((uid): uid is string => !!uid && String(uid).trim() !== '')))
+    const uniqueOrderItemIds = Array.from(new Set(stableUnits.map((unit) => unit.orderItemId).filter(Boolean)))
+    if (uniqueUids.length === 0 && uniqueOrderItemIds.length === 0) return {}
+
+    // PostgREST limits a response page. Fetch every matching record in bounded
+    // UID batches, otherwise an older/high-volume WO can silently lose statuses.
+    const rows: Array<{
+      id: string
+      item_uid: string
+      order_item_id: string | null
+      unit_index: number | null
+      status: string
+      result_source: string | null
+      remark: string | null
+      created_at: string | null
+      last_result_at: string | null
+    }> = []
+    const uidBatchSize = 200
+    const pageSize = 1000
+    for (let batchStart = 0; batchStart < uniqueUids.length; batchStart += uidBatchSize) {
+      const batch = uniqueUids.slice(batchStart, batchStart + uidBatchSize)
+      for (let from = 0; ; from += pageSize) {
+        const { data, error } = await supabase
+          .from('qc_records')
+          .select('id, item_uid, order_item_id, unit_index, status, result_source, remark, created_at, last_result_at')
+          .in('item_uid', batch)
+          .order('id', { ascending: true })
+          .range(from, from + pageSize - 1)
+        if (error) {
+          console.error('QC status load error:', error)
+          return {}
+        }
+        rows.push(...((data || []) as typeof rows))
+        if (!data || data.length < pageSize) break
+      }
+    }
+
+    for (let batchStart = 0; batchStart < uniqueOrderItemIds.length; batchStart += uidBatchSize) {
+      const batch = uniqueOrderItemIds.slice(batchStart, batchStart + uidBatchSize)
+      for (let from = 0; ; from += pageSize) {
+        const { data, error } = await supabase
+          .from('qc_records')
+          .select('id, item_uid, order_item_id, unit_index, status, result_source, remark, created_at, last_result_at')
+          .in('order_item_id', batch)
+          .order('id', { ascending: true })
+          .range(from, from + pageSize - 1)
+        if (error) {
+          console.error('QC stable status load error:', error)
+          return {}
+        }
+        rows.push(...((data || []) as typeof rows))
+        if (!data || data.length < pageSize) break
+      }
+    }
+
+    const dedupedRows = Array.from(new Map(rows.map((row) => [row.id, row])).values())
+    dedupedRows.sort((a, b) => {
+      const timeDiff = new Date(a.last_result_at || 0).getTime() - new Date(b.last_result_at || 0).getTime()
+      return timeDiff !== 0 ? timeDiff : a.id.localeCompare(b.id)
+    })
+    const map: Record<string, 'pass' | 'fail' | 'skip'> = {}
+    dedupedRows.forEach((row) => {
+      const uid = row.item_uid
+      const status: 'pass' | 'fail' | 'skip' | null = row.status === 'skipped'
+        || row.result_source === 'skip'
+        || (row.status === 'pass' && row.remark === 'ข้ามการ QC')
+        ? 'skip'
+        : row.status === 'pass' || row.status === 'fail' ? row.status : null
+      if (!status) return
+      if (row.order_item_id && row.unit_index) {
+        map[stableOrderItemUnitKey(row.order_item_id, row.unit_index)] = status
+      } else if (uid) {
+        // Only legacy records may fall back to the mutable display UID.
+        map[uid] = status
+      }
+    })
+    return map
+  }
+
+  async function prepareDataForPacking(
+    orders: OrderWithItems[],
+    qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>,
+    scannedKeySet: Set<string>,
+    selfPickupChannelCodes: ReadonlySet<string>,
+    wmsReadyByOrder: Record<string, boolean>,
+    wmsReadyByOrderItem: Record<string, boolean>,
+    viewOnly = false
+  ) {
+    const flatData: PackingItem[] = []
+    orders.forEach((order) => {
+      flatData.push(...buildPackingItemsFromOrder(
+        order,
+        qcStatusMap,
+        scannedKeySet,
+        selfPickupChannelCodes,
+        wmsReadyByOrder[order.id] ?? false,
+        wmsReadyByOrderItem
+      ))
+    })
+
+    const grouped: Record<string, PackingItem[]> = {}
+    const groupOrder: string[] = []
+    flatData.forEach((item) => {
+      // One packing group must represent exactly one bill. Legacy data may contain
+      // the same tracking number on several bills; grouping by tracking merged them
+      // and only the first order_id was shipped, leaving the other bills stuck.
+      const groupKey = item.order_id || `tracking:${item.tracking_number}`
+      if (!grouped[groupKey]) {
+        grouped[groupKey] = []
+        groupOrder.push(groupKey)
+      }
+      grouped[groupKey].push(item)
+    })
+
+    const aggregated = groupOrder.map((groupKey) => grouped[groupKey])
+    const needTagCount = viewOnly ? 0 : aggregated.filter((group) => group[0].packingTag == null).length
+    const reservedTags = viewOnly ? [] : reserveDailyPackingTags(needTagCount)
+    let tagIdx = 0
+    const aggregatedTagged = aggregated.map((group) => {
+      if (group[0].packingTag != null) return group
+      if (viewOnly) return group
+      const t = reservedTags[tagIdx++]!
+      return group.map((item) => ({ ...item, packingTag: t }))
+    })
+
+    const persistNewTags = aggregatedTagged
+      .map((group, i) => ({ group, hadTag: aggregated[i]![0].packingTag != null }))
+      .filter((x) => !x.hadTag)
+      .map(({ group }) => {
+        const order = orders.find((o) => o.id === group[0].order_id)
+        const prev =
+          order?.packing_meta && typeof order.packing_meta === 'object'
+            ? { ...(order.packing_meta as unknown as Record<string, unknown>) }
+            : {}
+        const tag = group[0].packingTag
+        return supabase
+          .from('or_orders')
+          .update({
+            packing_meta: { ...prev, dailyPackingTag: tag } as PackingMeta,
+          })
+          .eq('id', group[0].order_id)
+      })
+    if (!viewOnly) await Promise.allSettled(persistNewTags)
+
+    setAggregatedData(aggregatedTagged)
+    if (aggregatedTagged.length === 0) {
+      setCurrentIndex(-1)
+      return
+    }
+    const nextIndex = aggregatedTagged.findIndex(
+      (group) =>
+        isQcPassGroup(group) &&
+        isWmsReadyGroup(group) &&
+        !group.every((item) => item.scanned) &&
+        !group[0].isOrderComplete
+    )
+    if (nextIndex !== -1) {
+      setCurrentIndex(nextIndex)
+      startInactivityTimer()
+    } else {
+      const firstNotShipped = aggregatedTagged.findIndex((group) => !group[0].isOrderComplete)
+      setCurrentIndex(firstNotShipped !== -1 ? firstNotShipped : aggregatedTagged.length - 1)
+    }
+  }
+
+  async function performResetAction(index = currentIndexRef.current) {
+    if (isViewOnly) return
+    if (index < 0 || !currentWorkOrderName) return
+    const group = aggregatedDataRef.current[index]
+    if (!group) return
+
+    const isShipped = group[0].isOrderComplete
+    const reason = isShipped
+      ? window.prompt('กรุณาระบุเหตุผลที่ยกเลิกการจัดส่งและแพ็คใหม่')?.trim()
+      : 'ผู้ใช้เลือกเริ่มแพ็คใหม่'
+    if (isShipped && !reason) return
+    try {
+      const { error } = await supabase.rpc('pk_reset_order_packing', {
+        p_order_id: group[0].order_id,
+        p_reason: reason || 'ผู้ใช้เลือกเริ่มแพ็คใหม่',
+        p_reset_by: user?.username || user?.email || 'unknown',
+      })
+      if (error) throw error
+      await loadPackingData(currentWorkOrderName)
+      setStatusMessage({ text: isShipped ? '✅ ยกเลิกการจัดส่งและเปิดแพ็คใหม่แล้ว' : '✅ ล้างรายการสแกนแล้ว พร้อมเริ่มแพ็คใหม่', type: 'success' })
+    } catch (error: any) {
+      console.error('Reset Error:', error)
+      openAlert('แพ็คใหม่ไม่สำเร็จ: ' + (error?.message || error))
+    }
+  }
+
+  async function inspectBackupVideo(file: File): Promise<{ durationSeconds: number | null; width: number | null; height: number | null }> {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(file)
+      const video = document.createElement('video')
+      const finish = (result: { durationSeconds: number | null; width: number | null; height: number | null }) => {
+        URL.revokeObjectURL(url)
+        resolve(result)
+      }
+      video.preload = 'metadata'
+      video.onloadedmetadata = () => finish({
+        durationSeconds: Number.isFinite(video.duration) ? Math.round(video.duration) : null,
+        width: video.videoWidth || null,
+        height: video.videoHeight || null,
+      })
+      video.onerror = () => finish({ durationSeconds: null, width: null, height: null })
+      video.src = url
+    })
+  }
+
+  async function chooseBackupVideo(file: File | null) {
+    if (!file) return
+    const lowerName = file.name.toLowerCase()
+    const isSupportedVideo = /\.(mp4|webm)$/.test(lowerName) || /video\/(mp4|webm)/i.test(file.type)
+    if (!isSupportedVideo) {
+      openAlert('รองรับไฟล์วิดีโอ .mp4 และ .webm เท่านั้น')
+      return
+    }
+    const metadata = await inspectBackupVideo(file)
+    setRequeueImport({
+      open: true,
+      file,
+      workOrderName: '',
+      trackingNumber: '',
+      durationSeconds: metadata.durationSeconds,
+      width: metadata.width,
+      height: metadata.height,
+      saving: false,
+      error: '',
+    })
+  }
+
+  async function importBackupVideoToQueue() {
+    const file = requeueImport.file
+    const lowerName = file?.name.toLowerCase() || ''
+    const workOrderName = requeueImport.workOrderName.trim()
+    const trackingNumber = formatParcelNo(requeueImport.trackingNumber)
+    if (!file || !workOrderName || !trackingNumber) {
+      setRequeueImport((current) => ({ ...current, error: 'กรุณาระบุใบงานและเลขพัสดุให้ครบ' }))
+      return
+    }
+    setRequeueImport((current) => ({ ...current, saving: true, error: '' }))
+    try {
+      const { data: order } = await supabase
+        .from('or_orders')
+        .select('id, channel_order_no')
+        .eq('work_order_name', workOrderName)
+        .eq('tracking_number', trackingNumber)
+        .limit(1)
+        .maybeSingle()
+      const now = new Date().toISOString()
+      const durationSeconds = requeueImport.durationSeconds
+      const item: UploadQueueItem = {
+        id: crypto.randomUUID(),
+        workOrderName,
+        trackingNumber,
+        channelOrderNo: order?.channel_order_no || null,
+        orderId: order?.id || '',
+        filename: file.name,
+        storagePath: `work_orders/${workOrderName}/${trackingNumber}/${file.name}`,
+        status: 'pending',
+        createdAt: now,
+        updatedAt: now,
+        retryCount: 0,
+        lastError: null,
+        durationSeconds,
+        fileType: file.type || (lowerName.endsWith('.mp4') ? 'video/mp4' : 'video/webm'),
+        fileSize: file.size,
+        recordedBy: user?.username || user?.email || 'unknown',
+        recordedUserId: user?.id || null,
+        recordedAt: now,
+        deviceId,
+        deviceName,
+        folderName: folderHandle?.name || null,
+        folderPath: folderPath || null,
+        blob: file,
+        localDeleted: false,
+        qualityProfile: 'imported',
+        requestedWidth: null,
+        requestedHeight: null,
+        requestedFps: null,
+        requestedBitrate: null,
+        actualWidth: requeueImport.width,
+        actualHeight: requeueImport.height,
+        actualFps: null,
+        mimeType: file.type || (lowerName.endsWith('.mp4') ? 'video/mp4' : 'video/webm'),
+        codec: codecFromVideoMimeType(file.type || (lowerName.endsWith('.mp4') ? 'video/mp4' : 'video/webm')),
+        recorderBitrate: null,
+        actualBitrate: durationSeconds ? Math.round((file.size * 8) / durationSeconds) : null,
+      }
+      await addQueueItem(item)
+      await refreshQueue()
+      await requestQueueProcessing()
+      setRequeueImport((current) => ({ ...current, open: false, file: null, saving: false }))
+      openAlert('นำไฟล์สำรองกลับเข้าคิวแล้ว ระบบกำลังเริ่มอัปโหลด', 'สำเร็จ')
+    } catch (error: any) {
+      setRequeueImport((current) => ({ ...current, saving: false, error: error?.message || 'นำไฟล์กลับเข้าคิวไม่สำเร็จ' }))
+    }
+  }
+
+  async function handleParcelScan() {
+    if (isViewOnly) return
+    if (!currentGroup) return
+    const scanValue = parcelScanValue.trim().toUpperCase()
+    if (!scanValue) return
+    const group = currentGroup
+    if (!isWmsReadyGroup(group)) {
+      playErrorSound()
+      setStatusMessage({ text: '⛔ ยังไม่ได้หยิบและตรวจสินค้าใน WMS ครบ จึงยังแพ็คไม่ได้', type: 'error' })
+      return
+    }
+    if (!isQcPassGroup(group)) {
+      playErrorSound()
+      setStatusMessage({ text: '❌ ยังไม่ได้ QC Pass ครบทุกชิ้น', type: 'error' })
+      return
+    }
+    const scanNorm = normalizeParcelScanInput(scanValue)
+    const trackingNorm = normalizeParcelScanInput(String(group[0].tracking_number))
+    const isConvertedAwaitingTracking = Boolean(group[0].converted_from_self_pickup_at) && !trackingNorm
+    if (scanNorm === trackingNorm || isConvertedAwaitingTracking) {
+      if (isConvertedAwaitingTracking) {
+        const { data: duplicate, error: duplicateError } = await supabase
+          .from('or_orders')
+          .select('id')
+          .eq('tracking_number', scanNorm)
+          .neq('id', group[0].order_id)
+          .limit(1)
+        if (duplicateError) {
+          playErrorSound()
+          setStatusMessage({ text: '❌ ตรวจสอบเลขพัสดุซ้ำไม่สำเร็จ', type: 'error' })
+          return
+        }
+        if (duplicate && duplicate.length > 0) {
+          playErrorSound()
+          setStatusMessage({ text: '❌ เลขพัสดุนี้มีอยู่ในระบบแล้ว', type: 'error' })
+          return
+        }
+      }
+      const acceptedTracking = trackingNorm || scanNorm
+      // Start capturing as soon as the barcode is confirmed. Persisting scan
+      // metadata must not delay the beginning of the packing video.
+      startRecording(acceptedTracking).catch((error) => {
+        setRecordingState({
+          status: 'error',
+          tracking: acceptedTracking,
+          error: error?.message || 'เริ่มบันทึกไม่สำเร็จ'
+        })
+      })
+
+      const scannedBy = user?.username || user?.email || 'unknown'
+      const scanTime = new Date().toISOString()
+      const { data: ordRow, error: metaFetchErr } = await supabase
+        .from('or_orders')
+        .select('packing_meta')
+        .eq('id', group[0].order_id)
+        .single()
+      if (metaFetchErr) {
+        console.error('parcel scan packing_meta fetch:', metaFetchErr)
+      }
+      const prev =
+        ordRow?.packing_meta && typeof ordRow.packing_meta === 'object'
+          ? { ...(ordRow.packing_meta as Record<string, unknown>) }
+          : {}
+      let nextTag = group[0].packingTag
+      if (nextTag == null && typeof prev.dailyPackingTag === 'number') {
+        nextTag = prev.dailyPackingTag
+      }
+      if (nextTag == null) {
+        nextTag = reserveDailyPackingTags(1)[0]!
+      }
+      const { error: orderUpdateError } = await supabase
+        .from('or_orders')
+        .update({
+          ...(isConvertedAwaitingTracking ? { tracking_number: acceptedTracking } : {}),
+          packing_meta: {
+            ...prev,
+            parcelScanned: true,
+            scannedBy,
+            scanTime,
+            dailyPackingTag: nextTag,
+          } as PackingMeta,
+        })
+        .eq('id', group[0].order_id)
+      if (orderUpdateError) {
+        console.error('Error updating parcel scan:', orderUpdateError)
+        stopRecording()
+        playErrorSound()
+        setStatusMessage({ text: '❌ บันทึกเลขพัสดุไม่สำเร็จ: ' + orderUpdateError.message, type: 'error' })
+        return
+      }
+      const { error: logError } = await supabase.from('pk_packing_logs').insert({
+        order_id: group[0].order_id,
+        item_id: null,
+        packed_by: scannedBy,
+        notes: 'parcel_scan'
+      })
+      if (logError) console.warn('Failed to log parcel scan:', logError)
+
+      setAggregatedData((prev) =>
+        prev.map((g, idx) =>
+          idx === currentIndex ? g.map((item) => ({ ...item, tracking_number: acceptedTracking, parcelScanned: true, packingTag: nextTag })) : g
+        )
+      )
+      setParcelScanValue('')
+      setStatusMessage({ text: '', type: '' })
+      if (!isViewOnly) startInactivityTimer()
+      playSuccessSound()
+      const needsBilling = group[0].needsTaxInvoice || group[0].needsCashBill
+      if (needsBilling) {
+        const billType = group[0].needsTaxInvoice ? 'ใบกำกับภาษี' : 'บิลเงินสด'
+        openBillingConfirm(billType, () => {
+          setBillingCheckConfirmed(true)
+          setStatusMessage({ text: 'รอสแกนสินค้า...', type: '' })
+          setTimeout(() => itemScanRef.current?.focus(), 50)
+        })
+      }
+    } else {
+      playErrorSound()
+      setStatusMessage({ text: '❌ เลขพัสดุไม่ตรงกับที่เลือก', type: 'error' })
+    }
+  }
+
+  async function handleItemScan() {
+    if (isViewOnly) return
+    if (!currentGroup) return
+    const scanValue = itemScanValue.trim().toUpperCase()
+    if (!scanValue) return
+    const group = currentGroup
+    if (!isWmsReadyGroup(group)) {
+      playErrorSound()
+      setStatusMessage({ text: '⛔ ยังไม่ได้หยิบและตรวจสินค้าใน WMS ครบ จึงยังแพ็คไม่ได้', type: 'error' })
+      return
+    }
+    if (!isQcPassGroup(group)) {
+      playErrorSound()
+      setStatusMessage({ text: '❌ ยังไม่ได้ QC Pass ครบทุกชิ้น', type: 'error' })
+      return
+    }
+    const needsBilling = group[0].needsTaxInvoice || group[0].needsCashBill
+    if (needsBilling && !billingCheckConfirmed) {
+      const billType = group[0].needsTaxInvoice ? 'ใบกำกับภาษี' : 'บิลเงินสด'
+      playErrorSound()
+      setStatusMessage({ text: `⚠️ กรุณายืนยันว่าใส่${billType}ในกล่องก่อนสแกนสินค้า`, type: 'error' })
+      return
+    }
+    const itemToScan = group.find((item) => !item.scanned && item.unit_uid === scanValue)
+    if (itemToScan) {
+      const { error: scanError } = await supabase
+        .from('pk_packing_unit_scans')
+        .upsert(
+          {
+            order_id: itemToScan.order_id,
+            unit_uid: itemToScan.unit_uid,
+            scanned_by: user?.id ?? null,
+            scanned_at: new Date().toISOString(),
+            status: 'scanned',
+          },
+          { onConflict: 'order_id,unit_uid' }
+        )
+      if (scanError) {
+        console.error('Error saving unit scan:', scanError)
+        playErrorSound()
+        setStatusMessage({ text: '❌ บันทึกไม่สำเร็จ: ' + scanError.message, type: 'error' })
+        return
+      }
+      const scannedBy = user?.username || user?.email || 'unknown'
+      const { error: logError } = await supabase.from('pk_packing_logs').insert({
+        order_id: itemToScan.order_id,
+        item_id: null,
+        packed_by: scannedBy,
+        notes: 'item_scan'
+      })
+      if (logError) console.warn('Failed to log item scan:', logError)
+
+      setItemScanValue('')
+      playSuccessSound()
+      startInactivityTimer()
+
+      setAggregatedData((prev) =>
+        prev.map((g, idx) =>
+          idx === currentIndex
+            ? g.map((item) => (item.unit_uid === itemToScan.unit_uid ? { ...item, scanned: true } : item))
+            : g
+        )
+      )
+
+      const updatedGroup = group.map((item) =>
+        item.unit_uid === itemToScan.unit_uid ? { ...item, scanned: true } : item
+      )
+      if (updatedGroup.every((item) => item.scanned)) {
+        clearInactivityTimer()
+        setStatusMessage({ text: '✅ สแกนครบแล้ว!', type: 'success' })
+        openConfirm(
+          'สแกนสินค้าครบแล้ว แพ็คเสร็จเรียบร้อยใช่ไหม?',
+          () => { stopRecordingAndAdvance() },
+          'ยืนยันการแพ็คสินค้า',
+          'ใช่ (หยุดบันทึก)',
+          'ไม่ใช่ (ตรวจสอบอีกรอบ)'
+        )
+      }
+    } else {
+      playErrorSound()
+      setStatusMessage({ text: '❌ สินค้าไม่ถูกต้องหรือถูกสแกนแล้ว', type: 'error' })
+    }
+  }
+
+  async function shipAllScannedOrders() {
+    if (isViewOnly) return
+    setIsLoadingOrders(true)
+    try {
+      const ids: string[] = []
+      completedIndices.forEach((index) => {
+        const group = aggregatedData[index]
+        if (group && !group[0].isOrderComplete) ids.push(group[0].order_id)
+      })
+      if (ids.length === 0) {
+        openAlert('ไม่มีบิลที่แสกนครบรอส่ง')
+        setIsLoadingOrders(false)
+        return
+      }
+
+      const shippedBy = user?.username || user?.email || 'unknown'
+      const { error } = await supabase
+        .from('or_orders')
+        .update({ status: 'จัดส่งแล้ว', shipped_by: shippedBy, shipped_time: new Date().toISOString() })
+        .in('id', ids)
+
+      if (error) throw error
+      openAlert(`จัดส่งสำเร็จ ${ids.length} รายการ!`)
+      playSuccessSound()
+      if (currentWorkOrderName) {
+        await checkAndMarkPackEnd(currentWorkOrderName)
+        await loadPackingData(currentWorkOrderName)
+      }
+    } catch (error: any) {
+      openAlert(error.message)
+    } finally {
+      setIsLoadingOrders(false)
+    }
+  }
+
+  async function finalizeWorkOrder() {
+    if (isViewOnly) return
+    if (!currentWorkOrderName) return
+    openConfirm('ปิดใบงานนี้?', async () => {
+      setIsLoadingOrders(true)
+      try {
+        await finalizePackingWorkOrder(currentWorkOrderName, [])
+        openAlert('ปิดใบงานเรียบร้อย')
+        await loadWorkOrdersForPacking()
+      } catch (error: any) {
+        openAlert('ปิดใบงานไม่สำเร็จ: ' + (error?.message || error))
+      } finally {
+        setIsLoadingOrders(false)
+      }
+    })
+  }
+
+  async function shipAllAndFinalize() {
+    if (isViewOnly) return
+    if (!currentWorkOrderName) return
+    const incompleteGroups = aggregatedData.filter(
+      (group) => !group[0].isOrderComplete && (!isWmsReadyGroup(group) || !isQcPassGroup(group) || !group.every((item) => item.scanned))
+    )
+    if (incompleteGroups.length > 0) {
+      openAlert(`ยังปิดใบงานไม่ได้: มี ${incompleteGroups.length} บิลที่ WMS, QC หรือแพ็คยังไม่ครบ`)
+      return
+    }
+    setIsLoadingOrders(true)
+    try {
+      const ids: string[] = []
+      completedIndices.forEach((index) => {
+        const group = aggregatedData[index]
+        if (group && !group[0].isOrderComplete) ids.push(group[0].order_id)
+      })
+
+      await finalizePackingWorkOrder(currentWorkOrderName, ids)
+      playSuccessSound()
+      openAlert(`จัดส่งสำเร็จทั้งหมด ${ids.length || aggregatedData.length} รายการ!`)
+      await loadWorkOrdersForPacking()
+    } catch (error: any) {
+      openAlert(error.message)
+    } finally {
+      setIsLoadingOrders(false)
+    }
+  }
+
+  function playSuccessSound() {
+    const audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg')
+    audio.play().catch(() => null)
+  }
+
+  function playErrorSound() {
+    const audio = new Audio('https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg')
+    audio.play().catch(() => null)
+  }
+
+  async function handleOrderClick(index: number) {
+    if (index === currentIndex) return
+    if (recordingState.status === 'recording') {
+      openConfirm(
+        'กำลังบันทึกวิดีโออยู่ ต้องการหยุดบันทึกและเปลี่ยนบิลหรือไม่?',
+        () => {
+          stopRecording()
+          switchToOrder(index)
+        },
+        'หยุดบันทึกวิดีโอ',
+        'ใช่ (หยุดบันทึก)',
+        'ไม่ใช่ (บันทึกต่อ)'
+      )
+      return
+    }
+    await switchToOrder(index)
+  }
+
+  async function switchToOrder(index: number) {
+    const previousIndex = currentIndexRef.current
+    if (!isViewOnly && previousIndex !== -1 && previousIndex !== index) {
+      const oldGroup = aggregatedDataRef.current[previousIndex]
+      if (oldGroup && !oldGroup.every((item) => item.scanned)) {
+        const hasStarted = oldGroup.some((item) => item.scanned || item.parcelScanned)
+        if (hasStarted) {
+          await performResetAction(previousIndex)
+        }
+      }
+    }
+    setCurrentIndex(index)
+    setBillingCheckConfirmed(false)
+  }
+
+  function getRecordingLabel() {
+    if (!currentGroup) return 'พร้อมบันทึก'
+    if (recordingState.status === 'recording') return 'กำลังบันทึก'
+    const isFullyScanned = currentGroup.every((item) => item.scanned)
+    if (isFullyScanned) return 'บันทึกเสร็จสิ้น'
+    if (currentGroup[0].parcelScanned) return 'กำลังบันทึก'
+    return 'พร้อมบันทึก'
+  }
+
+  function getRecordingBadgeClass() {
+    if (!currentGroup) return 'bg-green-100 text-green-700'
+    if (recordingState.status === 'recording') return 'bg-red-100 text-red-700'
+    const isFullyScanned = currentGroup.every((item) => item.scanned)
+    if (isFullyScanned) return 'bg-blue-100 text-blue-700'
+    if (currentGroup[0].parcelScanned) return 'bg-red-100 text-red-700'
+    return 'bg-green-100 text-green-700'
+  }
+
+  async function ensurePreview(): Promise<boolean> {
+    if (streamRef.current && videoRef.current?.srcObject) return true
+    if (previewPromiseRef.current) return previewPromiseRef.current
+
+    const previewPromise = (async (): Promise<boolean> => {
+      if (!navigator?.mediaDevices?.getUserMedia) {
+        setPreviewModal({
+          open: true,
+          message: 'ไม่สามารถเปิดกล้องได้ (อุปกรณ์ไม่รองรับหรือไม่ได้เปิดผ่าน https)'
+        })
+        return false
+      }
+      try {
+        const profile = VIDEO_QUALITY_PROFILES[videoQualityProfile]
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: profile.width },
+            height: { ideal: profile.height },
+            frameRate: { ideal: profile.fps },
+          },
+          audio: false,
+        })
+        streamRef.current = stream
+        const actualSettings = stream.getVideoTracks()[0]?.getSettings()
+        console.info('[packing-video] camera settings', {
+          requested: { width: profile.width, height: profile.height, frameRate: profile.fps },
+          actual: {
+            width: actualSettings?.width ?? null,
+            height: actualSettings?.height ?? null,
+            frameRate: actualSettings?.frameRate ?? null,
+          },
+        })
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream
+          try {
+            await videoRef.current.play()
+          } catch (err: any) {
+            const msg = String(err?.message || '')
+            if (msg.includes('interrupted by a new load request')) return true
+            throw err
+          }
+        }
+        setRecordingState((prev) =>
+          prev.status === 'error' ? { status: 'idle', tracking: null } : prev
+        )
+        return true
+      } catch (error: any) {
+        const msg = String(error?.message || '')
+        if (msg.includes('interrupted by a new load request')) return true
+        setPreviewModal({
+          open: true,
+          message: error?.message || 'ไม่สามารถเปิดกล้องได้ กรุณาอนุญาตสิทธิ์กล้อง'
+        })
+        return false
+      }
+    })()
+
+    previewPromiseRef.current = previewPromise
+    try {
+      return await previewPromise
+    } finally {
+      if (previewPromiseRef.current === previewPromise) previewPromiseRef.current = null
+    }
+  }
+
+  async function startRecording(trackingNumber: string) {
+    if (
+      recordingState.status === 'recording'
+      || recordingStartingRef.current
+      || (recorderRef.current && recorderRef.current.state !== 'inactive')
+    ) return
+    // Lock before the first await. The parcel-scan handler and the recovery
+    // effect can run in the same render cycle; without this early lock they can
+    // create two MediaRecorders that write into the same chunk array.
+    recordingStartingRef.current = true
+    if (!folderHandle) {
+      recordingStartingRef.current = false
+      openAlert('กรุณาเลือกโฟลเดอร์จัดเก็บก่อนเริ่มบันทึก')
+      return
+    }
+    try {
+      // เตือนตั้งแต่ก่อนอัด ดีกว่าไปพังตอนเซฟหลังแพ็คเสร็จ
+      if (!(await isFolderHandleUsable(folderHandle))) {
+        await forgetFolder()
+        recordingStartingRef.current = false
+        openAlert('ไม่พบโฟลเดอร์ที่เลือกไว้ (อาจถูกย้าย เปลี่ยนชื่อ ลบ หรือไดรฟ์ถูกถอด)\nกรุณากด "เลือกโฟลเดอร์จัดเก็บ" ใหม่ก่อนเริ่มบันทึก')
+        return
+      }
+      const ok = await ensurePreview()
+      if (!ok && !streamRef.current) {
+        throw new Error('ไม่สามารถเปิดกล้องได้')
+      }
+      if (!streamRef.current) {
+        throw new Error('ไม่สามารถเปิดกล้องได้')
+      }
+
+      const profile = VIDEO_QUALITY_PROFILES[videoQualityProfile]
+      const supportedMimeTypes = getSupportedPackingVideoMimeTypes((type) => MediaRecorder.isTypeSupported(type))
+      let recorder: MediaRecorder | null = null
+      let selectedMimeType = ''
+
+      // Some implementations report a MIME type as supported but still reject it
+      // in the constructor for the active camera. Continue down the same safe list.
+      for (const mimeType of supportedMimeTypes) {
+        try {
+          const candidate = new MediaRecorder(streamRef.current, {
+            mimeType,
+            videoBitsPerSecond: profile.bitrate,
+          })
+          const candidateActualMimeType = candidate.mimeType || mimeType
+          if (!isPackingRecorderMimeCompatible(mimeType, candidateActualMimeType)) {
+            continue
+          }
+          recorder = candidate
+          selectedMimeType = mimeType
+          break
+        } catch {
+          // Try the next explicitly supported MP4/H.264 or WebM/VP8 option.
+        }
+      }
+      // Preserve the previous browser-default behavior only as a last-resort path.
+      if (!recorder) {
+        const fallbackRecorder = new MediaRecorder(streamRef.current, { videoBitsPerSecond: profile.bitrate })
+        if (!isSafePackingRecorderMimeType(fallbackRecorder.mimeType)) {
+          throw new Error('Browser นี้ไม่สามารถสร้างวิดีโอ MP4/H.264 หรือ WebM/VP8 ที่รองรับการ Preview ได้')
+        }
+        recorder = fallbackRecorder
+      }
+      const trackSettings = streamRef.current.getVideoTracks()[0]?.getSettings()
+      const actualMimeType = recorder.mimeType || selectedMimeType || 'video/webm'
+      recordingVideoMetadataRef.current = {
+        startedAt: null,
+        qualityProfile: profile.id,
+        requestedWidth: profile.width,
+        requestedHeight: profile.height,
+        requestedFps: profile.fps,
+        requestedBitrate: profile.bitrate,
+        actualWidth: trackSettings?.width ?? null,
+        actualHeight: trackSettings?.height ?? null,
+        actualFps: trackSettings?.frameRate ?? null,
+        mimeType: actualMimeType,
+        codec: codecFromVideoMimeType(actualMimeType),
+        recorderBitrate: Number(recorder.videoBitsPerSecond || 0) || null,
+        actualBitrate: null,
+      }
+      recorderRef.current = recorder
+      recordingChunksRef.current = []
+      recordingBytesRef.current = 0
+      recordingStartRef.current = null
+
+      recorder.onstart = () => {
+        const startedAt = new Date()
+        recordingStartRef.current = startedAt.getTime()
+        if (recordingVideoMetadataRef.current) {
+          recordingVideoMetadataRef.current.startedAt = startedAt.toISOString()
+        }
+        recordingStartingRef.current = false
+        setRecordingState({ status: 'recording', tracking: trackingNumber })
+        console.info('[packing-video] recording started', {
+          trackingNumber,
+          startedAt: startedAt.toISOString(),
+          mimeType: actualMimeType,
+        })
+      }
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size <= 0) return
+        recordingChunksRef.current.push(event.data)
+        recordingBytesRef.current += event.data.size
+        // เมื่อข้อมูลของ MediaRecorder ชุดนี้ถึงเพดาน ให้ stop เพื่อปิดเป็นไฟล์
+        // ให้ปิดช่วงปัจจุบัน; effect เดิมจะเริ่มช่วงถัดไปให้งานเดียวกันอัตโนมัติ
+        if (recordingBytesRef.current >= RECORDING_SEGMENT_LIMIT_BYTES && recorder.state === 'recording') {
+          recorder.stop()
+        }
+      }
+
+      recorder.onstop = async () => {
+        if (!recordingChunksRef.current.length) {
+          cleanupRecording()
+          return
+        }
+
+        const blob = new Blob(recordingChunksRef.current, { type: actualMimeType })
+        const durationSeconds = recordingStartRef.current
+          ? Math.round((Date.now() - recordingStartRef.current) / 1000)
+          : null
+        const videoMetadata = recordingVideoMetadataRef.current
+          ? {
+              ...recordingVideoMetadataRef.current,
+              actualBitrate: durationSeconds && durationSeconds > 0
+                ? Math.round((blob.size * 8) / durationSeconds)
+                : null,
+            }
+          : null
+        await queueRecording(blob, trackingNumber, durationSeconds || undefined, videoMetadata)
+        cleanupRecording(true)
+        if (stopAdvanceRef.current) {
+          stopAdvanceRef.current = false
+          goToNextGroup()
+        }
+      }
+
+      recorder.start(RECORDING_TIMESLICE_MS)
+    } catch (error: any) {
+      recordingStartingRef.current = false
+      cleanupRecording()
+      throw error
+    }
+  }
+
+  function cleanupRecording(markIdle = true, stopStream = false) {
+    recordingStartingRef.current = false
+    recorderRef.current = null
+    recordingChunksRef.current = []
+    recordingBytesRef.current = 0
+    recordingStartRef.current = null
+    recordingVideoMetadataRef.current = null
+    if (stopStream) {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop())
+        streamRef.current = null
+      }
+      if (videoRef.current) {
+        videoRef.current.srcObject = null
+      }
+    }
+    if (markIdle) {
+      setRecordingState({ status: 'idle', tracking: null })
+    }
+  }
+
+  async function queueRecording(blob: Blob, trackingNumber: string, durationSeconds?: number, videoMetadata?: RecordingVideoMetadata | null) {
+    if (!currentWorkOrderName || !currentGroup) return
+    if (!folderHandle) {
+      openAlert('ยังไม่ได้เลือกโฟลเดอร์จัดเก็บ กรุณาเลือกโฟลเดอร์ก่อน')
+      return
+    }
+    setRecordingState({ status: 'uploading', tracking: trackingNumber })
+    let localSaveError: string | null = null
+    let folderLost = false
+    try {
+      await requestNotificationPermission()
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+      const effectiveMimeType = videoMetadata?.mimeType || blob.type || 'video/webm'
+      const filename = `${timestamp}.${videoFileExtension(effectiveMimeType)}`
+      const path = `work_orders/${currentWorkOrderName}/${trackingNumber}/${filename}`
+
+      // ไฟล์ในโฟลเดอร์เป็นเพียงสำเนาสำรอง การอัปโหลดใช้ blob ใน IndexedDB
+      // ถ้าเขียนไฟล์ไม่ได้ต้องเข้าคิวต่อ ไม่เช่นนั้นวิดีโอที่อัดไว้จะหายทั้งไฟล์
+      // ระบุขั้นตอนที่พังไว้ด้วย เพราะ NotFoundError เกิดได้ทั้งจาก "โฟลเดอร์หาย" (พังที่สร้างไฟล์)
+      // และจากไฟล์ชั่วคราว .crswap ของ Chrome โดนแทรกแซง (พังที่ปิดไฟล์) ซึ่งโฟลเดอร์ยังปกติดี
+      let step = 'สร้างไฟล์'
+      try {
+        const fileHandle = await folderHandle.getFileHandle(filename, { create: true })
+        step = 'เปิดเขียนไฟล์'
+        const writable = await fileHandle.createWritable()
+        step = 'เขียนข้อมูล'
+        await writable.write(blob)
+        step = 'ปิดไฟล์'
+        await writable.close()
+      } catch (err: any) {
+        folderLost = !(await isFolderHandleUsable(folderHandle))
+        localSaveError = `${describeFolderError(err)}\n(ขั้นตอน: ${step} • ${err?.name || 'Error'})`
+        // ให้เลือกโฟลเดอร์ใหม่เฉพาะตอนที่โฟลเดอร์ใช้ไม่ได้จริง ไม่ใช่ทุก error
+        if (folderLost) {
+          await forgetFolder()
+        }
+      }
+
+      const recordedBy = user?.username || user?.email || 'unknown'
+      const item: UploadQueueItem = {
+        id: crypto.randomUUID(),
+        workOrderName: currentWorkOrderName,
+        trackingNumber,
+        channelOrderNo: currentGroup[0].channel_order_no,
+        orderId: currentGroup[0].order_id,
+        filename,
+        storagePath: path,
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        retryCount: 0,
+        lastError: null,
+        durationSeconds: durationSeconds ?? null,
+        fileType: blob.type || 'video/webm',
+        fileSize: blob.size,
+        recordedBy,
+        recordedUserId: user?.id || null,
+        recordedAt: videoMetadata?.startedAt || new Date().toISOString(),
+        deviceId,
+        deviceName,
+        folderName: folderHandle.name,
+        folderPath: folderPath || null,
+        blob,
+        localDeleted: localSaveError ? true : false,
+        qualityProfile: videoMetadata?.qualityProfile ?? videoQualityProfile,
+        requestedWidth: videoMetadata?.requestedWidth ?? null,
+        requestedHeight: videoMetadata?.requestedHeight ?? null,
+        requestedFps: videoMetadata?.requestedFps ?? null,
+        requestedBitrate: videoMetadata?.requestedBitrate ?? null,
+        actualWidth: videoMetadata?.actualWidth ?? null,
+        actualHeight: videoMetadata?.actualHeight ?? null,
+        actualFps: videoMetadata?.actualFps ?? null,
+        mimeType: videoMetadata?.mimeType ?? blob.type ?? null,
+        codec: videoMetadata?.codec ?? codecFromVideoMimeType(blob.type || 'video/webm'),
+        recorderBitrate: videoMetadata?.recorderBitrate ?? null,
+        actualBitrate: videoMetadata?.actualBitrate ?? (durationSeconds ? Math.round((blob.size * 8) / durationSeconds) : null),
+      }
+      await addQueueItem(item)
+      await refreshQueue()
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.ready
+        const regAny = reg as ServiceWorkerRegistration & { sync?: { register: (tag: string) => Promise<void> } }
+        if (regAny.sync?.register) {
+          await regAny.sync.register('packing-upload')
+        }
+        regAny.active?.postMessage({ type: 'sync-now' })
+      }
+      if (localSaveError) {
+        const nextStep = folderLost
+          ? 'กรุณากด "เลือกโฟลเดอร์จัดเก็บ" ใหม่ ก่อนแพ็คงานถัดไป'
+          : 'โฟลเดอร์ยังใช้งานได้ปกติ แพ็คงานถัดไปต่อได้เลย'
+        openAlert(`${localSaveError}\n\nวิดีโอถูกเก็บเข้าคิวอัปโหลดเรียบร้อยแล้ว ไม่สูญหาย\n${nextStep}`)
+      }
+    } catch (error: any) {
+      setRecordingState({ status: 'error', tracking: trackingNumber, error: error.message })
+      openAlert('บันทึกวิดีโอเข้าคิวอัปโหลดไม่สำเร็จ: ' + error.message)
+      return
+    } finally {
+      setRecordingState({ status: 'idle', tracking: null })
+    }
+  }
+
+  function stopRecording() {
+    const recorder = recorderRef.current
+    if (recorder?.state === 'recording' || recorder?.state === 'paused') {
+      recorder.stop()
+      return
+    }
+    cleanupRecording()
+  }
+
+  function stopRecordingAndAdvance() {
+    stopAdvanceRef.current = true
+    if (recordingState.status === 'recording') stopRecording()
+    else if (recordingState.status === 'idle') {
+      stopAdvanceRef.current = false
+      goToNextGroup()
+    }
+  }
+
+  const queueStatusSummary = useMemo(() => ({
+    pending: queueItems.filter((item) => item.status === 'pending' && !isStaleQueueTimestamp(item.status, item.updatedAt)).length,
+    uploading: queueItems.filter((item) => item.status === 'uploading' && !isStaleQueueTimestamp(item.status, item.updatedAt)).length,
+    success: queueItems.filter((item) => item.status === 'success').length,
+    failed: queueItems.filter((item) => item.status === 'failed' || isStaleQueueTimestamp(item.status, item.updatedAt)).length,
+  }), [queueItems])
+
+  const filteredQueueItems = useMemo(() => {
+    if (!queueStatusFilter) return queueItems
+    return queueItems.filter((item) => {
+      const stale = isStaleQueueTimestamp(item.status, item.updatedAt)
+      if (queueStatusFilter === 'failed') return item.status === 'failed' || stale
+      if (stale) return false
+      return item.status === queueStatusFilter
+    })
+  }, [queueItems, queueStatusFilter])
+
+  const uploadReportDevices = useMemo(() => {
+    const devices = new Map<string, string>()
+    packingDevices.forEach((device) => {
+      const online = Date.now() - new Date(device.last_seen_at).getTime() < DEVICE_ONLINE_MS
+      const label = `${device.device_name || 'ไม่ระบุชื่อเครื่อง'} • ${device.last_username || 'ไม่ทราบ User'} • ${online ? 'ออนไลน์' : 'ออฟไลน์'}`
+      devices.set(device.device_id, label)
+    })
+    uploadReportRows.forEach((row) => {
+      if (!devices.has(row.device_id)) devices.set(row.device_id, row.device_name || 'ไม่ระบุชื่อเครื่อง')
+    })
+    return Array.from(devices, ([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'th', { numeric: true }))
+  }, [packingDevices, uploadReportRows])
+
+  const packingDeviceById = useMemo(
+    () => new Map(packingDevices.map((device) => [device.device_id, device])),
+    [packingDevices],
+  )
+
+  const searchedUploadReportRows = useMemo(() => {
+    const term = normalizeParcelScanInput(uploadReportSearch).toLowerCase()
+    const fromTime = uploadReportDateFrom
+      ? new Date(`${uploadReportDateFrom}T00:00:00`).getTime()
+      : Number.NEGATIVE_INFINITY
+    const toTime = uploadReportDateTo
+      ? new Date(`${uploadReportDateTo}T23:59:59.999`).getTime()
+      : Number.POSITIVE_INFINITY
+    return uploadReportRows.filter((row) => {
+      if (uploadReportDeviceId && row.device_id !== uploadReportDeviceId) return false
+      const recordedTime = new Date(row.client_created_at).getTime()
+      if (recordedTime < fromTime || recordedTime > toTime) return false
+      if (!term) return true
+      return [
+        row.recorded_by,
+        row.device_name,
+        row.folder_path,
+        row.folder_name,
+        row.work_order_name,
+        row.tracking_number,
+        row.channel_order_no,
+        row.filename,
+      ].some((value) => normalizeParcelScanInput(String(value || '')).toLowerCase().includes(term))
+    })
+  }, [uploadReportRows, uploadReportSearch, uploadReportDeviceId, uploadReportDateFrom, uploadReportDateTo])
+
+  const reportStatusSummary = useMemo(() => ({
+    pending: searchedUploadReportRows.filter((row) => row.status === 'pending' && !isStaleQueueTimestamp(row.status, row.reported_at)).length,
+    uploading: searchedUploadReportRows.filter((row) => row.status === 'uploading' && !isStaleQueueTimestamp(row.status, row.reported_at)).length,
+    success: searchedUploadReportRows.filter((row) => row.status === 'success').length,
+    failed: searchedUploadReportRows.filter((row) => row.status === 'failed' || isStaleQueueTimestamp(row.status, row.reported_at)).length,
+  }), [searchedUploadReportRows])
+
+  const filteredUploadReportRows = useMemo(() => {
+    if (!reportStatusFilter) return searchedUploadReportRows
+    return searchedUploadReportRows.filter((row) => {
+      const stale = isStaleQueueTimestamp(row.status, row.reported_at)
+      if (reportStatusFilter === 'failed') return row.status === 'failed' || stale
+      if (stale) return false
+      return row.status === reportStatusFilter
+    })
+  }, [searchedUploadReportRows, reportStatusFilter])
+
+  const uploadReportTotalPages = Math.max(1, Math.ceil(filteredUploadReportRows.length / UPLOAD_REPORT_PAGE_SIZE))
+  const effectiveUploadReportPage = Math.min(uploadReportPage, uploadReportTotalPages)
+  const pagedUploadReportRows = useMemo(() => {
+    const start = (effectiveUploadReportPage - 1) * UPLOAD_REPORT_PAGE_SIZE
+    return filteredUploadReportRows.slice(start, start + UPLOAD_REPORT_PAGE_SIZE)
+  }, [filteredUploadReportRows, effectiveUploadReportPage])
+
+  useEffect(() => {
+    setUploadReportPage(1)
+  }, [uploadReportSearch, uploadReportDeviceId, uploadReportDateFrom, uploadReportDateTo, reportStatusFilter])
+
+  const reportDeviceSummary = useMemo(() => ({
+    online: packingDevices.filter((device) => Date.now() - new Date(device.last_seen_at).getTime() < DEVICE_ONLINE_MS).length,
+    offline: packingDevices.filter((device) => Date.now() - new Date(device.last_seen_at).getTime() >= DEVICE_ONLINE_MS).length,
+  }), [packingDevices])
+
+  const visibleReportDevices = useMemo(() => {
+    if (!reportDeviceListFilter) return []
+    return packingDevices
+      .filter((device) => {
+        const online = Date.now() - new Date(device.last_seen_at).getTime() < DEVICE_ONLINE_MS
+        return reportDeviceListFilter === 'online' ? online : !online
+      })
+      .sort((a, b) => String(a.device_name || '').localeCompare(String(b.device_name || ''), 'th', { numeric: true }))
+  }, [packingDevices, reportDeviceListFilter])
+
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center py-12">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+      </div>
+    )
+  }
+
+  return (
+    <div className={`w-full flex flex-col min-h-0 h-full flex-1 ${view === 'main' ? 'pb-6' : ''}`}>
+
+      {view === 'selection' ? (
+        <>
+        {/* เมนูย่อย — สไตล์เดียวกับเมนูออเดอร์ */}
+        <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6">
+          <div className="w-full overflow-x-auto px-2 scrollbar-thin sm:px-4 md:px-6 lg:px-8">
+            <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
+              {([
+                { key: 'new' as const, label: 'ใบงานใหม่', count: workOrders.length },
+                { key: 'shipped' as const, label: 'จัดส่งแล้ว' },
+                { key: 'queue' as const, label: 'คิวอัปโหลด' },
+                { key: 'report' as const, label: 'รายงาน' },
+                { key: 'tagSearch' as const, label: 'ค้นหา Tag' },
+              ]).filter((tab) => hasAccess(`packing-${tab.key}`)).map((tab) => (
+                <button
+                  key={tab.key}
+                  onClick={() => setSelectionTab(tab.key)}
+                  className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap flex-shrink-0 transition-colors ${
+                    selectionTab === tab.key
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-blue-600'
+                  }`}
+                >
+                  {tab.label}
+                  {'count' in tab && tab.count !== undefined && (
+                    <span className="ml-1.5 text-blue-600 font-semibold">({tab.count})</span>
+                  )}
+                </button>
+              ))}
+            </nav>
+          </div>
+        </div>
+
+        <div className="pt-4">
+          {selectionTab === 'new' ? (
+            newWorkOrders.length === 0 ? (
+              <div className="text-center py-12 text-gray-500">ไม่พบใบงานใหม่</div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {newWorkOrders.map((wo) => {
+                  const status = workOrderStatus[wo.work_order_name]
+                  const hasTracking = status?.hasTracking ?? true
+                  const isPartiallyPacked = status?.isPartiallyPacked ?? false
+                  const qcCompleted = status?.qcCompleted ?? false
+                  const qcSkipped = status?.qcSkipped ?? false
+                  const readyBills = status?.readyBills ?? 0
+                  const totalBills = status?.totalBills ?? 0
+                  const canSelect = hasTracking && totalBills > 0
+
+                  // สีตามสถานะ — ให้ความสำคัญกับ QC ก่อน, แล้วดู tracking
+                  let cardClass = ''
+                  let borderLeftColor = ''
+                  if (qcSkipped) {
+                    cardClass = canSelect
+                      ? 'bg-orange-50/80 border-orange-200 hover:bg-orange-100 hover:shadow-md'
+                      : 'bg-orange-50/60 border-orange-200'
+                    borderLeftColor = 'border-l-orange-500'
+                  } else if (qcCompleted) {
+                    cardClass = canSelect
+                      ? 'bg-emerald-50/80 border-emerald-200 hover:bg-emerald-100 hover:shadow-md'
+                      : 'bg-emerald-50/60 border-emerald-200'
+                    borderLeftColor = 'border-l-emerald-500'
+                  } else if (readyBills > 0) {
+                    cardClass = canSelect
+                      ? 'bg-blue-50/80 border-blue-200 hover:bg-blue-100 hover:shadow-md'
+                      : 'bg-blue-50/60 border-blue-200'
+                    borderLeftColor = 'border-l-blue-500'
+                  } else if (!hasTracking) {
+                    cardClass = 'bg-amber-50/60 border-amber-200'
+                    borderLeftColor = 'border-l-amber-400'
+                  } else {
+                    cardClass = 'bg-slate-50/80 border-slate-200'
+                    borderLeftColor = 'border-l-red-400'
+                  }
+                  if (!canSelect) cardClass += ' opacity-70 cursor-not-allowed'
+
+                  return (
+                    <div
+                      key={wo.id}
+                      className={`p-4 border border-l-4 rounded-xl text-left transition-all duration-200 shadow-sm ${cardClass} ${borderLeftColor}`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-lg font-bold flex items-center gap-2 flex-wrap">
+                            <span className="truncate">{wo.work_order_name}</span>
+                            {/* ป้าย QC — แสดงเสมอ */}
+                            {qcSkipped ? (
+                              <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-orange-500 text-white shadow-sm">
+                                ⏭ ไม่ต้อง QC
+                              </span>
+                            ) : qcCompleted ? (
+                              <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-emerald-500 text-white shadow-sm">
+                                ✓ Pass ครบ
+                              </span>
+                            ) : readyBills > 0 ? (
+                              <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-blue-500 text-white shadow-sm">
+                                ✓ พร้อมแพ็ค {readyBills}/{status?.totalBills ?? 0} บิล
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-red-500 text-white shadow-sm">
+                                ✗ รอ QC
+                              </span>
+                            )}
+                            {/* ป้ายเลขพัสดุ — แสดงแยกต่างหากเมื่อยังไม่มี */}
+                            {!hasTracking && (
+                              <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-amber-500 text-white shadow-sm">
+                                ⚠ รอเลขพัสดุ
+                              </span>
+                            )}
+                            <WoUrgencyChips bills={status?.dueBills} />
+                          </div>
+                          <div className="text-sm text-gray-500 mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                            <span>{wo.order_count} บิล{(status?.packedBills ?? 0) > 0 && <span className="text-emerald-600 font-medium"> (แพ็คแล้ว {status.packedBills}/{status.totalBills})</span>}</span>
+                            <span className="text-gray-400">|</span>
+                            <span>รวม {status?.totalItems ?? 0} รายการ</span>
+                            {(status?.packedItems ?? 0) > 0 && (
+                              <>
+                                <span className="text-gray-400">|</span>
+                                <span className="text-emerald-600 font-medium">แพ็คแล้ว {status?.packedItems ?? 0}</span>
+                              </>
+                            )}
+                            {(status?.totalItems ?? 0) - (status?.packedItems ?? 0) > 0 && (status?.packedItems ?? 0) > 0 && (
+                              <>
+                                <span className="text-gray-400">|</span>
+                                <span className="text-amber-600 font-medium">คงเหลือ {(status?.totalItems ?? 0) - (status?.packedItems ?? 0)}</span>
+                              </>
+                            )}
+                            {isPartiallyPacked && <span className="ml-1 text-blue-600 font-medium">🔄 แพ็คค้าง</span>}
+                            {planStartTimes[wo.work_order_name] && (
+                              <>
+                                <span className="text-gray-400">|</span>
+                                <span className="text-indigo-600 font-medium">
+                                  ⏱ เริ่ม {new Date(planStartTimes[wo.work_order_name]!).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        {canSelect ? (
+                          <div className="flex shrink-0 gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleSelectNewWorkOrder(wo.work_order_name, hasTracking, totalBills > 0, true)}
+                              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold shadow-sm hover:bg-emerald-700"
+                              title="เปิดดูรายการโดยไม่บันทึกเวลาเริ่มและไม่สามารถแพ็คสินค้า"
+                            >
+                              <i className="fas fa-eye" aria-hidden="true"></i>
+                              ดู
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSelectNewWorkOrder(wo.work_order_name, hasTracking, totalBills > 0)}
+                              disabled={roleViewOnly}
+                              className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-semibold shadow-sm hover:bg-blue-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              เริ่มแพ็คสินค้า
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="shrink-0 px-3 py-1.5 rounded-lg bg-gray-200 text-gray-400 text-sm font-medium">
+                            ไม่พร้อม
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          ) : selectionTab === 'shipped' ? (
+            <div className="space-y-4">
+              <div className="relative">
+                <input
+                  type="text"
+                  value={shippedSearch}
+                  onChange={(e) => setShippedSearch(e.target.value)}
+                  placeholder="ค้นหาเลขบิล ลูกค้า เลขพัสดุ หรือเลขรับพัสดุด่วน"
+                  className="w-full border rounded-lg pl-3 pr-9 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                />
+                {shippedSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setShippedSearch('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-lg leading-none"
+                    aria-label="ล้างการค้นหา"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">วันที่เริ่มต้น</label>
+                  <input
+                    type="date"
+                    value={shippedDateFrom}
+                    onChange={(e) => setShippedDateFrom(e.target.value)}
+                    className="w-full border rounded px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">วันที่สิ้นสุด</label>
+                  <input
+                    type="date"
+                    value={shippedDateTo}
+                    onChange={(e) => setShippedDateTo(e.target.value)}
+                    className="w-full border rounded px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">ช่องทาง</label>
+                  <select
+                    value={shippedChannelFilter}
+                    onChange={(e) => setShippedChannelFilter(e.target.value)}
+                    className="w-full border rounded px-3 py-2 text-sm"
+                  >
+                    <option value="">ทั้งหมด</option>
+                    {shippedChannels.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">ผู้แพ็ค</label>
+                  <select
+                    value={shippedPackerFilter}
+                    onChange={(e) => setShippedPackerFilter(e.target.value)}
+                    className="w-full border rounded px-3 py-2 text-sm"
+                  >
+                    <option value="">ทั้งหมด</option>
+                    {shippedPackers.map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              {shippedWorkOrders.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">ไม่พบใบงานที่จัดส่งแล้ว</div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {shippedWorkOrders.map((wo) => (
+                    <button
+                      key={wo.work_order_name}
+                      className="p-4 border border-l-4 rounded-xl text-left transition-all duration-200 shadow-sm bg-orange-50/80 border-orange-200 border-l-orange-500 hover:bg-orange-100 hover:shadow-md"
+                      onClick={() => {
+                        loadPackingData(wo.work_order_name)
+                      }}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-lg font-bold text-gray-800 truncate">{wo.work_order_name}</div>
+                        <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-orange-500 text-white shadow-sm shrink-0">
+                          ✓ จัดส่งแล้ว
+                        </span>
+                      </div>
+                      <div className="text-sm text-gray-600 mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                        <span>{wo.order_count} บิล</span>
+                        <span className="text-gray-300">|</span>
+                        <span>{wo.shipped_time ? new Date(wo.shipped_time).toLocaleString('th-TH') : '-'}</span>
+                      </div>
+                      <div className="text-xs text-gray-500 mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                        <span>ช่องทาง: {Array.from(wo.channels).join(', ') || '-'}</span>
+                        <span className="text-gray-300">|</span>
+                        <span>ผู้แพ็ค: {Array.from(wo.packers).join(', ') || '-'}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : selectionTab === 'tagSearch' ? (
+            <div className="space-y-4">
+              <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-4 space-y-3">
+                <h3 className="font-semibold text-gray-800">สแกนหาบิลจากรหัสสินค้า</h3>
+                <p className="text-sm text-gray-600">
+                  ใช้บาร์โค้ด <strong>Item UID</strong> หรือ <strong>รหัสสินค้า (product code)</strong> ระบบจะแสดงรายการในบิลเดียวกับหน้าจัดของ
+                </p>
+                <div className="flex flex-wrap gap-2 items-center">
+                  <input
+                    ref={tagSearchInputRef}
+                    autoFocus
+                    className="border-2 border-blue-500 rounded px-3 py-2 flex-1 min-w-[200px] text-center font-mono uppercase"
+                    placeholder="สแกนหรือพิมพ์รหัส..."
+                    value={tagSearchInput}
+                    onChange={(e) => setTagSearchInput(e.target.value.toUpperCase())}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        runTagSearchLookup()
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shrink-0"
+                    disabled={tagSearchLoading}
+                    onClick={() => runTagSearchLookup()}
+                  >
+                    {tagSearchLoading ? 'กำลังค้นหา...' : 'ค้นหา'}
+                  </button>
+                </div>
+                {tagSearchError && <div className="text-sm text-red-600 font-medium">{tagSearchError}</div>}
+              </div>
+
+              {tagSearchRows && tagSearchRows.length > 0 && tagSearchMeta && (
+                <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-x-auto">
+                  <div className="p-4 border-b border-gray-100 grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
+                    <div>
+                      <div className="text-lg font-bold text-gray-900">ใบงาน: {tagSearchMeta.workOrderName || '—'}</div>
+                      <div className="text-sm text-gray-600 mt-1">
+                        เลขพัสดุ:{' '}
+                        <span className="font-mono font-semibold">{formatParcelNo(tagSearchMeta.tracking || '') || '—'}</span>
+                      </div>
+                      {tagSearchRows[0]?.express_receipt_number && (
+                        <div className="text-sm text-cyan-700">
+                          เลขรับพัสดุด่วน:{' '}
+                          <span className="font-mono font-semibold">{tagSearchRows[0].express_receipt_number}</span>
+                        </div>
+                      )}
+                      <div className="text-sm text-gray-600">ลูกค้า: {tagSearchRows[0]?.customer_name || '—'}</div>
+                    </div>
+                    <div className="text-center md:self-start">
+                      <div className="text-sm text-gray-600">หมายเลข Tag</div>
+                      <div className="font-mono text-3xl font-extrabold text-blue-700 leading-none mt-1">
+                        {tagSearchMeta.packingTag ?? '—'}
+                      </div>
+                    </div>
+                    <div className="text-sm text-gray-500 md:text-right">
+                      {tagSearchRows.filter((i) => i.qc_status === 'pass' || i.qc_status === 'skip').length}/
+                      {tagSearchRows.length} รายการ QC พร้อม
+                    </div>
+                  </div>
+                  <table className="min-w-full border-collapse">
+                    <thead className="bg-gray-100">
+                      <tr className="text-left text-sm">
+                        <th className="p-2 border">รูปสินค้า</th>
+                        <th className="p-2 border">รูปลาย</th>
+                        <th className="p-2 border">สินค้า</th>
+                        {tagSearchHasCondoStamp && <th className="p-2 border">ชั้น</th>}
+                        <th className="p-2 border">สีหมึก</th>
+                        <th className="p-2 border">ลาย//เส้น</th>
+                        <th className="p-2 border">ฟอนต์</th>
+                        <th className="p-2 border">รายละเอียด</th>
+                        <th className="p-2 border">หมายเหตุ</th>
+                        <th className="p-2 border">ไฟล์</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tagSearchRows
+                        .slice()
+                        .sort((a, b) => naturalSortCompare(a.unit_uid, b.unit_uid))
+                        .map((item) => {
+                          const combinedPattern = [item.cartoon_pattern, item.line_pattern].filter(Boolean).join(' // ')
+                          const displayNotes = (item.notes || '').replace(/\[SET-.*?\]/g, '').trim()
+                          const fileLink =
+                            item.file_attachment &&
+                            (item.file_attachment.startsWith('http') || item.file_attachment.includes('www.'))
+                              ? item.file_attachment.startsWith('http')
+                                ? item.file_attachment
+                                : `https://${item.file_attachment}`
+                              : null
+                          const productImageUrl = getPublicUrl('product-images', item.product_code, '.jpg')
+                          const patternName = item.cartoon_pattern || item.line_pattern || ''
+                          const patternImageUrl = patternName ? getPublicUrl('cartoon-patterns', patternName, '.jpg') : ''
+                          return (
+                            <tr
+                              key={item.unit_uid}
+                              className={
+                                item.unit_uid === tagSearchActiveItemUid
+                                  ? 'bg-amber-100 ring-2 ring-amber-400'
+                                  : item.scanned
+                                    ? 'bg-green-50'
+                                    : ''
+                              }
+                            >
+                              <td className="p-2 border align-middle">
+                                <div className="flex flex-col items-center">
+                                  <div className="w-20 h-20 border rounded bg-white flex items-center justify-center">
+                                    {productImageUrl ? (
+                                      <img src={productImageUrl} alt={item.product_name} className="w-full h-full object-contain" />
+                                    ) : (
+                                      <span className="text-xs text-gray-400">ไม่มีรูป</span>
+                                    )}
+                                  </div>
+                                  <small className="mt-1">{item.unit_uid}</small>
+                                </div>
+                              </td>
+                              <td className="p-2 border align-middle">
+                                <div className="flex flex-col items-center">
+                                  <div className="w-20 h-20 border rounded bg-white flex items-center justify-center">
+                                    {patternImageUrl ? (
+                                      <img src={patternImageUrl} alt={patternName || 'pattern'} className="w-full h-full object-contain" />
+                                    ) : (
+                                      <span className="text-xs text-gray-400">ไม่มีรูป</span>
+                                    )}
+                                  </div>
+                                  <small className="mt-1">{patternName || '-'}</small>
+                                </div>
+                              </td>
+                              <td className="p-2 border">
+                                <div className="flex items-start gap-2 min-w-0">
+                                  {item.qc_status === 'pass' ? (
+                                    <span className="inline-flex items-center justify-center rounded-full bg-green-100 text-green-700 text-[11px] font-semibold px-2 py-0.5 shrink-0 whitespace-nowrap">
+                                      QC Pass
+                                    </span>
+                                  ) : item.qc_status === 'skip' ? (
+                                    <span className="inline-flex items-center justify-center rounded-full bg-orange-100 text-orange-700 text-[11px] font-semibold px-2 py-0.5 shrink-0 whitespace-nowrap">
+                                      Not QC
+                                    </span>
+                                  ) : item.qc_status === 'fail' ? (
+                                    <span className="inline-flex items-center justify-center rounded-full bg-red-100 text-red-700 text-[11px] font-semibold px-2 py-0.5 shrink-0 whitespace-nowrap">
+                                      QC Fail
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center justify-center rounded-full bg-gray-100 text-gray-500 text-[11px] font-semibold px-2 py-0.5 shrink-0 whitespace-nowrap">
+                                      ยังไม่ได้ QC
+                                    </span>
+                                  )}
+                                  <span className="min-w-0 break-words">{item.product_name}</span>
+                                </div>
+                              </td>
+                              {tagSearchHasCondoStamp && (
+                                <td className="p-2 border">
+                                  {isCondoStampProductName(item.product_name) ? item.shelf_location || '' : ''}
+                                </td>
+                              )}
+                              <td className="p-2 border">{item.ink_color || ''}</td>
+                              <td className="p-2 border">{combinedPattern}</td>
+                              <td className="p-2 border">{item.font || ''}</td>
+                              <td className="p-2 border">{item.details || ''}</td>
+                              <td className="p-2 border">{displayNotes}</td>
+                              <td className="p-2 border text-center">
+                                {fileLink ? (
+                                  <a
+                                    href={fileLink}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-cyan-600 underline text-sm"
+                                  >
+                                    เปิด
+                                  </a>
+                                ) : (
+                                  <span className="text-gray-300">-</span>
+                                )}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          ) : selectionTab === 'report' ? (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-bold text-gray-900">รายงานคิวอัปโหลดทุกเครื่อง</h2>
+                  <p className="text-sm text-gray-500">ข้อมูลจากทุก User และทุกเครื่อง อัปเดตอัตโนมัติทุก 10 วินาที</p>
+                </div>
+                <div className="flex flex-1 flex-wrap justify-end gap-2 sm:flex-none">
+                  <label htmlFor="upload-report-device" className="sr-only">กรองเครื่องแพ็ค</label>
+                  <select
+                    id="upload-report-device"
+                    value={uploadReportDeviceId}
+                    onChange={(event) => setUploadReportDeviceId(event.target.value)}
+                    className="min-w-[210px] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+                  >
+                    <option value="">เครื่องแพ็คทั้งหมด</option>
+                    {uploadReportDevices.map((device) => (
+                      <option key={device.id} value={device.id}>{device.name}</option>
+                    ))}
+                  </select>
+                  <label className="flex items-center gap-1.5 text-xs font-medium text-gray-600">
+                    ตั้งแต่
+                    <input
+                      type="date"
+                      value={uploadReportDateFrom}
+                      max={uploadReportDateTo || undefined}
+                      onChange={(event) => setUploadReportDateFrom(event.target.value)}
+                      className="rounded-lg border border-gray-300 bg-white px-2 py-2 text-sm text-gray-800"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs font-medium text-gray-600">
+                    ถึง
+                    <input
+                      type="date"
+                      value={uploadReportDateTo}
+                      min={uploadReportDateFrom || undefined}
+                      onChange={(event) => setUploadReportDateTo(event.target.value)}
+                      className="rounded-lg border border-gray-300 bg-white px-2 py-2 text-sm text-gray-800"
+                    />
+                  </label>
+                  <input
+                    value={uploadReportSearch}
+                    onChange={(event) => setUploadReportSearch(event.target.value)}
+                    className="min-w-[360px] flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm sm:flex-none lg:min-w-[420px]"
+                    placeholder="ค้นหา User, เครื่อง, ใบงาน, เลขพัสดุ..."
+                  />
+                  {(uploadReportSearch || uploadReportDeviceId || uploadReportDateFrom || uploadReportDateTo) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUploadReportSearch('')
+                        setUploadReportDeviceId('')
+                        setUploadReportDateFrom('')
+                        setUploadReportDateTo('')
+                      }}
+                      className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50"
+                    >
+                      ล้างตัวกรอง
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void loadUploadReport(true)}
+                    className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+                  >
+                    รีเฟรช
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <UploadStatusCard label="รอคิว" value={reportStatusSummary.pending} active={reportStatusFilter === 'pending'} onClick={() => setReportStatusFilter((v) => v === 'pending' ? null : 'pending')} className="border-amber-200 bg-amber-50 text-amber-800" />
+                <UploadStatusCard label="กำลังอัปโหลด" value={reportStatusSummary.uploading} active={reportStatusFilter === 'uploading'} onClick={() => setReportStatusFilter((v) => v === 'uploading' ? null : 'uploading')} className="border-sky-200 bg-sky-50 text-sky-800" />
+                <UploadStatusCard label="อัปโหลดสำเร็จ" value={reportStatusSummary.success} active={reportStatusFilter === 'success'} onClick={() => setReportStatusFilter((v) => v === 'success' ? null : 'success')} className="border-emerald-200 bg-emerald-50 text-emerald-800" />
+                <UploadStatusCard label="มีปัญหา/ค้าง" value={reportStatusSummary.failed} active={reportStatusFilter === 'failed'} onClick={() => setReportStatusFilter((v) => v === 'failed' ? null : 'failed')} className="border-red-200 bg-red-50 text-red-800" />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm shadow-sm">
+                <span className="font-semibold text-gray-800">สถานะเครื่อง:</span>
+                <button
+                  type="button"
+                  onClick={() => setReportDeviceListFilter((current) => current === 'online' ? null : 'online')}
+                  className={`inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 font-medium text-emerald-700 transition hover:bg-emerald-200 ${reportDeviceListFilter === 'online' ? 'ring-2 ring-emerald-400 ring-offset-1' : ''}`}
+                  aria-expanded={reportDeviceListFilter === 'online'}
+                >
+                  <span className="h-2 w-2 rounded-full bg-emerald-500" /> ออนไลน์ {reportDeviceSummary.online}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReportDeviceListFilter((current) => current === 'offline' ? null : 'offline')}
+                  className={`inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 font-medium text-gray-600 transition hover:bg-gray-200 ${reportDeviceListFilter === 'offline' ? 'ring-2 ring-gray-400 ring-offset-1' : ''}`}
+                  aria-expanded={reportDeviceListFilter === 'offline'}
+                >
+                  <span className="h-2 w-2 rounded-full bg-gray-400" /> ออฟไลน์ {reportDeviceSummary.offline}
+                </button>
+                <span className="text-xs text-gray-500">ออนไลน์ = ติดต่อระบบภายใน 2 นาทีล่าสุด</span>
+                {reportDeviceListFilter && (
+                  <div className="basis-full border-t border-gray-100 pt-3">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <span className="font-semibold text-gray-700">
+                        รายชื่อเครื่อง{reportDeviceListFilter === 'online' ? 'ออนไลน์' : 'ออฟไลน์'} ({visibleReportDevices.length.toLocaleString('th-TH')})
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setReportDeviceListFilter(null)}
+                        className="text-xs font-medium text-gray-500 hover:text-gray-800"
+                      >
+                        ปิดรายชื่อ
+                      </button>
+                    </div>
+                    {visibleReportDevices.length === 0 ? (
+                      <div className="rounded-lg bg-gray-50 px-3 py-4 text-center text-gray-500">ไม่มีเครื่องในสถานะนี้</div>
+                    ) : (
+                      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                        {visibleReportDevices.map((device) => (
+                          <div key={device.device_id} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                            <div className="flex items-center gap-2 font-semibold text-gray-800">
+                              <span className={`h-2 w-2 shrink-0 rounded-full ${reportDeviceListFilter === 'online' ? 'bg-emerald-500' : 'bg-gray-400'}`} />
+                              <span className="break-words">{device.device_name || 'ไม่ระบุชื่อเครื่อง'}</span>
+                            </div>
+                            <div className="mt-1 text-xs text-gray-600">User: {device.last_username || 'ไม่ทราบ User'}</div>
+                            <div className="mt-0.5 text-xs text-gray-500">
+                              ติดต่อครั้งล่าสุด: {device.last_seen_at ? new Date(device.last_seen_at).toLocaleString('th-TH') : '-'}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {uploadReportLoading ? (
+                <div className="py-12 text-center text-gray-500">กำลังโหลดรายงาน...</div>
+              ) : filteredUploadReportRows.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-gray-300 py-12 text-center text-gray-500">
+                  {reportStatusFilter ? 'ไม่มีรายการที่ตรงกับสถานะที่เลือก' : 'ยังไม่มีข้อมูลคิวอัปโหลด'}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
+                  <table className="w-full min-w-[1780px] text-sm">
+                    <thead className="bg-blue-600 text-white">
+                      <tr>
+                        <th className="px-3 py-3 text-left">เวลาบันทึก</th>
+                        <th className="px-3 py-3 text-left">User</th>
+                        <th className="px-3 py-3 text-left">เครื่อง / โฟลเดอร์</th>
+                        <th className="px-3 py-3 text-left">ใบงาน / เลขคำสั่งซื้อ / เลขพัสดุ</th>
+                        <th className="px-3 py-3 text-right">ระยะเวลา</th>
+                        <th className="px-3 py-3 text-right">ขนาดไฟล์</th>
+                        <th className="px-3 py-3 text-left">ข้อมูลวิดีโอ</th>
+                        <th className="px-3 py-3 text-center">สถานะ</th>
+                        <th className="px-3 py-3 text-left">อัปเดตล่าสุด / วิธีแก้ไข</th>
+                        <th className="px-3 py-3 text-center">จัดการ</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pagedUploadReportRows.map((row, index) => {
+                        const device = packingDeviceById.get(row.device_id)
+                        const deviceOnline = Boolean(device && Date.now() - new Date(device.last_seen_at).getTime() < DEVICE_ONLINE_MS)
+                        const stale = isStaleQueueTimestamp(row.status, row.reported_at)
+                        const statusLabel = stale
+                          ? 'ค้าง/ขาดการติดต่อ'
+                          : row.status === 'success'
+                            ? 'อัปโหลดสำเร็จ'
+                            : row.status === 'failed'
+                              ? 'มีปัญหา'
+                              : row.status === 'uploading'
+                                ? 'กำลังอัปโหลด'
+                                : 'รอคิว'
+                        const statusClass = stale || row.status === 'failed'
+                          ? 'bg-red-100 text-red-700'
+                          : row.status === 'success'
+                            ? 'bg-emerald-100 text-emerald-700'
+                            : row.status === 'uploading'
+                              ? 'bg-sky-100 text-sky-700'
+                              : 'bg-amber-100 text-amber-700'
+                        return (
+                          <tr key={row.id} className={`border-t border-gray-200 ${index % 2 ? 'bg-gray-50' : 'bg-white'}`}>
+                            <td className="whitespace-nowrap px-3 py-3">{new Date(row.client_created_at).toLocaleString('th-TH')}</td>
+                            <td className="px-3 py-3 font-medium">{row.recorded_by}</td>
+                            <td className="px-3 py-3">
+                              <div className="font-medium text-gray-900">{row.device_name}</div>
+                              <div className="max-w-[320px] truncate text-xs text-gray-500" title={row.folder_path || row.folder_name || '-'}>
+                                {row.folder_path || row.folder_name || 'ไม่ระบุตำแหน่ง'}
+                              </div>
+                              <div className={`mt-1 text-xs font-medium ${deviceOnline ? 'text-emerald-600' : 'text-gray-500'}`}>
+                                {deviceOnline ? '● ออนไลน์' : '● ออฟไลน์'}
+                                {device?.last_seen_at ? ` · ล่าสุด ${new Date(device.last_seen_at).toLocaleString('th-TH')}` : ' · ยังไม่มี heartbeat'}
+                              </div>
+                            </td>
+                            <td className="px-3 py-3">
+                              <div className="font-medium">{row.work_order_name}</div>
+                              <div className="text-xs text-indigo-600">เลขคำสั่งซื้อ: {row.channel_order_no || '-'}</div>
+                              <div className="text-xs text-gray-500">{formatParcelNo(row.tracking_number)}</div>
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">{formatDuration(row.duration_seconds)}</td>
+                            <td className="whitespace-nowrap px-3 py-3 text-right font-medium tabular-nums">
+                              <div>{formatFileSize(row.file_size_bytes)}</div>
+                              <div className="mt-1 text-xs font-normal text-gray-500">
+                                {megabytesPerMinute(row.file_size_bytes, row.duration_seconds)?.toLocaleString('th-TH', { maximumFractionDigits: 2 }) ?? '-'} MB/นาที
+                              </div>
+                            </td>
+                            <td className="px-3 py-3 text-xs text-gray-600">
+                              <div className="font-medium text-gray-900">
+                                {row.quality_profile === 'imported'
+                                  ? 'ไฟล์นำกลับเข้าคิว'
+                                  : row.quality_profile && VIDEO_QUALITY_PROFILES[row.quality_profile]
+                                    ? VIDEO_QUALITY_PROFILES[row.quality_profile].label
+                                    : 'ข้อมูลเดิม'}
+                              </div>
+                              <div>
+                                จริง: {row.actual_width && row.actual_height ? `${row.actual_width}×${row.actual_height}` : '-'}
+                                {row.actual_fps ? ` · ${Number(row.actual_fps).toLocaleString('th-TH', { maximumFractionDigits: 1 })} FPS` : ''}
+                                {row.codec ? ` · ${row.codec}` : ''}
+                              </div>
+                              <div>Bitrate ขอ/Recorder/จริง: {formatBitrate(row.requested_bitrate)} / {formatBitrate(row.recorder_bitrate)} / {formatBitrate(row.actual_bitrate)}</div>
+                            </td>
+                            <td className="px-3 py-3 text-center">
+                              <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${statusClass}`}>{statusLabel}</span>
+                              {row.retry_count > 0 && <div className="mt-1 text-[11px] text-gray-500">ลองใหม่ {row.retry_count} ครั้ง</div>}
+                            </td>
+                            <td className="px-3 py-3">
+                              <div className="whitespace-nowrap">{new Date(row.reported_at).toLocaleString('th-TH')}</div>
+                              {row.last_error && <div className="max-w-[260px] truncate text-xs text-red-600" title={row.last_error}>{row.last_error}</div>}
+                              {(stale || row.status === 'failed') && (
+                                <div className="mt-1 max-w-[340px] text-xs leading-5 text-amber-700">
+                                  💡 {uploadRecoveryAdvice(row, deviceOnline)}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-3 py-3 text-center">
+                              {(stale || row.status === 'failed') && (isViewOnly || row.user_id === user?.id) ? (
+                                <button
+                                  type="button"
+                                  disabled={deletingUploadReportId === row.id}
+                                  onClick={() => openConfirm(
+                                    `ลบรายการคิวที่มีปัญหา/ค้างของเลขพัสดุ ${formatParcelNo(row.tracking_number) || '-'}?\nรายการจะถูกซ่อนจากรายงานและไม่กลับมาแสดงซ้ำ`,
+                                    () => void deleteProblemUploadReport(row),
+                                    'ยืนยันลบรายการ',
+                                    'ลบรายการ',
+                                  )}
+                                  className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {deletingUploadReportId === row.id ? 'กำลังลบ...' : 'ลบ'}
+                                </button>
+                              ) : (
+                                <span className="text-gray-300">-</span>
+                              )}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+                    <span className="text-gray-500">
+                      แสดง {((effectiveUploadReportPage - 1) * UPLOAD_REPORT_PAGE_SIZE) + 1}–{Math.min(effectiveUploadReportPage * UPLOAD_REPORT_PAGE_SIZE, filteredUploadReportRows.length)} จาก {filteredUploadReportRows.length.toLocaleString('th-TH')} รายการ
+                    </span>
+                    {uploadReportTotalPages > 1 && (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={effectiveUploadReportPage <= 1}
+                          onClick={() => setUploadReportPage((page) => Math.max(1, page - 1))}
+                          className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          ก่อนหน้า
+                        </button>
+                        <span className="min-w-[110px] text-center font-medium text-gray-700">
+                          หน้า {effectiveUploadReportPage.toLocaleString('th-TH')} / {uploadReportTotalPages.toLocaleString('th-TH')}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={effectiveUploadReportPage >= uploadReportTotalPages}
+                          onClick={() => setUploadReportPage((page) => Math.min(uploadReportTotalPages, page + 1))}
+                          className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          ถัดไป
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <label htmlFor="packing-device-name" className="font-medium text-gray-700">ชื่อเครื่อง:</label>
+                  <input
+                    id="packing-device-name"
+                    value={deviceName}
+                    onChange={(event) => setDeviceNameState(event.target.value)}
+                    onBlur={() => void saveDeviceName()}
+                    className="min-w-[220px] rounded-lg border border-gray-300 px-3 py-2"
+                    placeholder="เช่น เครื่องแพ็ค 1"
+                  />
+                  <span className="text-xs text-gray-400">ใช้แยกเครื่องในหน้ารายงาน</span>
+                  <label htmlFor="packing-video-quality" className="ml-2 font-medium text-gray-700">คุณภาพวิดีโอ:</label>
+                  <select
+                    id="packing-video-quality"
+                    value={videoQualityProfile}
+                    onChange={(event) => void changeVideoQualityProfile(event.target.value as VideoQualityProfileId)}
+                    disabled={recordingState.status === 'recording'}
+                    className="min-w-[220px] rounded-lg border border-gray-300 px-3 py-2 disabled:opacity-50"
+                  >
+                    {SELECTABLE_VIDEO_QUALITY_PROFILES.map((profileId) => VIDEO_QUALITY_PROFILES[profileId]).map((profile) => (
+                      <option key={profile.id} value={profile.id}>{profile.label} — {profile.description}</option>
+                    ))}
+                  </select>
+                  <span className="text-xs text-gray-500">ค่าเริ่มต้น 720p/30 FPS/3 Mbps · รองรับ 1080p และแบ่งไฟล์อัตโนมัติเมื่อบันทึกนาน</span>
+                </div>
+                <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm">
+                  <div className="mb-2 font-semibold text-blue-900">ผูก Browser นี้กับทะเบียนสถานีเดิม</div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      value={stationClaimDeviceId}
+                      onChange={(event) => {
+                        setStationClaimDeviceId(event.target.value)
+                        setStationClaimMessage(null)
+                      }}
+                      className="min-w-[300px] rounded-lg border border-blue-300 bg-white px-3 py-2"
+                    >
+                      <option value="">-- เลือกสถานีเดิม --</option>
+                      {packingDevices
+                        .filter((device) => device.device_id !== deviceId)
+                        .map((device) => {
+                          const online = Date.now() - new Date(device.last_seen_at).getTime() < DEVICE_ONLINE_MS
+                          return (
+                            <option key={device.device_id} value={device.device_id} disabled={online}>
+                              {device.device_name} • {device.last_username || 'ไม่ทราบ User'} • {online ? 'ออนไลน์' : 'ออฟไลน์'}
+                            </option>
+                          )
+                        })}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => void claimExistingPackingStation()}
+                      disabled={!stationClaimDeviceId || stationClaiming}
+                      className="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {stationClaiming ? 'กำลังผูกสถานี...' : 'ใช้ทะเบียนสถานีนี้'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void loadPackingDeviceRegistry()}
+                      className="rounded-lg border border-blue-300 bg-white px-3 py-2 text-blue-700 hover:bg-blue-100"
+                    >
+                      รีเฟรชทะเบียน
+                    </button>
+                  </div>
+                  <p className="mt-2 text-xs text-blue-700">
+                    ใช้เมื่อ Browser ถูกล้างข้อมูลหรือสร้างรหัสเครื่องใหม่ ระบบจะย้ายประวัติของ Browser ปัจจุบันกลับไปยังสถานีเดิม
+                  </p>
+                  {stationClaimMessage && (
+                    <div className={`mt-2 rounded-lg px-3 py-2 text-xs font-medium ${stationClaimMessage.type === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                      {stationClaimMessage.text}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                    onClick={selectFolder}
+                  >
+                    เลือกโฟลเดอร์จัดเก็บ
+                  </button>
+                  <div className="text-sm text-gray-600">
+                    โฟลเดอร์ปัจจุบัน:{' '}
+                    <span className="font-semibold">{folderHandle?.name || 'ยังไม่ได้เลือก'}</span>
+                  </div>
+                  <input
+                    ref={requeueFileInputRef}
+                    type="file"
+                    accept="video/mp4,video/webm,.mp4,.webm"
+                    className="hidden"
+                    onChange={(event) => {
+                      void chooseBackupVideo(event.target.files?.[0] || null)
+                      event.currentTarget.value = ''
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => requeueFileInputRef.current?.click()}
+                    className="rounded-lg border border-violet-300 bg-violet-50 px-4 py-2 text-sm font-medium text-violet-700 hover:bg-violet-100"
+                  >
+                    นำไฟล์วิดีโอกลับเข้าคิว
+                  </button>
+                  {folderHandle ? (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200">
+                      เชื่อมต่ออยู่
+                    </span>
+                  ) : (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                      ยังไม่เชื่อมต่อ
+                    </span>
+                  )}
+                </div>
+                {folderHandle && (
+                  <div className="flex flex-wrap items-center gap-2 text-sm text-gray-600">
+                    <span>ตำแหน่ง:</span>
+                    {folderPath ? (
+                      <code className="px-2 py-0.5 bg-gray-100 border border-gray-200 rounded text-gray-800">
+                        {folderPath}
+                      </code>
+                    ) : (
+                      <span className="text-gray-400">ยังไม่ได้ระบุ</span>
+                    )}
+                    <button
+                      className="text-blue-600 underline text-xs"
+                      onClick={() => setPathModal({ open: true, value: folderPath })}
+                    >
+                      {folderPath ? 'แก้ไข' : 'ระบุตำแหน่ง'}
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <UploadStatusCard label="รอคิว" value={queueStatusSummary.pending} active={queueStatusFilter === 'pending'} onClick={() => setQueueStatusFilter((v) => v === 'pending' ? null : 'pending')} className="border-amber-200 bg-amber-50 text-amber-800" />
+                <UploadStatusCard label="กำลังอัปโหลด" value={queueStatusSummary.uploading} active={queueStatusFilter === 'uploading'} onClick={() => setQueueStatusFilter((v) => v === 'uploading' ? null : 'uploading')} className="border-sky-200 bg-sky-50 text-sky-800" />
+                <UploadStatusCard label="อัปโหลดสำเร็จ" value={queueStatusSummary.success} active={queueStatusFilter === 'success'} onClick={() => setQueueStatusFilter((v) => v === 'success' ? null : 'success')} className="border-emerald-200 bg-emerald-50 text-emerald-800" />
+                <UploadStatusCard label="มีปัญหา/ค้าง" value={queueStatusSummary.failed} active={queueStatusFilter === 'failed'} onClick={() => setQueueStatusFilter((v) => v === 'failed' ? null : 'failed')} className="border-red-200 bg-red-50 text-red-800" />
+              </div>
+              {queueLoading ? (
+                <div className="text-center py-6 text-gray-500">กำลังโหลดคิว...</div>
+              ) : filteredQueueItems.length === 0 ? (
+                <div className="text-center py-6 text-gray-500">
+                  {queueStatusFilter ? 'ไม่มีรายการที่ตรงกับสถานะที่เลือก' : 'ไม่มีคิวอัปโหลด'}
+                </div>
+              ) : (
+                <>
+                  <div className="flex flex-wrap justify-end gap-2">
+                  {queueItems.some((i) => i.status === 'success' && i.localDeleted) && (
+                    <button
+                      className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium shadow-sm"
+                      onClick={async () => {
+                        const toDelete = queueItems.filter((i) => i.status === 'success' && i.localDeleted)
+                        for (const item of toDelete) {
+                          await deleteQueueItem(item.id)
+                        }
+                        await refreshQueue()
+                      }}
+                    >
+                      ลบรายการที่ลบไฟล์แล้วทั้งหมด ({queueItems.filter((i) => i.status === 'success' && i.localDeleted).length})
+                    </button>
+                  )}
+                    <button
+                      type="button"
+                      disabled={clearingQueue}
+                      className="px-4 py-2 text-sm bg-red-700 text-white rounded-lg hover:bg-red-800 font-semibold shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
+                      onClick={() => {
+                        if (!folderHandle) {
+                          openAlert('กรุณาเชื่อมต่อโฟลเดอร์จัดเก็บของเครื่องนี้ก่อน เพื่อให้ระบบลบไฟล์วิดีโอได้ครบ')
+                          return
+                        }
+                        openConfirm(
+                          `ต้องการลบคิวทั้งหมดใน Chrome เครื่องนี้จำนวน ${queueItems.length.toLocaleString('th-TH')} รายการหรือไม่?\n\nระบบจะลบรายการรอคิว กำลังอัปโหลด ล้มเหลว และสำเร็จออกจาก IndexedDB พร้อมลบไฟล์วิดีโอที่อ้างอิงอยู่ในโฟลเดอร์ที่เชื่อมต่อ การทำรายการนี้ย้อนกลับไม่ได้`,
+                          () => void clearAllLocalQueueItems(),
+                          'ล้างคิวและไฟล์วิดีโอทั้งหมด',
+                          'ยืนยันลบทั้งหมด',
+                          'ยกเลิก',
+                        )
+                      }}
+                    >
+                      {clearingQueue ? 'กำลังล้างคิว...' : 'ล้างคิวทั้งหมด (ชั่วคราว)'}
+                    </button>
+                  </div>
+                <div className="space-y-2">
+                  {filteredQueueItems.map((item) => {
+                    const isSuccess = item.status === 'success'
+                    const isFailed = item.status === 'failed' || isStaleQueueTimestamp(item.status, item.updatedAt)
+                    const isUploading = item.status === 'uploading' && !isFailed
+                    const isOversized = /ไฟล์ใหญ่|ขีดจำกัดอัปโหลด/.test(item.lastError || '')
+                    const cardClass = isSuccess
+                      ? 'bg-blue-50 border-blue-200 text-blue-900'
+                      : isFailed
+                        ? 'bg-red-50 border-red-300 text-red-900'
+                        : isUploading
+                          ? 'bg-sky-50 border-sky-300 text-sky-900'
+                          : 'bg-amber-50 border-amber-300 text-amber-900'
+                    return (
+                    <div key={item.id} className={`border rounded-lg p-3 flex flex-wrap items-center justify-between gap-3 ${cardClass}`}>
+                      <div className="min-w-0">
+                        <div className="font-medium truncate">
+                          {item.workOrderName} • {formatParcelNo(item.trackingNumber)}
+                        </div>
+                        <div className="text-xs opacity-70">
+                          {item.createdAt ? new Date(item.createdAt).toLocaleString('th-TH') : item.filename} • {
+                            isSuccess ? 'อัปโหลดสำเร็จ' : isFailed ? (item.status === 'failed' ? 'อัปโหลดไม่สำเร็จ' : 'คิวค้าง') : isUploading ? 'กำลังอัปโหลด...' : 'รอคิว'
+                          }
+                          {' • '}{formatFileSize(item.fileSize)}
+                          {item.localDeleted ? ' • ลบไฟล์แล้ว' : ''}
+                        </div>
+                        {item.lastError && (
+                          <div className="text-xs truncate text-red-600">Error: {item.lastError}</div>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {isFailed && !isOversized && (
+                          <button
+                            className="px-3 py-1 text-sm bg-yellow-500 text-white rounded hover:bg-yellow-600 font-medium"
+                            onClick={async () => {
+                              await updateQueueItem(item.id, { status: 'pending', lastError: null })
+                              await refreshQueue()
+                              if ('serviceWorker' in navigator) {
+                                const reg = await navigator.serviceWorker.ready
+                                const regAny = reg as ServiceWorkerRegistration & { sync?: { register: (tag: string) => Promise<void> } }
+                                if (regAny.sync?.register) {
+                                  await regAny.sync.register('packing-upload')
+                                }
+                                regAny.active?.postMessage({ type: 'sync-now' })
+                              }
+                            }}
+                          >
+                            อัปโหลดใหม่
+                          </button>
+                        )}
+                        {isFailed && isOversized && (
+                          <span className="rounded bg-red-100 px-3 py-1 text-xs font-semibold text-red-700">
+                            ใช้ไฟล์สำรองในเครื่อง
+                          </span>
+                        )}
+                        {isSuccess && (
+                          <button
+                            className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700 font-medium"
+                            onClick={async () => {
+                              await deleteQueueItem(item.id)
+                              await refreshQueue()
+                            }}
+                          >
+                            ลบรายการ
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    )
+                  })}
+                </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+        </>
+      ) : (
+        <div className="space-y-4 flex-1 min-h-0 h-full">
+          {isLoadingOrders && (
+            <div className="flex justify-center items-center py-6">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+            </div>
+          )}
+
+          <div className="bg-white p-4 rounded-lg shadow">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-bold">
+                  จัดของ: {currentWorkOrderName || '-'}
+                </h2>
+                {packStartTime && !isViewOnly && (
+                  <div className="inline-flex items-center gap-2 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-1.5 mt-1">
+                    <span className="text-sm text-indigo-500 font-medium">⏱ เวลาเริ่ม:</span>
+                    <span className="text-lg font-bold text-indigo-700">
+                      {packStartTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    </span>
+                  </div>
+                )}
+              </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
+                    onClick={loadWorkOrdersForPacking}
+                  >
+                    ❮ กลับไปเลือกใบงาน
+                  </button>
+                {!isViewOnly && allGroupsScanned && !allGroupsShipped && (
+                  <button
+                    className="px-5 py-2.5 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg hover:from-green-700 hover:to-emerald-700 font-bold shadow-lg animate-pulse"
+                    onClick={() => openConfirm(`ยืนยันจัดส่งทั้งหมด ${aggregatedData.length} ออเดอร์ แล้วย้ายไปจัดส่งแล้ว?`, shipAllAndFinalize)}
+                  >
+                    🚚 จัดส่งออเดอร์ทั้งหมด
+                  </button>
+                )}
+                {!isViewOnly && hasPendingCompleted && !allGroupsScanned && (
+                  <button
+                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
+                    onClick={shipAllScannedOrders}
+                  >
+                    จัดส่งออร์เดอร์ที่สำเร็จ
+                  </button>
+                )}
+                {(!isViewOnly || (isAdminOrSuperadmin(user?.role) && currentGroup?.[0]?.isOrderComplete)) && (
+                <button
+                  className="px-4 py-2 bg-yellow-500 text-white rounded hover:bg-yellow-600"
+                  onClick={async () => {
+                    if (!currentGroup) return
+                    openConfirm(currentGroup[0].isOrderComplete
+                      ? 'ยืนยันยกเลิกการจัดส่งและแพ็คใหม่? ระบบจะเปิดใบงานและเวลา PACK ใน Plan กลับมา'
+                      : 'ยืนยัน "แพ็คใหม่"? (ข้อมูลที่สแกนไปแล้วในบิลนี้จะถูกล้าง แต่ Tag เดิมจะยังคงอยู่)', async () => {
+                      await performResetAction(currentIndex)
+                    })
+                  }}
+                >
+                  {currentGroup?.[0]?.isOrderComplete ? 'ยกเลิกจัดส่งและแพ็คใหม่' : 'แพ็คใหม่'}
+                </button>
+                )}
+                {!isViewOnly && allGroupsShipped && (
+                  <button
+                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                    onClick={finalizeWorkOrder}
+                  >
+                    ย้ายไป "จัดส่งแล้ว"
+                  </button>
+                )}
+                {isViewOnly && (
+                  <div className="text-sm text-gray-500 bg-gray-100 px-4 py-2 rounded-lg">
+                    <i className="fas fa-eye mr-2" aria-hidden="true"></i>
+                    โหมดดูอย่างเดียว — ไม่บันทึกเวลาเริ่มและไม่สามารถแพ็คสินค้าได้
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(340px,360px)_1fr] gap-4 flex-1 min-h-0 h-full items-stretch">
+            <div className="bg-white p-4 rounded-lg shadow space-y-3 h-full min-h-0 flex flex-col">
+              <div className="flex items-center gap-2 whitespace-nowrap">
+                <span className="font-bold text-base">
+                  สำเร็จ {completedIndices.size} / {aggregatedData.length}
+                </span>
+                <input
+                  className="border rounded-lg px-3 py-2 text-base flex-1 min-w-0"
+                  placeholder="ค้นหาเลขพัสดุ หรือเลขรับพัสดุด่วน..."
+                  value={searchTerm}
+                  onChange={(event) => setSearchTerm(event.target.value)}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowUnpackedOnly((v) => !v)}
+                className={`inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors ${
+                  showUnpackedOnly
+                    ? 'border-amber-500 bg-amber-500 text-white shadow-sm hover:bg-amber-600'
+                    : 'border-amber-300 bg-white text-amber-700 hover:bg-amber-50'
+                }`}
+              >
+                <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L14 13.414V19a1 1 0 01-.553.894l-4 2A1 1 0 018 21v-7.586L3.293 6.707A1 1 0 013 6V4z" />
+                </svg>
+                {showUnpackedOnly ? 'แสดงทั้งหมด' : 'แสดงเฉพาะที่ยังไม่แพ็ค'}
+              </button>
+              <div className="space-y-2.5 flex-1 min-h-0 overflow-y-auto pr-1 pb-8">
+                {aggregatedData.map((group, index) => {
+                  const isDone = group[0].isOrderComplete
+                  const wmsReady = isWmsReadyGroup(group)
+                  const isFullScanned = group.every((item) => item.scanned)
+                  const icon = isDone ? '✅' : isFullScanned ? '🟢' : '📦'
+                  const tracking = group[0].tracking_number
+                  const expressReceiptNumber = group[0].express_receipt_number
+                  const trackingDisp = packingGroupLabel(group[0])
+                  const searchNorm = searchTerm.replace(/\s+/g, '').toLowerCase()
+                  if (
+                    searchTerm &&
+                    !trackingDisp.toLowerCase().includes(searchNorm) &&
+                    !tracking.toLowerCase().includes(searchTerm.toLowerCase()) &&
+                    !group[0].bill_no.toLowerCase().includes(searchTerm.toLowerCase()) &&
+                    !expressReceiptNumber.toLowerCase().includes(searchTerm.toLowerCase())
+                  ) {
+                    return null
+                  }
+                  if (showUnpackedOnly && (isDone || isFullScanned)) {
+                    return null
+                  }
+                  return (
+                    <button
+                      key={`${group[0].order_id}-${index}`}
+                      className={`w-full text-left p-3 rounded-lg border ${
+                        index === currentIndex ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
+                      }`}
+                      onClick={() => handleOrderClick(index)}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-lg font-bold break-all leading-snug">
+                            {icon} {trackingDisp}
+                            <ExpressReceiptNumberInline value={expressReceiptNumber} />
+                            {!isDone && <UrgencyBadge order={group[0]} className="ml-1.5" />}
+                          </div>
+                          <div className="text-sm text-gray-600 mt-0.5">
+                            ลูกค้า: {group[0].customer_name || 'N/A'}
+                          </div>
+                          <div className="mt-1 flex items-start gap-2 flex-wrap">
+                            <div className="text-sm font-bold text-indigo-700 tabular-nums">
+                              Tag {group[0].packingTag ?? '—'}
+                            </div>
+                            <div className="flex flex-col items-start gap-1">
+                              <div
+                                className={`inline-flex items-center justify-center rounded-full px-2.5 py-1 text-xs font-bold whitespace-nowrap shrink-0 max-w-full ${
+                                  isQcPassGroup(group)
+                                    ? group.every((i) => i.qc_status === 'skip')
+                                      ? 'bg-orange-100 text-orange-700'
+                                      : 'bg-green-100 text-green-700'
+                                    : 'bg-red-100 text-red-700'
+                                }`}
+                              >
+                                {isQcPassGroup(group)
+                                  ? group.every((i) => i.qc_status === 'skip')
+                                    ? 'Not QC'
+                                    : 'QC Pass'
+                                  : 'ยังไม่ QC'}
+                              </div>
+                              {!isDone && !wmsReady && (
+                                <div className="inline-flex items-center justify-center rounded-full bg-red-100 px-2.5 py-1 text-xs font-bold text-red-700 whitespace-nowrap">
+                                  ยังไม่ได้หยิบ
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="space-y-4 flex flex-col min-h-0 h-full">
+              {currentGroup ? (
+                <>
+                  <div className="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
+                    <div className="bg-white p-4 rounded-lg shadow space-y-3">
+                      <div className="space-y-2">
+                        <h3 className="font-semibold text-center">
+                          {currentGroup[0].is_self_pickup
+                            ? 'ขั้นตอนที่ 1: ลูกค้ารับสินค้าเอง'
+                            : 'ขั้นตอนที่ 1: สแกนเลขพัสดุ'}
+                        </h3>
+                        {currentGroup[0].is_self_pickup ? (
+                          <div className="flex flex-wrap items-center justify-center gap-2 rounded border-2 border-emerald-400 bg-emerald-50 px-3 py-2 text-center font-semibold text-emerald-700">
+                            <span>รับสินค้าเอง — ไม่ต้องสแกนเลขพัสดุ</span>
+                            <button
+                              type="button"
+                              onClick={() => void openConvertToShipping(currentGroup[0].order_id)}
+                              disabled={isViewOnly || convertShippingLoading || (currentGroup[0].isOrderComplete && !isAdminOrSuperadmin(user?.role))}
+                              className="rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+                              title={currentGroup[0].isOrderComplete && !isAdminOrSuperadmin(user?.role) ? 'บิลที่จัดส่งแล้วต้องให้ Admin ดำเนินการ' : 'เปลี่ยนบิลนี้จากรับเองเป็นจัดส่ง'}
+                            >
+                              เปลี่ยนเป็นจัดส่ง
+                            </button>
+                          </div>
+                        ) : (() => {
+                          const parcelDisabled =
+                            isViewOnly ||
+                            currentGroup[0].parcelScanned ||
+                            currentGroup[0].isOrderComplete ||
+                            !isWmsReadyGroup(currentGroup) ||
+                            !isQcPassGroup(currentGroup)
+                          return (
+                        <>
+                        <input
+                          ref={parcelScanRef}
+                          className="w-full border-2 border-green-500 rounded px-3 py-2 text-center bg-white text-gray-900 placeholder:text-gray-400 outline-none focus:ring-2 focus:ring-green-200 focus:border-green-600 disabled:bg-slate-300 disabled:text-slate-700 disabled:placeholder:text-slate-600 disabled:border-slate-500 disabled:cursor-not-allowed"
+                          placeholder="ยิงบาร์โค้ดเลขพัสดุที่กล่อง"
+                          value={parcelScanValue}
+                          onChange={(event) => setParcelScanValue(event.target.value.toUpperCase())}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault()
+                              handleParcelScan()
+                            }
+                          }}
+                          disabled={parcelDisabled}
+                        />
+                        {currentGroup[0].converted_from_self_pickup_at && (
+                          <button
+                            type="button"
+                            onClick={() => void exportConvertedWaybill(currentGroup[0].order_id).catch((error) => openAlert('Export ใบปะหน้าไม่สำเร็จ: ' + (error?.message || error)))}
+                            className="mt-2 w-full rounded-lg border border-orange-300 bg-orange-50 px-3 py-2 text-sm font-semibold text-orange-700 hover:bg-orange-100"
+                          >
+                            Export ใบปะหน้า
+                          </button>
+                        )}
+                        </>
+                          )
+                        })()}
+                      </div>
+                      <div className="space-y-2">
+                        <h3 className="font-semibold text-center">ขั้นตอนที่ 2: สแกนสินค้า</h3>
+                        {(() => {
+                          const itemDisabled =
+                            isViewOnly ||
+                            !isQcPassGroup(currentGroup) ||
+                            !isWmsReadyGroup(currentGroup) ||
+                            !currentGroup[0].parcelScanned ||
+                            currentGroup[0].isOrderComplete ||
+                            currentGroup.every((item) => item.scanned) ||
+                            ((currentGroup[0].needsTaxInvoice || currentGroup[0].needsCashBill) &&
+                              !billingCheckConfirmed)
+                          return (
+                        <input
+                          ref={itemScanRef}
+                          className="w-full border-2 border-blue-500 rounded px-3 py-2 text-center bg-white text-gray-900 placeholder:text-gray-400 outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-600 disabled:bg-slate-300 disabled:text-slate-700 disabled:placeholder:text-slate-600 disabled:border-slate-500 disabled:cursor-not-allowed"
+                          placeholder="ยิงบาร์โค้ด Item UID"
+                          value={itemScanValue}
+                          onChange={(event) => setItemScanValue(event.target.value.toUpperCase())}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault()
+                              handleItemScan()
+                            }
+                          }}
+                          disabled={itemDisabled}
+                        />
+                          )
+                        })()}
+                      </div>
+                      <div
+                        className={`text-center font-semibold ${
+                          statusMessage.type === 'success'
+                            ? 'text-green-600'
+                            : statusMessage.type === 'error'
+                            ? 'text-red-600'
+                            : 'text-gray-700'
+                        }`}
+                      >
+                        {statusMessage.text}
+                      </div>
+                    </div>
+
+                    <div className="bg-white p-4 rounded-lg shadow space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h3 className="font-semibold">บันทึกวิดีโอ</h3>
+                        <span className={`px-2 py-1 rounded text-xs font-medium ${getRecordingBadgeClass()}`}>
+                          {getRecordingLabel()}
+                        </span>
+                      </div>
+                      <video ref={videoRef} className="w-full h-[150px] rounded bg-black object-contain" muted playsInline />
+                      {recordingState.status === 'error' && (
+                        <p className="text-sm text-red-600">{recordingState.error}</p>
+                      )}
+                      <p className="text-xs text-gray-500">ไฟล์จะถูกอัปโหลดไปที่ Google Drive เมื่อหยุดบันทึก</p>
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-4 rounded-lg shadow space-y-4 flex-1 min-h-0 overflow-x-auto overflow-y-visible h-full flex flex-col relative">
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-3 items-start gap-4">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-3 flex-wrap">
+                            <div className="text-lg font-semibold break-all">
+                              {currentGroup[0].is_self_pickup
+                                ? `รับสินค้าเอง: ${currentGroup[0].bill_no}`
+                                : `เลขพัสดุ: ${formatParcelNo(currentGroup[0].tracking_number)}`}
+                              <ExpressReceiptNumberInline value={currentGroup[0].express_receipt_number} />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!packingVideoUrl) return
+                                window.open(packingVideoUrl, '_blank', 'noopener,noreferrer')
+                              }}
+                              disabled={!packingVideoUrl || packingVideoLoading}
+                              className="px-3 py-1.5 text-sm font-semibold rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 shrink-0"
+                              title={packingVideoUrl ? 'เปิดวิดีโอในแท็บใหม่' : 'ยังไม่พบวิดีโอของบิลนี้'}
+                            >
+                              {packingVideoLoading ? 'กำลังหา...' : 'วิดีโอ'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                if (!packingVideoUrl) return
+                                try {
+                                  await navigator.clipboard.writeText(packingVideoUrl)
+                                  openAlert('คัดลอกลิงก์วิดีโอแล้ว')
+                                } catch {
+                                  openAlert('คัดลอกไม่สำเร็จ (เบราว์เซอร์ไม่อนุญาต) กรุณาคลิก "วิดีโอ" เพื่อเปิดแท็บใหม่แทน')
+                                }
+                              }}
+                              disabled={!packingVideoUrl || packingVideoLoading}
+                              className="px-3 py-1.5 text-sm font-semibold rounded bg-slate-200 text-slate-800 hover:bg-slate-300 disabled:opacity-40 shrink-0"
+                              title="คัดลอกลิงก์วิดีโอ"
+                            >
+                              คัดลอกลิงก์
+                            </button>
+                            <button
+                              type="button"
+                              onClick={stopRecordingAndAdvance}
+                              disabled={recordingState.status !== 'recording'}
+                              className="px-3 py-1.5 text-sm font-semibold rounded bg-red-500 text-white hover:bg-red-600 disabled:opacity-40 shrink-0"
+                            >
+                              หยุดบันทึก
+                            </button>
+                          </div>
+                        </div>
+                        <div className="text-center px-2">
+                          <div className="text-xs text-gray-500 whitespace-nowrap">หมายเลข Tag</div>
+                          <div className="text-xl sm:text-2xl font-bold tabular-nums">
+                            {currentGroup[0].packingTag ?? '—'}
+                          </div>
+                        </div>
+                        <div className="text-right justify-self-end">
+                          <div className="text-sm text-gray-500">จำนวน</div>
+                          <div className="text-2xl font-bold tabular-nums">
+                            {currentGroup.filter((item) => item.scanned).length}/{currentGroup.length}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-sm text-gray-600">
+                        ลูกค้า: {currentGroup[0].customer_name}
+                        {!currentGroup[0].isOrderComplete && <UrgencyBadge order={currentGroup[0]} className="ml-1.5" />}
+                      </div>
+                    </div>
+
+                    {(currentGroup[0].claim_type || currentGroup[0].needsTaxInvoice || currentGroup[0].needsCashBill) && (
+                      <div className="space-y-2">
+                        {currentGroup[0].claim_type && (
+                          <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 rounded p-3 text-sm">
+                            ⚠️ ออร์เดอร์เคลม: {claimTypeLabel(claimTypeLabels, currentGroup[0].claim_type)} {currentGroup[0].claim_details || ''}
+                          </div>
+                        )}
+                        {currentGroup[0].needsTaxInvoice && (
+                          <label className={`flex items-center gap-4 rounded-lg p-4 cursor-pointer select-none border-2 transition-colors ${billingCheckConfirmed ? 'bg-green-50 border-green-400' : 'bg-red-50 border-red-300 animate-pulse'}`}>
+                            <input
+                              type="checkbox"
+                              checked={billingCheckConfirmed}
+                              onChange={(e) => setBillingCheckConfirmed(e.target.checked)}
+                              className="w-8 h-8 rounded border-red-400 text-green-600 focus:ring-green-500 shrink-0"
+                            />
+                            <div>
+                              <div className="font-bold text-base text-red-800">‼️ ใบกำกับภาษี</div>
+                              <div className="text-sm text-red-700">กรุณาติ๊กยืนยันว่าใส่ใบกำกับภาษีในกล่องแล้ว</div>
+                            </div>
+                          </label>
+                        )}
+                        {!currentGroup[0].needsTaxInvoice && currentGroup[0].needsCashBill && (
+                          <label className={`flex items-center gap-4 rounded-lg p-4 cursor-pointer select-none border-2 transition-colors ${billingCheckConfirmed ? 'bg-green-50 border-green-400' : 'bg-blue-50 border-blue-300 animate-pulse'}`}>
+                            <input
+                              type="checkbox"
+                              checked={billingCheckConfirmed}
+                              onChange={(e) => setBillingCheckConfirmed(e.target.checked)}
+                              className="w-8 h-8 rounded border-blue-400 text-green-600 focus:ring-green-500 shrink-0"
+                            />
+                            <div>
+                              <div className="font-bold text-base text-blue-800">‼️ บิลเงินสด</div>
+                              <div className="text-sm text-blue-700">กรุณาติ๊กยืนยันว่าใส่บิลเงินสดในกล่องแล้ว</div>
+                            </div>
+                          </label>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="flex-1 min-h-0 overflow-visible h-full">
+                      <table className="min-w-full border-collapse">
+                      <thead className="bg-gray-100">
+                        <tr className="text-left text-sm">
+                          <th className="p-2 border">รูปสินค้า</th>
+                          <th className="p-2 border">รูปลาย</th>
+                          <th className="p-2 border">สินค้า</th>
+                          {currentGroupHasCondoStamp && <th className="p-2 border">ชั้น</th>}
+                          <th className="p-2 border">สีหมึก</th>
+                          <th className="p-2 border">ลาย//เส้น</th>
+                          <th className="p-2 border">ฟอนต์</th>
+                          <th className="p-2 border">รายละเอียด</th>
+                          <th className="p-2 border">หมายเหตุ</th>
+                          <th className="p-2 border">ไฟล์</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        {currentGroup
+                          .slice()
+                          .sort((a, b) => {
+                            if (a.scanned === b.scanned) return naturalSortCompare(a.unit_uid, b.unit_uid)
+                            return a.scanned ? 1 : -1
+                          })
+                          .map((item) => {
+                            const combinedPattern = [item.cartoon_pattern, item.line_pattern].filter(Boolean).join(' // ')
+                            const displayNotes = (item.notes || '').replace(/\[SET-.*?\]/g, '').trim()
+                            const fileLink =
+                              item.file_attachment &&
+                              (item.file_attachment.startsWith('http') || item.file_attachment.includes('www.'))
+                                ? item.file_attachment.startsWith('http')
+                                  ? item.file_attachment
+                                  : `https://${item.file_attachment}`
+                                : null
+                            const productImageUrl = getPublicUrl('product-images', item.product_code, '.jpg')
+                            const patternName = item.cartoon_pattern || item.line_pattern || ''
+                            const patternImageUrl = patternName ? getPublicUrl('cartoon-patterns', patternName, '.jpg') : ''
+                            return (
+                              <tr key={item.unit_uid} className={item.scanned ? 'bg-green-50' : ''}>
+                                <td className="p-2 border align-middle">
+                                  <div className="flex flex-col items-center">
+                                    <div
+                                      className="w-20 h-20 border rounded bg-white flex items-center justify-center cursor-pointer"
+                                      onMouseEnter={(e) => {
+                                        if (productImageUrl) setHoverImage({ url: productImageUrl, rect: e.currentTarget.getBoundingClientRect() })
+                                      }}
+                                      onMouseLeave={() => setHoverImage(null)}
+                                    >
+                                      {productImageUrl ? (
+                                        <img
+                                          src={productImageUrl}
+                                          alt={item.product_name}
+                                          className="w-full h-full object-contain"
+                                        />
+                                      ) : (
+                                        <span className="text-xs text-gray-400">ไม่มีรูป</span>
+                                      )}
+                                    </div>
+                                    <small className="mt-1">{item.unit_uid}</small>
+                                  </div>
+                                </td>
+                                <td className="p-2 border align-middle">
+                                  <div className="flex flex-col items-center">
+                                    <div
+                                      className="w-20 h-20 border rounded bg-white flex items-center justify-center cursor-pointer"
+                                      onMouseEnter={(e) => {
+                                        if (patternImageUrl) setHoverImage({ url: patternImageUrl, rect: e.currentTarget.getBoundingClientRect() })
+                                      }}
+                                      onMouseLeave={() => setHoverImage(null)}
+                                    >
+                                      {patternImageUrl ? (
+                                        <img
+                                          src={patternImageUrl}
+                                          alt={patternName || 'pattern'}
+                                          className="w-full h-full object-contain"
+                                        />
+                                      ) : (
+                                        <span className="text-xs text-gray-400">ไม่มีรูป</span>
+                                      )}
+                                    </div>
+                                    <small className="mt-1">{patternName || '-'}</small>
+                                  </div>
+                                </td>
+                                <td className="p-2 border">
+                                  <div className="flex items-start gap-2 min-w-0">
+                                    <div className="flex flex-col items-start gap-1 shrink-0">
+                                      {item.qc_status === 'pass' ? (
+                                        <span className="inline-flex items-center justify-center rounded-full bg-green-100 text-green-700 text-[11px] font-semibold px-2 py-0.5 whitespace-nowrap">
+                                          QC Pass
+                                        </span>
+                                      ) : item.qc_status === 'skip' ? (
+                                        <span className="inline-flex items-center justify-center rounded-full bg-orange-100 text-orange-700 text-[11px] font-semibold px-2 py-0.5 whitespace-nowrap">
+                                          Not QC
+                                        </span>
+                                      ) : item.qc_status === 'fail' ? (
+                                        <span className="inline-flex items-center justify-center rounded-full bg-red-100 text-red-700 text-[11px] font-semibold px-2 py-0.5 whitespace-nowrap">
+                                          QC Fail
+                                        </span>
+                                      ) : (
+                                        <span className="inline-flex items-center justify-center rounded-full bg-gray-100 text-gray-500 text-[11px] font-semibold px-2 py-0.5 whitespace-nowrap">
+                                          ยังไม่ได้ QC
+                                        </span>
+                                      )}
+                                      {!item.wmsReady && (
+                                        <span className="inline-flex items-center justify-center rounded-full bg-red-100 text-red-700 text-[11px] font-semibold px-2 py-0.5 whitespace-nowrap">
+                                          ยังไม่ได้หยิบ
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className="min-w-0 break-words">{item.product_name}</span>
+                                  </div>
+                                </td>
+                                {currentGroupHasCondoStamp && (
+                                  <td className="p-2 border">
+                                    {isCondoStampProductName(item.product_name) ? item.shelf_location || '' : ''}
+                                  </td>
+                                )}
+                                <td className="p-2 border">
+                                  {item.ink_color ? (
+                                    <div className="flex items-center gap-1.5">
+                                      <span
+                                        className="w-6 h-6 rounded-full border shrink-0"
+                                        style={{ backgroundColor: getInkColor(item.ink_color) }}
+                                      />
+                                      <span
+                                        className="font-semibold text-sm px-1.5 py-0.5 rounded"
+                                        style={{
+                                          backgroundColor: getInkColor(item.ink_color) + '30',
+                                          color: getInkColor(item.ink_color) !== '#ddd' ? getInkColor(item.ink_color) : undefined,
+                                        }}
+                                      >
+                                        {item.ink_color}
+                                      </span>
+                                      {item.ink_color.includes('กระดาษ') && (
+                                        <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none">
+                                          <path d="M5.625 1.5H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" fill="#DBEAFE" stroke="#3B82F6" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                          <path d="M10.5 2.25H8.25m2.25 0v1.5a3.375 3.375 0 0 0 3.375 3.375h1.5A1.125 1.125 0 0 0 16.5 6V4.5" fill="#93C5FD" stroke="#3B82F6" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                          <path d="M8.25 13.5h7.5M8.25 16.5H12" stroke="#3B82F6" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                        </svg>
+                                      )}
+                                      {item.ink_color.includes('ผ้า') && (
+                                        <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none">
+                                          <path d="M6.75 3 3 5.25v3h3l.75 1.5v8.25a1.5 1.5 0 0 0 1.5 1.5h7.5a1.5 1.5 0 0 0 1.5-1.5V9.75L18 8.25h3V5.25L17.25 3h-3a2.25 2.25 0 0 1-4.5 0h-3Z" fill="#FDE68A" stroke="#F59E0B" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                        </svg>
+                                      )}
+                                      {item.ink_color.includes('พลาสติก') && (
+                                        <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none">
+                                          <path d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5m4.75-11.396c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082" fill="#D1FAE5" stroke="#10B981" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                          <path d="M19.8 15.3l-1.57.393A9.065 9.065 0 0 1 12 15a9.065 9.065 0 0 0-6.23.693L5 14.5m14.8.8 1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0 1 12 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" fill="#A7F3D0" stroke="#10B981" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                        </svg>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    ''
+                                  )}
+                                </td>
+                                <td className="p-2 border">{combinedPattern}</td>
+                                <td className="p-2 border">{item.font || ''}</td>
+                                <td className="p-2 border">{item.details || ''}</td>
+                                <td className="p-2 border">{displayNotes}</td>
+                                <td className="p-2 border text-center">
+                                  {fileLink ? (
+                                    <a
+                                      href={fileLink}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-cyan-50 text-cyan-600 hover:bg-cyan-100 hover:text-cyan-700 transition-colors"
+                                      title="เปิดไฟล์แนบ"
+                                    >
+                                      <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                                      </svg>
+                                    </a>
+                                  ) : item.file_attachment ? (
+                                    <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-gray-100 text-gray-400" title={item.file_attachment}>
+                                      <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                                      </svg>
+                                    </span>
+                                  ) : (
+                                    <span className="text-gray-300">-</span>
+                                  )}
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        <tr aria-hidden="true">
+                          <td colSpan={currentGroupHasCondoStamp ? 10 : 9} className="h-8 border-0 p-0 bg-white" />
+                        </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="text-center text-gray-500 py-10">ไม่พบข้อมูลออร์เดอร์</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      <Modal
+        open={Boolean(convertShippingForm)}
+        onClose={() => { if (!convertShippingLoading) setConvertShippingForm(null) }}
+        contentClassName="max-w-3xl w-full mx-4"
+      >
+        {convertShippingForm && (
+          <div className="p-6 space-y-4">
+            <div>
+              <h3 className="text-xl font-bold text-gray-900">เปลี่ยนเป็นจัดส่ง</h3>
+              <p className="mt-1 text-sm text-gray-600">
+                บิล {convertShippingForm.billNo} จะคงช่องทางและเลขบิลเดิม ระบบจะล้างข้อมูลสแกนแพ็คเดิมและให้แพ็คใหม่
+              </p>
+              {convertShippingForm.isShipped && (
+                <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
+                  บิลนี้จัดส่งแล้ว ระบบจะยกเลิกการจัดส่งและเปิดใบงานกลับอัตโนมัติ
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium">วางชื่อ ที่อยู่ และเบอร์โทร</label>
+              <textarea
+                value={convertShippingForm.originalAddress}
+                onChange={(event) => setConvertShippingForm({ ...convertShippingForm, originalAddress: event.target.value })}
+                rows={3}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2"
+                placeholder="วางข้อมูลลูกค้า แล้วกด Auto Fill"
+              />
+              <button
+                type="button"
+                onClick={() => void autoFillConvertAddress()}
+                disabled={convertAddressLoading || !convertShippingForm.originalAddress.trim()}
+                className="mt-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-700 disabled:opacity-50"
+              >
+                {convertAddressLoading ? 'กำลังแยกที่อยู่...' : 'Auto Fill ที่อยู่'}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-sm font-medium">ชื่อผู้รับ *</label>
+                <input value={convertShippingForm.recipientName} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, recipientName: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium">เบอร์โทร *</label>
+                <input value={convertShippingForm.mobilePhone} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, mobilePhone: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
+              </div>
+              <div className="md:col-span-2">
+                <label className="mb-1 block text-sm font-medium">บ้านเลขที่/ถนน/ซอย *</label>
+                <input value={convertShippingForm.addressLine} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, addressLine: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium">แขวง/ตำบล</label>
+                <input value={convertShippingForm.subDistrict} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, subDistrict: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium">เขต/อำเภอ</label>
+                <input value={convertShippingForm.district} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, district: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium">จังหวัด *</label>
+                <input value={convertShippingForm.province} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, province: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium">รหัสไปรษณีย์ *</label>
+                <input value={convertShippingForm.postalCode} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, postalCode: e.target.value })} maxLength={5} className="w-full rounded-lg border px-3 py-2" />
+              </div>
+              {convertShippingForm.isShipped && (
+                <div className="md:col-span-2">
+                  <label className="mb-1 block text-sm font-medium">เหตุผลที่ยกเลิกจัดส่งและแพ็คใหม่ *</label>
+                  <textarea value={convertShippingForm.reason} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, reason: e.target.value })} rows={2} className="w-full rounded-lg border px-3 py-2" />
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap justify-end gap-2 border-t pt-4">
+              <button type="button" onClick={() => setConvertShippingForm(null)} disabled={convertShippingLoading} className="rounded-lg border px-4 py-2 text-sm font-semibold hover:bg-gray-50 disabled:opacity-50">
+                ยกเลิก
+              </button>
+              <button type="button" onClick={() => void saveConversionAndExport()} disabled={convertShippingLoading || convertAddressLoading} className="rounded-lg bg-orange-500 px-4 py-2 text-sm font-bold text-white hover:bg-orange-600 disabled:opacity-50">
+                {convertShippingLoading ? 'กำลังบันทึก...' : 'บันทึกและ Export ใบปะหน้า'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+      <Modal
+        open={previewModal.open}
+        onClose={() => setPreviewModal({ open: false, message: '' })}
+        closeOnBackdropClick
+        contentClassName="max-w-md"
+      >
+        <div className="p-5 space-y-3">
+          <h3 className="text-lg font-semibold">ไม่สามารถแสดงพรีวิววิดีโอ</h3>
+          <p className="text-sm text-gray-700">{previewModal.message}</p>
+          <div className="flex justify-end">
+            <button
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              onClick={() => setPreviewModal({ open: false, message: '' })}
+            >
+              รับทราบ
+            </button>
+          </div>
+        </div>
+      </Modal>
+      <Modal
+        open={reconnectOpen}
+        onClose={() => {
+          setReconnectOpen(false)
+          setPendingHandle(null)
+        }}
+        contentClassName="max-w-md"
+      >
+        <div className="p-5 space-y-4">
+          <h3 className="text-lg font-semibold">เชื่อมต่อโฟลเดอร์จัดเก็บ</h3>
+          <p className="text-sm text-gray-700">
+            โฟลเดอร์{' '}
+            <span className="font-semibold">{pendingHandle?.name || '-'}</span>{' '}
+            เคยตั้งค่าไว้ แต่ต้องขอสิทธิ์เข้าถึงใหม่ทุกครั้งที่เปิดหน้านี้
+          </p>
+          {folderPath && (
+            <p className="text-sm text-gray-600">
+              ตำแหน่ง:{' '}
+              <code className="px-2 py-0.5 bg-gray-100 border border-gray-200 rounded">{folderPath}</code>
+            </p>
+          )}
+          <p className="text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded px-2 py-1.5">
+            เมื่อกดปุ่มด้านล่าง Chrome จะถามยืนยันสิทธิ์อีกหนึ่งครั้ง เป็นหน้าต่างของเบราว์เซอร์เอง
+            กรุณากด "อนุญาต"
+          </p>
+          <div className="flex justify-end gap-2">
+            <button
+              className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
+              onClick={() => {
+                setReconnectOpen(false)
+                setPendingHandle(null)
+              }}
+            >
+              ไว้ก่อน
+            </button>
+            <button
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              onClick={confirmReconnect}
+            >
+              เชื่อมต่อโฟลเดอร์
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={pathModal.open}
+        onClose={() => setPathModal({ open: false, value: '' })}
+        contentClassName="max-w-md"
+      >
+        <div className="p-5 space-y-4">
+          <h3 className="text-lg font-semibold">ระบุตำแหน่งโฟลเดอร์</h3>
+          <p className="text-sm text-gray-700">
+            เลือกโฟลเดอร์{' '}
+            <span className="font-semibold">{folderHandle?.name || '-'}</span> เรียบร้อยแล้ว
+          </p>
+          <p className="text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded px-2 py-1.5">
+            เบราว์เซอร์ไม่เปิดเผยตำแหน่งเต็มของโฟลเดอร์ให้เว็บไซต์ ด้วยเหตุผลด้านความปลอดภัย
+            หากต้องการให้แสดงไว้อ้างอิง กรุณาคัดลอกจากช่อง Address bar ของ File Explorer มาวาง
+          </p>
+          <input
+            className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+            placeholder="เช่น D:\VDO_Packing"
+            value={pathModal.value}
+            onChange={(e) => setPathModal({ open: true, value: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') saveFolderPath(pathModal.value)
+            }}
+          />
+          <div className="flex justify-end gap-2">
+            <button
+              className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
+              onClick={() => setPathModal({ open: false, value: '' })}
+            >
+              ข้ามไปก่อน
+            </button>
+            <button
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              onClick={() => saveFolderPath(pathModal.value)}
+            >
+              บันทึก
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={requeueImport.open}
+        onClose={() => { if (!requeueImport.saving) setRequeueImport((current) => ({ ...current, open: false, file: null })) }}
+        contentClassName="max-w-lg"
+        closeOnBackdropClick={!requeueImport.saving}
+      >
+        <div className="space-y-4 p-5">
+          <div>
+            <h3 className="text-lg font-semibold">นำไฟล์วิดีโอสำรองกลับเข้าคิว</h3>
+            <p className="mt-1 text-sm text-gray-500">ไฟล์จะถูกเก็บในคิวของ Chrome เครื่องนี้และอัปโหลดตามปกติ</p>
+          </div>
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
+            <div className="font-medium text-gray-900">{requeueImport.file?.name || '-'}</div>
+            <div className="mt-1 text-xs text-gray-500">
+              {formatFileSize(requeueImport.file?.size)} · {formatDuration(requeueImport.durationSeconds)} ·{' '}
+              {requeueImport.width && requeueImport.height ? `${requeueImport.width}×${requeueImport.height}` : 'ไม่ทราบความละเอียด'}
+            </div>
+          </div>
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-gray-700">ใบงาน *</span>
+            <input
+              value={requeueImport.workOrderName}
+              onChange={(event) => setRequeueImport((current) => ({ ...current, workOrderName: event.target.value, error: '' }))}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2"
+              placeholder="เช่น SPTR-270869-R1"
+            />
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-gray-700">เลขพัสดุ *</span>
+            <input
+              value={requeueImport.trackingNumber}
+              onChange={(event) => setRequeueImport((current) => ({ ...current, trackingNumber: event.target.value, error: '' }))}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2"
+              placeholder="กรอกหรือสแกนเลขพัสดุ"
+            />
+          </label>
+          {requeueImport.error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{requeueImport.error}</p>}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              disabled={requeueImport.saving}
+              onClick={() => setRequeueImport((current) => ({ ...current, open: false, file: null }))}
+              className="rounded-lg bg-gray-200 px-4 py-2 text-sm hover:bg-gray-300 disabled:opacity-50"
+            >
+              ยกเลิก
+            </button>
+            <button
+              type="button"
+              disabled={requeueImport.saving}
+              onClick={() => void importBackupVideoToQueue()}
+              className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50"
+            >
+              {requeueImport.saving ? 'กำลังนำเข้าคิว...' : 'นำกลับเข้าคิวและอัปโหลด'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={dialog.open}
+        onClose={closeDialog}
+        closeOnBackdropClick={dialog.mode === 'alert'}
+        contentClassName="max-w-md"
+      >
+        <div className="p-5 space-y-4">
+          <h3 className="text-lg font-semibold">{dialog.title}</h3>
+          <p className="text-sm text-gray-700 whitespace-pre-line">{dialog.message}</p>
+          {dialog.mode === 'confirm' && dialog.title === 'ยืนยันการแพ็คสินค้า' && (
+            <p className="text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded px-2 py-1">
+              คีย์ลัด: กด <strong>Spacebar</strong> = ใช่, กด <strong>0</strong> = ไม่ใช่
+            </p>
+          )}
+          {dialog.mode === 'confirm' && dialog.spacebarConfirm && (
+            <p className="text-xs text-green-700 bg-green-50 border border-green-100 rounded px-2 py-1">
+              คีย์ลัด: กด <strong>Spacebar</strong> เพื่อยืนยัน แล้วเริ่มสแกนสินค้าได้ทันที
+            </p>
+          )}
+          <div className={`flex gap-2 ${dialog.spacebarConfirm ? 'justify-center' : 'justify-end'}`}>
+            {dialog.mode === 'confirm' && (
+              <button
+                className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
+                onClick={closeDialog}
+              >
+                {dialog.title === 'ยืนยันการแพ็คสินค้า' ? (
+                  <span className="flex flex-col leading-tight text-center">
+                    <span className="font-semibold">ไม่ใช่</span>
+                    <span className="text-[11px] text-gray-600">(0) ตรวจสอบอีกรอบ</span>
+                  </span>
+                ) : (
+                  dialog.cancelText || 'ยกเลิก'
+                )}
+              </button>
+            )}
+            <button
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              onClick={() => {
+                const action = confirmActionRef.current
+                closeDialog()
+                action?.()
+              }}
+            >
+              {dialog.title === 'ยืนยันการแพ็คสินค้า' ? (
+                <span className="flex flex-col leading-tight text-center">
+                  <span className="font-semibold">ใช่</span>
+                  <span className="text-[11px] text-blue-100">(Spacebar) หยุดบันทึก</span>
+                </span>
+              ) : dialog.spacebarConfirm ? (
+                <span className="flex flex-col leading-tight text-center">
+                  <span className="font-semibold">{dialog.confirmText || 'ยืนยัน'}</span>
+                  <span className="text-[11px] text-blue-100">(Spacebar) แล้วสแกนสินค้า</span>
+                </span>
+              ) : (
+                dialog.confirmText || 'ตกลง'
+              )}
+            </button>
+          </div>
+        </div>
+      </Modal>
+      <Modal
+        open={Boolean(shippedEdit?.open)}
+        onClose={() => setShippedEdit(null)}
+        closeOnBackdropClick
+        contentClassName="max-w-md"
+      >
+        <div className="p-5 space-y-4">
+          <h3 className="text-lg font-semibold">แก้ไขใบงานที่จัดส่งแล้ว</h3>
+          <div className="text-sm text-gray-600">
+            ใบงาน: <span className="font-semibold">{shippedEdit?.workOrderName}</span>
+          </div>
+          <div className="grid grid-cols-1 gap-3">
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">วันที่จัดส่ง</label>
+              <input
+                type="date"
+                value={shippedEdit?.shippedDate || ''}
+                onChange={(e) =>
+                  setShippedEdit((prev) => (prev ? { ...prev, shippedDate: e.target.value } : prev))
+                }
+                className="w-full border rounded px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">เวลา</label>
+              <input
+                type="time"
+                value={shippedEdit?.shippedTime || ''}
+                onChange={(e) =>
+                  setShippedEdit((prev) => (prev ? { ...prev, shippedTime: e.target.value } : prev))
+                }
+                className="w-full border rounded px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">ผู้แพ็ค</label>
+              <input
+                type="text"
+                value={shippedEdit?.shippedBy || ''}
+                onChange={(e) =>
+                  setShippedEdit((prev) => (prev ? { ...prev, shippedBy: e.target.value } : prev))
+                }
+                className="w-full border rounded px-3 py-2 text-sm"
+                placeholder="ระบุชื่อผู้แพ็ค"
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button
+              className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
+              onClick={() => setShippedEdit(null)}
+            >
+              ยกเลิก
+            </button>
+            <button
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              onClick={saveShippedEdit}
+            >
+              บันทึก
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Fixed overlay for hover-zoomed product/pattern images — escapes all overflow clipping */}
+      {hoverImage && (
+        <div
+          className="pointer-events-none fixed z-[999999]"
+          style={{
+            top: hoverImage.rect.top + hoverImage.rect.height / 2,
+            left: hoverImage.rect.right + 12,
+            transform: 'translateY(-50%)',
+          }}
+        >
+          <img
+            src={hoverImage.url}
+            alt="preview"
+            className="w-[280px] h-[280px] object-contain rounded-xl border-2 border-white bg-white"
+            style={{ boxShadow: '0 8px 32px rgba(0,0,0,0.3)' }}
+          />
+        </div>
+      )}
+    </div>
+  )
+}

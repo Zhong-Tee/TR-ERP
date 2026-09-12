@@ -1,0 +1,735 @@
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { FiCalendar, FiPlus, FiCamera, FiUpload, FiPaperclip } from 'react-icons/fi'
+import {
+  fetchEmployeeByUserId,
+  getEmployeeLeaveSummary,
+  createLeaveRequest,
+  fetchLeaveTypes,
+  fetchCompanyHolidays,
+  fetchWorkCalendar,
+  fetchWorkSchedules,
+  resolveEmployeeDayType,
+  updateLeaveRequest,
+  uploadHRFile,
+} from '../../../lib/hrApi'
+import { useAuthContext } from '../../../contexts/AuthContext'
+import { supabase } from '../../../lib/supabase'
+import AttachmentViewer from './AttachmentViewer'
+import type { HRCompanyHoliday, HREmployee, HREmployeeWorkCalendar, HRLeaveType, HRWorkSchedule } from '../../../types'
+
+const BUCKET_MEDICAL = 'hr-medical-certs'
+const CURRENT_YEAR = new Date().getFullYear()
+
+type LeaveSummaryBalance = {
+  leave_type_id: string
+  leave_type_name: string
+  entitled_days: number
+  used_days: number
+  remaining: number
+}
+
+type RecentRequest = {
+  id: string
+  leave_type_name: string
+  start_date: string
+  end_date: string
+  total_days: number
+  leave_mode?: 'full_day' | 'hourly'
+  start_time?: string | null
+  end_time?: string | null
+  total_hours?: number | null
+  status: string
+  reason?: string
+  is_emergency?: boolean
+  medical_cert_url?: string | null
+  created_at: string
+}
+
+function timeToMinutes(value: string): number {
+  const [hours, minutes] = value.slice(0, 5).split(':').map(Number)
+  return hours * 60 + minutes
+}
+
+function workingMinutesBetween(start: string, end: string, schedule?: HRWorkSchedule): number {
+  const startMin = timeToMinutes(start)
+  const endMin = timeToMinutes(end)
+  if (endMin <= startMin) return 0
+  if (!schedule) return endMin - startMin
+
+  const lunchStart = timeToMinutes(schedule.lunch_start || '12:00')
+  const lunchEnd = timeToMinutes(schedule.lunch_end || '13:00')
+  const lunchOverlap = Math.max(0, Math.min(endMin, lunchEnd) - Math.max(startMin, lunchStart))
+  return Math.max(0, endMin - startMin - lunchOverlap)
+}
+
+function scheduleWorkingMinutes(schedule?: HRWorkSchedule): number {
+  if (!schedule) return 8 * 60
+  return workingMinutesBetween(schedule.work_start, schedule.work_end, schedule)
+}
+
+function diffDays(start: string, end: string): number {
+  const a = new Date(start)
+  const b = new Date(end)
+  const diff = Math.round((b.getTime() - a.getTime()) / 86400000)
+  return Math.max(0, diff) + 1
+}
+
+function toLocalDateInput(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function earliestLeaveDate(advanceDays: number): string {
+  const date = new Date()
+  date.setHours(12, 0, 0, 0)
+  date.setDate(date.getDate() + Math.max(0, advanceDays))
+  return toLocalDateInput(date)
+}
+
+function formatThaiDate(value: string): string {
+  return new Intl.DateTimeFormat('th-TH', { dateStyle: 'long' }).format(new Date(`${value}T12:00:00`))
+}
+
+function formatDisplayDate(value: string): string {
+  const [year, month, day] = value.split('-')
+  return `${day}/${month}/${year}`
+}
+
+function statusBadge(status: string) {
+  const map: Record<string, string> = {
+    pending: 'bg-amber-100 text-amber-800',
+    approved: 'bg-emerald-100 text-emerald-800',
+    rejected: 'bg-red-100 text-red-800',
+    cancelled: 'bg-gray-100 text-gray-600',
+  }
+  const labels: Record<string, string> = {
+    pending: 'รอดำเนินการ',
+    approved: 'อนุมัติ',
+    rejected: 'ไม่อนุมัติ',
+    cancelled: 'ยกเลิก',
+  }
+  return (
+    <span className={`inline-flex items-center shrink-0 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ${map[status] ?? 'bg-gray-100 text-gray-600'}`}>
+      {labels[status] ?? status}
+    </span>
+  )
+}
+
+export default function EmployeeLeave() {
+  const { user } = useAuthContext()
+  const [employee, setEmployee] = useState<HREmployee | null>(null)
+  const [workSchedule, setWorkSchedule] = useState<HRWorkSchedule | undefined>()
+  const [calendarDays, setCalendarDays] = useState<HREmployeeWorkCalendar[]>([])
+  const [companyHolidays, setCompanyHolidays] = useState<HRCompanyHoliday[]>([])
+  const [loadedCalendarRange, setLoadedCalendarRange] = useState('')
+  const [calendarLoading, setCalendarLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [summary, setSummary] = useState<{
+    balances: LeaveSummaryBalance[]
+    recent_requests: RecentRequest[]
+  } | null>(null)
+  const [leaveTypes, setLeaveTypes] = useState<HRLeaveType[]>([])
+  const [formOpen, setFormOpen] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [uploadingCert, setUploadingCert] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const docInputRef = useRef<HTMLInputElement>(null)
+  const [docFile, setDocFile] = useState<File | null>(null)
+  const [docError, setDocError] = useState<string | null>(null)
+  const [showBalance, setShowBalance] = useState(false)
+  /** เอกสารแนบใบลาที่กำลังเปิดดูเต็มจอ */
+  const [certViewer, setCertViewer] = useState<{ path: string; name: string } | null>(null)
+
+  const [form, setForm] = useState({
+    leave_type_id: '',
+    leave_mode: 'full_day' as 'full_day' | 'hourly',
+    start_date: '',
+    end_date: '',
+    start_time: '09:00',
+    end_time: '12:00',
+    reason: '',
+    is_emergency: false,
+  })
+
+  /** ชั่วโมงลา (โหมดชั่วโมง) — รองรับข้ามเที่ยงคืนไม่ได้ (ลาในวันเดียว) */
+  const totalHours = (() => {
+    if (form.leave_mode !== 'hourly' || !form.start_time || !form.end_time) return 0
+    const mins = workingMinutesBetween(form.start_time, form.end_time, workSchedule)
+    return mins > 0 ? Math.round((mins / 60) * 100) / 100 : 0
+  })()
+
+  const calendarEndDate = form.leave_mode === 'hourly' ? form.start_date : form.end_date
+  const requestedCalendarDays =
+    form.start_date && calendarEndDate ? diffDays(form.start_date, calendarEndDate) : 0
+  const requestedCalendarRange = `${employee?.id ?? ''}|${form.start_date}|${calendarEndDate}`
+  const workCalendarReady = requestedCalendarDays > 0 && loadedCalendarRange === requestedCalendarRange
+  const fullDayBreakdown = (() => {
+    if (!workCalendarReady || !workSchedule) return { working: 0, excluded: 0 }
+    const overrideMap = new Map(calendarDays.map((day) => [day.work_date, day]))
+    const holidayMap = new Map(companyHolidays.map((holiday) => [holiday.holiday_date, holiday]))
+    let working = 0
+    const cursor = new Date(`${form.start_date}T12:00:00`)
+    const end = new Date(`${calendarEndDate}T12:00:00`)
+    while (cursor <= end) {
+      const date = toLocalDateInput(cursor)
+      if (resolveEmployeeDayType(date, workSchedule, overrideMap.get(date), holidayMap.get(date)) === 'work') working += 1
+      cursor.setDate(cursor.getDate() + 1)
+    }
+    return { working, excluded: requestedCalendarDays - working }
+  })()
+
+  const totalDays =
+    form.leave_mode === 'hourly'
+      ? Math.round((totalHours / (scheduleWorkingMinutes(workSchedule) / 60)) * 100) / 100
+      : fullDayBreakdown.working
+
+  const selectedType = leaveTypes.find((t) => t.id === form.leave_type_id)
+  const isPersonalLeave = (selectedType?.name || '').includes('กิจ')
+  const emergencyBypass = isPersonalLeave && form.is_emergency
+  const advanceNoticeDays = Math.max(0, selectedType?.advance_notice_days || 0)
+  const minLeaveDate = earliestLeaveDate(emergencyBypass ? 0 : advanceNoticeDays)
+  const startDateTooEarly = !emergencyBypass && !!form.start_date && form.start_date < minLeaveDate
+  const requiresDoc = !!selectedType?.requires_doc
+  const docLabel = selectedType?.doc_label || 'เอกสารประกอบการลา'
+
+  const load = useCallback(async () => {
+    if (!user?.id) return
+    setLoading(true)
+    try {
+      const emp = await fetchEmployeeByUserId(user.id)
+      setEmployee(emp)
+      if (!emp) {
+        setLoading(false)
+        return
+      }
+      const [sum, types, schedules] = await Promise.all([
+        getEmployeeLeaveSummary(emp.id, CURRENT_YEAR),
+        fetchLeaveTypes(),
+        fetchWorkSchedules(true),
+      ])
+      setSummary(sum)
+      setLeaveTypes(types)
+      setWorkSchedule(
+        schedules.find((schedule) => schedule.id === emp.work_schedule_id)
+          ?? schedules.find((schedule) => schedule.is_default)
+          ?? schedules[0],
+      )
+      if (types.length) setForm((f) => f.leave_type_id ? f : ({ ...f, leave_type_id: types[0].id }))
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
+  }, [user?.id])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  useEffect(() => {
+    if (!employee?.id || !form.start_date || !calendarEndDate || calendarEndDate < form.start_date) {
+      setCalendarDays([])
+      setCompanyHolidays([])
+      setLoadedCalendarRange('')
+      return
+    }
+    let cancelled = false
+    const range = `${employee.id}|${form.start_date}|${calendarEndDate}`
+    setCalendarLoading(true)
+    setLoadedCalendarRange('')
+    void Promise.all([
+      fetchWorkCalendar(form.start_date, calendarEndDate, [employee.id]),
+      fetchCompanyHolidays(form.start_date, calendarEndDate),
+    ]).then(([days, holidays]) => {
+      if (cancelled) return
+      setCalendarDays(days)
+      setCompanyHolidays(holidays)
+      setLoadedCalendarRange(range)
+    }).catch((error) => {
+      if (!cancelled) {
+        console.error(error)
+        setDocError('โหลดตารางวันทำงานไม่สำเร็จ กรุณาลองใหม่')
+      }
+    }).finally(() => {
+      if (!cancelled) setCalendarLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [calendarEndDate, employee?.id, form.start_date])
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!employee || !form.leave_type_id || !form.start_date) return
+    const isHourly = form.leave_mode === 'hourly'
+    if (!isHourly && !form.end_date) return
+    if (!workCalendarReady || calendarLoading) {
+      setDocError('กรุณารอระบบตรวจสอบตารางวันทำงาน')
+      return
+    }
+    if (isHourly && fullDayBreakdown.working === 0) {
+      setDocError('วันที่เลือกเป็นวันหยุด จึงไม่สามารถส่งคำขอลาเป็นชั่วโมงได้')
+      return
+    }
+    if (!isHourly && totalDays <= 0) {
+      setDocError('ช่วงวันที่เลือกไม่มีวันทำงาน จึงไม่สามารถส่งคำขอลาได้')
+      return
+    }
+    if (startDateTooEarly) {
+      setDocError(`ประเภท${selectedType?.name || 'การลานี้'}ต้องแจ้งล่วงหน้า ${advanceNoticeDays} วัน เลือกได้ตั้งแต่วันที่ ${formatThaiDate(minLeaveDate)}`)
+      return
+    }
+    if (!form.reason.trim()) {
+      setDocError('กรุณากรอกเหตุผลการลา')
+      return
+    }
+    if (isHourly && totalHours <= 0) {
+      setDocError('เวลาสิ้นสุดต้องมากกว่าเวลาเริ่ม')
+      return
+    }
+    if (requiresDoc && !docFile) {
+      setDocError(`กรุณาแนบ${docLabel}`)
+      return
+    }
+    setSubmitting(true)
+    try {
+      const createdLeave = await createLeaveRequest({
+        employee_id: employee.id,
+        leave_type_id: form.leave_type_id,
+        leave_mode: form.leave_mode,
+        start_date: form.start_date,
+        end_date: isHourly ? form.start_date : form.end_date,
+        start_time: isHourly ? form.start_time : undefined,
+        end_time: isHourly ? form.end_time : undefined,
+        total_hours: isHourly ? totalHours : undefined,
+        total_days: totalDays,
+        reason: form.reason || undefined,
+        is_emergency: emergencyBypass,
+        status: 'pending',
+        notified_before: false,
+        notified_morning: false,
+      })
+      // แนบเอกสารตอนขอลา (ถ้าประเภทนั้นบังคับ)
+      if (docFile) {
+        const path = `${employee.id}/${createdLeave.id}_${Date.now()}_${docFile.name}`
+        await uploadHRFile(BUCKET_MEDICAL, path, docFile)
+        await updateLeaveRequest(createdLeave.id, { medical_cert_url: path })
+      }
+      // แจ้งใบลาใหม่เข้ากลุ่ม HR (fire-and-forget)
+      supabase.functions.invoke('hr-leave-request-notify', { body: { leave_id: createdLeave.id } }).catch(() => {})
+      setForm({
+        leave_type_id: leaveTypes[0]?.id ?? '',
+        leave_mode: 'full_day',
+        start_date: '',
+        end_date: '',
+        start_time: '09:00',
+        end_time: '12:00',
+        reason: '',
+        is_emergency: false,
+      })
+      setDocFile(null)
+      setDocError(null)
+      setFormOpen(false)
+      await load()
+    } catch (err) {
+      console.error(err)
+      setDocError(err instanceof Error ? err.message : 'ส่งคำขอลาไม่สำเร็จ กรุณาลองใหม่')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const needsMedicalCert = (r: RecentRequest): boolean => {
+    if (r.status !== 'approved') return false
+    const typeName = (r.leave_type_name || '').toLowerCase()
+    if (!typeName.includes(' sick') && !typeName.includes('ป่วย')) return false
+    if (Number(r.total_days) <= 1) return false
+    return !r.medical_cert_url
+  }
+
+  const handleMedicalUpload = async (requestId: string, file: File) => {
+    if (!employee) return
+    setUploadingCert(requestId)
+    try {
+      const path = `${employee.id}/${requestId}_${Date.now()}_${file.name}`
+      await uploadHRFile(BUCKET_MEDICAL, path, file)
+      const publicPath = path
+      await updateLeaveRequest(requestId, { medical_cert_url: publicPath })
+      await load()
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setUploadingCert(null)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <div className="animate-spin rounded-full h-10 w-10 border-2 border-emerald-500 border-t-transparent" />
+      </div>
+    )
+  }
+
+  if (!employee) {
+    return (
+      <div className="rounded-2xl bg-white p-6 shadow-sm text-center text-gray-500">
+        ไม่พบข้อมูลพนักงาน
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      <section>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-xl font-semibold text-gray-900">วันลาคงเหลือ</h2>
+          {(summary?.balances?.length ?? 0) > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowBalance((v) => !v)}
+              className="text-sm text-emerald-600 font-medium underline"
+            >
+              {showBalance ? 'ซ่อน' : 'ดูทั้งหมด'}
+            </button>
+          )}
+        </div>
+        <div className="space-y-3">
+          {!summary?.balances?.length ? (
+            <p className="text-gray-500 text-sm">ไม่มีข้อมูลวันลาในปีนี้</p>
+          ) : showBalance ? (
+            summary.balances.map((b) => {
+              const max = Math.max(b.entitled_days ?? 1, 1)
+              const pct = ((b.remaining ?? 0) / max) * 100
+              return (
+                <div key={b.leave_type_id} className="rounded-2xl bg-white border border-gray-200 p-4 shadow-sm">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="font-medium text-gray-900">{b.leave_type_name}</span>
+                    <span className="text-emerald-600 font-bold">
+                      {b.remaining ?? 0} / {b.entitled_days ?? 0} วัน
+                    </span>
+                  </div>
+                  <div className="h-2 rounded-full bg-gray-200 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${pct > 30 ? 'bg-emerald-500' : pct > 0 ? 'bg-amber-500' : 'bg-red-400'}`}
+                      style={{ width: `${Math.min(100, pct)}%` }}
+                    />
+                  </div>
+                </div>
+              )
+            })
+          ) : null}
+        </div>
+      </section>
+
+      <section>
+        <button
+          type="button"
+          onClick={() => setFormOpen(!formOpen)}
+          className="flex items-center justify-center gap-2 w-full rounded-2xl bg-emerald-600 text-white py-4 px-4 shadow-md active:bg-emerald-700"
+        >
+          <FiPlus className="w-5 h-5" />
+          <span className="font-medium">ขอลางาน</span>
+        </button>
+
+        {formOpen && (
+          <div className="mt-4 rounded-2xl bg-white border border-gray-200 p-4 shadow-sm">
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">ประเภทการลา</label>
+                <select
+                  value={form.leave_type_id}
+                  onChange={(e) => {
+                    setForm((f) => ({ ...f, leave_type_id: e.target.value, start_date: '', end_date: '', is_emergency: false }))
+                    setDocError(null)
+                  }}
+                  className="w-full rounded-xl border border-gray-300 px-4 py-3 text-base"
+                  required
+                >
+                  {leaveTypes.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+                {advanceNoticeDays > 0 && !emergencyBypass && (
+                  <p className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                    <span className="block">ต้องแจ้งล่วงหน้า {advanceNoticeDays} วัน</span>
+                    <span className="block">เลือกได้ตั้งแต่ {formatDisplayDate(minLeaveDate)}</span>
+                  </p>
+                )}
+                {isPersonalLeave && (
+                  <label className={`mt-3 flex cursor-pointer items-start gap-3 rounded-xl border px-3 py-3 transition ${form.is_emergency?'border-red-300 bg-red-50':'border-gray-200 bg-white'}`}>
+                    <input
+                      type="checkbox"
+                      checked={form.is_emergency}
+                      onChange={(e) => {
+                        setForm((f) => ({ ...f, is_emergency: e.target.checked }))
+                        setDocError(null)
+                      }}
+                      className="mt-0.5 h-4 w-4 accent-red-600"
+                    />
+                    <span>
+                      <b className="block text-sm text-red-700">ฉุกเฉิน</b>
+                      <span className="block text-xs text-gray-500">สำหรับลากิจเรื่องฉุกเฉินเท่านั้น</span>
+                    </span>
+                  </label>
+                )}
+              </div>
+              {/* เลือกช่วงลา: เต็มวัน / ชั่วโมง */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">ช่วงลา</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {([
+                    ['full_day', 'เต็มวัน'],
+                    ['hourly', 'เป็นชั่วโมง'],
+                  ] as ['full_day' | 'hourly', string][]).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setForm((f) => ({ ...f, leave_mode: mode }))}
+                      className={`py-2.5 rounded-xl text-sm font-medium border transition-colors ${
+                        form.leave_mode === mode
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'bg-white text-gray-600 border-gray-300'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {form.leave_mode === 'full_day' ? (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">วันเริ่ม</label>
+                      <input
+                        type="date"
+                        min={minLeaveDate}
+                        value={form.start_date}
+                        onChange={(e) => {
+                          setForm((f) => ({ ...f, start_date: e.target.value, end_date: f.end_date && f.end_date < e.target.value ? '' : f.end_date }))
+                          setDocError(null)
+                        }}
+                        className="w-full rounded-xl border border-gray-300 px-4 py-3"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">วันสิ้นสุด</label>
+                      <input
+                        type="date"
+                        min={form.start_date || minLeaveDate}
+                        value={form.end_date}
+                        onChange={(e) => setForm((f) => ({ ...f, end_date: e.target.value }))}
+                        className="w-full rounded-xl border border-gray-300 px-4 py-3"
+                        required
+                      />
+                    </div>
+                  </div>
+                  <p className="text-sm text-gray-600">
+                    {calendarLoading || !workCalendarReady
+                      ? 'กำลังตรวจสอบตารางวันทำงาน...'
+                      : <>หักสิทธิ์ {totalDays} วัน จาก {requestedCalendarDays} วันปฏิทิน{fullDayBreakdown.excluded > 0 ? ` · ไม่นับวันหยุด ${fullDayBreakdown.excluded} วัน` : ''}</>}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">วันที่ลา</label>
+                    <input
+                      type="date"
+                      min={minLeaveDate}
+                      value={form.start_date}
+                      onChange={(e) => {
+                        setForm((f) => ({ ...f, start_date: e.target.value }))
+                        setDocError(null)
+                      }}
+                      className="w-full rounded-xl border border-gray-300 px-4 py-3"
+                      required
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">เวลาเริ่ม</label>
+                      <input
+                        type="time"
+                        value={form.start_time}
+                        onChange={(e) => setForm((f) => ({ ...f, start_time: e.target.value }))}
+                        className="w-full rounded-xl border border-gray-300 px-4 py-3"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">เวลาสิ้นสุด</label>
+                      <input
+                        type="time"
+                        value={form.end_time}
+                        onChange={(e) => setForm((f) => ({ ...f, end_time: e.target.value }))}
+                        className="w-full rounded-xl border border-gray-300 px-4 py-3"
+                        required
+                      />
+                    </div>
+                  </div>
+                  <p className="text-sm text-gray-600">รวม {totalHours} ชั่วโมง</p>
+                </>
+              )}
+              {startDateTooEarly && (
+                <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  วันที่เลือกเร็วเกินไป กรุณาเลือกตั้งแต่ {formatThaiDate(minLeaveDate)} เป็นต้นไป
+                </p>
+              )}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  เหตุผล <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  value={form.reason}
+                  onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))}
+                  className="w-full rounded-xl border border-gray-300 px-4 py-3 min-h-[80px]"
+                  placeholder="ระบุเหตุผล..."
+                  required
+                />
+              </div>
+              {requiresDoc && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    {docLabel} <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    ref={docInputRef}
+                    type="file"
+                    accept="image/*,.pdf"
+                    className="hidden"
+                    onChange={(e) => {
+                      setDocFile(e.target.files?.[0] ?? null)
+                      setDocError(null)
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => docInputRef.current?.click()}
+                    className="w-full flex items-center justify-center gap-2 rounded-xl border-2 border-dashed border-emerald-300 text-emerald-700 py-3 active:bg-emerald-50"
+                  >
+                    <FiUpload className="w-5 h-5" />
+                    {docFile ? 'เปลี่ยนไฟล์' : `แนบ${docLabel}`}
+                  </button>
+                  {docFile && (
+                    <p className="text-xs text-gray-600 mt-1.5 truncate">📎 {docFile.name}</p>
+                  )}
+                  {docError && <p className="text-xs text-red-500 mt-1.5">{docError}</p>}
+                </div>
+              )}
+              {!requiresDoc && docError && (
+                <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{docError}</p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFormOpen(false)}
+                  className="flex-1 py-3 rounded-xl border border-gray-300 text-gray-700 font-medium"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting || startDateTooEarly}
+                  className="flex-1 py-3 rounded-xl bg-emerald-600 text-white font-medium disabled:opacity-60"
+                >
+                  {submitting ? 'กำลังส่ง...' : 'ส่งคำขอ'}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+      </section>
+
+      {summary?.recent_requests?.some(needsMedicalCert) && (
+        <section className="rounded-2xl border-2 border-amber-200 bg-amber-50 p-4">
+          <h3 className="font-semibold text-amber-900 mb-2 flex items-center gap-2">
+            <FiCamera className="w-5 h-5" />
+            อัปโหลดใบรับรองแพทย์
+          </h3>
+          <p className="text-sm text-amber-800 mb-3">การลาป่วยมากกว่า 1 วันที่อนุมัติแล้ว กรุณาอัปโหลดใบรับรองแพทย์</p>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,.pdf"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              const reqId = (e.target as HTMLInputElement).dataset.requestId
+              if (file && reqId) handleMedicalUpload(reqId, file)
+            }}
+          />
+          {summary.recent_requests.filter(needsMedicalCert).map((r) => (
+            <div key={r.id} className="flex items-center justify-between gap-2 py-2 border-b border-amber-200 last:border-0">
+              <span className="text-sm text-amber-900">{r.leave_type_name} ({r.start_date} – {r.end_date})</span>
+              <button
+                type="button"
+                onClick={() => {
+                  fileInputRef.current?.setAttribute('data-request-id', r.id)
+                  fileInputRef.current?.click()
+                }}
+                disabled={uploadingCert === r.id}
+                className="flex items-center gap-1 rounded-lg bg-amber-600 text-white px-3 py-2 text-sm font-medium active:bg-amber-700 disabled:opacity-60"
+              >
+                <FiUpload className="w-4 h-4" />
+                {uploadingCert === r.id ? 'กำลังอัปโหลด...' : 'อัปโหลด'}
+              </button>
+            </div>
+          ))}
+        </section>
+      )}
+
+      <section>
+        <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+          <FiCalendar className="w-5 h-5 text-emerald-600" />
+          ประวัติการขอลา
+        </h3>
+        <div className="rounded-2xl bg-white border border-gray-200 shadow-sm overflow-hidden">
+          {!summary?.recent_requests?.length ? (
+            <p className="p-4 text-center text-gray-500 text-sm">ยังไม่มีรายการขอลา</p>
+          ) : (
+            <ul className="divide-y divide-gray-100">
+              {summary.recent_requests.map((r) => (
+                <li key={r.id} className="p-4">
+                  <div className="flex justify-between items-start gap-2">
+                    <div>
+                      <p className="font-medium text-gray-900">{r.leave_type_name}</p>
+                      <p className="text-sm text-gray-600">
+                        {r.leave_mode === 'hourly'
+                          ? `${r.start_date} ${(r.start_time ?? '').slice(0, 5)}–${(r.end_time ?? '').slice(0, 5)} น. (${r.total_hours ?? 0} ชม.)`
+                          : `${r.start_date} – ${r.end_date} (${r.total_days} วัน)`}
+                      </p>
+                      {r.reason && <p className="text-xs text-gray-500 mt-1">{r.reason}</p>}
+                    </div>
+                    {statusBadge(r.status)}
+                  </div>
+                  {r.medical_cert_url && (
+                    <button
+                      type="button"
+                      onClick={() => setCertViewer({ path: r.medical_cert_url!, name: `ใบรับรองแพทย์ — ${r.leave_type_name}` })}
+                      className="mt-2 flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700 active:bg-emerald-100"
+                    >
+                      <FiPaperclip className="w-3.5 h-3.5" />
+                      ดูเอกสารแนบ
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+
+      {certViewer && (
+        <AttachmentViewer
+          items={[{ bucket: BUCKET_MEDICAL, path: certViewer.path, name: certViewer.name }]}
+          onClose={() => setCertViewer(null)}
+        />
+      )}
+    </div>
+  )
+}

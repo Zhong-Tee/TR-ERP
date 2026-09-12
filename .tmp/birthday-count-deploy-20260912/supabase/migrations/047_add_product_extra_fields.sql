@@ -1,0 +1,4 @@
+ALTER TABLE pr_products
+  ADD COLUMN IF NOT EXISTS seller_name TEXT,
+  ADD COLUMN IF NOT EXISTS product_name_cn TEXT,
+  ADD COLUMN IF NOT EXISTS order_point TEXT;

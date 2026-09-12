@@ -1,0 +1,838 @@
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { AuthProvider } from './contexts/AuthContext'
+import { MenuAccessProvider } from './contexts/MenuAccessContext'
+import Login from './components/auth/Login'
+import Layout from './components/layout/Layout'
+import ProtectedRoute from './components/ProtectedRoute'
+import { useAuthContext } from './contexts/AuthContext'
+import { useMenuAccess } from './contexts/MenuAccessContext'
+import Orders from './pages/Orders'
+import AdminQC from './pages/AdminQC'
+import Account from './pages/Account'
+import QC from './pages/QC'
+import Packing from './pages/Packing'
+import TransportVerification from './pages/TransportVerification'
+import Plan from './pages/Plan'
+import Wms from './pages/Wms'
+import Products from './pages/Products'
+import ProductsInactive from './pages/ProductsInactive'
+import ProductInformation from './pages/ProductInformation'
+import CartoonPatterns from './pages/CartoonPatterns'
+import SalesReports from './pages/SalesReports'
+import KPIDashboard from './pages/KPI'
+import Settings from './pages/Settings'
+import Warehouse from './pages/Warehouse'
+import WarehouseAudit from './pages/WarehouseAudit'
+import WarehouseAdjust from './pages/WarehouseAdjust'
+import WarehouseSub from './pages/WarehouseSub'
+import CreateAuditForm from './components/audit/CreateAuditForm'
+import MobileCountView from './components/audit/MobileCountView'
+import AuditReviewView from './components/audit/AuditReviewView'
+import AuditorHome from './components/audit/AuditorHome'
+import WarehouseReturns from './pages/WarehouseReturns'
+import InternalProduction from './pages/InternalProduction'
+import RollMaterialCalc from './pages/RollMaterialCalc'
+import ProductSalesList from './pages/ProductSalesList'
+import InventoryBalanceHistory from './pages/InventoryBalanceHistory'
+import PurchasePR from './pages/PurchasePR'
+import PurchasePO from './pages/PurchasePO'
+import PurchaseGR from './pages/PurchaseGR'
+import PurchaseSample from './pages/PurchaseSample'
+import DashboardPage from './pages/Dashboard'
+import Marketplace from './pages/Marketplace'
+import Machinery from './pages/Machinery'
+import KnowledgeHub from './pages/KnowledgeHub'
+import TechnicianHome from './components/wms/technician/TechnicianHome'
+import { lazy, Suspense } from 'react'
+import EmployeePortal from './pages/EmployeePortal'
+import ModeLauncher from './pages/ModeLauncher'
+import ResetPassword from './pages/ResetPassword'
+import MissedClockInAlert from './components/hr/MissedClockInAlert'
+import UnreadAnnouncementAlert from './components/hr/UnreadAnnouncementAlert'
+import UnreadWarningCertificateAlert from './components/hr/UnreadWarningCertificateAlert'
+import {
+  DESKTOP_MENU_PATH_ORDER,
+  MACHINERY_MOBILE_ROLES,
+  TECHNICIAN_ROLE,
+  WMS_MOBILE_SPECIAL_ROLES,
+} from './config/accessPolicy'
+import { getActiveMobileMode, getMobileAccess, getSelectableMobileModes, hasDesktopOverride, modeAllowsPath } from './lib/mobileMode'
+
+const HREmployeeRegistry = lazy(() => import('./components/hr/EmployeeRegistry'))
+const HRLeaveManagement = lazy(() => import('./components/hr/LeaveManagement'))
+const HRInterviewSchedule = lazy(() => import('./components/hr/InterviewSchedule'))
+const HRTimeAttendance = lazy(() => import('./components/hr/TimeAttendance'))
+const HRWorkScore = lazy(() => import('./components/hr/WorkScore'))
+const HRWorkCalendar = lazy(() => import('./components/hr/WorkCalendar'))
+const HRContractTemplates = lazy(() => import('./components/hr/ContractTemplates'))
+const HRCompanyDocuments = lazy(() => import('./components/hr/CompanyDocuments'))
+const HROnboardingPlan = lazy(() => import('./components/hr/OnboardingPlan'))
+const HRSalaryPath = lazy(() => import('./components/hr/SalaryPath'))
+const HRAnnouncements = lazy(() => import('./components/hr/AnnouncementManagement'))
+const HRWarningLetters = lazy(() => import('./components/hr/WarningLetters'))
+const HRTrainingCertificates = lazy(() => import('./components/hr/TrainingCertificates'))
+const HRAssetRegistry = lazy(() => import('./components/hr/AssetRegistryPage'))
+const HRSettings = lazy(() => import('./components/hr/HRSettings'))
+const HRTaskManagement = lazy(() => import('./components/hr/TaskManagement'))
+const HRRequests = lazy(() => import('./components/hr/HRRequests'))
+
+const HRLoading = () => (
+  <div className="flex items-center justify-center py-20">
+    <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-600" />
+  </div>
+)
+
+const MOBILE_MAX_WIDTH = 1024
+
+function SmartRedirect() {
+  const { user, signOut } = useAuthContext()
+  const { menuAccessLoading, hasAccess } = useMenuAccess()
+
+  if (!user) return <Navigate to="/" replace />
+
+  // เข้าจากมือถือ + มีสิทธิ์โหมดมือถือ → พาไปหน้าเลือกโหมด (เว้นแต่กด "โหมด PC Desktop" ไว้)
+  if (window.innerWidth <= MOBILE_MAX_WIDTH && !hasDesktopOverride()) {
+    const mobileChoiceCount =
+      getSelectableMobileModes(user).length +
+      (user.employee_access === true ? 1 : 0) +
+      (user.role === TECHNICIAN_ROLE ? 1 : 0) // PC Desktop
+    if (mobileChoiceCount > 1) {
+      return <Navigate to="/mode" replace />
+    }
+    if (getMobileAccess(user).length > 0) {
+      return <Navigate to="/mode" replace />
+    }
+    // เปิดสวิตช์ employee_access อย่างเดียว → เข้าหน้า Employee ทันที (พฤติกรรมเดิม)
+    if (user.employee_access === true) {
+      return <Navigate to="/employee" replace />
+    }
+  }
+
+  // Special roles: redirect immediately without waiting for menuAccess
+  if (user.role === 'auditor') return <Navigate to="/warehouse/audit" replace />
+
+  if (user.role === TECHNICIAN_ROLE) {
+    const useDesktopMode = window.innerWidth > MOBILE_MAX_WIDTH || hasDesktopOverride()
+    return <Navigate to={useDesktopMode ? '/plan' : '/technician'} replace />
+  }
+
+  if (WMS_MOBILE_SPECIAL_ROLES.includes(user.role)) return <Navigate to="/wms" replace />
+
+  if (user.role === 'employee') return <Navigate to="/employee" replace />
+
+  // Desktop roles: wait for menuAccess to determine first accessible page
+  if (menuAccessLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
+          <p className="mt-4 text-gray-600">กำลังโหลด...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // หา menu แรกที่ role มีสิทธิ์เข้าถึง
+  for (const menu of DESKTOP_MENU_PATH_ORDER) {
+    if (hasAccess(menu.key)) return <Navigate to={menu.path} replace />
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-100">
+      <div className="text-center space-y-4 p-8 bg-white rounded-xl shadow-lg max-w-md">
+        <div className="text-5xl">🔒</div>
+        <p className="text-xl font-bold text-gray-700">ไม่มีเมนูที่สามารถเข้าถึงได้</p>
+        <p className="text-gray-500">กรุณาติดต่อผู้ดูแลระบบเพื่อตั้งค่าสิทธิ์การใช้งาน</p>
+        <div className="flex gap-3 justify-center pt-2">
+          <button onClick={() => window.location.reload()} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+            รีเฟรช
+          </button>
+          <button onClick={() => signOut()} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300">
+            ออกจากระบบ
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AuditRouteSwitch() {
+  const { user } = useAuthContext()
+  if (user?.role === 'auditor' || getActiveMobileMode(user) === 'auditor') return <AuditorHome />
+  return <Layout><WarehouseAudit /></Layout>
+}
+
+function AppRoutes() {
+  const { user, loading } = useAuthContext()
+  const location = useLocation()
+
+  // reset-password ต้องแสดงเสมอ ไม่ว่า auth state จะเป็นอะไร
+  // เพราะหลัง verify OTP สำเร็จ user จะถูก set แต่ยังต้องกรอก password ใหม่อยู่
+  if (location.pathname === '/reset-password') {
+    return <ResetPassword />
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
+          <p className="mt-4 text-gray-600">กำลังโหลด...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!user) {
+    if (location.pathname !== '/') {
+      return <Navigate to="/" replace />
+    }
+    return <Login onLoginSuccess={() => {}} />
+  }
+
+  // โหมดมือถือที่สวมอยู่ (จากหน้าเลือกโหมด /mode) — ใช้ layout มือถือของ role นั้นแทน
+  const activeMobileMode = getActiveMobileMode(user)
+  const isWmsMobileRole = user
+    ? WMS_MOBILE_SPECIAL_ROLES.includes(user.role) ||
+      (activeMobileMode != null && WMS_MOBILE_SPECIAL_ROLES.includes(activeMobileMode))
+    : false
+  const isMachineryMobileLayout = user
+    ? (MACHINERY_MOBILE_ROLES.includes(user.role) && user.role !== TECHNICIAN_ROLE) ||
+      (user.role === TECHNICIAN_ROLE && window.innerWidth <= MOBILE_MAX_WIDTH && !hasDesktopOverride()) ||
+      (activeMobileMode != null && MACHINERY_MOBILE_ROLES.includes(activeMobileMode))
+    : false
+
+  // ผู้ใช้ที่เปิดสวิตช์ employee_access เข้า /employee ได้ทุก role — ไม่โดน redirect ของ role มือถือ
+  const onEmployeePortalWithAccess =
+    user?.employee_access === true && location.pathname.startsWith('/employee')
+
+  // role มือถือที่ได้รับสิทธิ์หลายโหมด (mobile_access) → เข้า /mode และ path ของโหมดที่สวมอยู่ได้
+  // โดยไม่โดน redirect ประจำ role ของตัวเอง
+  const mobileModeExempt =
+    (location.pathname === '/mode' && (
+      getSelectableMobileModes(user).length + (user?.employee_access === true ? 1 : 0) > 1
+    )) ||
+    (activeMobileMode != null && modeAllowsPath(activeMobileMode, location.pathname))
+
+  // Technician บนจอ PC ใช้ desktop Layout เป็นค่าเริ่มต้น เว้นแต่เลือกโหมด Mobile ไว้ชัดเจน
+  if (
+    user?.role === TECHNICIAN_ROLE &&
+    location.pathname === '/technician' &&
+    activeMobileMode !== 'technician' &&
+    (window.innerWidth > MOBILE_MAX_WIDTH || hasDesktopOverride())
+  ) {
+    return <Navigate to="/plan" replace />
+  }
+
+  if (
+    user &&
+    user.role === TECHNICIAN_ROLE &&
+    !onEmployeePortalWithAccess &&
+    !mobileModeExempt &&
+    location.pathname !== '/plan' &&
+    location.pathname !== '/machinery' &&
+    location.pathname !== '/technician'
+  ) {
+    return <Navigate to="/technician" replace />
+  }
+
+  if (
+    user &&
+    user.role === 'picker' &&
+    !onEmployeePortalWithAccess &&
+    !mobileModeExempt &&
+    location.pathname !== '/wms'
+  ) {
+    return <Navigate to="/wms" replace />
+  }
+
+  if (
+    user &&
+    (user.role === 'production_mb' || user.role === 'manager') &&
+    !onEmployeePortalWithAccess &&
+    !mobileModeExempt &&
+    location.pathname !== '/wms' &&
+    location.pathname !== '/machinery'
+  ) {
+    return <Navigate to="/wms" replace />
+  }
+
+  if (user && user.role === 'employee' && !location.pathname.startsWith('/employee')) {
+    return <Navigate to="/employee" replace />
+  }
+
+  return (
+    <Routes>
+      <Route
+        path="/"
+        element={<SmartRedirect />}
+      />
+      <Route
+        path="/dashboard"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump', 'qc_order', 'account']}>
+            <Layout>
+              <DashboardPage />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/marketplace"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr']}>
+            <Layout>
+              <Marketplace />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/orders"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump', 'qc_order', 'account']}>
+            <Layout>
+              <Orders />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin-qc"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'qc_order']}>
+            <Layout>
+              <AdminQC />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/account"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'account']}>
+            <Layout>
+              <Account />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/plan"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump', 'production', 'qc_staff', 'packing_staff', 'technician']}>
+            <Layout>
+              <Plan />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/plan/tv"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump', 'production']}>
+            <Plan tvMode />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/technician"
+        element={
+          <ProtectedRoute allowedRoles={['technician']}>
+            <TechnicianHome />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/machinery"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'production', 'production_mb', 'manager', 'technician', 'packing_staff']}>
+            {isMachineryMobileLayout ? (
+              <Machinery />
+            ) : (
+              <Layout>
+                <Machinery />
+              </Layout>
+            )}
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/wms"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store', 'production', 'production_mb', 'manager', 'picker']}>
+            {isWmsMobileRole ? (
+              <Wms />
+            ) : (
+              <Layout>
+                <Wms />
+              </Layout>
+            )}
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/qc"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'production', 'packing_staff']}>
+            <Layout>
+              <QC />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/packing"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'packing_staff', 'production']}>
+            <Layout>
+              <Packing />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/transport"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'packing_staff']}>
+            <Layout>
+              <TransportVerification />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/products/information"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump']}>
+            <Layout>
+              <ProductInformation />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/products/inactive"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump']}>
+            <Layout>
+              <ProductsInactive />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/products"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump']}>
+            <Layout>
+              <Products />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/sub"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store', 'qc_order', 'sales-pump', 'qc_staff', 'packing_staff', 'account', 'production', 'hr']}>
+            <Layout>
+              <WarehouseSub />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store']}>
+            <Layout>
+              <Warehouse />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/audit"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store', 'auditor']}>
+            <AuditRouteSwitch />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/audit/create"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store']}>
+            <Layout>
+              <CreateAuditForm />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/audit/:id/count"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store', 'auditor']}>
+            <MobileCountView />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/audit/:id/review"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store', 'manager']}>
+            <Layout>
+              <AuditReviewView />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/adjust"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store']}>
+            <Layout>
+              <WarehouseAdjust />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/returns"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store']}>
+            <Layout>
+              <WarehouseReturns />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/production"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store', 'production', 'account']}>
+            <Layout>
+              <InternalProduction />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/roll-calc"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store']}>
+            <Layout>
+              <RollMaterialCalc />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/sales-list"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store']}>
+            <Layout>
+              <ProductSalesList />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/purchase/requests"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'account']}>
+            <Layout>
+              <PurchasePR key="machinery-purchase-requests" fixedPrType="machinery" hideCreate />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/purchase/pr"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'account']}>
+            <Layout>
+              <PurchasePR key="standard-purchase-pr" />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/purchase/po"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'account']}>
+            <Layout>
+              <PurchasePO />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/purchase/gr"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store', 'account']}>
+            <Layout>
+              <PurchaseGR />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/purchase/sample"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store', 'account']}>
+            <Layout>
+              <PurchaseSample />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/cartoon-patterns"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump']}>
+            <Layout>
+              <CartoonPatterns />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/sales-reports"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr']}>
+            <Layout>
+              <SalesReports />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/kpi"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr']}>
+            <Layout>
+              <KPIDashboard />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr']}>
+            <Layout>
+              <Settings />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/inventory-history"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store']}>
+            <Layout>
+              <InventoryBalanceHistory />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/knowledge-hub"
+        element={<ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'qc_order', 'sales-pump', 'qc_staff', 'packing_staff', 'account', 'store', 'production', 'hr']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
+      />
+      <Route
+        path="/knowledge-hub/new"
+        element={<ProtectedRoute allowedRoles={['superadmin', 'admin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
+      />
+      <Route
+        path="/knowledge-hub/categories"
+        element={<ProtectedRoute allowedRoles={['superadmin', 'admin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
+      />
+      <Route
+        path="/knowledge-hub/tasks"
+        element={<ProtectedRoute allowedRoles={['superadmin', 'admin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
+      />
+      <Route
+        path="/knowledge-hub/:id"
+        element={<ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'qc_order', 'sales-pump', 'qc_staff', 'packing_staff', 'account', 'store', 'production', 'hr']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
+      />
+      <Route
+        path="/knowledge-hub/:id/edit"
+        element={<ProtectedRoute allowedRoles={['superadmin', 'admin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
+      />
+      <Route
+        path="/hr"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HREmployeeRegistry /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/leave"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRLeaveManagement /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/interview"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRInterviewSchedule /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/attendance"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRTimeAttendance /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/work-score"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRWorkScore /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/work-calendar"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRWorkCalendar /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/contracts"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRContractTemplates /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/documents"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRCompanyDocuments /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/onboarding"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HROnboardingPlan /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/salary"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRSalaryPath /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/announcements"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRAnnouncements /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/warnings"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRWarningLetters /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/certificates"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRTrainingCertificates /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/assets"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRAssetRegistry /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/tasks"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRTaskManagement /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/requests"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRRequests /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/settings"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRSettings /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/employee/*"
+        element={
+          <ProtectedRoute allowedRoles={['employee']}>
+            <EmployeePortal />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/mode"
+        element={
+          <ProtectedRoute>
+            <ModeLauncher />
+          </ProtectedRoute>
+        }
+      />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  )
+}
+
+function App() {
+  return (
+    <Router>
+      <AuthProvider>
+        <MenuAccessProvider>
+          <AppRoutes />
+          {/* เตือน "ลืมบันทึกเวลาเข้างาน" ทันทีที่ login — ครอบทุกหน้า */}
+          <MissedClockInAlert />
+          {/* เตือน "ประกาศที่ยังไม่รับทราบ" ทันทีที่ login — ครอบทุกหน้า ทั้ง PC และมือถือ */}
+          <UnreadAnnouncementAlert />
+          <UnreadWarningCertificateAlert />
+        </MenuAccessProvider>
+      </AuthProvider>
+    </Router>
+  )
+}
+
+export default App

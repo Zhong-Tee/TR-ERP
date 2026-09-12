@@ -1,0 +1,2406 @@
+import { useState, useEffect, useRef } from 'react'
+import * as XLSX from 'xlsx'
+import { supabase } from '../lib/supabase'
+import { buildIlikeOr } from '../lib/searchFilter'
+import { getPublicUrl } from '../lib/qcApi'
+import { getNextProductCode } from '../lib/purchaseApi'
+import Modal from '../components/ui/Modal'
+import { Product, ProductType } from '../types'
+import { useAuthContext } from '../contexts/AuthContext'
+
+const COST_VISIBLE_ROLES = ['superadmin', 'account']
+const PRODUCT_SAFE_COLUMNS = 'id, product_code, product_name, seller_name, product_name_cn, order_point, order_point_days, product_category, product_type, rubber_code, storage_location, safety_stock, unit_name, unit_multiplier, is_hold, hold_reason, hold_at, hold_by, is_active, created_at, updated_at'
+
+const SEARCH_DEBOUNCE_MS = 400
+const PAGE_SIZE = 50
+/** PostgREST / payload size safety for bulk insert */
+const DB_CHUNK_SIZE = 500
+
+const BUCKET_PRODUCT_IMAGES = 'product-images'
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
+
+function getProductImageUrl(productCode: string | null | undefined, ext: string = '.jpg'): string {
+  return getPublicUrl(BUCKET_PRODUCT_IMAGES, productCode, ext)
+}
+
+/** Import สินค้า: ไม่รวม safety_stock — ปรับจำนวน safety จริงผ่านคลัง / ใบปรับสต๊อค */
+const PRODUCT_TEMPLATE_HEADERS = [
+  'product_code',
+  'product_name',
+  'seller_name',
+  'product_name_cn',
+  'order_point',
+  'order_point_days',
+  'product_category',
+  'product_type',
+  'rubber_code',
+  'storage_location',
+  'unit_cost',
+  'unit_name',
+  'unit_multiplier',
+] as const
+
+const INIT_IMPORT_HEADERS = [
+  'product_code',
+  'product_name',
+  'product_name_cn',
+  'product_category',
+  'product_type',
+  'seller_name',
+  'seller_name_cn',
+  'seller_purchase_channel',
+  'seller_type',
+  'unit_cost',
+  'initial_stock',
+  'safety_stock',
+  'order_point',
+  'order_point_days',
+  'rubber_code',
+  'storage_location',
+  'unit_name',
+  'unit_multiplier',
+] as const
+
+type SellerTypeValue = 'thailand' | 'foreign'
+
+function parseSellerType(raw: unknown): SellerTypeValue | null {
+  const v = String(raw ?? '').trim().toLowerCase()
+  if (!v) return null
+  if (['thailand', 'th', 'ไทย', 'ประเทศไทย'].includes(v)) return 'thailand'
+  if (['foreign', 'intl', 'international', 'cn', 'ต่างประเทศ', 'ตปท'].includes(v)) return 'foreign'
+  return null
+}
+
+function sellerTypeLabel(value: SellerTypeValue | null | undefined) {
+  if (value === 'thailand') return 'ประเทศไทย'
+  if (value === 'foreign') return 'ต่างประเทศ'
+  return '-'
+}
+
+type ChannelOption = { channel_code: string; channel_name: string }
+
+interface InitImportRow {
+  product_code: string
+  product_name: string
+  product_name_cn: string
+  product_category: string
+  product_type: string
+  seller_name: string
+  seller_name_cn: string
+  seller_purchase_channel: string
+  seller_type: SellerTypeValue | null
+  unit_cost: number
+  initial_stock: number
+  safety_stock: number
+  order_point: string
+  order_point_days: number | null
+  rubber_code: string
+  storage_location: string
+  unit_name: string
+  unit_multiplier: number
+  channel_prices: Record<string, number>
+}
+
+/** อัปโหลดไฟล์รูปไป bucket product-images ชื่อไฟล์ = productCode + นามสกุล จากไฟล์ */
+async function uploadProductImage(file: File, productCode: string): Promise<string> {
+  const ext = file.name.includes('.') ? '.' + file.name.split('.').pop() : '.jpg'
+  const fileName = productCode.trim() + ext
+  const { data, error } = await supabase.storage
+    .from(BUCKET_PRODUCT_IMAGES)
+    .upload(fileName, file, {
+      cacheControl: '3600',
+      upsert: true,
+      contentType: file.type || `image/${ext.replace('.', '')}`,
+    })
+  if (error) throw error
+  return `${supabaseUrl}/storage/v1/object/public/${BUCKET_PRODUCT_IMAGES}/${encodeURIComponent(data.path)}`
+}
+
+/** อัปโหลดรูปเดียวไป bucket ด้วยชื่อไฟล์เดิม (ใช้สำหรับอัปโหลดหลายรูป) */
+async function uploadImageToBucket(file: File): Promise<void> {
+  const fileName = file.name || `image-${Date.now()}.jpg`
+  const { error } = await supabase.storage
+    .from(BUCKET_PRODUCT_IMAGES)
+    .upload(fileName, file, {
+      cacheControl: '3600',
+      upsert: true,
+      contentType: file.type || 'image/jpeg',
+    })
+  if (error) throw error
+}
+
+type ChannelPriceRow = { product_id: string; channel_code: string; sale_price: number }
+
+type ImportProgressState = {
+  active: boolean
+  title: string
+  phase: string
+  current: number
+  total: number
+}
+
+type UploadImageResultState = {
+  open: boolean
+  total: number
+  success: number
+  failed: number
+  errors: string[]
+}
+
+const emptyImportProgress = (): ImportProgressState => ({
+  active: false,
+  title: '',
+  phase: '',
+  current: 0,
+  total: 0,
+})
+
+async function insertChannelPricesInChunks(
+  rows: ChannelPriceRow[],
+  onProgress?: (done: number, total: number) => void,
+): Promise<void> {
+  for (let i = 0; i < rows.length; i += DB_CHUNK_SIZE) {
+    const chunk = rows.slice(i, i + DB_CHUNK_SIZE)
+    const { error } = await supabase.from('pr_product_channel_prices').insert(chunk)
+    if (error) throw error
+    onProgress?.(Math.min(i + chunk.length, rows.length), rows.length)
+  }
+}
+
+function ImportProgressModal({ progress }: { progress: ImportProgressState }) {
+  if (!progress.active) return null
+
+  const hasTotal = progress.total > 0
+  const percent = hasTotal ? Math.min(100, Math.round((progress.current / progress.total) * 100)) : 0
+
+  return (
+    <Modal
+      open
+      onClose={() => {}}
+      closeOnBackdropClick={false}
+      showCloseButton={false}
+      stackClassName="z-[80]"
+      contentClassName="max-w-md w-full mx-4"
+    >
+      <div className="p-6">
+        <div className="flex items-start gap-4">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-blue-100">
+            <svg className="h-6 w-6 animate-spin text-blue-600" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              />
+            </svg>
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-lg font-bold text-slate-800">{progress.title}</h3>
+            <p className="mt-1 text-sm text-slate-600">{progress.phase}</p>
+          </div>
+        </div>
+
+        <div className="mt-5 space-y-2">
+          {hasTotal ? (
+            <div className="flex items-center justify-between text-sm font-medium text-slate-700">
+              <span>
+                {progress.current.toLocaleString()} / {progress.total.toLocaleString()} รายการ
+              </span>
+              <span className="tabular-nums text-blue-700">{percent}%</span>
+            </div>
+          ) : (
+            <p className="text-sm font-medium text-slate-700">กำลังเตรียมข้อมูล...</p>
+          )}
+
+          <div className="h-2.5 overflow-hidden rounded-full bg-slate-200">
+            {hasTotal ? (
+              <div
+                className="h-full rounded-full bg-blue-600 transition-all duration-300 ease-out"
+                style={{ width: `${Math.max(percent, progress.current > 0 ? 4 : 0)}%` }}
+              />
+            ) : (
+              <div className="h-full w-1/3 animate-pulse rounded-full bg-blue-500" />
+            )}
+          </div>
+
+          {hasTotal && percent >= 100 ? (
+            <p className="text-xs font-medium text-emerald-700">ใกล้เสร็จแล้ว กำลังสรุปผล...</p>
+          ) : (
+            <p className="text-xs text-slate-500">กรุณารอสักครู่ อย่าปิดหรือรีเฟรชหน้านี้</p>
+          )}
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function UploadImageResultModal({
+  result,
+  onClose,
+}: {
+  result: UploadImageResultState
+  onClose: () => void
+}) {
+  if (!result.open) return null
+
+  const allSuccess = result.failed === 0
+  const allFailed = result.success === 0
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      closeOnBackdropClick
+      stackClassName="z-[80]"
+      contentClassName="max-w-lg w-full mx-4"
+    >
+      <div className="p-6">
+        <div className="text-center mb-5">
+          <div className={`mx-auto w-14 h-14 rounded-full flex items-center justify-center mb-3 ${
+            allSuccess ? 'bg-green-100' : allFailed ? 'bg-red-100' : 'bg-amber-100'
+          }`}>
+            {allSuccess && (
+              <svg className="w-7 h-7 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            )}
+            {allFailed && (
+              <svg className="w-7 h-7 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            )}
+            {!allSuccess && !allFailed && (
+              <svg className="w-7 h-7 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            )}
+          </div>
+          <h3 className={`text-lg font-bold ${
+            allSuccess ? 'text-green-800' : allFailed ? 'text-red-800' : 'text-amber-800'
+          }`}>
+            {allSuccess ? 'อัปโหลดรูปสำเร็จ' : allFailed ? 'อัปโหลดรูปล้มเหลว' : 'อัปโหลดรูปเสร็จสิ้น (บางไฟล์ล้มเหลว)'}
+          </h3>
+          <p className="text-sm text-slate-500 mt-1">สรุปผลการอัปโหลดไปยัง Bucket {BUCKET_PRODUCT_IMAGES}</p>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3 mb-4">
+          <div className="bg-blue-50 rounded-xl p-3 text-center">
+            <div className="text-2xl font-bold text-blue-700">{result.total}</div>
+            <div className="text-xs text-blue-600">ทั้งหมด</div>
+          </div>
+          <div className="bg-green-50 rounded-xl p-3 text-center">
+            <div className="text-2xl font-bold text-green-700">{result.success}</div>
+            <div className="text-xs text-green-600">สำเร็จ</div>
+          </div>
+          <div className="bg-red-50 rounded-xl p-3 text-center">
+            <div className="text-2xl font-bold text-red-700">{result.failed}</div>
+            <div className="text-xs text-red-600">ล้มเหลว</div>
+          </div>
+        </div>
+
+        {result.errors.length > 0 && (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-4">
+            <h4 className="text-sm font-semibold text-red-700 mb-1">ไฟล์ที่อัปโหลดไม่สำเร็จ</h4>
+            <ul className="text-xs text-red-600 space-y-0.5 max-h-32 overflow-y-auto">
+              {result.errors.map((e, i) => <li key={i}>{e}</li>)}
+            </ul>
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={onClose}
+          className={`w-full px-4 py-2.5 rounded-xl font-semibold text-white transition-colors ${
+            allSuccess ? 'bg-green-600 hover:bg-green-700'
+              : allFailed ? 'bg-red-600 hover:bg-red-700'
+              : 'bg-amber-500 hover:bg-amber-600'
+          }`}
+        >
+          ตกลง
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+const PRODUCT_TYPE_OPTIONS: { value: ProductType; label: string }[] = [
+  { value: 'FG', label: 'FG - สินค้าสำเร็จรูป' },
+  { value: 'RM', label: 'RM - วัตถุดิบ' },
+  { value: 'PP', label: 'PP - สินค้าแปรรูป' },
+]
+const ADD_PRODUCT_TYPE_OPTIONS = PRODUCT_TYPE_OPTIONS.filter((opt) => opt.value !== 'PP')
+
+const UNIT_PRESETS = ['ชิ้น', 'คู่', 'แพ็ค', 'กล่อง', 'ชุด', 'ม้วน', 'แท่ง', 'เส้น']
+
+const emptyForm = () => ({
+  product_code: '',
+  product_name: '',
+  seller_name: '',
+  product_name_cn: '',
+  order_point: '',
+  order_point_days: '',
+  product_category: '',
+  product_type: 'FG' as ProductType,
+  rubber_code: '',
+  storage_location: '',
+  unit_cost: '',
+  safety_stock: '',
+  unit_name: 'ชิ้น',
+  unit_multiplier: '1',
+})
+
+/** ค่าจาก API/DB อาจเป็น number หรือ string — ใช้ในฟอร์มและตาราง จุดสั่งซื้อ(วัน) */
+function orderPointDaysToFormString(v: unknown): string {
+  if (v == null || v === '') return ''
+  const n = typeof v === 'number' ? v : Number(v)
+  if (!Number.isFinite(n) || n < 0) return ''
+  return String(Math.floor(n))
+}
+
+function productToFormState(product: Product) {
+  return {
+    product_code: product.product_code,
+    product_name: product.product_name,
+    seller_name: product.seller_name || '',
+    product_name_cn: product.product_name_cn || '',
+    order_point: product.order_point || '',
+    order_point_days: orderPointDaysToFormString(product.order_point_days),
+    product_category: product.product_category || '',
+    product_type: product.product_type || 'FG',
+    rubber_code: product.rubber_code || '',
+    storage_location: product.storage_location || '',
+    unit_cost: product.unit_cost != null ? String(product.unit_cost) : '',
+    safety_stock: product.safety_stock != null ? String(product.safety_stock) : '',
+    unit_name: product.unit_name || 'ชิ้น',
+    unit_multiplier: product.unit_multiplier != null ? String(product.unit_multiplier) : '1',
+  }
+}
+
+export default function Products() {
+  const { user } = useAuthContext()
+  const canSeeCost = COST_VISIBLE_ROLES.includes(user?.role || '')
+  const canSeeChannelPrices = user?.role !== 'store'
+  const [products, setProducts] = useState<Product[]>([])
+  const [loading, setLoading] = useState(true)
+  const [searchInput, setSearchInput] = useState('')
+  const [appliedSearch, setAppliedSearch] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState('')
+  const [productTypeFilter, setProductTypeFilter] = useState<'' | ProductType>('')
+  const [productVisibilityFilter, setProductVisibilityFilter] = useState<'active' | 'hold' | 'hidden' | 'all'>('active')
+  const [hiddenCount, setHiddenCount] = useState(0)
+  const [holdCount, setHoldCount] = useState(0)
+  const [channels, setChannels] = useState<ChannelOption[]>([])
+  const [channelPrices, setChannelPrices] = useState<Record<string, string>>({})
+  const [categories, setCategories] = useState<string[]>([])
+  const [modalMode, setModalMode] = useState<'add' | 'edit' | null>(null)
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null)
+  const [form, setForm] = useState(emptyForm())
+  const [saving, setSaving] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [holdingId, setHoldingId] = useState<string | null>(null)
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [uploadPreview, setUploadPreview] = useState<string | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [importProgress, setImportProgress] = useState<ImportProgressState>(emptyImportProgress)
+  const [uploadingImages, setUploadingImages] = useState(false)
+  const [uploadImageResult, setUploadImageResult] = useState<UploadImageResultState>({
+    open: false,
+    total: 0,
+    success: 0,
+    failed: 0,
+    errors: [],
+  })
+  const [sellerOptions, setSellerOptions] = useState<string[]>([])
+  const [page, setPage] = useState(1)
+  const [totalCount, setTotalCount] = useState(0)
+
+  // Notification modal
+  const [notifyModal, setNotifyModal] = useState<{ open: boolean; type: 'success' | 'error' | 'warning'; title: string; message: string }>({
+    open: false, type: 'success', title: '', message: '',
+  })
+  function showNotify(type: 'success' | 'error' | 'warning', title: string, message: string = '') {
+    setNotifyModal({ open: true, type, title, message })
+  }
+
+  const isSuperAdmin = user?.role === 'superadmin'
+
+  // Init import state
+  const [initImportOpen, setInitImportOpen] = useState(false)
+  const [initImportRows, setInitImportRows] = useState<InitImportRow[]>([])
+  const [initImportDupCodes, setInitImportDupCodes] = useState<Set<string>>(new Set())
+  const [initImportErrors, setInitImportErrors] = useState<string[]>([])
+  const [initImporting, setInitImporting] = useState(false)
+  const initImportInputRef = useRef<HTMLInputElement>(null)
+
+  function showImportProgress(update: Partial<ImportProgressState> & Pick<ImportProgressState, 'title' | 'phase'>) {
+    setImportProgress((prev) => ({
+      ...prev,
+      active: true,
+      current: update.current ?? prev.current,
+      total: update.total ?? prev.total,
+      title: update.title,
+      phase: update.phase,
+    }))
+  }
+
+  function patchImportProgress(update: Partial<ImportProgressState>) {
+    setImportProgress((prev) => ({ ...prev, ...update }))
+  }
+
+  function hideImportProgress() {
+    setImportProgress(emptyImportProgress())
+  }
+
+  const isImportBusy = importing || initImporting
+
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const importInputRef = useRef<HTMLInputElement>(null)
+  const uploadImagesInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    debounceRef.current = setTimeout(() => {
+      setAppliedSearch(searchInput.trim())
+      setPage(1)
+    }, SEARCH_DEBOUNCE_MS)
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [searchInput])
+
+  useEffect(() => {
+    setPage(1)
+  }, [categoryFilter, productTypeFilter, productVisibilityFilter])
+
+  useEffect(() => {
+    loadProducts()
+  }, [appliedSearch, categoryFilter, productTypeFilter, productVisibilityFilter, page])
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('topbar-menu-count', { detail: { count: totalCount } }))
+  }, [totalCount])
+
+  useEffect(() => {
+    loadCategories()
+    loadSellerOptions()
+    loadChannels()
+  }, [])
+
+  function getChannelPriceHeaders(list: ChannelOption[]) {
+    return list.map((ch) => `price_${ch.channel_code}`)
+  }
+
+  async function loadCategories() {
+    try {
+      const { data, error } = await supabase.rpc('get_distinct_product_categories')
+      if (error) throw error
+      const list = ((data || []) as Array<{ product_category: string | null }>)
+        .map((r) => r.product_category)
+        .filter((category: string | null): category is string => Boolean(category?.trim()))
+        .map((category) => category.trim())
+      setCategories(Array.from(new Set<string>(list)).sort((a, b) => a.localeCompare(b, 'th', { numeric: true })))
+    } catch (e) {
+      console.error('Error loading categories:', e)
+    }
+  }
+
+  async function loadSellerOptions() {
+    try {
+      const { data, error } = await supabase
+        .from('pr_sellers')
+        .select('name')
+        .eq('is_active', true)
+        .order('name')
+      if (error) throw error
+      setSellerOptions((data || []).map((s: { name: string }) => s.name))
+    } catch (e) {
+      console.error('Error loading sellers:', e)
+    }
+  }
+
+  async function loadChannels() {
+    try {
+      const { data, error } = await supabase
+        .from('channels')
+        .select('channel_code, channel_name')
+        .order('channel_code', { ascending: true })
+      if (error) throw error
+      setChannels((data || []) as ChannelOption[])
+    } catch (e) {
+      console.error('Error loading channels:', e)
+    }
+  }
+
+  async function loadProducts() {
+    setLoading(true)
+    try {
+      const from = (page - 1) * PAGE_SIZE
+      const to = from + PAGE_SIZE - 1
+
+      let query = supabase
+        .from('pr_products')
+        .select((canSeeCost ? '*' : PRODUCT_SAFE_COLUMNS) as '*', { count: 'exact' })
+        .order('product_code', { ascending: true })
+        .range(from, to)
+      const hiddenCountQuery = supabase
+        .from('pr_products')
+        .select('*', { count: 'exact', head: true })
+        .eq('is_active', false)
+      const holdCountQuery = supabase
+        .from('pr_products')
+        .select('*', { count: 'exact', head: true })
+        .eq('is_active', true)
+        .eq('is_hold', true)
+
+      if (productVisibilityFilter === 'active') {
+        query = query.eq('is_active', true).eq('is_hold', false)
+      } else if (productVisibilityFilter === 'hold') {
+        query = query.eq('is_active', true).eq('is_hold', true)
+      } else if (productVisibilityFilter === 'hidden') {
+        query = query.eq('is_active', false)
+      }
+
+      if (appliedSearch) {
+        query = query.or(buildIlikeOr(appliedSearch, ['product_code', 'product_name']))
+      }
+      if (categoryFilter) {
+        query = query.eq('product_category', categoryFilter)
+      }
+      if (productTypeFilter) {
+        query = query.eq('product_type', productTypeFilter)
+      }
+
+      const [{ data, error, count }, { count: hiddenTotal, error: hiddenErr }, { count: holdTotal, error: holdErr }] = await Promise.all([
+        query,
+        hiddenCountQuery,
+        holdCountQuery,
+      ])
+
+      if (error) throw error
+      if (hiddenErr) throw hiddenErr
+      if (holdErr) throw holdErr
+      setProducts(data || [])
+      setTotalCount(count || 0)
+      setHiddenCount(hiddenTotal || 0)
+      setHoldCount(holdTotal || 0)
+    } catch (error: any) {
+      console.error('Error loading products:', error)
+      showNotify('error', 'เกิดข้อผิดพลาดในการโหลดข้อมูล', error.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function autoGenerateProductCodeByType(productType: ProductType) {
+    if (productType !== 'FG' && productType !== 'RM') return
+    try {
+      const nextCode = await getNextProductCode(productType)
+      setForm((prev) => (prev.product_type === productType ? { ...prev, product_code: nextCode } : prev))
+    } catch (error: any) {
+      console.error('Error generating product code:', error)
+      showNotify('warning', 'ไม่สามารถรันรหัสสินค้าอัตโนมัติได้', error?.message || 'กรุณากรอกรหัสสินค้าเอง')
+    }
+  }
+
+  function openAdd() {
+    setForm(emptyForm())
+    setChannelPrices({})
+    setEditingProduct(null)
+    setUploadFile(null)
+    setUploadPreview(null)
+    setModalMode('add')
+    void autoGenerateProductCodeByType('FG')
+  }
+
+  async function openEdit(product: Product) {
+    setEditingProduct(product)
+    setForm(productToFormState(product))
+    setUploadFile(null)
+    setUploadPreview(null)
+    setModalMode('edit')
+    if (canSeeChannelPrices) void loadProductChannelPrices(product.id)
+
+    try {
+      const { data, error } = await supabase.from('pr_products').select((canSeeCost ? '*' : PRODUCT_SAFE_COLUMNS) as '*').eq('id', product.id).single()
+      if (error) throw error
+      if (data) {
+        const row = data as Product
+        setEditingProduct(row)
+        setForm(productToFormState(row))
+      }
+    } catch (e) {
+      console.error('openEdit: failed to load product row', e)
+    }
+  }
+
+  function closeModal() {
+    if (uploadPreview) URL.revokeObjectURL(uploadPreview)
+    setModalMode(null)
+    setEditingProduct(null)
+    setForm(emptyForm())
+    setChannelPrices({})
+    setUploadFile(null)
+    setUploadPreview(null)
+  }
+
+  async function loadProductChannelPrices(productId: string) {
+    try {
+      const { data, error } = await supabase
+        .from('pr_product_channel_prices')
+        .select('channel_code, sale_price')
+        .eq('product_id', productId)
+      if (error) throw error
+      const map: Record<string, string> = {}
+      ;(data || []).forEach((row: { channel_code: string; sale_price: number }) => {
+        map[row.channel_code] = String(row.sale_price ?? '')
+      })
+      setChannelPrices(map)
+    } catch (error) {
+      console.error('Error loading channel prices:', error)
+      setChannelPrices({})
+    }
+  }
+
+  async function saveProductChannelPrices(productId: string) {
+    // Store users must not read or overwrite channel-sale prices while editing product metadata.
+    if (!canSeeChannelPrices) return
+    const rows = channels
+      .map((ch) => {
+        const raw = String(channelPrices[ch.channel_code] ?? '').trim()
+        if (raw === '') return null
+        const price = Number(raw)
+        if (!Number.isFinite(price) || price < 0) return null
+        return {
+          product_id: productId,
+          channel_code: ch.channel_code,
+          sale_price: Number(price.toFixed(2)),
+        }
+      })
+      .filter(Boolean) as Array<{ product_id: string; channel_code: string; sale_price: number }>
+
+    const { error: delErr } = await supabase
+      .from('pr_product_channel_prices')
+      .delete()
+      .eq('product_id', productId)
+    if (delErr) throw delErr
+
+    if (rows.length > 0) {
+      const { error: insErr } = await supabase
+        .from('pr_product_channel_prices')
+        .insert(rows)
+      if (insErr) throw insErr
+    }
+  }
+
+  function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (uploadPreview) URL.revokeObjectURL(uploadPreview)
+    setUploadPreview(null)
+    setUploadFile(file || null)
+    if (file) setUploadPreview(URL.createObjectURL(file))
+    e.target.value = ''
+  }
+
+  async function handleSave() {
+    const code = form.product_code.trim()
+    const name = form.product_name.trim()
+    if (!code || !name) {
+      showNotify('warning', 'กรุณากรอกรหัสสินค้าและชื่อสินค้า')
+      return
+    }
+
+    setSaving(true)
+    try {
+      if (uploadFile) {
+        await uploadProductImage(uploadFile, code)
+      }
+      const parsedMultiplier = parseFloat(form.unit_multiplier) || 1
+      const unitMultiplier = parsedMultiplier > 0 ? parsedMultiplier : 1
+      const parsedOrderPointDays = Number(form.order_point_days.trim())
+      const orderPointDays =
+        form.order_point_days.trim() === ''
+          ? null
+          : Number.isFinite(parsedOrderPointDays) && parsedOrderPointDays >= 0
+            ? Math.floor(parsedOrderPointDays)
+            : null
+      const productTypeToSave: ProductType =
+        modalMode === 'add' && form.product_type === 'PP'
+          ? 'FG'
+          : (form.product_type || 'FG')
+
+      if (modalMode === 'add') {
+        const { data: createdProduct, error } = await supabase.from('pr_products').insert({
+          product_code: code,
+          product_name: name,
+          seller_name: form.seller_name.trim() || null,
+          product_name_cn: form.product_name_cn.trim() || null,
+          order_point: form.order_point.trim() || null,
+          order_point_days: orderPointDays,
+          product_category: form.product_category.trim() || null,
+          product_type: productTypeToSave,
+          rubber_code: form.rubber_code.trim() || null,
+          storage_location: form.storage_location.trim() || null,
+          unit_cost: form.unit_cost.trim() ? Number(form.unit_cost.trim()) : 0,
+          safety_stock: form.safety_stock.trim() ? Number(form.safety_stock.trim()) : 0,
+          unit_name: form.unit_name.trim() || 'ชิ้น',
+          unit_multiplier: unitMultiplier,
+          is_active: true,
+        }).select('id').single()
+        if (error) throw error
+        await saveProductChannelPrices(createdProduct.id)
+        showNotify('success', 'เพิ่มสินค้าเรียบร้อย')
+      } else if (modalMode === 'edit' && editingProduct) {
+        const { error } = await supabase
+          .from('pr_products')
+          .update({
+            product_code: code,
+            product_name: name,
+            seller_name: form.seller_name.trim() || null,
+            product_name_cn: form.product_name_cn.trim() || null,
+            order_point: form.order_point.trim() || null,
+            order_point_days: orderPointDays,
+            product_category: form.product_category.trim() || null,
+            product_type: productTypeToSave,
+            rubber_code: form.rubber_code.trim() || null,
+            storage_location: form.storage_location.trim() || null,
+            unit_cost: form.unit_cost.trim() ? Number(form.unit_cost.trim()) : 0,
+            safety_stock: form.safety_stock.trim() ? Number(form.safety_stock.trim()) : 0,
+            unit_name: form.unit_name.trim() || 'ชิ้น',
+            unit_multiplier: unitMultiplier,
+          })
+          .eq('id', editingProduct.id)
+        if (error) throw error
+        await saveProductChannelPrices(editingProduct.id)
+        showNotify('success', 'แก้ไขสินค้าเรียบร้อย')
+      }
+      closeModal()
+      loadProducts()
+      loadCategories()
+      loadSellerOptions()
+    } catch (error: any) {
+      console.error('Error saving product:', error)
+      showNotify('error', 'เกิดข้อผิดพลาด', error.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function toggleProductVisibility(product: Product) {
+    setDeletingId(product.id)
+    try {
+      const { error } = await supabase
+        .from('pr_products')
+        .update({ is_active: !product.is_active })
+        .eq('id', product.id)
+      if (error) throw error
+      showNotify('success', product.is_active ? 'ซ่อนสินค้าเรียบร้อย' : 'ยกเลิกซ่อนสินค้าเรียบร้อย')
+      loadProducts()
+    } catch (error: any) {
+      console.error('Error toggling product visibility:', error)
+      showNotify('error', 'เกิดข้อผิดพลาด', error.message)
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  async function toggleProductHold(product: Product) {
+    setHoldingId(product.id)
+    try {
+      const nextHold = !product.is_hold
+      const { error } = await supabase
+        .from('pr_products')
+        .update({
+          is_hold: nextHold,
+          hold_at: nextHold ? new Date().toISOString() : null,
+          hold_by: nextHold ? (user?.id ?? null) : null,
+        })
+        .eq('id', product.id)
+      if (error) throw error
+      showNotify('success', nextHold ? 'ตั้งค่า Hold เรียบร้อย' : 'ยกเลิก Hold เรียบร้อย')
+      loadProducts()
+    } catch (error: any) {
+      console.error('Error toggling product hold:', error)
+      showNotify('error', 'เกิดข้อผิดพลาด', error.message)
+    } finally {
+      setHoldingId(null)
+    }
+  }
+
+  function downloadTemplate() {
+    const channelPriceHeaders = getChannelPriceHeaders(channels)
+    const headers = [...PRODUCT_TEMPLATE_HEADERS, ...channelPriceHeaders]
+    const ws = XLSX.utils.aoa_to_sheet([
+      headers as unknown as string[],
+      ['P001', 'สินค้าตัวอย่าง', 'ผู้ขายA', '样品', 'จุดA', 14, 'หมวดA', 'FG', 'R001', 'A-1', 50, 'ชิ้น', 1, ...channelPriceHeaders.map(() => '')],
+    ])
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'สินค้า')
+    XLSX.writeFile(wb, 'Template_สินค้า.xlsx')
+  }
+
+  async function downloadProductsExcel() {
+    try {
+      // ดึงสินค้าทั้งหมดแบบแบ่งหน้า — กัน PostgREST จำกัด 1000 แถวต่อ query
+      const PAGE = 1000
+      const data: Array<Record<string, unknown> & { id: string }> = []
+      for (let from = 0; ; from += PAGE) {
+        const { data: part, error } = await supabase
+          .from('pr_products')
+          .select(
+            'id, product_code, product_name, seller_name, product_name_cn, order_point, order_point_days, product_category, product_type, rubber_code, storage_location, unit_cost, unit_name, unit_multiplier'
+          )
+          .eq('is_active', true)
+          .order('product_code', { ascending: true })
+          .range(from, from + PAGE - 1)
+        if (error) throw error
+        data.push(...((part || []) as Array<Record<string, unknown> & { id: string }>))
+        if (!part || part.length < PAGE) break
+      }
+      const productIds = data.map((p) => p.id)
+      const channelPriceHeaders = getChannelPriceHeaders(channels)
+      const headers = [...PRODUCT_TEMPLATE_HEADERS, ...channelPriceHeaders]
+      const priceMapByProductId: Record<string, Record<string, number>> = {}
+      if (productIds.length > 0) {
+        // ดึงราคาช่องทางทั้งหมดแบบแบ่งหน้า + เรียงลำดับ — กันแถวที่เพิ่งแก้ (insert ใหม่) หลุดเกิน 1000 แถวแรก
+        const priceRows: { product_id: string; channel_code: string; sale_price: number }[] = []
+        for (let from = 0; ; from += PAGE) {
+          const { data: part, error: priceErr } = await supabase
+            .from('pr_product_channel_prices')
+            .select('product_id, channel_code, sale_price')
+            .in('product_id', productIds)
+            .order('product_id', { ascending: true })
+            .order('channel_code', { ascending: true })
+            .range(from, from + PAGE - 1)
+          if (priceErr) throw priceErr
+          priceRows.push(...((part || []) as { product_id: string; channel_code: string; sale_price: number }[]))
+          if (!part || part.length < PAGE) break
+        }
+        priceRows.forEach((row) => {
+          if (!priceMapByProductId[row.product_id]) priceMapByProductId[row.product_id] = {}
+          priceMapByProductId[row.product_id][`price_${row.channel_code}`] = row.sale_price
+        })
+      }
+      const rows = (data || []).map((p) =>
+        headers.map((h) => {
+          if (h.startsWith('price_')) return priceMapByProductId[(p as { id: string }).id]?.[h] ?? ''
+          return (p as Record<string, unknown>)[h] ?? ''
+        })
+      )
+      const wb = XLSX.utils.book_new()
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
+      XLSX.utils.book_append_sheet(wb, ws, 'สินค้า')
+      XLSX.writeFile(wb, 'ข้อมูลสินค้าทั้งหมด.xlsx')
+    } catch (e: any) {
+      console.error(e)
+      showNotify('error', 'ดาวน์โหลดไม่สำเร็จ', e?.message || String(e))
+    }
+  }
+
+  async function handleImport(file: File) {
+    setImporting(true)
+    showImportProgress({ title: 'Import สินค้า', phase: 'กำลังอ่านและตรวจสอบไฟล์...', current: 0, total: 0 })
+    try {
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(new Uint8Array(buf), { type: 'array' })
+      const firstSheet = wb.SheetNames[0]
+      if (!firstSheet) throw new Error('ไม่มีชีตในไฟล์')
+      const sheet = wb.Sheets[firstSheet]
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+      if (!rows.length) throw new Error('ไม่มีข้อมูลในไฟล์')
+
+      const validTypes: ProductType[] = ['FG', 'RM', 'PP']
+      const channelPriceHeaders = getChannelPriceHeaders(channels)
+      const toInsert: Array<{
+        product_code: string
+        product_name: string
+        seller_name: string | null
+        product_name_cn: string | null
+        order_point: string | null
+        order_point_days: number | null
+        product_category: string | null
+        product_type: ProductType
+        rubber_code: string | null
+        storage_location: string | null
+        unit_cost: number
+        unit_name: string
+        unit_multiplier: number
+        is_active: boolean
+        channel_prices: Record<string, number>
+      }> = []
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i]
+        const code = String(row.product_code ?? '').trim()
+        const name = String(row.product_name ?? '').trim()
+        if (!code || !name) continue
+        const rawType = String(row.product_type ?? '').trim().toUpperCase()
+        const productType: ProductType = validTypes.includes(rawType as ProductType) ? (rawType as ProductType) : 'FG'
+        const unitCost = Number(row.unit_cost ?? 0)
+        const rawOrderPointDays = Number(row.order_point_days ?? '')
+        const unitName = String(row.unit_name ?? '').trim() || 'ชิ้น'
+        const rawMultiplier = Number(row.unit_multiplier ?? 1)
+        const unitMultiplier = isNaN(rawMultiplier) || rawMultiplier <= 0 ? 1 : rawMultiplier
+        const channelPricesForRow: Record<string, number> = {}
+        for (const header of channelPriceHeaders) {
+          const rawPrice = String(row[header] ?? '').trim()
+          if (!rawPrice) continue
+          const parsedPrice = Number(rawPrice)
+          if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
+            throw new Error(`ราคา ${header} ไม่ถูกต้อง (แถว ${i + 2})`)
+          }
+          channelPricesForRow[header.replace('price_', '')] = Number(parsedPrice.toFixed(2))
+        }
+        toInsert.push({
+          product_code: code,
+          product_name: name,
+          seller_name: (row.seller_name != null && String(row.seller_name).trim()) || null,
+          product_name_cn: (row.product_name_cn != null && String(row.product_name_cn).trim()) || null,
+          order_point: (row.order_point != null && String(row.order_point).trim()) || null,
+          order_point_days: Number.isFinite(rawOrderPointDays) && rawOrderPointDays >= 0 ? Math.floor(rawOrderPointDays) : null,
+          product_category: (row.product_category != null && String(row.product_category).trim()) || null,
+          product_type: productType,
+          rubber_code: (row.rubber_code != null && String(row.rubber_code).trim()) || null,
+          storage_location: (row.storage_location != null && String(row.storage_location).trim()) || null,
+          unit_cost: isNaN(unitCost) ? 0 : unitCost,
+          unit_name: unitName,
+          unit_multiplier: unitMultiplier,
+          is_active: true,
+          channel_prices: channelPricesForRow,
+        })
+      }
+      if (!toInsert.length) throw new Error('ไม่มีแถวที่ valid (ต้องมี product_code และ product_name)')
+
+      // ตรวจสอบรหัสสินค้าซ้ำในไฟล์ที่นำเข้า
+      const uniqueCodes = new Set<string>()
+      const deduped = toInsert.filter((item) => {
+        const key = item.product_code.toLowerCase()
+        if (uniqueCodes.has(key)) return false
+        uniqueCodes.add(key)
+        return true
+      })
+      const dupInFile = toInsert.length - deduped.length
+
+      const importCodes = deduped.map((i) => i.product_code)
+      patchImportProgress({
+        total: deduped.length,
+        current: 0,
+        phase: `กำลังตรวจสอบรหัสสินค้าในระบบ (${deduped.length.toLocaleString()} รายการ)...`,
+      })
+      // โหลดเฉพาะรหัสในไฟล์ (ไม่ดึงทั้งตาราง)
+      const { data: existingProducts } = await supabase
+        .from('pr_products')
+        .select('id, product_code')
+        .in('product_code', importCodes)
+      const existingCodes = new Set(
+        (existingProducts || []).map((p: { id: string; product_code: string }) => p.product_code.toLowerCase())
+      )
+      const productIdByCode = new Map(
+        (existingProducts || []).map((p: { id: string; product_code: string }) => [p.product_code.toLowerCase(), p.id])
+      )
+      const newItems = deduped.filter((item) => !existingCodes.has(item.product_code.toLowerCase()))
+      const updateItems = deduped.filter((item) => existingCodes.has(item.product_code.toLowerCase()))
+
+      if (!newItems.length && !updateItems.length) {
+        hideImportProgress()
+        showNotify('warning', 'ไม่มีข้อมูลที่จะนำเข้า', dupInFile > 0 ? `ซ้ำในไฟล์ ${dupInFile} รายการ` : '')
+        loadProducts()
+        loadCategories()
+        loadSellerOptions()
+        return
+      }
+
+      const totalProducts = deduped.length
+      let processedProducts = 0
+
+      let insertedCount = 0
+      let updatedCount = 0
+
+      if (newItems.length) {
+        const payload = newItems.map(({ channel_prices, ...rest }) => rest)
+        patchImportProgress({ phase: `กำลังเพิ่มสินค้าใหม่ (${newItems.length.toLocaleString()} รายการ)...` })
+        for (let i = 0; i < payload.length; i += DB_CHUNK_SIZE) {
+          const chunk = payload.slice(i, i + DB_CHUNK_SIZE)
+          const { error } = await supabase.from('pr_products').insert(chunk)
+          if (error) throw error
+          processedProducts += chunk.length
+          patchImportProgress({ current: processedProducts })
+        }
+        insertedCount = payload.length
+      }
+
+      if (updateItems.length) {
+        const updatePayload = updateItems.map(({ channel_prices, is_active: _a, ...rest }) => rest)
+        patchImportProgress({ phase: `กำลังอัปเดตสินค้า (${updateItems.length.toLocaleString()} รายการ)...` })
+        for (let i = 0; i < updatePayload.length; i += DB_CHUNK_SIZE) {
+          const chunk = updatePayload.slice(i, i + DB_CHUNK_SIZE)
+          const { error } = await supabase.from('pr_products').upsert(chunk, { onConflict: 'product_code' })
+          if (error) throw error
+          processedProducts += chunk.length
+          patchImportProgress({ current: processedProducts })
+        }
+        updatedCount = updateItems.length
+      }
+
+      patchImportProgress({ phase: 'กำลังเตรียมข้อมูลราคาช่องทาง...' })
+      const allCodes = deduped.map((i) => i.product_code)
+      if (allCodes.length > 0) {
+        const { data: productsWithIds, error: idErr } = await supabase
+          .from('pr_products')
+          .select('id, product_code')
+          .in('product_code', allCodes)
+        if (idErr) throw idErr
+        ;(productsWithIds || []).forEach((p: { id: string; product_code: string }) => {
+          productIdByCode.set(p.product_code.toLowerCase(), p.id)
+        })
+      }
+
+      const touchedProductIds = deduped
+        .map((item) => productIdByCode.get(item.product_code.toLowerCase()))
+        .filter((id): id is string => Boolean(id))
+
+      if (touchedProductIds.length > 0) {
+        for (let i = 0; i < touchedProductIds.length; i += DB_CHUNK_SIZE) {
+          const idChunk = touchedProductIds.slice(i, i + DB_CHUNK_SIZE)
+          const { error: delErr } = await supabase.from('pr_product_channel_prices').delete().in('product_id', idChunk)
+          if (delErr) throw delErr
+        }
+      }
+
+      const priceRows: ChannelPriceRow[] = []
+      for (const item of deduped) {
+        const productId = productIdByCode.get(item.product_code.toLowerCase())
+        if (!productId) continue
+        for (const [channelCode, price] of Object.entries(item.channel_prices || {})) {
+          priceRows.push({
+            product_id: productId,
+            channel_code: channelCode,
+            sale_price: Number(price) || 0,
+          })
+        }
+      }
+      if (priceRows.length > 0) {
+        patchImportProgress({ phase: `กำลังบันทึกราคาช่องทาง (${priceRows.length.toLocaleString()} รายการ)...` })
+        await insertChannelPricesInChunks(priceRows, (done, total) => {
+          patchImportProgress({
+            current: totalProducts,
+            phase: `กำลังบันทึกราคาช่องทาง ${done.toLocaleString()} / ${total.toLocaleString()} รายการ...`,
+          })
+        })
+      }
+
+      patchImportProgress({ current: totalProducts, phase: 'นำเข้าเสร็จสิ้น กำลังโหลดข้อมูลใหม่...' })
+      const msgs: string[] = []
+      if (insertedCount > 0) msgs.push(`เพิ่มสินค้าใหม่ ${insertedCount} รายการ`)
+      if (updatedCount > 0) msgs.push(`อัปเดตสินค้าเดิม ${updatedCount} รายการ`)
+      if (dupInFile > 0) msgs.push(`ข้ามรายการซ้ำในไฟล์ ${dupInFile} รายการ`)
+      showNotify('success', 'นำเข้าสินค้าสำเร็จ', msgs.join(', '))
+      loadProducts()
+      loadCategories()
+      loadSellerOptions()
+    } catch (err: any) {
+      console.error('Import error:', err)
+      showNotify('error', 'นำเข้าสินค้าล้มเหลว', err?.message || String(err))
+    } finally {
+      hideImportProgress()
+      setImporting(false)
+      importInputRef.current && (importInputRef.current.value = '')
+    }
+  }
+
+  async function handleUploadImages(files: FileList | null) {
+    if (!files?.length) return
+    const imageFiles = Array.from(files).filter((f) => f.type.startsWith('image/'))
+    if (!imageFiles.length) {
+      showNotify('warning', 'กรุณาเลือกไฟล์รูปภาพเท่านั้น')
+      return
+    }
+    setUploadingImages(true)
+    setUploadImageResult({ open: false, total: 0, success: 0, failed: 0, errors: [] })
+    showImportProgress({
+      title: 'อัปโหลดรูปสินค้า',
+      phase: 'กำลังเตรียมอัปโหลด...',
+      current: 0,
+      total: imageFiles.length,
+    })
+    const uploadErrors: string[] = []
+    let ok = 0
+    try {
+      for (let i = 0; i < imageFiles.length; i++) {
+        const file = imageFiles[i]
+        patchImportProgress({
+          phase: `กำลังอัปโหลด ${(i + 1).toLocaleString()} / ${imageFiles.length.toLocaleString()} ไฟล์...`,
+        })
+        try {
+          await uploadImageToBucket(file)
+          ok++
+        } catch (e) {
+          const errMsg = e instanceof Error ? e.message : String(e)
+          console.error('Upload fail:', file.name, e)
+          uploadErrors.push(`${file.name}: ${errMsg}`)
+        }
+        patchImportProgress({ current: i + 1 })
+      }
+      patchImportProgress({ current: imageFiles.length, phase: 'อัปโหลดเสร็จสิ้น กำลังสรุปผล...' })
+      setUploadImageResult({
+        open: true,
+        total: imageFiles.length,
+        success: ok,
+        failed: uploadErrors.length,
+        errors: uploadErrors,
+      })
+    } catch (err: any) {
+      console.error('Upload images error:', err)
+      showNotify('error', 'อัปโหลดรูปล้มเหลว', err?.message || String(err))
+    } finally {
+      hideImportProgress()
+      setUploadingImages(false)
+      uploadImagesInputRef.current && (uploadImagesInputRef.current.value = '')
+    }
+  }
+
+  // ── Init Import: Download Template ──
+
+  function downloadInitTemplate() {
+    const channelPriceHeaders = getChannelPriceHeaders(channels)
+    const headers = [...INIT_IMPORT_HEADERS, ...channelPriceHeaders]
+    const ws = XLSX.utils.aoa_to_sheet([
+      headers,
+      ['110000001', 'CK02-SET สีแดง', '红色套装', 'CALENDAR', 'FG', 'AI DAI', '爱戴', '1688', 'foreign', 25.50, 500, 20, '25', 14, 'R001', 'ชั้น A', 'ชิ้น', 1, ...channelPriceHeaders.map(() => '')],
+      ['110000002', 'สินค้า B', '商品B', 'STICKER', 'RM', 'บริษัทไทย', '', 'Line', 'thailand', 10.00, 1000, 50, '30', 21, '', '', 'แพ็ค', 12, ...channelPriceHeaders.map(() => '')],
+    ])
+    ws['!cols'] = [
+      { wch: 14 }, { wch: 28 }, { wch: 22 }, { wch: 14 }, { wch: 12 },
+      { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 12 },
+      { wch: 12 }, { wch: 14 }, { wch: 12 },
+      { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 12 },
+      ...channelPriceHeaders.map(() => ({ wch: 14 })),
+    ]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'สินค้า+สต๊อค')
+    XLSX.writeFile(wb, 'Template_สินค้า_สต๊อคเริ่มต้น.xlsx')
+  }
+
+  // ── Init Import: Parse Excel → preview ──
+
+  async function handleInitImportFile(file: File) {
+    try {
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(new Uint8Array(buf), { type: 'array' })
+      const firstSheet = wb.SheetNames[0]
+      if (!firstSheet) throw new Error('ไม่มีชีตในไฟล์')
+      const sheet = wb.Sheets[firstSheet]
+      const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+      if (!rawRows.length) throw new Error('ไม่มีข้อมูลในไฟล์')
+
+      const validTypes: ProductType[] = ['FG', 'RM', 'PP']
+      const channelPriceHeaders = getChannelPriceHeaders(channels)
+      const errors: string[] = []
+      const parsed: InitImportRow[] = []
+      const seenCodes = new Set<string>()
+
+      for (let i = 0; i < rawRows.length; i++) {
+        const row = rawRows[i]
+        const rowNum = i + 2
+        const code = String(row.product_code ?? '').trim()
+        const name = String(row.product_name ?? '').trim()
+        if (!code) { errors.push(`แถว ${rowNum}: ไม่มี product_code`); continue }
+        if (!name) { errors.push(`แถว ${rowNum}: ไม่มี product_name`); continue }
+        if (seenCodes.has(code.toLowerCase())) {
+          errors.push(`แถว ${rowNum}: product_code "${code}" ซ้ำในไฟล์`)
+          continue
+        }
+        seenCodes.add(code.toLowerCase())
+
+        const rawType = String(row.product_type ?? '').trim().toUpperCase()
+        const unitCost = Number(row.unit_cost ?? 0)
+        const initialStock = Number(row.initial_stock ?? 0)
+        const safetyStock = Number(row.safety_stock ?? 0)
+        const rawOrderPointDays = Number(row.order_point_days ?? '')
+        const orderPointDays =
+          Number.isFinite(rawOrderPointDays) && rawOrderPointDays >= 0
+            ? Math.floor(rawOrderPointDays)
+            : null
+        const unitName = String(row.unit_name ?? '').trim() || 'ชิ้น'
+        const rawMult = Number(row.unit_multiplier ?? 1)
+        const unitMultiplier = isNaN(rawMult) || rawMult <= 0 ? 1 : rawMult
+        const channelPricesForRow: Record<string, number> = {}
+        for (const header of channelPriceHeaders) {
+          const rawPrice = String(row[header] ?? '').trim()
+          if (!rawPrice) continue
+          const parsedPrice = Number(rawPrice)
+          if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
+            errors.push(`แถว ${rowNum}: ${header} ไม่ถูกต้อง`)
+            continue
+          }
+          channelPricesForRow[header.replace('price_', '')] = Number(parsedPrice.toFixed(2))
+        }
+
+        if (isNaN(unitCost) || unitCost < 0) { errors.push(`แถว ${rowNum}: unit_cost ไม่ถูกต้อง`); continue }
+        if (isNaN(initialStock) || initialStock < 0) { errors.push(`แถว ${rowNum}: initial_stock ไม่ถูกต้อง`); continue }
+        if (isNaN(safetyStock) || safetyStock < 0) { errors.push(`แถว ${rowNum}: safety_stock ไม่ถูกต้อง`); continue }
+
+        const rawSellerType = String(row.seller_type ?? '').trim()
+        const sellerType = parseSellerType(rawSellerType)
+        if (rawSellerType && !sellerType) {
+          errors.push(`แถว ${rowNum}: seller_type ไม่ถูกต้อง (ใช้ thailand หรือ foreign)`)
+          continue
+        }
+
+        parsed.push({
+          product_code: code,
+          product_name: name,
+          product_name_cn: String(row.product_name_cn ?? '').trim(),
+          product_category: String(row.product_category ?? '').trim(),
+          product_type: validTypes.includes(rawType as ProductType) ? rawType : 'FG',
+          seller_name: String(row.seller_name ?? '').trim(),
+          seller_name_cn: String(row.seller_name_cn ?? '').trim(),
+          seller_purchase_channel: String(row.seller_purchase_channel ?? '').trim(),
+          seller_type: sellerType,
+          unit_cost: unitCost,
+          initial_stock: initialStock,
+          safety_stock: Math.min(safetyStock, initialStock),
+          order_point: String(row.order_point ?? '').trim(),
+          order_point_days: orderPointDays,
+          rubber_code: String(row.rubber_code ?? '').trim(),
+          storage_location: String(row.storage_location ?? '').trim(),
+          unit_name: unitName,
+          unit_multiplier: unitMultiplier,
+          channel_prices: channelPricesForRow,
+        })
+      }
+
+      if (!parsed.length && errors.length) {
+        showNotify('error', 'ไม่มีข้อมูลที่ถูกต้อง', errors.slice(0, 5).join('\n'))
+        return
+      }
+
+      // Check against existing products
+      const { data: existing } = await supabase
+        .from('pr_products')
+        .select('product_code')
+      const existingCodes = new Set(
+        (existing || []).map((p: { product_code: string }) => p.product_code.toLowerCase())
+      )
+      const dupCodes = new Set<string>()
+      parsed.forEach((r) => { if (existingCodes.has(r.product_code.toLowerCase())) dupCodes.add(r.product_code) })
+
+      setInitImportRows(parsed)
+      setInitImportDupCodes(dupCodes)
+      setInitImportErrors(errors)
+      setInitImportOpen(true)
+    } catch (err: any) {
+      console.error('Init import parse error:', err)
+      showNotify('error', 'อ่านไฟล์ไม่สำเร็จ', err?.message || String(err))
+    } finally {
+      if (initImportInputRef.current) initImportInputRef.current.value = ''
+    }
+  }
+
+  // ── Init Import: Confirm → RPC ──
+
+  async function confirmInitImport() {
+    const newRows = initImportRows.filter((r) => !initImportDupCodes.has(r.product_code))
+    const updateRows = initImportRows.filter((r) => initImportDupCodes.has(r.product_code))
+
+    if (!newRows.length && !updateRows.length) {
+      showNotify('warning', 'ไม่มีข้อมูลที่จะนำเข้า', 'ไม่พบข้อมูลใหม่หรือข้อมูลที่ต้องอัปเดต')
+      return
+    }
+
+    setInitImporting(true)
+    const allRowsPreview = [...newRows, ...updateRows]
+    const totalSteps = newRows.length + updateRows.length + allRowsPreview.length
+    let processedSteps = 0
+    showImportProgress({
+      title: 'Import สินค้า + สต๊อคเริ่มต้น',
+      phase: 'กำลังเตรียมนำเข้าข้อมูล...',
+      current: 0,
+      total: Math.max(totalSteps, 1),
+    })
+    try {
+      let insertedCount = 0
+      let updatedCount = 0
+      const rpcErrors: Array<{ product_code: string; error: string }> = []
+
+      if (newRows.length) {
+        patchImportProgress({
+          phase: `กำลังนำเข้าสินค้าและสต๊อคเริ่มต้น (${newRows.length.toLocaleString()} รายการ)...`,
+        })
+        const payload = newRows.map((r) => ({
+          product_code: r.product_code,
+          product_name: r.product_name,
+          product_category: r.product_category || null,
+          product_type: r.product_type || 'FG',
+          seller_name: r.seller_name || null,
+          seller_name_cn: r.seller_name_cn || null,
+          seller_purchase_channel: r.seller_purchase_channel || null,
+          seller_type: r.seller_type || null,
+          product_name_cn: r.product_name_cn || null,
+          unit_cost: r.unit_cost,
+          initial_stock: r.initial_stock,
+          safety_stock: r.safety_stock,
+          order_point: r.order_point || null,
+          order_point_days: r.order_point_days,
+          rubber_code: r.rubber_code || null,
+          storage_location: r.storage_location || null,
+          unit_name: r.unit_name || 'ชิ้น',
+          unit_multiplier: r.unit_multiplier || 1,
+        }))
+
+        const { data, error } = await supabase.rpc('rpc_bulk_import_products_with_stock', {
+          items: payload,
+        })
+        if (error) throw error
+        const result = data as { imported: number; skipped: number; errors: Array<{ product_code: string; error: string }> }
+        insertedCount = result.imported
+        if (result.errors?.length) rpcErrors.push(...result.errors)
+        processedSteps += newRows.length
+        patchImportProgress({ current: processedSteps })
+      }
+
+      if (updateRows.length) {
+        patchImportProgress({ phase: `กำลังอัปเดตสินค้า (${updateRows.length.toLocaleString()} รายการ)...` })
+      }
+      for (const r of updateRows) {
+        const { error } = await supabase
+          .from('pr_products')
+          .update({
+            product_name: r.product_name,
+            product_name_cn: r.product_name_cn || null,
+            product_category: r.product_category || null,
+            product_type: r.product_type || 'FG',
+            seller_name: r.seller_name || null,
+            seller_name_cn: r.seller_name_cn || null,
+            seller_purchase_channel: r.seller_purchase_channel || null,
+            seller_type: r.seller_type || null,
+            unit_cost: r.unit_cost,
+            order_point: r.order_point || null,
+            order_point_days: r.order_point_days,
+            rubber_code: r.rubber_code || null,
+            storage_location: r.storage_location || null,
+            unit_name: r.unit_name || 'ชิ้น',
+            unit_multiplier: r.unit_multiplier || 1,
+          })
+          .eq('product_code', r.product_code)
+        if (error) {
+          console.error(`Update failed for ${r.product_code}:`, error)
+          rpcErrors.push({ product_code: r.product_code, error: error.message })
+          processedSteps++
+          patchImportProgress({ current: processedSteps })
+          continue
+        }
+        updatedCount++
+        processedSteps++
+        patchImportProgress({
+          current: processedSteps,
+          phase: `กำลังอัปเดตสินค้า ${updatedCount.toLocaleString()} / ${updateRows.length.toLocaleString()} รายการ...`,
+        })
+      }
+
+      // save channel prices for both inserted and updated rows
+      const allRows = allRowsPreview
+      const allCodes = allRows.map((r) => r.product_code)
+      if (allCodes.length > 0) {
+        const { data: productRows, error: productRowsErr } = await supabase
+          .from('pr_products')
+          .select('id, product_code')
+          .in('product_code', allCodes)
+        if (productRowsErr) throw productRowsErr
+        const idMap = new Map<string, string>()
+        ;(productRows || []).forEach((p: { id: string; product_code: string }) => idMap.set(p.product_code.toLowerCase(), p.id))
+        patchImportProgress({ phase: `กำลังบันทึกราคาช่องทาง (${allRows.length.toLocaleString()} รายการ)...` })
+        let pricedCount = 0
+        for (const row of allRows) {
+          const productId = idMap.get(row.product_code.toLowerCase())
+          if (!productId) {
+            processedSteps++
+            patchImportProgress({ current: processedSteps })
+            continue
+          }
+          const priceRows = Object.entries(row.channel_prices || {}).map(([channelCode, price]) => ({
+            product_id: productId,
+            channel_code: channelCode,
+            sale_price: Number(price) || 0,
+          }))
+          const { error: delErr } = await supabase
+            .from('pr_product_channel_prices')
+            .delete()
+            .eq('product_id', productId)
+          if (delErr) throw delErr
+          if (priceRows.length > 0) {
+            const { error: insErr } = await supabase
+              .from('pr_product_channel_prices')
+              .insert(priceRows)
+            if (insErr) throw insErr
+          }
+          pricedCount++
+          processedSteps++
+          patchImportProgress({
+            current: processedSteps,
+            phase: `กำลังบันทึกราคาช่องทาง ${pricedCount.toLocaleString()} / ${allRows.length.toLocaleString()} รายการ...`,
+          })
+        }
+      }
+
+      patchImportProgress({ current: totalSteps, phase: 'นำเข้าเสร็จสิ้น กำลังโหลดข้อมูลใหม่...' })
+      const msgs: string[] = []
+      if (insertedCount > 0) msgs.push(`เพิ่มสินค้าใหม่ ${insertedCount} รายการ`)
+      if (updatedCount > 0) msgs.push(`อัปเดตสินค้าเดิม ${updatedCount} รายการ`)
+      if (rpcErrors.length > 0) msgs.push(`ผิดพลาด ${rpcErrors.length} รายการ`)
+
+      showNotify(
+        rpcErrors.length ? 'warning' : 'success',
+        'ผลการนำเข้าสินค้า + สต๊อค',
+        msgs.join(', ')
+      )
+
+      setInitImportOpen(false)
+      setInitImportRows([])
+      setInitImportDupCodes(new Set())
+      setInitImportErrors([])
+      loadProducts()
+      loadCategories()
+      loadSellerOptions()
+    } catch (err: any) {
+      console.error('Init import error:', err)
+      showNotify('error', 'นำเข้าล้มเหลว', err?.message || String(err))
+    } finally {
+      hideImportProgress()
+      setInitImporting(false)
+    }
+  }
+
+  const initImportChannelHeaders = getChannelPriceHeaders(channels)
+
+  return (
+    <div className="space-y-6 mt-4">
+      <div className="flex flex-wrap items-center justify-end gap-2">
+          {canSeeCost && <button
+            type="button"
+            onClick={downloadProductsExcel}
+            className="px-3 py-2 rounded-xl bg-green-600 text-white hover:bg-green-700 text-sm font-semibold"
+          >
+            ดาวน์โหลด (Excel)
+          </button>}
+          {canSeeCost && <button
+            type="button"
+            onClick={downloadTemplate}
+            className="px-3 py-2 rounded-xl bg-gray-500 text-white hover:bg-gray-600 text-sm font-semibold"
+          >
+            Download Template
+          </button>}
+          {canSeeCost && <label className={`px-3 py-2 rounded-xl bg-yellow-500 text-white hover:bg-yellow-600 text-sm font-semibold inline-block ${isImportBusy ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
+            {importing ? 'กำลังนำเข้า...' : 'Import สินค้า'}
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+              className="hidden"
+              disabled={isImportBusy}
+              onChange={(e) => {
+                const file = e.target.files?.[0]
+                e.target.value = ''
+                if (file) handleImport(file)
+              }}
+            />
+          </label>}
+          {isSuperAdmin && (
+            <>
+              <button
+                type="button"
+                onClick={downloadInitTemplate}
+                className="px-3 py-2 rounded-xl bg-teal-600 text-white hover:bg-teal-700 text-sm font-semibold"
+              >
+                Template สต๊อคเริ่มต้น
+              </button>
+              <label className={`px-3 py-2 rounded-xl bg-orange-600 text-white hover:bg-orange-700 text-sm font-semibold inline-block ${isImportBusy ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
+                {initImporting ? 'กำลังนำเข้า...' : 'Import สินค้า + สต๊อคเริ่มต้น'}
+                <input
+                  ref={initImportInputRef}
+                  type="file"
+                  accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                  className="hidden"
+                  disabled={isImportBusy}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (file) handleInitImportFile(file)
+                  }}
+                />
+              </label>
+            </>
+          )}
+          <label className="px-3 py-2 rounded-xl bg-purple-600 text-white hover:bg-purple-700 text-sm font-semibold cursor-pointer inline-block">
+            {uploadingImages ? 'กำลังอัปโหลด...' : 'อัปโหลดรูป'}
+            <input
+              ref={uploadImagesInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              disabled={uploadingImages}
+              onChange={(e) => {
+                const files = e.target.files
+                if (files?.length) handleUploadImages(files)
+              }}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={openAdd}
+            className="px-4 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 font-semibold"
+          >
+            + เพิ่มสินค้า
+          </button>
+      </div>
+
+      <div className="bg-surface-50 p-6 rounded-2xl shadow-soft border border-surface-200">
+        <div className="flex flex-wrap gap-4 mb-4">
+          <div className="flex-1 min-w-[200px]">
+            <label htmlFor="products-search" className="sr-only">ค้นหาสินค้า</label>
+            <input
+              id="products-search"
+              type="text"
+              autoComplete="off"
+              tabIndex={0}
+              placeholder="ค้นหารหัสสินค้าหรือชื่อสินค้า..."
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-surface-50 text-base"
+            />
+          </div>
+          <div className="w-full sm:w-auto sm:min-w-[150px]">
+            <label htmlFor="products-type" className="sr-only">ประเภทสินค้า</label>
+            <select
+              id="products-type"
+              value={productTypeFilter}
+              onChange={(e) => setProductTypeFilter(e.target.value as '' | ProductType)}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-surface-50 text-base"
+            >
+              <option value="">ทุกประเภท</option>
+              {PRODUCT_TYPE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="w-full sm:w-auto sm:min-w-[180px]">
+            <label htmlFor="products-category" className="sr-only">หมวดหมู่</label>
+            <select
+              id="products-category"
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-surface-50 text-base"
+            >
+              <option value="">ทุกหมวดหมู่</option>
+              {categories.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
+          <div className="w-full sm:w-auto sm:min-w-[190px]">
+            <label htmlFor="products-visibility" className="sr-only">สถานะสินค้า</label>
+            <select
+              id="products-visibility"
+              value={productVisibilityFilter}
+              onChange={(e) => setProductVisibilityFilter(e.target.value as 'active' | 'hold' | 'hidden' | 'all')}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-surface-50 text-base"
+            >
+              <option value="active">ใช้งานอยู่</option>
+              <option value="hold">Hold</option>
+              <option value="hidden">ที่ซ่อนอยู่</option>
+              <option value="all">ทั้งหมด</option>
+            </select>
+            <div className="mt-1 flex items-center gap-2 text-xs text-surface-500">
+              <span className="inline-flex items-center gap-1">
+                Hold <span className="font-semibold text-amber-700">{holdCount}</span> รายการ
+              </span>
+              <span className="text-surface-300">|</span>
+              <span className="inline-flex items-center gap-1">
+                ซ่อนอยู่ <span className="font-semibold text-surface-700">{hiddenCount}</span> รายการ
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="flex justify-center items-center py-12">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+          </div>
+        ) : products.length === 0 ? (
+          <div className="text-center py-12 text-gray-500">
+            ไม่พบข้อมูลสินค้า
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-blue-600 text-[12px] leading-tight text-white">
+                  <th className="px-2 py-2.5 text-left font-semibold rounded-tl-xl">รูป</th>
+                  <th className="px-2 py-2.5 text-left font-semibold">รหัสสินค้า</th>
+                  <th className="px-2 py-2.5 text-left font-semibold">ชื่อสินค้า</th>
+                  <th className="px-2 py-2.5 text-center font-semibold">ประเภท</th>
+                  <th className="px-2 py-2.5 text-left font-semibold">ชื่อผู้ขาย</th>
+                  <th className="px-2 py-2.5 text-left font-semibold">ชื่อภาษาจีน</th>
+                  <th className="px-2 py-2.5 text-left font-semibold">จุดจัดเก็บ</th>
+                  <th className="px-2 py-2.5 text-left font-semibold">รหัสหน้ายาง</th>
+                  <th className="px-2 py-2.5 text-left font-semibold">หมวดหมู่</th>
+                  <th className="px-2 py-2.5 text-center font-semibold">จุดสั่งซื้อ</th>
+                  <th className="px-2 py-2.5 text-center font-semibold">จุดสั่งซื้อ<wbr />(วัน)</th>
+                  <th className="px-2 py-2.5 text-center font-semibold">หน่วย</th>
+                  <th className="px-2 py-2.5 text-right font-semibold rounded-tr-xl">การจัดการ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {products.map((product, idx) => {
+                  const orderPointDaysDisplay = orderPointDaysToFormString(product.order_point_days)
+                  return (
+                  <tr key={product.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                    <td className="px-3 py-2">
+                      <ProductImage
+                        code={product.product_code}
+                        name={product.product_name}
+                      />
+                    </td>
+                    <td className="px-3 py-2 font-semibold text-surface-900">{product.product_code}</td>
+                    <td className="px-3 py-2 text-surface-800">{product.product_name}</td>
+                    <td className="px-3 py-2 text-center">
+                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-bold ${product.product_type === 'RM' ? 'bg-orange-100 text-orange-700' : product.product_type === 'PP' ? 'bg-purple-100 text-purple-700' : 'bg-green-100 text-green-700'}`}>
+                        {product.product_type}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-surface-700">{product.seller_name || '-'}</td>
+                    <td className="px-3 py-2 text-surface-700">{product.product_name_cn || '-'}</td>
+                    <td className="px-3 py-2 text-surface-700">{product.storage_location || '-'}</td>
+                    <td className="px-3 py-2 text-surface-700">{product.rubber_code || '-'}</td>
+                    <td className="px-3 py-2 text-surface-700">{product.product_category || '-'}</td>
+                    <td className="px-3 py-2 text-center text-surface-700">{product.order_point || '-'}</td>
+                    <td className="px-3 py-2 text-center text-surface-700">
+                      {orderPointDaysDisplay === '' ? '-' : orderPointDaysDisplay}
+                    </td>
+                    <td className="px-3 py-2 text-center text-surface-700">
+                      {product.unit_name || 'ชิ้น'}
+                      {product.unit_multiplier != null && product.unit_multiplier > 1 && (
+                        <span className="text-xs text-gray-400 ml-1">(x{product.unit_multiplier})</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <div className="flex gap-2 justify-end items-center">
+                        <button
+                          type="button"
+                          onClick={() => openEdit(product)}
+                          className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-semibold"
+                        >
+                          แก้ไข
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => toggleProductHold(product)}
+                          disabled={holdingId === product.id}
+                          className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 ${
+                            product.is_hold
+                              ? 'bg-amber-500 text-white hover:bg-amber-600'
+                              : 'bg-white text-amber-700 border border-amber-300 hover:bg-amber-50'
+                          }`}
+                          title={product.is_hold ? 'กดเพื่อยกเลิก Hold' : 'กดเพื่อ Hold (ไม่แจ้งเตือนถึงจุดสั่งซื้อ)'}
+                        >
+                          {holdingId === product.id ? 'กำลังบันทึก...' : product.is_hold ? 'Hold' : 'Hold'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => toggleProductVisibility(product)}
+                          disabled={deletingId === product.id}
+                          className={`relative inline-flex h-7 w-14 items-center rounded-full transition-colors disabled:opacity-50 ${
+                            product.is_active ? 'bg-emerald-500' : 'bg-gray-400'
+                          }`}
+                          title={product.is_active ? 'กดเพื่อซ่อนสินค้า' : 'กดเพื่อยกเลิกซ่อนสินค้า'}
+                        >
+                          <span
+                            className={`inline-block h-5 w-5 transform rounded-full bg-white transition ${
+                              product.is_active ? 'translate-x-8' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                        <span className={`text-xs font-semibold ${product.is_active ? 'text-emerald-700' : 'text-gray-500'}`}>
+                          {deletingId === product.id ? 'กำลังบันทึก...' : product.is_active ? 'เปิด' : 'ซ่อน'}
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Pagination */}
+        {totalCount > PAGE_SIZE && (
+          <div className="flex items-center justify-between mt-4 pt-4 border-t text-sm text-gray-600">
+            <span>
+              แสดง {Math.min((page - 1) * PAGE_SIZE + 1, totalCount)}–{Math.min(page * PAGE_SIZE, totalCount)} จาก {totalCount} รายการ
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPage(1)}
+                disabled={page <= 1}
+                className="px-2.5 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                «
+              </button>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="px-2.5 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                ‹ ก่อนหน้า
+              </button>
+              <span className="px-3 py-1 font-medium">
+                หน้า {page} / {Math.ceil(totalCount / PAGE_SIZE)}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(Math.ceil(totalCount / PAGE_SIZE), p + 1))}
+                disabled={page >= Math.ceil(totalCount / PAGE_SIZE)}
+                className="px-2.5 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                ถัดไป ›
+              </button>
+              <button
+                type="button"
+                onClick={() => setPage(Math.ceil(totalCount / PAGE_SIZE))}
+                disabled={page >= Math.ceil(totalCount / PAGE_SIZE)}
+                className="px-2.5 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                »
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <Modal
+        open={modalMode !== null}
+        onClose={closeModal}
+        closeOnBackdropClick={false}
+        contentClassName="max-w-2xl !overflow-hidden flex flex-col"
+      >
+        {/* Sticky Header */}
+        <div className="px-6 pt-6 pb-3 border-b border-surface-200 shrink-0">
+          <h2 className="text-2xl font-semibold">
+            {modalMode === 'add' ? 'เพิ่มสินค้า' : 'แก้ไขสินค้า'}
+          </h2>
+        </div>
+        {/* Scrollable Body */}
+        <div className="px-6 py-4 overflow-y-auto flex-1">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
+            {/* รหัสสินค้า */}
+            <div className="sm:col-span-2">
+              <label className="block text-sm font-semibold text-surface-700 mb-1">รหัสสินค้า *</label>
+              <input
+                type="text"
+                value={form.product_code}
+                onChange={(e) => setForm((f) => ({ ...f, product_code: e.target.value }))}
+                placeholder="รหัสสินค้า"
+                className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
+                readOnly={modalMode === 'edit'}
+              />
+              {modalMode === 'edit' && (
+                <p className="text-xs text-surface-500 mt-1">ไม่สามารถแก้ไขรหัสสินค้าได้</p>
+              )}
+            </div>
+            {/* ชื่อสินค้า */}
+            <div className="sm:col-span-2">
+              <label className="block text-sm font-semibold text-surface-700 mb-1">ชื่อสินค้า *</label>
+              <input
+                type="text"
+                value={form.product_name}
+                onChange={(e) => setForm((f) => ({ ...f, product_name: e.target.value }))}
+                placeholder="ชื่อสินค้า"
+                className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
+              />
+            </div>
+            {/* ชื่อผู้ขาย */}
+            <div>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">ชื่อผู้ขาย</label>
+              <SearchableSelect
+                options={sellerOptions}
+                value={form.seller_name}
+                onChange={(v) => setForm((f) => ({ ...f, seller_name: v }))}
+                placeholder="ค้นหาหรือเลือกผู้ขาย..."
+              />
+            </div>
+            {/* ชื่อภาษาจีน */}
+            <div>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">ชื่อภาษาจีน</label>
+              <input
+                type="text"
+                value={form.product_name_cn}
+                onChange={(e) => setForm((f) => ({ ...f, product_name_cn: e.target.value }))}
+                placeholder="ชื่อภาษาจีน"
+                className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
+              />
+            </div>
+            {/* จุดสั่งซื้อ */}
+            <div>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">จุดสั่งซื้อ</label>
+              <input
+                type="text"
+                value={form.order_point}
+                onChange={(e) => setForm((f) => ({ ...f, order_point: e.target.value }))}
+                placeholder="จุดสั่งซื้อ"
+                className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
+              />
+            </div>
+            {/* จุดสั่งซื้อ(วัน) */}
+            <div>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">จุดสั่งซื้อ(วัน)</label>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={form.order_point_days}
+                onChange={(e) => setForm((f) => ({ ...f, order_point_days: e.target.value }))}
+                placeholder="เช่น 14"
+                className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
+              />
+            </div>
+            {/* จุดจัดเก็บ */}
+            <div>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">จุดจัดเก็บ</label>
+              <input
+                type="text"
+                value={form.storage_location}
+                onChange={(e) => setForm((f) => ({ ...f, storage_location: e.target.value }))}
+                placeholder="จุดจัดเก็บ"
+                className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
+              />
+            </div>
+            {/* หมวดหมู่ */}
+            <div>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">หมวดหมู่</label>
+              <SearchableSelect
+                options={categories}
+                value={form.product_category}
+                onChange={(value) => setForm((f) => ({ ...f, product_category: value }))}
+                placeholder="ค้นหาหรือเลือกหมวดหมู่..."
+                allowCustom
+                customOptionLabel="เพิ่มหมวดหมู่ใหม่"
+              />
+              <p className="mt-1 text-xs text-surface-500">เลือกจากหมวดหมู่ที่มีอยู่ หรือพิมพ์ชื่อใหม่แล้วกด Enter</p>
+            </div>
+            {/* ประเภทสินค้า */}
+            <div>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">ประเภทสินค้า</label>
+              <select
+                value={form.product_type}
+                onChange={(e) => {
+                  const nextType = e.target.value as ProductType
+                  setForm((f) => ({ ...f, product_type: nextType }))
+                  if (modalMode === 'add') void autoGenerateProductCodeByType(nextType)
+                }}
+                className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
+              >
+                {(modalMode === 'add' ? ADD_PRODUCT_TYPE_OPTIONS : PRODUCT_TYPE_OPTIONS).map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+              {modalMode === 'add' && (
+                <p className="text-xs text-surface-500 mt-1">สินค้า PP สร้างจากเมนู คลัง &gt; ผลิตภายใน</p>
+              )}
+            </div>
+            {/* ราคาขายรายช่องทาง */}
+            {canSeeChannelPrices && <div className="sm:col-span-2">
+              <label className="block text-sm font-semibold text-surface-700 mb-1">ราคาขายรายช่องทาง</label>
+              {channels.length === 0 ? (
+                <div className="text-sm text-surface-500 border border-surface-200 rounded-xl px-3 py-2">
+                  ไม่พบข้อมูลช่องทางขาย
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 border border-surface-200 rounded-xl p-3 bg-surface-50">
+                  {channels.map((ch) => (
+                    <div key={ch.channel_code} className="flex items-center gap-2">
+                      <span className="w-28 text-xs font-semibold text-surface-600 truncate" title={ch.channel_name}>
+                        {ch.channel_code}
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={channelPrices[ch.channel_code] ?? ''}
+                        onChange={(e) => setChannelPrices((prev) => ({ ...prev, [ch.channel_code]: e.target.value }))}
+                        placeholder="ราคา"
+                        className="w-full px-2 py-1.5 border border-surface-300 rounded-lg text-sm"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="text-xs text-surface-500 mt-1">เว้นว่างได้ หากไม่กำหนดราคาช่องทางนั้น</p>
+            </div>}
+            <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] gap-x-4 gap-y-3">
+            {/* รหัสหน้ายาง */}
+            <div>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">รหัสหน้ายาง</label>
+              <input
+                type="text"
+                value={form.rubber_code}
+                onChange={(e) => setForm((f) => ({ ...f, rubber_code: e.target.value }))}
+                placeholder="รหัสหน้ายาง"
+                className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
+              />
+            </div>
+            {/* ต้นทุนสินค้า — ซ่อนฟิลด์นี้เพราะ landed_cost คำนวณจาก Lot อัตโนมัติ */}
+            {/* Safety Stock — ปรับผ่านหน้า คลัง > ปรับสต๊อค เท่านั้น (โยก lot จริงผ่าน FIFO) */}
+            {/* ─── หน่วยสินค้า (2 ช่องบรรทัดเดียวกัน) ─── */}
+            <div>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">หน่วย</label>
+              <div className="flex min-w-0 gap-2">
+                <select
+                  value={UNIT_PRESETS.includes(form.unit_name) ? form.unit_name : '__custom__'}
+                  onChange={(e) => {
+                    if (e.target.value === '__custom__') {
+                      setForm((f) => ({ ...f, unit_name: '' }))
+                    } else {
+                      setForm((f) => ({ ...f, unit_name: e.target.value }))
+                    }
+                  }}
+                  className={`${UNIT_PRESETS.includes(form.unit_name) ? 'w-full' : 'w-20 shrink-0'} px-3 py-2 border border-surface-300 rounded-xl text-base`}
+                >
+                  {UNIT_PRESETS.map((u) => (
+                    <option key={u} value={u}>{u}</option>
+                  ))}
+                  <option value="__custom__">อื่นๆ...</option>
+                </select>
+                {!UNIT_PRESETS.includes(form.unit_name) && (
+                  <input
+                    type="text"
+                    value={form.unit_name}
+                    onChange={(e) => setForm((f) => ({ ...f, unit_name: e.target.value }))}
+                    placeholder="พิมพ์ชื่อหน่วย"
+                    className="min-w-0 flex-1 px-3 py-2 border border-surface-300 rounded-xl text-base"
+                  />
+                )}
+              </div>
+            </div>
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">ชิ้น/หน่วย</label>
+              <input
+                type="number"
+                min={1}
+                step="any"
+                value={form.unit_multiplier}
+                onChange={(e) => setForm((f) => ({ ...f, unit_multiplier: e.target.value }))}
+                onBlur={() => {
+                  const v = parseFloat(form.unit_multiplier)
+                  if (!v || v <= 0) setForm((f) => ({ ...f, unit_multiplier: '1' }))
+                }}
+                placeholder="1"
+                className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
+              />
+              <p className="text-xs text-surface-500 mt-1">
+                เช่น คู่ = 2, แพ็ค 12 ชิ้น = 12
+              </p>
+            </div>
+            {/* รูปสินค้า */}
+            <div className="sm:col-span-2">
+              <label className="block text-sm font-semibold text-surface-700 mb-1">รูปสินค้า</label>
+              <p className="text-xs text-surface-500 mb-1">
+                อัปโหลดรูปจะเก็บใน Bucket {BUCKET_PRODUCT_IMAGES} ชื่อไฟล์ = รหัสสินค้า
+                {modalMode === 'edit' && ' — อัปโหลดรูปใหม่จะแทนที่รูปเก่า'}
+              </p>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={onFileChange}
+                className="w-full text-sm text-surface-600 file:mr-2 file:py-2 file:px-3 file:rounded file:border-0 file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
+              />
+              {(uploadPreview || (form.product_code.trim() && !uploadFile)) && (
+                <div className="mt-2">
+                  <span className="text-xs text-surface-500 block mb-1">พรีวิว</span>
+                  {uploadPreview ? (
+                    <img
+                      src={uploadPreview}
+                      alt="พรีวิว"
+                      className="w-24 h-24 object-cover rounded border"
+                    />
+                  ) : (
+                    <ProductImage code={form.product_code.trim()} name={form.product_name} />
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+        {/* Sticky Footer */}
+        <div className="px-6 py-4 border-t border-surface-200 flex gap-2 justify-end shrink-0">
+          <button
+            type="button"
+            onClick={closeModal}
+            className="px-4 py-2 border border-surface-300 rounded-xl hover:bg-surface-100"
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving}
+            className="px-4 py-2 bg-primary-200 text-primary-900 rounded-xl hover:bg-primary-300 disabled:opacity-50 font-semibold"
+          >
+            {saving ? 'กำลังบันทึก...' : modalMode === 'add' ? 'เพิ่มสินค้า' : 'บันทึก'}
+          </button>
+        </div>
+      </Modal>
+
+      {/* Init Import Preview Modal */}
+      <Modal
+        open={initImportOpen}
+        onClose={() => { if (!initImporting) { setInitImportOpen(false); setInitImportRows([]); setInitImportDupCodes(new Set()); setInitImportErrors([]) } }}
+        closeOnBackdropClick={false}
+        stackClassName="z-[70]"
+        contentClassName="w-full max-w-full !overflow-hidden flex flex-col"
+      >
+        <div className="px-6 pt-6 pb-3 border-b border-surface-200 shrink-0">
+          <h2 className="text-2xl font-semibold">ตรวจสอบข้อมูลก่อนนำเข้า</h2>
+          <p className="text-sm text-surface-500 mt-1">กรุณาตรวจสอบข้อมูลด้านล่างให้ถูกต้อง แล้วกด "ยืนยันนำเข้า"</p>
+        </div>
+
+        <div className="flex-1 overflow-auto px-6 py-4 space-y-4">
+          {/* Summary */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="bg-blue-50 rounded-xl p-3 text-center">
+              <div className="text-2xl font-bold text-blue-700">{initImportRows.length}</div>
+              <div className="text-xs text-blue-600">ทั้งหมดในไฟล์</div>
+            </div>
+            <div className="bg-green-50 rounded-xl p-3 text-center">
+              <div className="text-2xl font-bold text-green-700">{initImportRows.length - initImportDupCodes.size}</div>
+              <div className="text-xs text-green-600">สินค้าใหม่ (จะนำเข้า)</div>
+            </div>
+            <div className="bg-amber-50 rounded-xl p-3 text-center">
+              <div className="text-2xl font-bold text-amber-700">{initImportDupCodes.size}</div>
+              <div className="text-xs text-amber-600">มีอยู่ในระบบ (อัปเดต)</div>
+            </div>
+            <div className="bg-red-50 rounded-xl p-3 text-center">
+              <div className="text-2xl font-bold text-red-700">{initImportErrors.length}</div>
+              <div className="text-xs text-red-600">แถวที่มีปัญหา</div>
+            </div>
+          </div>
+
+          {/* Errors */}
+          {initImportErrors.length > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3">
+              <h4 className="text-sm font-semibold text-red-700 mb-1">แถวที่มีปัญหา (ไม่ถูกนำเข้า)</h4>
+              <ul className="text-xs text-red-600 space-y-0.5 max-h-24 overflow-y-auto">
+                {initImportErrors.map((e, i) => <li key={i}>{e}</li>)}
+              </ul>
+            </div>
+          )}
+
+          {/* Data Table */}
+          {initImportRows.length > 0 && (
+            <div className="overflow-x-auto pb-1 border border-surface-200 rounded-xl">
+              <table className="min-w-max text-xs">
+                <thead>
+                  <tr className="bg-surface-100">
+                    <th className="px-2 py-2 text-left font-semibold">สถานะ</th>
+                    <th className="px-2 py-2 text-left font-semibold">รหัสสินค้า</th>
+                    <th className="px-2 py-2 text-left font-semibold">ชื่อสินค้า</th>
+                    <th className="px-2 py-2 text-left font-semibold">ชื่อภาษาจีน</th>
+                    <th className="px-2 py-2 text-left font-semibold">หมวดหมู่</th>
+                    <th className="px-2 py-2 text-center font-semibold">ประเภท</th>
+                    <th className="px-2 py-2 text-left font-semibold">ผู้ขาย</th>
+                    <th className="px-2 py-2 text-left font-semibold">ชื่อผู้ขายจีน</th>
+                    <th className="px-2 py-2 text-left font-semibold">ช่องทางซื้อ</th>
+                    <th className="px-2 py-2 text-left font-semibold">ประเภทผู้ขาย</th>
+                    <th className="px-2 py-2 text-right font-semibold">ต้นทุน</th>
+                    <th className="px-2 py-2 text-right font-semibold">สต๊อครวม</th>
+                    <th className="px-2 py-2 text-right font-semibold">Safety</th>
+                    <th className="px-2 py-2 text-right font-semibold">On Hand</th>
+                    <th className="px-2 py-2 text-left font-semibold">จุดสั่งซื้อ</th>
+                    <th className="px-2 py-2 text-right font-semibold">จุดสั่งซื้อ(วัน)</th>
+                    <th className="px-2 py-2 text-left font-semibold">รหัสหน้ายาง</th>
+                    <th className="px-2 py-2 text-left font-semibold">จุดจัดเก็บ</th>
+                    <th className="px-2 py-2 text-center font-semibold">หน่วย</th>
+                    <th className="px-2 py-2 text-right font-semibold">ชิ้น/หน่วย</th>
+                    {initImportChannelHeaders.map((header) => (
+                      <th key={header} className="px-2 py-2 text-right font-semibold">
+                        {header}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {initImportRows.map((row, idx) => {
+                    const isDup = initImportDupCodes.has(row.product_code)
+                    const onHand = row.initial_stock - row.safety_stock
+                    return (
+                      <tr key={idx} className={`border-t ${isDup ? 'bg-amber-50' : idx % 2 === 0 ? 'bg-white' : 'bg-surface-50'}`}>
+                        <td className="px-2 py-1.5">
+                          {isDup ? (
+                            <span className="inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-200 text-amber-800">อัปเดต</span>
+                          ) : (
+                            <span className="inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-green-200 text-green-800">ใหม่</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1.5 font-mono font-semibold">{row.product_code}</td>
+                        <td className="px-2 py-1.5 max-w-[200px] truncate">{row.product_name}</td>
+                        <td className="px-2 py-1.5">{row.product_name_cn || '-'}</td>
+                        <td className="px-2 py-1.5">{row.product_category || '-'}</td>
+                        <td className="px-2 py-1.5 text-center">
+                          <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${row.product_type === 'RM' ? 'bg-orange-100 text-orange-700' : row.product_type === 'PP' ? 'bg-purple-100 text-purple-700' : 'bg-green-100 text-green-700'}`}>
+                            {row.product_type}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5">{row.seller_name || '-'}</td>
+                        <td className="px-2 py-1.5">{row.seller_name_cn || '-'}</td>
+                        <td className="px-2 py-1.5">{row.seller_purchase_channel || '-'}</td>
+                        <td className="px-2 py-1.5">{sellerTypeLabel(row.seller_type)}</td>
+                        <td className="px-2 py-1.5 text-right">{row.unit_cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        <td className="px-2 py-1.5 text-right font-semibold">{row.initial_stock.toLocaleString()}</td>
+                        <td className="px-2 py-1.5 text-right">{row.safety_stock.toLocaleString()}</td>
+                        <td className="px-2 py-1.5 text-right">{onHand.toLocaleString()}</td>
+                        <td className="px-2 py-1.5">{row.order_point || '-'}</td>
+                        <td className="px-2 py-1.5 text-right">{row.order_point_days ?? '-'}</td>
+                        <td className="px-2 py-1.5">{row.rubber_code || '-'}</td>
+                        <td className="px-2 py-1.5">{row.storage_location || '-'}</td>
+                        <td className="px-2 py-1.5 text-center">{row.unit_name || 'ชิ้น'}</td>
+                        <td className="px-2 py-1.5 text-right">{row.unit_multiplier}</td>
+                        {initImportChannelHeaders.map((header) => {
+                          const channelCode = header.replace('price_', '')
+                          const price = row.channel_prices?.[channelCode]
+                          return (
+                            <td key={header} className="px-2 py-1.5 text-right">
+                              {typeof price === 'number'
+                                ? price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                                : '-'}
+                            </td>
+                          )
+                        })}
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-surface-200 flex gap-2 justify-end shrink-0">
+          <button
+            type="button"
+            onClick={() => { setInitImportOpen(false); setInitImportRows([]); setInitImportDupCodes(new Set()); setInitImportErrors([]) }}
+            disabled={initImporting}
+            className="px-4 py-2 border border-surface-300 rounded-xl hover:bg-surface-100 disabled:opacity-50"
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="button"
+            onClick={confirmInitImport}
+            disabled={initImporting || initImportRows.length === 0}
+            className="px-4 py-2 bg-orange-600 text-white rounded-xl hover:bg-orange-700 disabled:opacity-50 font-semibold"
+          >
+            {initImporting ? 'กำลังนำเข้า...' : `ยืนยันนำเข้า (${initImportRows.length} รายการ)`}
+          </button>
+        </div>
+      </Modal>
+
+      <ImportProgressModal progress={importProgress} />
+
+      <UploadImageResultModal
+        result={uploadImageResult}
+        onClose={() => setUploadImageResult((prev) => ({ ...prev, open: false }))}
+      />
+
+      {/* Notification Modal */}
+      <Modal open={notifyModal.open} onClose={() => setNotifyModal((p) => ({ ...p, open: false }))} closeOnBackdropClick contentClassName="max-w-sm">
+        <div className="p-6 text-center">
+          <div className={`mx-auto w-14 h-14 rounded-full flex items-center justify-center mb-4 ${
+            notifyModal.type === 'success' ? 'bg-green-100' : notifyModal.type === 'error' ? 'bg-red-100' : 'bg-amber-100'
+          }`}>
+            {notifyModal.type === 'success' && (
+              <svg className="w-7 h-7 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            )}
+            {notifyModal.type === 'error' && (
+              <svg className="w-7 h-7 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            )}
+            {notifyModal.type === 'warning' && (
+              <svg className="w-7 h-7 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            )}
+          </div>
+          <h3 className={`text-lg font-bold mb-1 ${
+            notifyModal.type === 'success' ? 'text-green-800' : notifyModal.type === 'error' ? 'text-red-800' : 'text-amber-800'
+          }`}>
+            {notifyModal.title}
+          </h3>
+          {notifyModal.message && (
+            <p className="text-sm text-gray-600 mt-1">{notifyModal.message}</p>
+          )}
+          <button
+            type="button"
+            onClick={() => setNotifyModal((p) => ({ ...p, open: false }))}
+            className={`mt-5 px-6 py-2.5 rounded-xl font-semibold text-white transition-colors ${
+              notifyModal.type === 'success' ? 'bg-green-600 hover:bg-green-700'
+                : notifyModal.type === 'error' ? 'bg-red-600 hover:bg-red-700'
+                : 'bg-amber-500 hover:bg-amber-600'
+            }`}
+          >
+            ตกลง
+          </button>
+        </div>
+      </Modal>
+    </div>
+  )
+}
+
+function SearchableSelect({
+  options,
+  value,
+  onChange,
+  placeholder = 'ค้นหา...',
+  allowCustom = false,
+  customOptionLabel = 'เพิ่มรายการใหม่',
+}: {
+  options: string[]
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  allowCustom?: boolean
+  customOptionLabel?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const wrapperRef = useRef<HTMLDivElement>(null)
+
+  // ปิด dropdown เมื่อคลิกข้างนอก
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
+
+  const filtered = options.filter((o) =>
+    o.toLowerCase().includes(search.toLowerCase())
+  )
+  const trimmedSearch = search.trim()
+  const hasExactOption = options.some((option) => option.toLocaleLowerCase('th-TH') === trimmedSearch.toLocaleLowerCase('th-TH'))
+  const canAddCustom = allowCustom && trimmedSearch.length > 0 && !hasExactOption
+
+  const commitValue = (nextValue: string) => {
+    onChange(nextValue.trim())
+    setOpen(false)
+    setSearch('')
+  }
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      <div
+        className="w-full flex items-center border border-surface-300 rounded-xl bg-white cursor-pointer"
+        onClick={() => setOpen(true)}
+      >
+        <input
+          type="text"
+          value={open ? search : value || ''}
+          onChange={(e) => { setSearch(e.target.value); if (!open) setOpen(true) }}
+          onFocus={() => { setOpen(true); setSearch('') }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && canAddCustom) {
+              event.preventDefault()
+              commitValue(trimmedSearch)
+            }
+          }}
+          placeholder={value ? value : placeholder}
+          className="flex-1 px-3 py-2 rounded-xl text-base outline-none bg-transparent"
+        />
+        {value && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onChange(''); setSearch('') }}
+            className="px-2 text-gray-400 hover:text-red-500"
+            title="ล้าง"
+          >
+            &times;
+          </button>
+        )}
+        <span className="px-2 text-gray-400 pointer-events-none">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+        </span>
+      </div>
+      {open && (
+        <ul className="absolute z-50 mt-1 w-full max-h-48 overflow-y-auto bg-white border border-surface-300 rounded-xl shadow-lg">
+          {canAddCustom && (
+            <li>
+              <button
+                type="button"
+                className="w-full border-b border-blue-100 bg-blue-50 px-3 py-2 text-left text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                onClick={() => commitValue(trimmedSearch)}
+              >
+                + {customOptionLabel} “{trimmedSearch}”
+              </button>
+            </li>
+          )}
+          {filtered.length === 0 && !canAddCustom ? (
+            <li className="px-3 py-2 text-gray-400 italic text-sm">ไม่พบข้อมูล</li>
+          ) : (
+            filtered.map((opt) => (
+              <li
+                key={opt}
+                className={`px-3 py-2 cursor-pointer hover:bg-blue-50 text-sm ${opt === value ? 'bg-blue-100 font-semibold text-blue-700' : ''}`}
+                onClick={() => commitValue(opt)}
+              >
+                {opt}
+              </li>
+            ))
+          )}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function ProductImage({
+  code,
+  name,
+  imageUrl,
+}: {
+  code: string
+  name: string
+  imageUrl?: string | null
+}) {
+  const [failed, setFailed] = useState(false)
+  const url = imageUrl || (code ? getProductImageUrl(code) : '')
+  const displayUrl = url && !failed ? url : ''
+  if (!displayUrl) {
+    return (
+      <div className="w-20 h-20 bg-surface-200 rounded-xl flex items-center justify-center text-surface-400 text-xs">
+        ไม่มีรูป
+      </div>
+    )
+  }
+  return (
+    <a
+      href={displayUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="block w-20 h-20 rounded-xl overflow-hidden hover:ring-2 hover:ring-primary-200 focus:outline-none focus:ring-2 focus:ring-primary-200"
+      title="คลิกเพื่อเปิดรูปในแท็บใหม่"
+    >
+      <img
+        src={displayUrl}
+        alt={name}
+        className="w-20 h-20 object-cover"
+        onError={() => setFailed(true)}
+      />
+    </a>
+  )
+}

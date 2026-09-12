@@ -15,6 +15,21 @@ import { getChatEnterToSendPref, setChatEnterToSendPref } from '../../lib/chatEn
 import { STOP_PRODUCTION_ISSUE_SLUG } from '../../lib/issueTypeSlugs'
 import { deriveChatDeliveryStatuses, type ChatDeliveryStatus } from '../../lib/chatDeliveryReceipt'
 
+const ISSUE_CHAT_BUBBLE_TONES = [
+  {
+    bubble: 'bg-blue-50 text-gray-900 border-blue-200',
+    badge: 'bg-blue-100 text-blue-700',
+    name: 'text-blue-700',
+    scope: 'bg-blue-100 text-blue-700',
+  },
+  {
+    bubble: 'bg-amber-50 text-gray-900 border-amber-200',
+    badge: 'bg-amber-100 text-amber-800',
+    name: 'text-amber-800',
+    scope: 'bg-amber-100 text-amber-800',
+  },
+] as const
+
 type IssueBoardProps = {
   scope: 'orders' | 'plan'
   workOrders?: Array<{ work_order_name: string }>
@@ -988,39 +1003,36 @@ export default function IssueBoard({
               ) : chatLogs.length === 0 ? (
                 <div className="text-center text-gray-500 py-6">ยังไม่มีข้อความ</div>
               ) : (
-                chatLogs.map((log) => {
+                chatLogs.map((log, index) => {
                   const isPlan = log.source_scope === 'plan'
                   const isMe =
                     log.sender_id === user?.id ||
                     (!!user?.username && log.sender_name === user.username) ||
                     (!!user?.email && log.sender_name === user.email)
                   const isRight = isMe
+                  const bubbleTone = ISSUE_CHAT_BUBBLE_TONES[index % ISSUE_CHAT_BUBBLE_TONES.length]
                   const scopeLabel = isPlan ? 'Plan' : 'ออเดอร์'
                   return (
                     <div key={log.id} className={`flex ${isRight ? 'justify-end' : 'justify-start'} group`}>
-                      <div className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm border ${
-                        isRight
-                          ? 'bg-emerald-500/95 text-white border-emerald-400 rounded-br-sm'
-                          : 'bg-blue-50 text-gray-900 border-blue-200 rounded-bl-sm'
+                      <div className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm border ${bubbleTone.bubble} ${
+                        isRight ? 'rounded-br-sm' : 'rounded-bl-sm'
                       }`}>
                         <div className={`flex items-center gap-3 mb-1 ${isRight ? 'flex-row-reverse' : ''}`}>
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${isRight ? 'bg-emerald-600/50 text-emerald-100' : 'bg-blue-100 text-blue-700'}`}>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${bubbleTone.badge}`}>
                             {isRight ? 'ผู้ส่ง' : 'ผู้รับ'}
                           </span>
-                          <span className={`text-xs font-bold ${isRight ? 'text-emerald-100' : 'text-blue-700'}`}>
+                          <span className={`text-xs font-bold ${bubbleTone.name}`}>
                             {log.sender_name}
-                            <span className={`ml-1.5 px-1.5 py-0.5 rounded text-[10px] ${isRight ? 'bg-emerald-700/60 text-emerald-100' : 'bg-blue-100 text-blue-700'}`}>{scopeLabel}</span>
+                            <span className={`ml-1.5 px-1.5 py-0.5 rounded text-[10px] ${bubbleTone.scope}`}>{scopeLabel}</span>
                           </span>
-                          <span className={`text-xs ${isRight ? 'text-emerald-200' : 'text-gray-500'}`}>
+                          <span className="text-xs text-gray-500">
                             {formatDateTime(log.created_at)}
                           </span>
                           <button
                             type="button"
                             onClick={() => handleHideIssueChat(log.id)}
                             title="ซ่อนข้อความนี้"
-                            className={`opacity-0 group-hover:opacity-100 p-0.5 rounded transition-all ${
-                              isRight ? 'text-emerald-100 hover:text-red-200' : 'text-gray-400 hover:text-red-500'
-                            }`}
+                            className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-gray-400 hover:text-red-500 transition-all"
                           >
                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />

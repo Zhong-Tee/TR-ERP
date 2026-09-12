@@ -1,0 +1,352 @@
+import { getPublicUrl } from '../../lib/qcApi'
+import { supabase } from '../../lib/supabase'
+import { fetchAllSupabasePages } from '../../lib/supabasePagination'
+
+/** แถวที่ต้องหยิบจริง — ซ่อน system_complete จาก Picker / ตรวจสินค้า / รายการหยิบ */
+export const WMS_FULFILLMENT_PICK_OR_LEGACY =
+  'fulfillment_mode.eq.warehouse_pick,fulfillment_mode.is.null'
+
+/**
+ * PostgREST OR: (fulfillment pick/legacy) และ (ไม่ถูกยกเลิก หรือ ยกเลิกแล้วแต่ recall/ตัดจองในระบบแล้ว)
+ * ใช้หน้าตรวจสินค้า — แสดงรายการบิลยกเลิกหลังแอดมินดำเนินการสต๊อคแล้ว ให้คลังกดคืนคลังจริง
+ */
+export const WMS_REVIEW_INCLUDE_CANCELLED_RECALLED_OR =
+  'and(fulfillment_mode.eq.warehouse_pick,status.neq.cancelled),' +
+  'and(fulfillment_mode.eq.warehouse_pick,status.eq.cancelled,stock_action.eq.recalled),' +
+  'and(fulfillment_mode.is.null,status.neq.cancelled),' +
+  'and(fulfillment_mode.is.null,status.eq.cancelled,stock_action.eq.recalled)'
+
+/** บิลยกเลิก + คืนสต๊อค/ตัดจองในระบบแล้ว (recalled) แต่ยังรอเก็บคืนที่จัดเก็บ */
+export function isWmsCancelledAwaitingPhysicalShelf(row: {
+  status?: string | null
+  stock_action?: string | null
+}): boolean {
+  return row.status === 'cancelled' && row.stock_action === 'recalled'
+}
+
+/** แถวที่แสดงในรายการตรวจสินค้า (รวมแท็บทั้งหมด) */
+export function isWmsReviewVisibleRow(row: { status?: string | null; stock_action?: string | null }): boolean {
+  if (isWmsCancelledAwaitingPhysicalShelf(row)) return true
+  return ['picked', 'correct', 'wrong', 'not_find', 'out_of_stock', 'returned'].includes(String(row.status || ''))
+}
+
+/**
+ * ชื่อใบงาน (work_order_name) ที่มีแถว wms_orders มอบหมายแล้ว
+ * รองรับทั้ง work_order_id และแถว legacy ที่ work_order_id ว่าง โดย order_id เก็บชื่อใบงาน
+ * และแบ่งหน้าการอ่านเพื่อไม่ให้รายการเกินเพดาน 1,000 แถวของ Supabase
+ */
+export async function fetchWorkOrderNamesWithWmsAssigned(): Promise<Set<string>> {
+  const wmsRows = await fetchAllSupabasePages<{ work_order_id: string | null; order_id: string | null }>((from, to) =>
+    supabase
+      .from('wms_orders')
+      .select('work_order_id, order_id')
+      .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+      .neq('status', 'cancelled')
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
+
+  const woIds = new Set<string>()
+  const assignedNames = new Set<string>()
+  for (const r of wmsRows) {
+    if (r.work_order_id) woIds.add(r.work_order_id as string)
+    // wms_orders.order_id stores the work-order name, including on legacy rows
+    // where work_order_id is null. Keep it as a fallback instead of treating it
+    // as an or_orders UUID.
+    const legacyName = String(r.order_id || '').trim()
+    if (legacyName) assignedNames.add(legacyName)
+  }
+
+  const ids = Array.from(woIds)
+  const idBatchSize = 200
+  for (let from = 0; from < ids.length; from += idBatchSize) {
+    const { data, error } = await supabase
+      .from('or_work_orders')
+      .select('work_order_name')
+      .in('id', ids.slice(from, from + idBatchSize))
+    if (error) throw error
+    for (const row of data || []) {
+      const name = String((row as { work_order_name?: string | null }).work_order_name || '').trim()
+      if (name) assignedNames.add(name)
+    }
+  }
+  return assignedNames
+}
+
+/** key ของเมนูย่อย WMS — ต้องตรงกับ st_user_menus (Settings) ที่ใช้ wms-* prefix */
+export const WMS_MENU_KEYS = {
+  UPLOAD: 'wms-upload',
+  NEW_ORDERS: 'wms-new-orders',
+  REVIEW: 'wms-review',
+  KPI: 'wms-kpi',
+  REQUISITION: 'wms-requisition',
+  RETURN_REQUISITION: 'wms-return-requisition',
+  BORROW_REQUISITION: 'wms-borrow-requisition',
+  NOTIF: 'wms-notif',
+  STOCK_ANOMALY: 'wms-stock-anomaly',
+  SETTINGS: 'wms-settings',
+} as const
+
+/** เมนูที่ต้องแสดง badge ตัวเลข */
+export const WMS_COUNTED_KEYS = [
+  WMS_MENU_KEYS.NEW_ORDERS,
+  WMS_MENU_KEYS.UPLOAD,
+  WMS_MENU_KEYS.REVIEW,
+  WMS_MENU_KEYS.REQUISITION,
+  WMS_MENU_KEYS.RETURN_REQUISITION,
+  WMS_MENU_KEYS.BORROW_REQUISITION,
+  WMS_MENU_KEYS.NOTIF,
+  WMS_MENU_KEYS.STOCK_ANOMALY,
+]
+
+export interface WmsTabCounts {
+  [key: string]: number
+}
+
+const normalizeWmsCategory = (value: string | null | undefined) =>
+  String(value || '').trim().toUpperCase()
+
+export async function fetchWmsNonPickerCategories(): Promise<Set<string>> {
+  const { data, error } = await supabase
+    .from('wms_non_picker_categories')
+    .select('category_name')
+  if (error) throw error
+  return new Set(
+    (data || [])
+      .map((row: { category_name: string | null }) => normalizeWmsCategory(row.category_name))
+      .filter(Boolean)
+  )
+}
+
+/** สินค้าที่ถูกผูกไว้กับคลังย่อยจะไม่ถูกส่งให้ Picker คลังหลัก */
+export async function fetchSubWarehouseProductIds(): Promise<Set<string>> {
+  const { data: warehouses, error: warehouseError } = await supabase
+    .from('wh_sub_warehouses')
+    .select('id')
+    .eq('is_active', true)
+  if (warehouseError) throw warehouseError
+  const warehouseIds = (warehouses || []).map((row: { id: string }) => row.id)
+  if (warehouseIds.length === 0) return new Set()
+
+  const { data, error } = await supabase
+    .from('wh_sub_warehouse_products')
+    .select('product_id')
+    .in('sub_warehouse_id', warehouseIds)
+  if (error) throw error
+  return new Set((data || []).map((row: { product_id: string | null }) => row.product_id).filter(Boolean) as string[])
+}
+
+export function isWmsPickableCategory(
+  category: string | null | undefined,
+  nonPickerCategories: Set<string>
+): boolean {
+  const normalized = normalizeWmsCategory(category)
+  return normalized !== '' && !nonPickerCategories.has(normalized)
+}
+
+export function isWmsPickableProduct(
+  productId: string | null | undefined,
+  category: string | null | undefined,
+  nonPickerCategories: Set<string>,
+  subWarehouseProductIds: Set<string>
+): boolean {
+  if (productId && subWarehouseProductIds.has(productId)) return false
+  return isWmsPickableCategory(category, nonPickerCategories)
+}
+
+/**
+ * คำนวณจำนวนรายการในแต่ละแท็บ WMS — shared logic ใช้ร่วมกันทั้ง Sidebar และ AdminLayout
+ * เพื่อให้ตัวเลขตรงกันเสมอ
+ */
+export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total: number }> {
+  const dateParts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date())
+  const datePart = (type: Intl.DateTimeFormatPartTypes) => dateParts.find((part) => part.type === type)?.value || ''
+  const today = `${datePart('year')}-${datePart('month')}-${datePart('day')}`
+
+  // 1. ใบงานใหม่: work orders with status "กำลังผลิต" not yet assigned picker + มีสินค้าในหมวดหมู่ที่ต้องหยิบ
+  const { data: woData } = await supabase
+    .from('or_work_orders')
+    .select('work_order_name')
+    .eq('status', 'กำลังผลิต')
+  let newOrdersCount = 0
+  if (woData && woData.length > 0) {
+    const woNames = [...new Set(woData.map((wo: any) => wo.work_order_name as string))]
+    const [assignedNames, nonPickerCategories, subWarehouseProductIds] = await Promise.all([
+      fetchWorkOrderNamesWithWmsAssigned(),
+      fetchWmsNonPickerCategories(),
+      fetchSubWarehouseProductIds(),
+    ])
+    const unassignedNames = woNames.filter((n) => !assignedNames.has(n))
+
+    if (unassignedNames.length > 0) {
+      const { data: orders } = await supabase
+        .from('or_orders')
+        .select('work_order_name, or_order_items(product_id, is_free)')
+        .in('work_order_name', unassignedNames)
+      const allItems = (orders || []).flatMap((o: any) =>
+        (o.or_order_items || []).map((i: any) => ({
+          product_id: i.product_id,
+          work_order_name: o.work_order_name,
+          is_free: i.is_free,
+        }))
+      )
+      const productIds = [...new Set(allItems.map((i: any) => i.product_id).filter(Boolean))]
+      let catMap: Record<string, string> = {}
+      if (productIds.length > 0) {
+        const { data: prods } = await supabase
+          .from('pr_products')
+          .select('id, product_category')
+          .in('id', productIds)
+        catMap = (prods || []).reduce((acc: Record<string, string>, p: any) => {
+          acc[p.id] = String(p.product_category || '')
+          return acc
+        }, {})
+      }
+      const woQualifies = new Set<string>()
+      allItems.forEach((item: any) => {
+        if (!item.product_id) return
+        if (isWmsPickableProduct(item.product_id, catMap[item.product_id], nonPickerCategories, subWarehouseProductIds)) {
+          woQualifies.add(item.work_order_name)
+        }
+      })
+      newOrdersCount = unassignedNames.filter((n) => woQualifies.has(n)).length
+    }
+  }
+
+  // 2. รายการใบงาน: นับเฉพาะ order_id ที่สถานะภาพรวม = IN PROGRESS (มี item ที่ status เป็น pending/wrong/not_find)
+  const { data: wmsData } = await supabase
+    .from('wms_orders')
+    .select('work_order_id, order_id, status, stock_action')
+    .or(WMS_REVIEW_INCLUDE_CANCELLED_RECALLED_OR)
+    .gte('created_at', today + 'T00:00:00')
+    .lte('created_at', today + 'T23:59:59')
+
+  const uploadGroups: Record<string, boolean> = {}
+  ;(wmsData || []).forEach((r: any) => {
+    if (!uploadGroups[r.order_id]) uploadGroups[r.order_id] = false
+    if (['pending', 'wrong', 'not_find'].includes(r.status)) uploadGroups[r.order_id] = true
+  })
+  const uploadCount = Object.values(uploadGroups).filter(Boolean).length
+
+  // 3. ตรวจสินค้า: ใช้เงื่อนไขเดียวกับ ReviewSection (นับเป็น work_order_id)
+  let reviewCount = 0
+  if (wmsData) {
+    const grouped: Record<string, { total: number; pending: number; picked: number; shelfPending: number }> = {}
+    wmsData.forEach((r: any) => {
+      const wid = String(r.work_order_id || '').trim()
+      if (!wid) return
+      if (!grouped[wid]) grouped[wid] = { total: 0, pending: 0, picked: 0, shelfPending: 0 }
+      grouped[wid].total++
+      if (r.status === 'pending') grouped[wid].pending++
+      if (r.status === 'picked') grouped[wid].picked++
+      if (isWmsCancelledAwaitingPhysicalShelf(r)) grouped[wid].shelfPending++
+    })
+    reviewCount = Object.values(grouped).filter((g) => g.pending === 0 && (g.picked > 0 || g.shelfPending > 0)).length
+  }
+
+  // 4-7. รายการเบิก + รายการคืน + รายการยืม + แจ้งเตือน — ยิง parallel
+  const [reqRes, returnReqRes, borrowReqRes, notifRowsRes, anomalyRes] = await Promise.all([
+    supabase
+      .from('wms_requisitions')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'pending'),
+    supabase
+      .from('wms_return_requisitions')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'pending'),
+    supabase
+      .from('wms_borrow_requisitions')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'pending'),
+    supabase
+      .from('wms_notifications')
+      .select('id, type, order_id')
+      .eq('is_read', false),
+    supabase.rpc('rpc_get_wms_stock_anomalies', { p_from_date: today, p_to_date: today }),
+  ])
+
+  const notifRows = (notifRowsRes.data || []) as { id: string; type: string; order_id: string | null }[]
+  const cancelOrderSet = new Set<string>()
+  let notifCount = 0
+  for (const row of notifRows) {
+    if (row.type === 'ยกเลิกบิล') {
+      const key = String(row.order_id || '').trim()
+      if (!key) continue
+      if (cancelOrderSet.has(key)) continue
+      cancelOrderSet.add(key)
+      notifCount += 1
+    } else {
+      notifCount += 1
+    }
+  }
+
+  const counts: WmsTabCounts = {
+    [WMS_MENU_KEYS.NEW_ORDERS]: newOrdersCount,
+    [WMS_MENU_KEYS.UPLOAD]: uploadCount,
+    [WMS_MENU_KEYS.REVIEW]: reviewCount,
+    [WMS_MENU_KEYS.REQUISITION]: reqRes.count ?? 0,
+    [WMS_MENU_KEYS.RETURN_REQUISITION]: returnReqRes.count ?? 0,
+    [WMS_MENU_KEYS.BORROW_REQUISITION]: borrowReqRes.count ?? 0,
+    [WMS_MENU_KEYS.NOTIF]: notifCount,
+    [WMS_MENU_KEYS.STOCK_ANOMALY]: anomalyRes.data?.length ?? 0,
+  }
+  const total = Object.values(counts).reduce((s, n) => s + n, 0)
+  return { counts, total }
+}
+
+export const WMS_STATUS_LABELS: Record<string, string> = {
+  pending: 'กำลังจัด',
+  picked: 'หยิบแล้ว',
+  out_of_stock: 'สินค้าหมด',
+  correct: 'หยิบถูก',
+  wrong: 'หยิบผิด',
+  not_find: 'ไม่เจอสินค้า',
+  returned: 'คืนเข้าคลัง',
+  mixed: 'หลายสถานะ',
+}
+
+const PRODUCT_IMAGE_BUCKET = 'product-images'
+
+export function getProductImageUrl(productCode: string | null | undefined, ext: string = '.jpg'): string {
+  if (!productCode) return ''
+  return getPublicUrl(PRODUCT_IMAGE_BUCKET, productCode, ext)
+}
+
+export function formatDuration(ms: number): string {
+  if (ms < 0 || Number.isNaN(ms)) return '00:00:00'
+  let s = Math.floor(ms / 1000)
+  let h = Math.floor(s / 3600)
+  s %= 3600
+  let m = Math.floor(s / 60)
+  s %= 60
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+}
+
+export function calculateDuration(startTime: string, endTime: string | null): string {
+  const s = new Date(startTime)
+  const e = endTime ? new Date(endTime) : new Date()
+  return formatDuration(e.getTime() - s.getTime())
+}
+
+export function sortOrderItems<T extends { location?: string | null; created_at?: string | null; id?: string | null }>(
+  items: T[] | null | undefined
+): T[] {
+  if (!items) return []
+  return [...items].sort((a, b) => {
+    const locA = a.location || ''
+    const locB = b.location || ''
+    if (locA === 'อะไหล่' && locB !== 'อะไหล่') return 1
+    if (locA !== 'อะไหล่' && locB === 'อะไหล่') return -1
+    const locCmp = locA.localeCompare(locB, undefined, { numeric: true, sensitivity: 'base' })
+    if (locCmp !== 0) return locCmp
+
+    const aTs = a.created_at ? new Date(a.created_at).getTime() : 0
+    const bTs = b.created_at ? new Date(b.created_at).getTime() : 0
+    if (aTs !== bTs) return aTs - bTs
+
+    const aId = String(a.id || '')
+    const bId = String(b.id || '')
+    return aId.localeCompare(bId)
+  })
+}

@@ -1,0 +1,4915 @@
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { createPortal } from 'react-dom'
+import * as XLSX from 'xlsx'
+import { supabase } from '../lib/supabase'
+import type { User, BankSetting, BillHeaderSetting, OrderChatLog, IssueType } from '../types'
+import { formatDateTime } from '../lib/utils'
+import { BANK_CODES } from '../types'
+import { testEasySlipConnection, testEasySlipWithImage } from '../lib/slipVerification'
+import Modal from '../components/ui/Modal'
+import { useWmsModal } from '../components/wms/useWmsModal'
+import DataBackupClearPanel from '../components/settings/DataBackupClearPanel'
+import MfaEnrollPanel from '../components/settings/MfaEnrollPanel'
+import ClockLocationsPanel from '../components/settings/ClockLocationsPanel'
+import ChannelManagementPanel from '../components/settings/ChannelManagementPanel'
+import { useMenuAccess } from '../contexts/MenuAccessContext'
+import { useAuthContext } from '../contexts/AuthContext'
+import { getRoleLookupCandidates, normalizeRole } from '../config/accessPolicy'
+import { pumpVerifiedRoutingStatus } from '../lib/pumpConfirmRouting'
+import { MOBILE_MODE_ROLES, MOBILE_MODE_INFO, getMobileAccess, type MobileMode } from '../lib/mobileMode'
+import { authErrorMessage } from '../lib/authErrorMessage'
+import PromotionSettingsPanel from '../components/settings/PromotionSettingsPanel'
+import { fetchAllSupabasePages } from '../lib/supabasePagination'
+
+const SETTINGS_TABS = [
+  { key: 'users', label: 'จัดการสิทธิ์ผู้ใช้' },
+  { key: 'role-settings', label: 'ตั้งค่า Role' },
+  { key: 'clock-locations', label: 'จุดบันทึกเวลา (GPS)' },
+  { key: 'banks', label: 'ตั้งค่าข้อมูลธนาคาร' },
+  { key: 'product-settings', label: 'ตั้งค่าสินค้า' },
+  { key: 'bill-channel-map', label: 'ตั้งค่าเลขบิล-ช่องทาง' },
+  { key: 'sellers', label: 'ผู้ขาย' },
+  { key: 'promotions', label: 'โปรโมชั่น/ค่าส่ง' },
+  { key: 'issue-types', label: 'ประเภท Issue' },
+  { key: 'chat-history', label: 'ประวัติแชท' },
+  { key: 'easyslip', label: 'API EasySlip' },
+  { key: 'backup-clear', label: 'สำลองข้อมูล/ล้างข้อมูล' },
+  { key: 'security', label: '🔐 ความปลอดภัย' },
+] as const
+
+type SettingsTabKey = (typeof SETTINGS_TABS)[number]['key']
+
+type RoleSettingsView = 'desktop' | 'mobile'
+type DesktopRole = 'admin' | 'sales-tr' | 'qc_order' | 'sales-pump' | 'qc_staff' | 'packing_staff' | 'account' | 'store' | 'production' | 'hr'
+
+const PARTIALLY_RESTRICTED_GROUPS = new Set([
+  'marketplace', 'orders', 'plan', 'machinery', 'wms', 'qc', 'packing', 'account',
+  'warehouse', 'purchase', 'hr', 'settings', 'knowledge-hub',
+])
+
+const MOBILE_ROLE_ACCESS = [
+  {
+    role: 'production_mb', label: 'ฝ่ายผลิต (Mobile)', path: '/wms', tone: 'emerald',
+    menus: ['บันทึกคิวงาน', 'เบิกของ', 'คืนของ', 'ยืมของ', 'รับสินค้าตีกลับ', 'Machinery: มอนิเตอร์/ตรวจความพร้อม/แจ้งซ่อม/ประวัติ/คำขอซื้อ/สต๊อค'],
+    note: 'เข้า WMS และ Machinery ได้ สิทธิ์บันทึกข้อมูลขึ้นกับ RLS ของฝ่ายผลิต',
+  },
+  {
+    role: 'manager', label: 'ผู้จัดการ (Mobile)', path: '/wms', tone: 'blue',
+    menus: ['อนุมัติเบิก', 'รับ GR', 'รับสินค้าตีกลับ', 'Machinery: มอนิเตอร์/ตรวจความพร้อม/แจ้งซ่อม/ประวัติ/คำขอซื้อ/สต๊อค'],
+    note: 'เข้า WMS และ Machinery ได้ ใช้สำหรับอนุมัติและตรวจรับในหน้ามือถือ',
+  },
+  {
+    role: 'technician', label: 'ช่างเทคนิค', path: '/technician', tone: 'amber',
+    menus: ['Machinery: สถานะ/มอนิเตอร์', 'ตรวจความพร้อม', 'แจ้งเสีย/ซ่อม', 'ตั้งค่า Checklist', 'ประวัติ/รายงาน', 'คำขอซื้อ', 'สต๊อคคงเหลือ'],
+    note: 'ไม่เห็นตั้งค่าเครื่องและตั้งค่าสินค้า แต่จัดการ Checklist และงานซ่อมได้',
+  },
+  {
+    role: 'picker', label: 'พนักงานหยิบสินค้า', path: '/wms', tone: 'violet',
+    menus: ['หยิบของ', 'รับ GR', 'รับสินค้าตีกลับ'],
+    note: 'เข้าเฉพาะ WMS สำหรับงานหยิบและรับสินค้า ไม่สามารถเข้า Machinery',
+  },
+  {
+    role: 'auditor', label: 'ผู้ตรวจนับสต๊อก', path: '/warehouse/audit', tone: 'cyan',
+    menus: ['รายการ Audit', 'สร้างรอบตรวจนับ', 'บันทึกผลนับ', 'ตรวจสอบผล'],
+    note: 'เข้าได้เฉพาะเส้นทาง Audit ของคลัง',
+  },
+  {
+    role: 'employee', label: 'พนักงาน', path: '/employee', tone: 'slate',
+    menus: ['หน้าหลัก', 'งาน', 'ลงเวลา', 'ขอลา', 'ตารางงาน', 'คะแนน', 'ขอ WFH (Hybrid)', 'เตือน/รับรอง', 'ทรัพย์สิน', 'คำร้อง', 'เอกสาร', 'เส้นทางเงินเดือน', 'Onboarding'],
+    note: 'เห็นข้อมูลของตนเองตาม Employee Portal; WFH แสดงเฉพาะพนักงาน Hybrid',
+  },
+] as const
+
+export default function Settings() {
+  const { user: currentUser } = useAuthContext()
+  const { hasAccess, refreshMenuAccess } = useMenuAccess()
+  const [users, setUsers] = useState<User[]>([])
+  const [showCreateUserModal, setShowCreateUserModal] = useState(false)
+  const [createUserForm, setCreateUserForm] = useState({ email: '', password: '', username: '', role: 'sales-tr' })
+  const [createUserLoading, setCreateUserLoading] = useState(false)
+  const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
+  const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
+  // ตั้งค่าเลขบิล-ช่องทาง (prefix เลขคำสั่งซื้อ)
+  const [orderNoPrefixRows, setOrderNoPrefixRows] = useState<
+    { id: string; channel_code: string; prefix: string; is_active: boolean }[]
+  >([])
+  const [orderNoPrefixByChannel, setOrderNoPrefixByChannel] = useState<Record<string, string[]>>({})
+  const [orderNoPrefixLoading, setOrderNoPrefixLoading] = useState(false)
+  const [orderNoPrefixSaving, setOrderNoPrefixSaving] = useState(false)
+  const [selectedPrefixChannel, setSelectedPrefixChannel] = useState<string>('')
+  const [prefixInput, setPrefixInput] = useState<string>('')
+  const [loading, setLoading] = useState(true)
+  const [activeTab, setActiveTab] = useState<SettingsTabKey>('users')
+  const [roleSettingsView, setRoleSettingsView] = useState<RoleSettingsView>('desktop')
+
+  // ตั้งค่า activeTab ให้เป็นแท็บแรกที่ user มีสิทธิ์เข้าถึง
+  useEffect(() => {
+    const firstAccessible = SETTINGS_TABS.find(t => hasAccess(`settings-${t.key}`))
+    if (firstAccessible && !hasAccess(`settings-${activeTab}`)) {
+      setActiveTab(firstAccessible.key)
+    }
+  }, [hasAccess]) // eslint-disable-line react-hooks/exhaustive-deps
+  const [, setFixingStatus] = useState(false)
+  const [, setStatusFixResult] = useState<{
+    success: boolean
+    message: string
+    details?: any
+  } | null>(null)
+  const [testingConnection, setTestingConnection] = useState(false)
+  const [connectionTestResult, setConnectionTestResult] = useState<{
+    success: boolean
+    message: string
+    details?: any
+  } | null>(null)
+  const [testingWithImage, setTestingWithImage] = useState(false)
+  const [testImageResult, setTestImageResult] = useState<{
+    success: boolean
+    message: string
+    amount?: number
+    transRef?: string
+    date?: string
+    receiverBank?: any
+    receiverAccount?: any
+    data?: any
+    error?: string
+  } | null>(null)
+  const [selectedImage, setSelectedImage] = useState<File | null>(null)
+  const [imagePreview, setImagePreview] = useState<string | null>(null)
+  
+  // Bank settings form state
+  const [showBankForm, setShowBankForm] = useState(false)
+  const [editingBank, setEditingBank] = useState<BankSetting | null>(null)
+  const [bankFormData, setBankFormData] = useState({
+    account_number: '',
+    bank_code: '',
+    bank_name: '',
+    account_name: '',
+    is_active: true,
+    use_for_claim_slips: false,
+    selectedChannels: [] as string[],
+  })
+
+  // Bill header settings state
+  const [bankSubTab, setBankSubTab] = useState<'bank-info' | 'bill-header'>('bank-info')
+  const [billChannelSubTab, setBillChannelSubTab] = useState<'channels' | 'prefix'>('channels') // sub-tab จัดการช่องทาง/ตั้งค่าเลขบิล
+  const [billHeaders, setBillHeaders] = useState<BillHeaderSetting[]>([])
+  const [billHeaderLoading, setBillHeaderLoading] = useState(false)
+  const [showBillHeaderForm, setShowBillHeaderForm] = useState(false)
+  const [editingBillHeader, setEditingBillHeader] = useState<BillHeaderSetting | null>(null)
+  const [billHeaderFormData, setBillHeaderFormData] = useState({
+    company_key: '',
+    bill_code: '',
+    company_name: '',
+    company_name_en: '',
+    address: '',
+    tax_id: '',
+    branch: 'สำนักงานใหญ่',
+    phone: '',
+    logo_url: '',
+    selectedBankIds: [] as string[],
+  })
+  const [billHeaderSaving, setBillHeaderSaving] = useState(false)
+  const [logoFile, setLogoFile] = useState<File | null>(null)
+  const [logoPreview, setLogoPreview] = useState<string | null>(null)
+
+  // ตั้งค่าสินค้า: หมวดหมู่ + ฟิลด์ที่อนุญาตให้กรอก
+  const PRODUCT_FIELD_KEYS = [
+    { key: 'product_name', label: 'ชื่อสินค้า' },
+    { key: 'ink_color', label: 'สีหมึก' },
+    { key: 'layer', label: 'ชั้น' },
+    { key: 'cartoon_pattern', label: 'ลายการ์ตูน' },
+    { key: 'line_pattern', label: 'ลายเส้น' },
+    { key: 'font', label: 'ฟอนต์' },
+    { key: 'line_1', label: 'บรรทัด 1' },
+    { key: 'line_2', label: 'บรรทัด 2' },
+    { key: 'line_3', label: 'บรรทัด 3' },
+    { key: 'quantity', label: 'จำนวน' },
+    { key: 'unit_price', label: 'ราคา/หน่วย' },
+    { key: 'notes', label: 'หมายเหตุ' },
+    { key: 'attachment', label: 'ไฟล์แนบ' },
+  ] as const
+  type ProductFieldKey = (typeof PRODUCT_FIELD_KEYS)[number]['key']
+  type ProductFieldOverrideValue = boolean | null | 'required'
+  const defaultCategoryFields: Record<ProductFieldKey, boolean> = {
+    product_name: true,
+    ink_color: true,
+    layer: true,
+    cartoon_pattern: true,
+    line_pattern: true,
+    font: true,
+    line_1: true,
+    line_2: true,
+    line_3: true,
+    quantity: true,
+    unit_price: true,
+    notes: true,
+    attachment: true,
+  }
+  const [productCategories, setProductCategories] = useState<string[]>([])
+  const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, Record<ProductFieldKey, boolean>>>({})
+  /** เปิดใช้หมวดในการขาย/เปิดบิล — ไม่มี key = ถือว่าเปิด (ค่าเริ่มต้น) */
+  const [categorySalesActive, setCategorySalesActive] = useState<Record<string, boolean>>({})
+  const [savingProductSettings, setSavingProductSettings] = useState(false)
+  const [importingCategorySettings, setImportingCategorySettings] = useState(false)
+  const categoryFileInputRef = useRef<HTMLInputElement>(null)
+  // Product-level field overrides (null = ใช้ค่าจากหมวดหมู่)
+  const [allProducts, setAllProducts] = useState<{ id: string; product_name: string; product_code: string; product_category: string | null }[]>([])
+  const [productOverrides, setProductOverrides] = useState<Record<string, Record<ProductFieldKey, ProductFieldOverrideValue>>>({})
+  const [savingProductOverrides, setSavingProductOverrides] = useState(false)
+  const [importingOverrides, setImportingOverrides] = useState(false)
+  const overrideFileInputRef = useRef<HTMLInputElement>(null)
+  const [overrideSearchInput, setOverrideSearchInput] = useState('')
+  const [overrideSearchTerm, setOverrideSearchTerm] = useState('')
+  const [overrideCategoryFilter, setOverrideCategoryFilter] = useState<string>('')
+  const [overridePage, setOverridePage] = useState(1)
+  const overrideDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [roleMenus, setRoleMenus] = useState<Record<string, Record<string, boolean>>>({})
+  const roleMenusRef = useRef<Record<string, Record<string, boolean>>>({})
+  const roleMenusLoadSeqRef = useRef(0)
+  const [roleMenusLoading, setRoleMenusLoading] = useState(false)
+  const [savingRoleMenus, setSavingRoleMenus] = useState(false)
+  const [chatLogs, setChatLogs] = useState<OrderChatLog[]>([])
+  const [chatLoading, setChatLoading] = useState(false)
+  const [chatFromDate, setChatFromDate] = useState(() => {
+    const d = new Date()
+    d.setDate(d.getDate() - 7)
+    return d.toISOString().split('T')[0]
+  })
+  const [chatToDate, setChatToDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [chatSource, setChatSource] = useState<'all' | 'confirm' | 'issue'>('all')
+  // Issue messages merged into a unified format
+  const [issueChatLogs, setIssueChatLogs] = useState<(OrderChatLog & { _source: 'issue'; _issueTitle?: string; _sourceScope?: 'plan' | 'orders' })[]>([])
+  // Bill-level grouping
+  const [selectedChatBill, setSelectedChatBill] = useState<string | null>(null)
+  const [selectedBillMessages, setSelectedBillMessages] = useState<(OrderChatLog & { _source: 'confirm' | 'issue'; _issueTitle?: string; _sourceScope?: 'plan' | 'orders' })[]>([])
+  const [selectedBillLoading, setSelectedBillLoading] = useState(false)
+  const [issueTypes, setIssueTypes] = useState<IssueType[]>([])
+  const [issueTypeName, setIssueTypeName] = useState('')
+  const [issueTypeColor, setIssueTypeColor] = useState('#3B82F6')
+  const [issueTypeSaving, setIssueTypeSaving] = useState(false)
+  const [issueTypeEditingId, setIssueTypeEditingId] = useState<string | null>(null)
+  const [userRoleFilter, setUserRoleFilter] = useState<string>('all')
+  const [userSearch, setUserSearch] = useState('')
+  const [hideInactiveUsers, setHideInactiveUsers] = useState(false)
+  /** user id ที่กำลังเปิด popover สิทธิ์ Mobile อยู่ */
+  const [mobileAccessUserId, setMobileAccessUserId] = useState<string | null>(null)
+  const [mobileAccessPopoverPosition, setMobileAccessPopoverPosition] = useState({ top: 0, left: 0 })
+
+  useEffect(() => {
+    if (!mobileAccessUserId) return
+    const closePopover = () => setMobileAccessUserId(null)
+    window.addEventListener('resize', closePopover)
+    window.addEventListener('scroll', closePopover, true)
+    return () => {
+      window.removeEventListener('resize', closePopover)
+      window.removeEventListener('scroll', closePopover, true)
+    }
+  }, [mobileAccessUserId])
+
+  // ผู้ขาย (Sellers) — seller_type: thailand | foreign
+  const [sellers, setSellers] = useState<
+    { id: string; name: string; name_cn: string; purchase_channel: string; seller_type: string; is_active: boolean }[]
+  >([])
+  const [sellerName, setSellerName] = useState('')
+  const [sellerNameCn, setSellerNameCn] = useState('')
+  const [sellerPurchaseChannel, setSellerPurchaseChannel] = useState('')
+  const [sellerType, setSellerType] = useState<'thailand' | 'foreign'>('foreign')
+  const [sellerSaving, setSellerSaving] = useState(false)
+  const [sellerSyncing, setSellerSyncing] = useState(false)
+  const [sellerEditingId, setSellerEditingId] = useState<string | null>(null)
+  const [showSellerModal, setShowSellerModal] = useState(false)
+  const [sellerSearchInput, setSellerSearchInput] = useState('')
+  /** กรองตารางผู้ขาย: ทั้งหมด / ไทย / ต่างประเทศ */
+  const [sellerTypeTableFilter, setSellerTypeTableFilter] = useState<'all' | 'thailand' | 'foreign'>('all')
+  /** กรองการมองเห็น: ใช้งาน / ซ่อน / ทั้งหมด */
+  const [sellerVisibilityFilter, setSellerVisibilityFilter] = useState<'active' | 'hidden' | 'all'>('active')
+  const [sellerTogglingId, setSellerTogglingId] = useState<string | null>(null)
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
+
+  const sellerHiddenCount = useMemo(
+    () => sellers.filter((s) => !s.is_active).length,
+    [sellers],
+  )
+
+  const sellersAfterVisibility = useMemo(() => {
+    if (sellerVisibilityFilter === 'active') return sellers.filter((s) => s.is_active)
+    if (sellerVisibilityFilter === 'hidden') return sellers.filter((s) => !s.is_active)
+    return sellers
+  }, [sellers, sellerVisibilityFilter])
+
+  const sellersAfterSearch = useMemo(() => {
+    const q = sellerSearchInput.trim().toLowerCase()
+    if (!q) return sellersAfterVisibility
+    return sellersAfterVisibility.filter((s) => {
+      const haystack = [s.name, s.name_cn, s.purchase_channel]
+        .map((v) => (v || '').toLowerCase())
+        .join(' ')
+      return haystack.includes(q)
+    })
+  }, [sellersAfterVisibility, sellerSearchInput])
+
+  const sellersFilteredForTable = useMemo(() => {
+    if (sellerTypeTableFilter === 'all') return sellersAfterSearch
+    return sellersAfterSearch.filter((s) => {
+      const t = s.seller_type === 'thailand' ? 'thailand' : 'foreign'
+      return t === sellerTypeTableFilter
+    })
+  }, [sellersAfterSearch, sellerTypeTableFilter])
+
+  useEffect(() => {
+    loadUsers()
+    loadBankSettings()
+    loadChannels()
+    loadBillHeaders()
+  }, [])
+
+  useEffect(() => {
+    if (activeTab === 'product-settings') {
+      loadProductCategories()
+      loadCategoryFieldSettings()
+      loadAllProducts()
+      loadProductOverrides()
+    }
+    if (activeTab === 'bill-channel-map') {
+      loadChannelOrderNoPrefixes()
+      if (!selectedPrefixChannel && channels.length > 0) {
+        setSelectedPrefixChannel(channels[0].channel_code)
+      }
+    }
+    if (activeTab === 'role-settings') {
+      loadRoleMenus()
+    }
+    if (activeTab === 'chat-history') {
+      loadChatLogs()
+    }
+    if (activeTab === 'issue-types') {
+      loadIssueTypes()
+    }
+    if (activeTab === 'sellers') {
+      loadSellers()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab])
+
+  useEffect(() => {
+    overrideDebounceRef.current = setTimeout(() => {
+      setOverrideSearchTerm(overrideSearchInput.trim())
+      setOverridePage(1)
+    }, 400)
+    return () => {
+      if (overrideDebounceRef.current) clearTimeout(overrideDebounceRef.current)
+    }
+  }, [overrideSearchInput])
+
+  /** ถ้าเลือกกรองหมวดที่ถูกปิดการขายแล้ว ให้รีเซ็ต */
+  useEffect(() => {
+    if (!overrideCategoryFilter) return
+    if (categorySalesActive[overrideCategoryFilter] === false) {
+      setOverrideCategoryFilter('')
+      setOverridePage(1)
+    }
+  }, [overrideCategoryFilter, categorySalesActive])
+
+  async function testConnection() {
+    setTestingConnection(true)
+    setConnectionTestResult(null)
+    try {
+      const result = await testEasySlipConnection()
+      setConnectionTestResult(result)
+    } catch (error: any) {
+      setConnectionTestResult({
+        success: false,
+        message: `เกิดข้อผิดพลาด: ${error.message}`,
+      })
+    } finally {
+      setTestingConnection(false)
+    }
+  }
+
+  function handleImageSelect(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (file) {
+      setSelectedImage(file)
+      // Create preview
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        setImagePreview(e.target?.result as string)
+      }
+      reader.readAsDataURL(file)
+    }
+  }
+
+  async function testWithImage() {
+    if (!selectedImage) {
+      showMessage({ message: 'กรุณาเลือกไฟล์รูปสลิปก่อน' })
+      return
+    }
+
+    setTestingWithImage(true)
+    setTestImageResult(null)
+    try {
+      const result = await testEasySlipWithImage(selectedImage)
+      setTestImageResult(result)
+    } catch (error: any) {
+      setTestImageResult({
+        success: false,
+        message: `เกิดข้อผิดพลาด: ${error.message}`,
+        error: error.message,
+      })
+    } finally {
+      setTestingWithImage(false)
+    }
+  }
+
+  async function loadChannels() {
+    try {
+      const { data, error } = await supabase
+        .from('channels')
+        .select('channel_code, channel_name')
+        .order('channel_code', { ascending: true })
+
+      if (error) throw error
+      setChannels(data || [])
+    } catch (error: any) {
+      console.error('Error loading channels:', error)
+    }
+  }
+
+  async function loadChannelOrderNoPrefixes() {
+    setOrderNoPrefixLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('or_channel_order_no_prefixes')
+        .select('id, channel_code, prefix, is_active, created_at')
+        .eq('is_active', true)
+        .order('channel_code', { ascending: true })
+        .order('prefix', { ascending: true })
+
+      if (error) throw error
+      const rows = (data || []) as { id: string; channel_code: string; prefix: string; is_active: boolean }[]
+      setOrderNoPrefixRows(rows)
+
+      const map: Record<string, string[]> = {}
+      rows.forEach((r) => {
+        const cc = String(r.channel_code || '').trim()
+        const px = String(r.prefix || '').trim()
+        if (!cc || !px) return
+        if (!map[cc]) map[cc] = []
+        if (!map[cc].includes(px)) map[cc].push(px)
+      })
+      setOrderNoPrefixByChannel(map)
+    } catch (error: any) {
+      console.error('Error loading channel order_no prefixes:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'โหลดข้อมูล prefix ไม่สำเร็จ: ' + (error?.message || String(error)) })
+    } finally {
+      setOrderNoPrefixLoading(false)
+    }
+  }
+
+  const normalizePrefixToken = (s: string) => String(s || '').trim()
+
+  function getSelectedChannelPrefixes(channelCode: string): string[] {
+    const cc = String(channelCode || '').trim()
+    return (orderNoPrefixByChannel[cc] || []).slice().sort((a, b) => a.localeCompare(b))
+  }
+
+  function setSelectedChannelPrefixes(channelCode: string, prefixes: string[]) {
+    const cc = String(channelCode || '').trim()
+    const next = Array.from(new Set(prefixes.map(normalizePrefixToken).filter(Boolean))).sort((a, b) => a.localeCompare(b))
+    setOrderNoPrefixByChannel((prev) => ({ ...prev, [cc]: next }))
+  }
+
+  async function saveSelectedChannelPrefixes() {
+    const channelCode = String(selectedPrefixChannel || '').trim()
+    if (!channelCode) {
+      showMessage({ title: 'แจ้งเตือน', message: 'กรุณาเลือกช่องทาง' })
+      return
+    }
+    const desired = getSelectedChannelPrefixes(channelCode)
+    setOrderNoPrefixSaving(true)
+    try {
+      const existingRows = orderNoPrefixRows.filter((r) => String(r.channel_code || '').trim() === channelCode)
+      const existingPrefixes = Array.from(new Set(existingRows.map((r) => normalizePrefixToken(r.prefix)).filter(Boolean)))
+      const toInsert = desired.filter((p) => !existingPrefixes.includes(p))
+      const toDelete = existingRows.filter((r) => !desired.includes(normalizePrefixToken(r.prefix)))
+
+      if (toDelete.length > 0) {
+        const ids = toDelete.map((r) => r.id).filter(Boolean)
+        const { error } = await supabase.from('or_channel_order_no_prefixes').delete().in('id', ids)
+        if (error) throw error
+      }
+      if (toInsert.length > 0) {
+        const payload = toInsert.map((p) => ({ channel_code: channelCode, prefix: p, is_active: true }))
+        const { error } = await supabase.from('or_channel_order_no_prefixes').insert(payload)
+        if (error) throw error
+      }
+
+      await loadChannelOrderNoPrefixes()
+      showMessage({ title: 'สำเร็จ', message: 'บันทึกการตั้งค่า prefix สำเร็จ' })
+    } catch (error: any) {
+      console.error('Error saving channel order_no prefixes:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'บันทึกไม่สำเร็จ: ' + (error?.message || String(error)) })
+    } finally {
+      setOrderNoPrefixSaving(false)
+    }
+  }
+
+  async function removePrefix(channelCode: string, prefix: string) {
+    const ok = await showConfirm({
+      title: 'ยืนยันการลบ',
+      message: `ต้องการลบ prefix "${prefix}" ของช่องทาง ${channelCode} ใช่หรือไม่?`,
+      confirmText: 'ลบ',
+      cancelText: 'ยกเลิก',
+    })
+    if (!ok) return
+
+    const current = getSelectedChannelPrefixes(channelCode)
+    setSelectedChannelPrefixes(channelCode, current.filter((p) => p !== prefix))
+  }
+
+  async function loadUsers() {
+    setLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('us_users')
+        .select('*')
+        .order('created_at', { ascending: false })
+
+      if (error) throw error
+      setUsers(((data || []) as User[]).map((u) => ({ ...u, role: normalizeRole(u.role) as User['role'] })))
+    } catch (error: any) {
+      console.error('Error loading users:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function updateUsername(userId: string, newUsername: string) {
+    try {
+      const { error } = await supabase
+        .from('us_users')
+        .update({ username: newUsername.trim() })
+        .eq('id', userId)
+
+      if (error) throw error
+      showMessage({ title: 'สำเร็จ', message: 'อัปเดต Username สำเร็จ' })
+      loadUsers()
+    } catch (error: any) {
+      console.error('Error updating username:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
+  async function updateUserRole(userId: string, newRole: string) {
+    try {
+      const targetUser = users.find((user) => user.id === userId)
+      const mobileAccess = getMobileAccess(targetUser).filter((mode) => mode !== normalizeRole(newRole))
+      const { error } = await supabase
+        .from('us_users')
+        .update({ role: newRole, mobile_access: mobileAccess })
+        .eq('id', userId)
+
+      if (error) throw error
+      showMessage({ title: 'สำเร็จ', message: 'อัปเดตสิทธิ์สำเร็จ' })
+      loadUsers()
+    } catch (error: any) {
+      console.error('Error updating user role:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
+  async function updateUserActive(userId: string, isActive: boolean) {
+    try {
+      const { error } = await supabase
+        .from('us_users')
+        .update({ is_active: isActive })
+        .eq('id', userId)
+
+      if (error) throw error
+      showMessage({
+        title: 'สำเร็จ',
+        message: isActive ? 'เปิดใช้งานบัญชีสำเร็จ' : 'ระงับการใช้งานบัญชีสำเร็จ',
+      })
+      loadUsers()
+    } catch (error: any) {
+      console.error('Error updating user active status:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
+  async function toggleEmployeeAccess(targetUser: User) {
+    const next = targetUser.employee_access !== true
+    try {
+      const { error } = await supabase
+        .from('us_users')
+        .update({ employee_access: next })
+        .eq('id', targetUser.id)
+
+      if (error) throw error
+      showMessage({
+        title: 'สำเร็จ',
+        message: next
+          ? 'เปิดสิทธิ์ Employee สำเร็จ — user นี้เข้าหน้า Employee ผ่านมือถือได้ทันที'
+          : 'ปิดสิทธิ์ Employee สำเร็จ',
+      })
+      loadUsers()
+    } catch (error: any) {
+      console.error('Error updating employee access:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
+  /** เปิด/ปิดสิทธิ์โหมดมือถือ (production_mb, manager, technician, picker, auditor) ทีละตัว */
+  async function toggleMobileAccess(targetUser: User, mode: MobileMode) {
+    const current = getMobileAccess(targetUser)
+    const next = current.includes(mode) ? current.filter((m) => m !== mode) : [...current, mode]
+    try {
+      const { error } = await supabase
+        .from('us_users')
+        .update({ mobile_access: next })
+        .eq('id', targetUser.id)
+
+      if (error) throw error
+      loadUsers()
+    } catch (error: any) {
+      console.error('Error updating mobile access:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
+  async function handleToggleActive(targetUser: User) {
+    const willDeactivate = targetUser.is_active !== false
+    if (willDeactivate) {
+      const ok = await showConfirm({
+        title: 'ระงับการใช้งาน',
+        message: `ต้องการระงับการใช้งานของ "${targetUser.username || targetUser.email}" หรือไม่?\n\nUser จะถูก logout และไม่สามารถเข้าระบบได้จนกว่าจะเปิดใช้งานอีกครั้ง`,
+      })
+      if (!ok) return
+    }
+    await updateUserActive(targetUser.id, !willDeactivate)
+  }
+
+  async function handleDeleteUser(targetUser: User) {
+    const ok = await showConfirm({
+      title: '⚠️ ลบผู้ใช้ถาวร',
+      message: `ต้องการลบ "${targetUser.username || targetUser.email}" ออกจากระบบหรือไม่?\n\nการลบเป็น ถาวร ไม่สามารถกู้คืนได้`,
+    })
+    if (!ok) return
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/delete-user`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session?.access_token}`,
+          },
+          body: JSON.stringify({ userId: targetUser.id }),
+        }
+      )
+      const result = await res.json()
+      if (!res.ok) throw new Error(result.error || 'เกิดข้อผิดพลาด')
+      showMessage({ title: 'สำเร็จ', message: `ลบผู้ใช้ "${targetUser.username || targetUser.email}" สำเร็จ` })
+      loadUsers()
+    } catch (err: any) {
+      showMessage({ title: 'ผิดพลาด', message: err.message })
+    }
+  }
+
+  async function handleCreateUser() {
+    const { email, password, username, role } = createUserForm
+    if (!email.trim()) return showMessage({ title: 'แจ้งเตือน', message: 'กรุณากรอก Email' })
+    if (!password || password.length < 6) return showMessage({ title: 'แจ้งเตือน', message: 'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร' })
+
+    setCreateUserLoading(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-user`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session?.access_token}`,
+          },
+          body: JSON.stringify({ email: email.trim(), password, username: username.trim(), role }),
+        }
+      )
+      const result = await res.json()
+      if (!res.ok) throw new Error(result.error || 'เกิดข้อผิดพลาด')
+
+      showMessage({ title: 'สำเร็จ', message: `สร้าง User "${username.trim() || email.trim()}" สำเร็จ` })
+      setShowCreateUserModal(false)
+      setCreateUserForm({ email: '', password: '', username: '', role: 'sales-tr' })
+      loadUsers()
+    } catch (err: any) {
+      // ปิดฟอร์มก่อนแสดงข้อความ เพื่อไม่ให้ Modal สร้าง User บัง Popup แจ้งข้อผิดพลาด
+      setShowCreateUserModal(false)
+      showMessage({
+        title: 'ไม่สามารถเพิ่มผู้ใช้ได้',
+        message: authErrorMessage(err, 'ไม่สามารถสร้างผู้ใช้ได้ กรุณาตรวจสอบข้อมูลแล้วลองใหม่อีกครั้ง'),
+      })
+    } finally {
+      setCreateUserLoading(false)
+    }
+  }
+
+  const MENU_ROLE_OPTIONS = [
+    // ── Dashboard ──
+    { key: 'dashboard', label: 'Dashboard', group: '' },
+    // ── Marketplace ──
+    { key: 'marketplace', label: 'Marketplace', group: '' },
+    { key: 'marketplace-dashboard', label: 'Dashboard', group: 'marketplace' },
+    { key: 'marketplace-new', label: 'งานใหม่ (อัปโหลด/Assign)', group: 'marketplace' },
+    { key: 'marketplace-assign', label: 'Assign', group: 'marketplace' },
+    { key: 'marketplace-follow-up', label: 'รอติดตาม', group: 'marketplace' },
+    { key: 'marketplace-done', label: 'เสร็จสิ้น', group: 'marketplace' },
+    { key: 'marketplace-cancelled', label: 'ยกเลิก', group: 'marketplace' },
+    { key: 'marketplace-settings', label: 'ตั้งค่า', group: 'marketplace' },
+    // ── ออเดอร์ ──
+    { key: 'orders', label: 'ออเดอร์', group: '' },
+    { key: 'orders-all', label: 'ทั้งหมด', group: 'orders' },
+    { key: 'orders-create', label: 'สร้าง/แก้ไข', group: 'orders' },
+    { key: 'orders-claim-req', label: 'บิลเคลม (REQ)', group: 'orders' },
+    { key: 'orders-waiting', label: 'รอลงข้อมูล', group: 'orders' },
+    { key: 'orders-data-error', label: 'ลงข้อมูลผิด', group: 'orders' },
+    { key: 'orders-complete', label: 'ตรวจสอบไม่ผ่าน', group: 'orders' },
+    { key: 'orders-verified', label: 'ตรวจสอบแล้ว', group: 'orders' },
+    { key: 'orders-refund-return', label: 'โอนคืน', group: 'orders' },
+    { key: 'orders-confirm', label: 'Confirm', group: 'orders' },
+    { key: 'orders-shipped', label: 'จัดส่งแล้ว', group: 'orders' },
+    { key: 'orders-cancelled', label: 'ยกเลิก', group: 'orders' },
+    { key: 'orders-issue', label: 'Issue', group: 'orders' },
+    // ── รอตรวจคำสั่งซื้อ ──
+    { key: 'admin-qc', label: 'รอตรวจคำสั่งซื้อ', group: '' },
+    // ── Plan ──
+    { key: 'plan', label: 'Plan', group: '' },
+    { key: 'plan-dash', label: 'Dashboard (Master Plan)', group: 'plan' },
+    { key: 'orders-work-orders', label: 'ใบสั่งงาน', group: 'plan' },
+    { key: 'orders-work-orders-manage', label: 'จัดการใบงาน', group: 'plan' },
+    { key: 'plan-dept', label: 'หน้าแผนก (คิวงาน)', group: 'plan' },
+    { key: 'plan-jobs', label: 'ใบงานทั้งหมด', group: 'plan' },
+    { key: 'plan-form', label: 'สร้าง/แก้ไขใบงาน', group: 'plan' },
+    { key: 'plan-set', label: 'ตั้งค่า', group: 'plan' },
+    { key: 'plan-issue', label: 'Issue', group: 'plan' },
+    // ── Machinery ──
+    { key: 'machinery', label: 'Machinery', group: '' },
+    { key: 'machinery-settings', label: 'ตั้งค่าเครื่อง', group: 'machinery' },
+    // ── จัดสินค้า (WMS) ──
+    { key: 'wms', label: 'จัดสินค้า', group: '' },
+    { key: 'wms-new-orders', label: 'ใบงานใหม่', group: 'wms' },
+    { key: 'wms-upload', label: 'รายการใบงาน', group: 'wms' },
+    { key: 'wms-review', label: 'ตรวจสินค้า', group: 'wms' },
+    { key: 'wms-kpi', label: 'KPI', group: 'wms' },
+    { key: 'wms-requisition', label: 'รายการเบิก', group: 'wms' },
+    { key: 'wms-return-requisition', label: 'รายการคืน', group: 'wms' },
+    { key: 'wms-borrow-requisition', label: 'รายการยืม', group: 'wms' },
+    { key: 'wms-notif', label: 'แจ้งเตือน', group: 'wms' },
+    { key: 'wms-stock-anomaly', label: 'สต๊อคผิดปกติ', group: 'wms' },
+    { key: 'wms-settings', label: 'ตั้งค่า', group: 'wms' },
+    // ── QC ──
+    { key: 'qc', label: 'QC', group: '' },
+    { key: 'qc-operation', label: 'QC Operation', group: 'qc' },
+    { key: 'qc-reject', label: 'Reject', group: 'qc' },
+    { key: 'qc-report', label: 'Reports & KPI', group: 'qc' },
+    { key: 'qc-history', label: 'History Check', group: 'qc' },
+    { key: 'qc-settings', label: 'Settings', group: 'qc' },
+    // ── แพ็คสินค้า ──
+    { key: 'packing', label: 'แพ็คสินค้า', group: '' },
+    { key: 'packing-new', label: 'ใบงานใหม่', group: 'packing' },
+    { key: 'packing-shipped', label: 'จัดส่งแล้ว', group: 'packing' },
+    { key: 'packing-queue', label: 'คิวอัปโหลด', group: 'packing' },
+    { key: 'packing-report', label: 'รายงาน', group: 'packing' },
+    { key: 'packing-tagSearch', label: 'ค้นหา Tag', group: 'packing' },
+    // ── ทวนสอบขนส่ง ──
+    { key: 'transport', label: 'ทวนสอบขนส่ง', group: '' },
+    // ── บัญชี ──
+    { key: 'account', label: 'บัญชี', group: '' },
+    { key: 'account-dashboard', label: 'Dashboard', group: 'account' },
+    { key: 'account-slip-verification', label: 'รายการการตรวจสลิป', group: 'account' },
+    { key: 'account-manual-slip-check', label: 'ตรวจสลิปมือ', group: 'account' },
+    { key: 'account-bill-edit', label: 'แก้ไขบิล', group: 'account' },
+    { key: 'account-amendment', label: 'ขอยกเลิกบิล', group: 'account' },
+    { key: 'account-amendment-approve', label: 'อนุมัติยกเลิกบิล', group: 'account' },
+    { key: 'account-claim-approval', label: 'อนุมัติเคลม', group: 'account' },
+    { key: 'account-slip-age', label: 'อายุสลิป', group: 'account' },
+    { key: 'account-refunds', label: 'รายการโอนคืน', group: 'account' },
+    { key: 'account-tax-invoice', label: 'ขอใบกำกับภาษี', group: 'account' },
+    { key: 'account-approvals', label: 'รายการอนุมัติ', group: 'account' },
+    { key: 'account-ecommerce', label: 'Ecommerce', group: 'account' },
+    { key: 'account-promotion-audit', label: 'ตรวจโปรโมชั่น', group: 'account' },
+    { key: 'account-payroll', label: 'เงินเดือน', group: 'account' },
+    { key: 'account-trial-balance', label: 'งบต้นทุนขาย', group: 'account' },
+    // ── สินค้า ──
+    { key: 'products', label: 'สินค้า', group: '' },
+    { key: 'product-information', label: 'ข้อมูลสินค้า', group: 'products' },
+    { key: 'products-inactive', label: 'รายการสินค้าไม่เคลื่อนไหว', group: 'products' },
+    // ── ลายการ์ตูน ──
+    { key: 'cartoon-patterns', label: 'ลายการ์ตูน', group: '' },
+    // ── คลัง ──
+    { key: 'warehouse', label: 'คลัง', group: '' },
+    { key: 'warehouse-sub', label: 'คลังย่อย', group: 'warehouse' },
+    { key: 'warehouse-stock', label: 'คลังสินค้า', group: 'warehouse' },
+    { key: 'warehouse-audit', label: 'Audit', group: 'warehouse' },
+    { key: 'warehouse-adjust', label: 'ปรับสต๊อค', group: 'warehouse' },
+    { key: 'warehouse-returns', label: 'รับสินค้าตีกลับ', group: 'warehouse' },
+    { key: 'warehouse-production', label: 'ผลิตภายใน', group: 'warehouse' },
+    { key: 'warehouse-roll-calc', label: 'Roll Material Calculator', group: 'warehouse' },
+    { key: 'warehouse-sales-list', label: 'รายการขายสินค้า', group: 'warehouse' },
+    { key: 'warehouse-inventory-history', label: 'รายการสินค้าคงเหลือ', group: 'warehouse' },
+    // ── สั่งซื้อ ──
+    { key: 'purchase', label: 'สั่งซื้อ', group: '' },
+    { key: 'purchase-requests', label: 'คำขอซื้อ', group: 'purchase' },
+    { key: 'purchase-pr', label: 'PR (ใบขอซื้อ)', group: 'purchase' },
+    { key: 'purchase-po', label: 'PO (ใบสั่งซื้อ)', group: 'purchase' },
+    { key: 'purchase-gr', label: 'GR (ใบรับสินค้า)', group: 'purchase' },
+    { key: 'purchase-sample', label: 'สินค้าตัวอย่าง', group: 'purchase' },
+    // ── รายงานยอดขาย ──
+    { key: 'sales-reports', label: 'รายงานยอดขาย', group: '' },
+    // ── KPI ──
+    { key: 'kpi', label: 'KPI', group: '' },
+    // ── HR ──
+    { key: 'hr', label: 'HR', group: '' },
+    { key: 'hr-employees', label: 'ทะเบียนพนักงาน', group: 'hr' },
+    { key: 'hr-tasks', label: 'งาน', group: 'hr' },
+    { key: 'hr-requests', label: 'คำร้อง', group: 'hr' },
+    { key: 'hr-announcements', label: 'ประกาศ', group: 'hr' },
+    { key: 'hr-leave', label: 'ลางาน/OT/WFH', group: 'hr' },
+    { key: 'hr-work-calendar', label: 'ตารางวันทำงานและวันหยุด', group: 'hr' },
+    { key: 'hr-interview', label: 'นัดสัมภาษณ์', group: 'hr' },
+    { key: 'hr-attendance', label: 'เวลาทำงาน', group: 'hr' },
+    { key: 'hr-work-score', label: 'คะแนนปฏิบัติงาน', group: 'hr' },
+    { key: 'hr-contracts', label: 'สัญญาจ้าง', group: 'hr' },
+    { key: 'hr-documents', label: 'กฏระเบียบ/SOP', group: 'hr' },
+    { key: 'hr-onboarding', label: 'รับพนักงานใหม่', group: 'hr' },
+    { key: 'hr-salary', label: 'เส้นทางเงินเดือน', group: 'hr' },
+    { key: 'hr-warnings', label: 'ใบเตือน', group: 'hr' },
+    { key: 'hr-certificates', label: 'ใบรับรอง', group: 'hr' },
+    { key: 'hr-assets', label: 'ทะเบียนทรัพย์สิน', group: 'hr' },
+    { key: 'hr-settings', label: 'ตั้งค่า HR', group: 'hr' },
+    // ── Knowledge Hub ──
+    { key: 'knowledge-hub', label: 'Knowledge Hub', group: '' },
+    // ── ตั้งค่า ──
+    { key: 'settings', label: 'ตั้งค่า', group: '' },
+    { key: 'settings-users', label: 'จัดการสิทธิ์ผู้ใช้', group: 'settings' },
+    { key: 'settings-role-settings', label: 'ตั้งค่า Role', group: 'settings' },
+    { key: 'settings-clock-locations', label: 'จุดบันทึกเวลา (GPS)', group: 'settings' },
+    { key: 'settings-banks', label: 'ตั้งค่าข้อมูลธนาคาร', group: 'settings' },
+    { key: 'settings-bill-header', label: 'ตั้งค่าหัวบิล', group: 'settings' },
+    { key: 'settings-product-settings', label: 'ตั้งค่าสินค้า', group: 'settings' },
+    { key: 'settings-bill-channel-map', label: 'ตั้งค่าเลขบิล-ช่องทาง', group: 'settings' },
+    { key: 'settings-sellers', label: 'ผู้ขาย', group: 'settings' },
+    { key: 'settings-promotions', label: 'โปรโมชั่น/ค่าส่ง', group: 'settings' },
+    { key: 'settings-issue-types', label: 'ประเภท Issue', group: 'settings' },
+    { key: 'settings-chat-history', label: 'ประวัติแชท', group: 'settings' },
+    { key: 'settings-easyslip', label: 'API EasySlip', group: 'settings' },
+    { key: 'settings-backup-clear', label: 'สำลองข้อมูล/ล้างข้อมูล', group: 'settings' },
+    { key: 'settings-security', label: 'ความปลอดภัย', group: 'settings' },
+  ] as const
+
+  const buildChildrenByParent = () => {
+    const map: Record<string, string[]> = {}
+    MENU_ROLE_OPTIONS.forEach((menu) => {
+      if (!menu.group) return
+      if (!map[menu.group]) map[menu.group] = []
+      map[menu.group].push(menu.key)
+    })
+    return map
+  }
+
+  async function loadRoleMenus() {
+    const seq = ++roleMenusLoadSeqRef.current
+    setRoleMenusLoading(true)
+    try {
+      const roleList = Array.from(new Set(settingsRoles.flatMap((role) => getRoleLookupCandidates(role)))).map((r) =>
+        normalizeRole(r),
+      )
+      // โหลดทีละ role ด้วย .eq('role', ...) — หลีก .in() และหลีก limit ไม่มี order ที่อาจตัดแถวบาง role (เช่น store) ออก
+      const results = await Promise.all(
+        roleList.map((r) => supabase.from('st_user_menus').select('role, menu_key, has_access').eq('role', r)),
+      )
+      const data: { role: string; menu_key: string; has_access: boolean }[] = []
+      for (const res of results) {
+        if (res.error) throw res.error
+        if (res.data?.length) data.push(...(res.data as { role: string; menu_key: string; has_access: boolean }[]))
+      }
+      const map: Record<string, Record<string, boolean>> = {}
+      /** (role::menu_key) ที่มีแถวใน DB และ has_access = false — ห้ามสืบทอดจากเมนูหลัก (สอดคล้อง hasAccess) */
+      const explicitDeny = new Set<string>()
+      const denyKey = (roleKey: string, menuKey: string) => `${roleKey}::${menuKey}`
+      settingsRoles.forEach((role) => {
+        map[role] = {}
+        MENU_ROLE_OPTIONS.forEach((menu) => {
+          map[role][menu.key] = false
+        })
+      })
+      ;(data || []).forEach((row: any) => {
+        const roleKey = normalizeRole(row.role)
+        if (!map[roleKey]) map[roleKey] = {}
+        map[roleKey][row.menu_key] = row.has_access === true
+        if (row.has_access === false) {
+          explicitDeny.add(denyKey(roleKey, row.menu_key))
+        }
+      })
+      // ถ้ามีเมนูย่อยติ๊กอย่างน้อยหนึ่งรายการ ให้เมนูหลักแสดงติ๊กสอดคล้องกัน (กันสถานะ DB ไม่มีแถว parent)
+      const childrenByParent = buildChildrenByParent()
+      settingsRoles.forEach((role) => {
+        Object.keys(childrenByParent).forEach((parentKey) => {
+          if (!parentKey) return
+          const kids = childrenByParent[parentKey] || []
+          if (kids.some((ck) => map[role]?.[ck] === true)) {
+            if (!map[role]) map[role] = {}
+            map[role][parentKey] = true
+          }
+        })
+      })
+      // สั่งซื้อ: เมื่อมี purchase=true ใน DB แต่ย่อยไม่มีแถว — hasAccess ยังเข้า PR/PO/GR ได้ (fallback เมนูหลัก)
+      // ให้ตารางตรงกับพฤติกรรมนั้น; ถ้าต้องการปิด PR เฉพาะต้องบันทึกให้มีแถว has_access=false
+      const PURCHASE_INHERIT_PARENT_KEY = 'purchase'
+      settingsRoles.forEach((role) => {
+        if (map[role]?.[PURCHASE_INHERIT_PARENT_KEY] !== true) return
+        const kids = childrenByParent[PURCHASE_INHERIT_PARENT_KEY] || []
+        for (const ck of kids) {
+          if (explicitDeny.has(denyKey(role, ck))) continue
+          if (!map[role]) map[role] = {}
+          map[role][ck] = true
+        }
+      })
+      // ป้องกันผลลัพธ์ load เก่ากลับมาเขียนทับ state ล่าสุด
+      if (seq !== roleMenusLoadSeqRef.current) return
+      roleMenusRef.current = map
+      setRoleMenus(map)
+    } catch (error: any) {
+      console.error('Error loading role menus:', error)
+    } finally {
+      if (seq === roleMenusLoadSeqRef.current) {
+        setRoleMenusLoading(false)
+      }
+    }
+  }
+
+  async function loadChatLogs() {
+    setChatLoading(true)
+    setSelectedChatBill(null)
+    try {
+      // Load Confirm Chat
+      let confirmQuery = supabase
+        .from('or_order_chat_logs')
+        .select('*')
+        .eq('is_hidden', false)
+        .order('created_at', { ascending: false })
+      if (chatFromDate) confirmQuery = confirmQuery.gte('created_at', `${chatFromDate}T00:00:00.000Z`)
+      if (chatToDate) confirmQuery = confirmQuery.lte('created_at', `${chatToDate}T23:59:59.999Z`)
+      const { data: confirmData, error: confirmError } = await confirmQuery.limit(500)
+      if (confirmError) throw confirmError
+      setChatLogs((confirmData || []) as OrderChatLog[])
+
+      // Load Issue Chat (messages + issue info)
+      let issueQuery = supabase
+        .from('or_issue_messages')
+        .select('*, or_issues!inner(id, title, order_id)')
+        .eq('is_hidden', false)
+        .order('created_at', { ascending: false })
+      if (chatFromDate) issueQuery = issueQuery.gte('created_at', `${chatFromDate}T00:00:00.000Z`)
+      if (chatToDate) issueQuery = issueQuery.lte('created_at', `${chatToDate}T23:59:59.999Z`)
+      const { data: issueData, error: issueError } = await issueQuery.limit(500)
+      if (issueError) throw issueError
+
+      // ดึง order_id → bill_no mapping
+      const orderIds = [...new Set((issueData || []).map((m: any) => m.or_issues?.order_id).filter(Boolean))]
+      let billMap: Record<string, string> = {}
+      if (orderIds.length > 0) {
+        const { data: orders } = await supabase
+          .from('or_orders')
+          .select('id, bill_no')
+          .in('id', orderIds)
+        ;(orders || []).forEach((o: any) => { billMap[o.id] = o.bill_no })
+      }
+
+      const mapped = (issueData || []).map((m: any) => ({
+        id: m.id,
+        order_id: m.or_issues?.order_id || '',
+        bill_no: billMap[m.or_issues?.order_id] || m.or_issues?.title || 'N/A',
+        sender_id: m.sender_id,
+        sender_name: m.sender_name,
+        message: m.message,
+        created_at: m.created_at,
+        _source: 'issue' as const,
+        _issueTitle: m.or_issues?.title,
+        _sourceScope: m.source_scope as 'plan' | 'orders' | undefined,
+      }))
+      setIssueChatLogs(mapped)
+    } catch (error: any) {
+      console.error('Error loading chat logs:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการโหลดประวัติแชท: ' + error.message })
+    } finally {
+      setChatLoading(false)
+    }
+  }
+
+  async function loadAllMessagesForBill(billNo: string) {
+    setSelectedBillLoading(true)
+    setSelectedBillMessages([])
+    try {
+      // Confirm chat for this bill
+      const { data: confirmData } = await supabase
+        .from('or_order_chat_logs')
+        .select('*')
+        .eq('bill_no', billNo)
+        .eq('is_hidden', false)
+        .order('created_at', { ascending: true })
+      const confirmMsgs: typeof selectedBillMessages = (confirmData || []).map((l: any) => ({ ...l, _source: 'confirm' as const }))
+
+      // Issue chat for this bill
+      const { data: orderData } = await supabase
+        .from('or_orders')
+        .select('id')
+        .eq('bill_no', billNo)
+        .limit(1)
+        .single()
+      let issueMsgs: typeof selectedBillMessages = []
+      if (orderData?.id) {
+        const { data: issueData } = await supabase
+          .from('or_issue_messages')
+          .select('*, or_issues!inner(id, title, order_id)')
+          .eq('or_issues.order_id', orderData.id)
+          .eq('is_hidden', false)
+          .order('created_at', { ascending: true })
+        issueMsgs = (issueData || []).map((m: any) => ({
+          id: m.id,
+          order_id: m.or_issues?.order_id || '',
+          bill_no: billNo,
+          sender_id: m.sender_id,
+          sender_name: m.sender_name,
+          message: m.message,
+          created_at: m.created_at,
+          _source: 'issue' as const,
+          _issueTitle: m.or_issues?.title,
+          _sourceScope: m.source_scope as 'plan' | 'orders' | undefined,
+        }))
+      }
+
+      const all = [...confirmMsgs, ...issueMsgs].sort((a, b) => a.created_at.localeCompare(b.created_at))
+      setSelectedBillMessages(all)
+    } catch (error) {
+      console.error('Error loading all messages for bill:', error)
+    } finally {
+      setSelectedBillLoading(false)
+    }
+  }
+
+  async function deleteChatLog(id: string, source: 'confirm' | 'issue' = 'confirm') {
+    const ok = await showConfirm({ title: 'ลบข้อความ', message: 'ต้องการลบข้อความนี้หรือไม่?' })
+    if (!ok) return
+    try {
+      const table = source === 'issue' ? 'or_issue_messages' : 'or_order_chat_logs'
+      const { error } = await supabase
+        .from(table)
+        .delete()
+        .eq('id', id)
+      if (error) throw error
+      if (source === 'issue') {
+        setIssueChatLogs((prev) => prev.filter((log) => log.id !== id))
+      } else {
+        setChatLogs((prev) => prev.filter((log) => log.id !== id))
+      }
+      setSelectedBillMessages((prev) => prev.filter((log) => log.id !== id))
+    } catch (error: any) {
+      console.error('Error deleting chat log:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการลบ: ' + error.message })
+    }
+  }
+
+  async function deleteChatLogsByBill(billNo: string) {
+    const ok = await showConfirm({ title: 'ลบแชททั้งบิล', message: `ต้องการลบข้อความทั้งหมดของบิล ${billNo} หรือไม่?\n(เฉพาะ Confirm Chat เท่านั้น)` })
+    if (!ok) return
+    try {
+      const { error } = await supabase
+        .from('or_order_chat_logs')
+        .delete()
+        .eq('bill_no', billNo)
+      if (error) throw error
+      setChatLogs((prev) => prev.filter((log) => log.bill_no !== billNo))
+      setSelectedChatBill(null)
+    } catch (error: any) {
+      console.error('Error deleting chat logs by bill:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการลบ: ' + error.message })
+    }
+  }
+
+  async function loadIssueTypes() {
+    try {
+      const { data, error } = await supabase
+        .from('or_issue_types')
+        .select('*')
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      setIssueTypes((data || []) as IssueType[])
+    } catch (error: any) {
+      console.error('Error loading issue types:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการโหลดประเภท Issue: ' + error.message })
+    }
+  }
+
+  async function saveIssueType() {
+    if (!issueTypeName.trim()) {
+      showMessage({ message: 'กรุณากรอกชื่อประเภท' })
+      return
+    }
+    setIssueTypeSaving(true)
+    try {
+      const payload = {
+        name: issueTypeName.trim(),
+        color: issueTypeColor || '#3B82F6',
+        is_active: true,
+      }
+      if (issueTypeEditingId) {
+        const { error } = await supabase
+          .from('or_issue_types')
+          .update(payload)
+          .eq('id', issueTypeEditingId)
+        if (error) throw error
+      } else {
+        const { error } = await supabase.from('or_issue_types').insert(payload)
+        if (error) throw error
+      }
+      setIssueTypeName('')
+      setIssueTypeColor('#3B82F6')
+      setIssueTypeEditingId(null)
+      loadIssueTypes()
+    } catch (error: any) {
+      console.error('Error saving issue type:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    } finally {
+      setIssueTypeSaving(false)
+    }
+  }
+
+  async function deleteIssueType(id: string) {
+    const ok = await showConfirm({ title: 'ลบประเภท Issue', message: 'ต้องการลบประเภท Issue นี้หรือไม่?' })
+    if (!ok) return
+    try {
+      const { error } = await supabase
+        .from('or_issue_types')
+        .delete()
+        .eq('id', id)
+      if (error) throw error
+      setIssueTypes((prev) => prev.filter((t) => t.id !== id))
+    } catch (error: any) {
+      console.error('Error deleting issue type:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
+  // ===== Sellers CRUD =====
+  async function fetchSellersTable() {
+    try {
+      const { data, error } = await supabase.from('pr_sellers').select('*').order('name')
+      if (error) throw error
+      setSellers(data || [])
+    } catch (error: any) {
+      console.error('Error loading sellers:', error)
+    }
+  }
+
+  /** ซิงก์ชื่อจาก pr_products เข้า pr_sellers แล้วโหลดตาราง (เรียกเมื่อเปิดแท็บ) */
+  async function loadSellers() {
+    try {
+      const { error } = await supabase.rpc('rpc_sync_pr_sellers_from_products')
+      if (error) console.warn('Sync sellers from products:', error.message)
+    } catch (e) {
+      console.warn('Sync sellers from products:', e)
+    }
+    await fetchSellersTable()
+  }
+
+  async function syncSellersFromProductsManual() {
+    setSellerSyncing(true)
+    try {
+      const { data, error } = await supabase.rpc('rpc_sync_pr_sellers_from_products')
+      if (error) throw error
+      const inserted = (data as { inserted?: number })?.inserted ?? 0
+      const updated = (data as { updated?: number })?.updated ?? 0
+      const parts: string[] = []
+      if (inserted > 0) parts.push(`เพิ่ม ${inserted} รายการ`)
+      if (updated > 0) parts.push(`อัปเดต ${updated} รายการ`)
+      showMessage({
+        message:
+          parts.length > 0
+            ? `ซิงก์ผู้ขายจากสินค้า: ${parts.join(', ')}`
+            : 'ข้อมูลผู้ขายในสินค้าตรงกับรายการแล้ว',
+      })
+      await fetchSellersTable()
+    } catch (error: any) {
+      console.error('Sync sellers failed:', error)
+      showMessage({ title: 'ผิดพลาด', message: error?.message || String(error) })
+    } finally {
+      setSellerSyncing(false)
+    }
+  }
+
+  function resetSellerForm() {
+    setSellerName('')
+    setSellerNameCn('')
+    setSellerPurchaseChannel('')
+    setSellerType('foreign')
+    setSellerEditingId(null)
+  }
+
+  function openSellerModalForAdd() {
+    resetSellerForm()
+    setShowSellerModal(true)
+  }
+
+  function openSellerModalForEdit(s: {
+    id: string
+    name: string
+    name_cn: string
+    purchase_channel: string
+    seller_type: string
+  }) {
+    setSellerEditingId(s.id)
+    setSellerName(s.name)
+    setSellerNameCn(s.name_cn || '')
+    setSellerPurchaseChannel(s.purchase_channel || '')
+    setSellerType(s.seller_type === 'thailand' ? 'thailand' : 'foreign')
+    setShowSellerModal(true)
+  }
+
+  function closeSellerModal() {
+    setShowSellerModal(false)
+    resetSellerForm()
+  }
+
+  async function saveSeller() {
+    if (!sellerName.trim()) {
+      showMessage({ message: 'กรุณากรอกชื่อผู้ขาย' })
+      return
+    }
+    setSellerSaving(true)
+    try {
+      const payload = {
+        name: sellerName.trim(),
+        name_cn: sellerNameCn.trim(),
+        purchase_channel: sellerPurchaseChannel.trim(),
+        seller_type: sellerType,
+      }
+      if (sellerEditingId) {
+        const { error } = await supabase
+          .from('pr_sellers')
+          .update(payload)
+          .eq('id', sellerEditingId)
+        if (error) throw error
+      } else {
+        const { error } = await supabase
+          .from('pr_sellers')
+          .insert(payload)
+        if (error) throw error
+      }
+      closeSellerModal()
+      await fetchSellersTable()
+    } catch (error: any) {
+      console.error('Error saving seller:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    } finally {
+      setSellerSaving(false)
+    }
+  }
+
+  async function toggleSellerVisibility(s: { id: string; is_active: boolean }) {
+    setSellerTogglingId(s.id)
+    try {
+      const { error } = await supabase
+        .from('pr_sellers')
+        .update({ is_active: !s.is_active })
+        .eq('id', s.id)
+      if (error) throw error
+      showMessage({
+        message: s.is_active ? 'ซ่อนผู้ขายเรียบร้อย' : 'เปิดใช้งานผู้ขายเรียบร้อย',
+      })
+      await fetchSellersTable()
+    } catch (error: any) {
+      console.error('Error toggling seller visibility:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    } finally {
+      setSellerTogglingId(null)
+    }
+  }
+
+  async function toggleRoleMenu(role: string, menuKey: string, checked: boolean) {
+    const targetMenu = MENU_ROLE_OPTIONS.find((m) => m.key === menuKey)
+    if (!targetMenu) return
+    if (role === 'sales-pump' && (targetMenu.key === 'marketplace' || targetMenu.group === 'marketplace')) return
+    setRoleMenus((prev) => {
+      const childrenByParent = buildChildrenByParent()
+      const parentOfMenu = MENU_ROLE_OPTIONS.find((m) => m.key === menuKey)?.group || ''
+      const isParentMenu = !!childrenByParent[menuKey]?.length
+      const updated = {
+        ...prev,
+        [role]: {
+          ...(prev[role] || {}),
+          [menuKey]: checked,
+        },
+      }
+      // ถ้าติ๊กเมนูหลัก -> ติ๊กเมนูย่อยทั้งหมด, ถ้าเอาติ๊กออก -> เอาออกทั้งหมด
+      if (isParentMenu) {
+        childrenByParent[menuKey].forEach((childKey) => {
+          const child = MENU_ROLE_OPTIONS.find((m) => m.key === childKey)
+          if (child) {
+            updated[role][childKey] = checked
+          }
+        })
+      }
+      // ถ้าติ๊กเมนูย่อย -> เปิดเมนูหลัก, ถ้าเอาติ๊กออก -> ปิดเมนูหลักเมื่อไม่มีลูกเหลือ
+      if (!isParentMenu && parentOfMenu) {
+        const siblingKeys = childrenByParent[parentOfMenu] || []
+        const hasAnyChecked = siblingKeys.some((key) => {
+          const sibling = MENU_ROLE_OPTIONS.find((m) => m.key === key)
+          return !!sibling && updated[role][key] === true
+        })
+        updated[role][parentOfMenu] = hasAnyChecked
+      }
+      roleMenusRef.current = updated
+      return updated
+    })
+  }
+
+  async function saveRoleMenus() {
+    setSavingRoleMenus(true)
+    try {
+      const childrenByParent = buildChildrenByParent()
+      const base = roleMenusRef.current
+      const synced: Record<string, Record<string, boolean>> = {}
+      settingsRoles.forEach((role) => {
+        synced[role] = { ...(base[role] || {}) }
+      })
+      settingsRoles.forEach((role) => {
+        Object.keys(childrenByParent).forEach((parentKey) => {
+          if (!parentKey) return
+          const kids = childrenByParent[parentKey] || []
+          if (kids.some((k) => synced[role]?.[k] === true)) {
+            if (!synced[role]) synced[role] = {}
+            synced[role][parentKey] = true
+          }
+        })
+      })
+      roleMenusRef.current = synced
+
+      const payload: Array<{ role: string; menu_key: string; menu_name: string; has_access: boolean }> = []
+      const currentRoleMenus = roleMenusRef.current
+      settingsRoles.forEach((role) => {
+        const menus = currentRoleMenus[role] ?? {}
+        const r = normalizeRole(role)
+        MENU_ROLE_OPTIONS.forEach((menu) => {
+          const marketplaceBlocked = role === 'sales-pump' && (menu.key === 'marketplace' || menu.group === 'marketplace')
+          payload.push({
+            role: r,
+            menu_key: menu.key,
+            menu_name: menu.label,
+            has_access: marketplaceBlocked ? false : (menus[menu.key] ?? false),
+          })
+        })
+      })
+      const BATCH = 400
+      for (let i = 0; i < payload.length; i += BATCH) {
+        const slice = payload.slice(i, i + BATCH)
+        const { error } = await supabase.from('st_user_menus').upsert(slice, { onConflict: 'role,menu_key' })
+        if (error) throw error
+      }
+      refreshMenuAccess()
+      await loadRoleMenus()
+      showMessage({ title: 'สำเร็จ', message: 'บันทึกการตั้งค่า Role สำเร็จ' })
+    } catch (error: any) {
+      console.error('Error saving role menus:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    } finally {
+      setSavingRoleMenus(false)
+    }
+  }
+
+  async function loadBankSettings() {
+    try {
+      // Load bank settings
+      const { data: bankData, error: bankError } = await supabase
+        .from('bank_settings')
+        .select('*')
+        .order('created_at', { ascending: false })
+
+      if (bankError) throw bankError
+
+      if (!bankData || bankData.length === 0) {
+        setBankSettings([])
+        return
+      }
+
+      // Load all bank_settings_channels
+      const { data: channelsData, error: channelsError } = await supabase
+        .from('bank_settings_channels')
+        .select('bank_setting_id, channel_code')
+
+      if (channelsError) {
+        console.error('Error loading bank settings channels:', channelsError)
+        // Continue without channels if error
+      }
+
+      // Load all channels for mapping
+      const { data: allChannels, error: allChannelsError } = await supabase
+        .from('channels')
+        .select('channel_code, channel_name')
+
+      if (allChannelsError) {
+        console.error('Error loading channels:', allChannelsError)
+      }
+
+      // Create channel map
+      const channelMap = new Map(
+        (allChannels || []).map((ch: any) => [ch.channel_code, ch.channel_name])
+      )
+
+      // Transform data to include channels array
+      const transformedData = bankData.map((bank: any) => {
+        // Find channels for this bank
+        const bankChannels = (channelsData || [])
+          .filter((bsc: any) => bsc.bank_setting_id === bank.id)
+          .map((bsc: any) => ({
+            channel_code: bsc.channel_code,
+            channel_name: channelMap.get(bsc.channel_code) || bsc.channel_code,
+          }))
+
+        return {
+          ...bank,
+          channels: bankChannels,
+        }
+      })
+
+      setBankSettings(transformedData)
+    } catch (error: any) {
+      console.error('Error loading bank settings:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message })
+    }
+  }
+
+  async function loadProductCategories() {
+    try {
+      const data = await fetchAllSupabasePages<{ id: string; product_category: string | null }>((from, to) => supabase
+        .from('pr_products')
+        .select('id, product_category')
+        .eq('is_active', true)
+        .not('product_category', 'is', null)
+        .order('id', { ascending: true })
+        .range(from, to))
+      const categories = Array.from(
+        new Set(
+          data
+            .map((r: { product_category: string | null }) => r.product_category)
+            .filter((c): c is string => !!c && String(c).trim() !== '')
+        )
+      ).sort((a, b) => a.localeCompare(b))
+      setProductCategories(categories)
+    } catch (error: any) {
+      console.error('Error loading product categories:', error)
+      setProductCategories([])
+    }
+  }
+
+  async function loadCategoryFieldSettings() {
+    try {
+      const { data, error } = await supabase
+        .from('pr_category_field_settings')
+        .select('*')
+
+      if (error) throw error
+      const map: Record<string, Record<ProductFieldKey, boolean>> = {}
+      const salesMap: Record<string, boolean> = {}
+      ;(data || []).forEach((row: any) => {
+        map[row.category] = {
+          product_name: row.product_name ?? true,
+          ink_color: row.ink_color ?? true,
+          layer: row.layer ?? true,
+          cartoon_pattern: row.cartoon_pattern ?? true,
+          line_pattern: row.line_pattern ?? true,
+          font: row.font ?? true,
+          line_1: row.line_1 ?? true,
+          line_2: row.line_2 ?? true,
+          line_3: row.line_3 ?? true,
+          quantity: row.quantity ?? true,
+          unit_price: row.unit_price ?? true,
+          notes: row.notes ?? true,
+          attachment: row.attachment ?? true,
+        }
+        const catKey = row.category != null ? String(row.category).trim() : ''
+        if (catKey) {
+          salesMap[catKey] = row.is_active_for_sales !== false
+        }
+      })
+      setCategoryFieldSettings(map)
+      setCategorySalesActive(salesMap)
+    } catch (error: any) {
+      console.error('Error loading category field settings:', error)
+      setCategoryFieldSettings({})
+      setCategorySalesActive({})
+    }
+  }
+
+  /** หมวดนี้เปิดใช้ในการขายหรือไม่ — ไม่มีใน DB ถือว่าเปิด */
+  function getCategorySalesActive(category: string): boolean {
+    return categorySalesActive[category] !== false
+  }
+
+  function setCategorySalesActiveFlag(category: string, value: boolean) {
+    setCategorySalesActive((prev) => ({ ...prev, [category]: value }))
+  }
+
+  function getCategoryFields(category: string): Record<ProductFieldKey, boolean> {
+    return categoryFieldSettings[category]
+      ? { ...categoryFieldSettings[category] }
+      : { ...defaultCategoryFields }
+  }
+
+  function setCategoryField(category: string, field: ProductFieldKey, value: boolean) {
+    setCategoryFieldSettings((prev) => ({
+      ...prev,
+      [category]: { ...getCategoryFields(category), [field]: value },
+    }))
+  }
+
+  async function saveCategoryFieldSettings() {
+    setSavingProductSettings(true)
+    try {
+      for (const category of productCategories) {
+        const fields = getCategoryFields(category)
+        await supabase.from('pr_category_field_settings').upsert(
+          {
+            category,
+            product_name: fields.product_name,
+            ink_color: fields.ink_color,
+            layer: fields.layer,
+            cartoon_pattern: fields.cartoon_pattern,
+            line_pattern: fields.line_pattern,
+            font: fields.font,
+            line_1: fields.line_1,
+            line_2: fields.line_2,
+            line_3: fields.line_3,
+            quantity: fields.quantity,
+            unit_price: fields.unit_price,
+            notes: fields.notes,
+            attachment: fields.attachment,
+            is_active_for_sales: getCategorySalesActive(category),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'category' }
+        )
+      }
+      showMessage({ title: 'สำเร็จ', message: 'บันทึกตั้งค่าสินค้าสำเร็จ' })
+    } catch (error: any) {
+      console.error('Error saving category field settings:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการบันทึก: ' + error.message })
+    } finally {
+      setSavingProductSettings(false)
+    }
+  }
+
+  // --- Product-level field overrides ---
+  async function loadAllProducts() {
+    try {
+      const data = await fetchAllSupabasePages((from, to) => supabase
+        .from('pr_products')
+        .select('id, product_name, product_code, product_category')
+        .eq('is_active', true)
+        // ชนิดสินค้าที่ขายได้ — ต้องตรงกับตัวกรองในฟอร์มเปิดบิล (OrderForm/MarketplaceOrderModal)
+        .in('product_type', ['FG', 'PP'])
+        .order('product_name')
+        .order('id', { ascending: true })
+        .range(from, to))
+      setAllProducts(data)
+    } catch (error: any) {
+      console.error('Error loading products for overrides:', error)
+      setAllProducts([])
+    }
+  }
+
+  async function loadProductOverrides() {
+    try {
+      const { data, error } = await supabase.from('pr_product_field_overrides').select('*')
+      if (error) throw error
+      const map: Record<string, Record<ProductFieldKey, ProductFieldOverrideValue>> = {}
+      ;(data || []).forEach((row: any) => {
+        const pid = row.product_id
+        if (!pid) return
+        const requiredFields = new Set<string>(Array.isArray(row.required_fields) ? row.required_fields : [])
+        const entry: Record<string, ProductFieldOverrideValue> = {}
+        for (const { key } of PRODUCT_FIELD_KEYS) {
+          entry[key] = requiredFields.has(key) ? 'required' : row[key] ?? null
+        }
+        map[pid] = entry as Record<ProductFieldKey, ProductFieldOverrideValue>
+      })
+      setProductOverrides(map)
+    } catch (error: any) {
+      console.error('Error loading product overrides:', error)
+      setProductOverrides({})
+    }
+  }
+
+  function getProductOverrideFields(productId: string): Record<ProductFieldKey, ProductFieldOverrideValue> {
+    if (productOverrides[productId]) return { ...productOverrides[productId] }
+    const empty: Record<string, ProductFieldOverrideValue> = {}
+    for (const { key } of PRODUCT_FIELD_KEYS) empty[key] = null
+    return empty as Record<ProductFieldKey, ProductFieldOverrideValue>
+  }
+
+  function setProductOverrideField(productId: string, field: ProductFieldKey, value: ProductFieldOverrideValue) {
+    setProductOverrides((prev) => ({
+      ...prev,
+      [productId]: { ...getProductOverrideFields(productId), [field]: value },
+    }))
+  }
+
+  /** ตรวจว่าสินค้านี้มี override ที่แตกต่างจาก null (ต้องบันทึก) */
+  function productHasOverrides(productId: string): boolean {
+    const fields = productOverrides[productId]
+    if (!fields) return false
+    return Object.values(fields).some((v) => v !== null)
+  }
+
+  const OVERRIDE_PAGE_SIZE = 50
+
+  /** สินค้าในหมวดที่เปิดใช้ในการขาย (สำหรับ Override) */
+  const overrideEligibleProducts = useMemo(() => {
+    return allProducts.filter((p) => {
+      const c = (p.product_category || '').trim()
+      if (!c) return true
+      return categorySalesActive[c] !== false
+    })
+  }, [allProducts, categorySalesActive])
+
+  const productCategoriesActiveForSales = useMemo(
+    () => productCategories.filter((c) => categorySalesActive[c] !== false),
+    [productCategories, categorySalesActive]
+  )
+
+  /** สินค้าที่กรองตามการค้นหาและหมวดหมู่ (memoized) */
+  const filteredOverrideProducts = useMemo(() => {
+    let list = overrideEligibleProducts
+    if (overrideCategoryFilter) {
+      list = list.filter((p) => (p.product_category || '') === overrideCategoryFilter)
+    }
+    if (overrideSearchTerm) {
+      const term = overrideSearchTerm.toLowerCase()
+      list = list.filter(
+        (p) =>
+          (p.product_name || '').toLowerCase().includes(term) ||
+          (p.product_code || '').toLowerCase().includes(term)
+      )
+    }
+    return list
+  }, [overrideEligibleProducts, overrideCategoryFilter, overrideSearchTerm])
+
+  const overrideTotalPages = Math.ceil(filteredOverrideProducts.length / OVERRIDE_PAGE_SIZE)
+  const paginatedOverrideProducts = useMemo(() => {
+    const start = (overridePage - 1) * OVERRIDE_PAGE_SIZE
+    return filteredOverrideProducts.slice(start, start + OVERRIDE_PAGE_SIZE)
+  }, [filteredOverrideProducts, overridePage])
+
+  async function saveProductOverrides() {
+    setSavingProductOverrides(true)
+    try {
+      const productsWithOverrides = overrideEligibleProducts.filter((p) => productHasOverrides(p.id))
+      const productsWithoutOverrides = overrideEligibleProducts.filter((p) => !productHasOverrides(p.id))
+
+      for (const product of productsWithOverrides) {
+        const fields = getProductOverrideFields(product.id)
+        const { error } = await supabase.from('pr_product_field_overrides').upsert(
+          {
+            product_id: product.id,
+            ...Object.fromEntries(
+              PRODUCT_FIELD_KEYS
+                .filter(({ key }) => key !== 'product_name')
+                .map(({ key }) => [key, fields[key] === 'required' ? true : fields[key]]),
+            ),
+            required_fields: PRODUCT_FIELD_KEYS.filter(({ key }) => fields[key] === 'required').map(({ key }) => key),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'product_id' }
+        )
+        if (error) throw error
+      }
+
+      if (productsWithoutOverrides.length > 0) {
+        const idsToDelete = productsWithoutOverrides
+          .filter((p) => p.id in productOverrides)
+          .map((p) => p.id)
+        if (idsToDelete.length > 0) {
+          await supabase.from('pr_product_field_overrides').delete().in('product_id', idsToDelete)
+        }
+      }
+
+      showMessage({ title: 'สำเร็จ', message: 'บันทึกตั้งค่า override ระดับสินค้าสำเร็จ' })
+    } catch (error: any) {
+      console.error('Error saving product overrides:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการบันทึก: ' + error.message })
+    } finally {
+      setSavingProductOverrides(false)
+    }
+  }
+
+  // --- Export / Import override เป็นไฟล์ Excel (จับคู่ด้วย product_code) ---
+  const OVERRIDE_SHEET_NAME = 'Override'
+  const OVERRIDE_ID_HEADERS = ['product_code', 'product_name', 'product_category'] as const
+  const overrideExportHeaders = [...OVERRIDE_ID_HEADERS, ...PRODUCT_FIELD_KEYS.map((f) => f.label)]
+
+  /** ค่า override → ค่าที่เขียนลงเซลล์ */
+  function overrideValueToCell(value: ProductFieldOverrideValue, categoryValue: boolean): string {
+    if (value === 'required') return 'R'
+    if (value === true) return '1'
+    if (value === false) return '0'
+    return categoryValue ? '(1)' : '(0)'
+  }
+
+  /** ค่าในเซลล์ → boolean|null (รองรับ 1/0, เปิด/ปิด, true/false, y/n — ค่าในวงเล็บ = ตามหมวดหมู่) */
+  function overrideCellToValue(raw: unknown): ProductFieldOverrideValue {
+    const s = String(raw ?? '').trim().toLowerCase()
+    if (s === '') return null
+    if (s.startsWith('(')) return null // ค่าจากหมวดหมู่ที่ export ไว้ให้ดู ไม่ใช่ override
+    if (['r', 'required', 'บังคับกรอก'].includes(s)) return 'required'
+    if (['1', 'true', 'y', 'yes', 'on', 'เปิด'].includes(s)) return true
+    if (['0', 'false', 'n', 'no', 'off', 'ปิด'].includes(s)) return false
+    return null
+  }
+
+  /** แถวตัวอย่างในชีตวิธีกรอก — สร้างจาก PRODUCT_FIELD_KEYS เพื่อให้คอลัมน์ตรงกับหัวตารางเสมอ */
+  function overrideExampleRow(
+    code: string,
+    name: string,
+    category: string,
+    values: Partial<Record<ProductFieldKey, string>>
+  ): string[] {
+    return [code, name, category, ...PRODUCT_FIELD_KEYS.map(({ key }) => values[key] ?? '')]
+  }
+
+  function exportProductOverrides() {
+    try {
+      const rows = allProducts.map((p) => {
+        const fields = getProductOverrideFields(p.id)
+        const catKey = (p.product_category || '').trim()
+        const catSettings = catKey ? getCategoryFields(catKey) : defaultCategoryFields
+        return [
+          p.product_code || '',
+          p.product_name || '',
+          p.product_category || '',
+          ...PRODUCT_FIELD_KEYS.map(({ key }) => overrideValueToCell(fields[key], catSettings[key])),
+        ]
+      })
+
+      const ws = XLSX.utils.aoa_to_sheet([overrideExportHeaders, ...rows])
+      ws['!cols'] = [
+        { wch: 14 },
+        { wch: 34 },
+        { wch: 14 },
+        ...PRODUCT_FIELD_KEYS.map(() => ({ wch: 10 })),
+      ]
+
+      const guide = XLSX.utils.aoa_to_sheet([
+        ['วิธีกรอกไฟล์ Override ฟิลด์ระดับสินค้า'],
+        [],
+        ['1) ระบบจับคู่สินค้าด้วยคอลัมน์ product_code เท่านั้น'],
+        ['', 'product_name และ product_category มีไว้ให้อ่านเฉยๆ — แก้แล้วไม่มีผลตอน Import'],
+        [],
+        ['2) ค่าที่กรอกได้ในคอลัมน์ฟิลด์ (ชื่อสินค้า ... ไฟล์แนบ)'],
+        ['', '(1) หรือ (0)', 'ค่าที่ดึงมาจากหมวดหมู่ (มีวงเล็บ = แสดงให้ดูเฉยๆ) — Import แล้วนับเป็น "ตามหมวดหมู่"'],
+        ['', 'เว้นว่าง', 'ตามหมวดหมู่ (ค่าเริ่มต้น) — ใช้ค่าจากตารางตั้งค่าหมวดหมู่'],
+        ['', '1', 'Override เปิด — แสดงฟิลด์นี้ แม้หมวดหมู่จะปิด'],
+        ['', 'R', 'Override เปิด (บังคับกรอก) — แสดงและตรวจว่าต้องกรอกก่อนเปิดบิล'],
+        ['', '0', 'Override ปิด — ซ่อนฟิลด์นี้ แม้หมวดหมู่จะเปิด'],
+        ['', 'พิมพ์ required หรือ บังคับกรอก แทน R ได้ และพิมพ์ เปิด/ปิด, true/false, y/n แทน 1/0 ได้'],
+        ['', 'ต้องการ override ช่องไหน ให้พิมพ์ทับค่าในวงเล็บด้วย 1, R หรือ 0 (ไม่มีวงเล็บ)'],
+        [],
+        ['3) แถวที่ product_code ไม่มีในระบบจะถูกข้าม และรายงานจำนวนให้ทราบ'],
+        ['4) สินค้าที่ไม่มีในไฟล์จะไม่ถูกแตะต้อง — ค่าเดิมบนหน้าจอยังอยู่'],
+        ['5) หลัง Import ต้องกดปุ่ม "บันทึก Override" เพื่อบันทึกลงฐานข้อมูล'],
+        [],
+        ['ตัวอย่างการกรอก (คัดลอกรูปแบบนี้ไปใส่ในชีต Override)'],
+        overrideExportHeaders,
+        overrideExampleRow('110000002', 'CA01 ภารกิจเด็กดี 1ชุด', 'CALENDAR', {
+          ink_color: '1',
+          line_1: '0',
+          line_2: '0',
+          line_3: '0',
+        }),
+        overrideExampleRow('110000353', 'COLLEEN สีไม้ 12สี', 'FIBERLASER', { attachment: '1' }),
+        overrideExampleRow('110000006', 'Color Pencil#12', 'ETC', {}),
+        [],
+        ['แถวที่ 1: บังคับเปิด "สีหมึก" และบังคับปิด "บรรทัด 1-3" ที่เหลือตามหมวดหมู่'],
+        ['แถวที่ 2: บังคับเปิด "ไฟล์แนบ" อย่างเดียว'],
+        ['แถวที่ 3: เว้นว่างทุกช่อง = ไม่มี override (ล้าง override เดิมของสินค้านี้ทิ้ง)'],
+        ['หมายเหตุ: ค่าในวงเล็บ เช่น (1) หรือ (0) นับเป็น "ตามหมวดหมู่" เหมือนเว้นว่าง'],
+      ])
+      guide['!cols'] = [{ wch: 4 }, { wch: 30 }, { wch: 60 }]
+
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, OVERRIDE_SHEET_NAME)
+      XLSX.utils.book_append_sheet(wb, guide, 'วิธีกรอก')
+      XLSX.writeFile(wb, 'Override_ฟิลด์สินค้า.xlsx')
+    } catch (error: any) {
+      console.error('Error exporting product overrides:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'Export ไม่สำเร็จ: ' + (error?.message || String(error)) })
+    }
+  }
+
+  async function importProductOverrides(file: File) {
+    setImportingOverrides(true)
+    try {
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(new Uint8Array(buf), { type: 'array' })
+      const sheetName = wb.SheetNames.includes(OVERRIDE_SHEET_NAME) ? OVERRIDE_SHEET_NAME : wb.SheetNames[0]
+      if (!sheetName) throw new Error('ไม่มีชีตในไฟล์')
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[sheetName], { defval: '' })
+      if (!rows.length) throw new Error('ไม่มีข้อมูลในไฟล์')
+      if (!('product_code' in rows[0])) throw new Error('ไม่พบคอลัมน์ product_code — ใช้ไฟล์ที่ได้จากปุ่ม Export เป็นต้นแบบ')
+
+      const productByCode: Record<string, { id: string }> = {}
+      for (const p of allProducts) {
+        const code = String(p.product_code || '').trim()
+        if (code) productByCode[code] = p
+      }
+
+      const next = { ...productOverrides }
+      let applied = 0
+      const unknownCodes: string[] = []
+
+      for (const row of rows) {
+        const code = String(row['product_code'] ?? '').trim()
+        if (!code) continue
+        const product = productByCode[code]
+        if (!product) {
+          unknownCodes.push(code)
+          continue
+        }
+        const entry: Record<string, ProductFieldOverrideValue> = {}
+        for (const { key, label } of PRODUCT_FIELD_KEYS) {
+          entry[key] = overrideCellToValue(row[label])
+        }
+        next[product.id] = entry as Record<ProductFieldKey, ProductFieldOverrideValue>
+        applied++
+      }
+
+      setProductOverrides(next)
+      setOverridePage(1)
+
+      const lines = [`นำเข้าค่า override ของสินค้า ${applied} รายการ`]
+      if (unknownCodes.length > 0) {
+        const preview = unknownCodes.slice(0, 5).join(', ')
+        lines.push(
+          `ข้าม ${unknownCodes.length} รายการ (ไม่พบ product_code ในระบบ): ${preview}${unknownCodes.length > 5 ? ' ...' : ''}`
+        )
+      }
+      lines.push('')
+      lines.push('ยังไม่ได้บันทึกลงฐานข้อมูล — ตรวจค่าในตารางแล้วกด "บันทึก Override"')
+      showMessage({ title: 'นำเข้าสำเร็จ', message: lines.join('\n') })
+    } catch (error: any) {
+      console.error('Error importing product overrides:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'Import ไม่สำเร็จ: ' + (error?.message || String(error)) })
+    } finally {
+      setImportingOverrides(false)
+    }
+  }
+
+  // --- Export / Import ตั้งค่าหมวดหมู่ (ฟิลด์ที่อนุญาต + เปิดการขาย) เป็นไฟล์ Excel ---
+  const CATEGORY_SHEET_NAME = 'CategorySettings'
+  const CATEGORY_SALES_HEADER = 'เปิดการขาย'
+  const categoryExportHeaders = ['product_category', CATEGORY_SALES_HEADER, ...PRODUCT_FIELD_KEYS.map((f) => f.label)]
+
+  function exportCategoryFieldSettings() {
+    try {
+      const rows = productCategories.map((category) => {
+        const fields = getCategoryFields(category)
+        return [
+          category,
+          getCategorySalesActive(category) ? '1' : '0',
+          ...PRODUCT_FIELD_KEYS.map(({ key }) => (fields[key] ? '1' : '0')),
+        ]
+      })
+
+      const ws = XLSX.utils.aoa_to_sheet([categoryExportHeaders, ...rows])
+      ws['!cols'] = [{ wch: 18 }, { wch: 10 }, ...PRODUCT_FIELD_KEYS.map(() => ({ wch: 10 }))]
+
+      const guide = XLSX.utils.aoa_to_sheet([
+        ['วิธีกรอกไฟล์ตั้งค่าหมวดหมู่สินค้า'],
+        [],
+        ['1) ระบบจับคู่ด้วยคอลัมน์ product_category — ชื่อหมวดหมู่ต้องตรงกับในระบบ'],
+        ['2) คอลัมน์ เปิดการขาย: 1 = เปิดหมวดนี้ในการขาย/เปิดบิล, 0 = ปิด'],
+        ['3) คอลัมน์ฟิลด์ (ชื่อสินค้า ... ไฟล์แนบ): 1 = อนุญาตให้กรอก, 0 = ไม่อนุญาต'],
+        ['', 'พิมพ์ เปิด/ปิด, true/false, y/n แทน 1/0 ได้เช่นกัน'],
+        ['', 'เว้นว่าง = คงค่าปัจจุบันในระบบ (ไม่เปลี่ยนช่องนั้น)'],
+        ['4) แถวที่ชื่อหมวดหมู่ไม่มีในระบบจะถูกข้าม และรายงานจำนวนให้ทราบ'],
+        ['5) หมวดหมู่ที่ไม่มีในไฟล์จะไม่ถูกแตะต้อง — ค่าเดิมบนหน้าจอยังอยู่'],
+        ['6) หลัง Import ต้องกดปุ่ม "บันทึก" ของตารางตั้งค่าหมวดหมู่ เพื่อบันทึกลงฐานข้อมูล'],
+      ])
+      guide['!cols'] = [{ wch: 4 }, { wch: 70 }]
+
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, CATEGORY_SHEET_NAME)
+      XLSX.utils.book_append_sheet(wb, guide, 'วิธีกรอก')
+      XLSX.writeFile(wb, 'ตั้งค่าหมวดหมู่สินค้า.xlsx')
+    } catch (error: any) {
+      console.error('Error exporting category settings:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'Export ไม่สำเร็จ: ' + (error?.message || String(error)) })
+    }
+  }
+
+  async function importCategoryFieldSettings(file: File) {
+    setImportingCategorySettings(true)
+    try {
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(new Uint8Array(buf), { type: 'array' })
+      const sheetName = wb.SheetNames.includes(CATEGORY_SHEET_NAME) ? CATEGORY_SHEET_NAME : wb.SheetNames[0]
+      if (!sheetName) throw new Error('ไม่มีชีตในไฟล์')
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[sheetName], { defval: '' })
+      if (!rows.length) throw new Error('ไม่มีข้อมูลในไฟล์')
+      if (!('product_category' in rows[0])) throw new Error('ไม่พบคอลัมน์ product_category — ใช้ไฟล์ที่ได้จากปุ่ม Export เป็นต้นแบบ')
+
+      const known = new Set(productCategories)
+      const nextFields = { ...categoryFieldSettings }
+      const nextSales = { ...categorySalesActive }
+      let applied = 0
+      const unknownCategories: string[] = []
+
+      for (const row of rows) {
+        const category = String(row['product_category'] ?? '').trim()
+        if (!category) continue
+        if (!known.has(category)) {
+          unknownCategories.push(category)
+          continue
+        }
+        const current = nextFields[category] ? { ...nextFields[category] } : { ...defaultCategoryFields }
+        for (const { key, label } of PRODUCT_FIELD_KEYS) {
+          const v = overrideCellToValue(row[label])
+          if (v !== null) current[key] = v === 'required' ? true : v
+        }
+        nextFields[category] = current
+        const sales = overrideCellToValue(row[CATEGORY_SALES_HEADER])
+        if (sales !== null) nextSales[category] = sales === 'required' ? true : sales
+        applied++
+      }
+
+      setCategoryFieldSettings(nextFields)
+      setCategorySalesActive(nextSales)
+
+      const lines = [`นำเข้าตั้งค่าหมวดหมู่ ${applied} รายการ`]
+      if (unknownCategories.length > 0) {
+        const preview = unknownCategories.slice(0, 5).join(', ')
+        lines.push(
+          `ข้าม ${unknownCategories.length} รายการ (ไม่พบหมวดหมู่ในระบบ): ${preview}${unknownCategories.length > 5 ? ' ...' : ''}`
+        )
+      }
+      lines.push('')
+      lines.push('ยังไม่ได้บันทึกลงฐานข้อมูล — ตรวจค่าในตารางแล้วกดปุ่ม "บันทึก"')
+      showMessage({ title: 'นำเข้าสำเร็จ', message: lines.join('\n') })
+    } catch (error: any) {
+      console.error('Error importing category settings:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'Import ไม่สำเร็จ: ' + (error?.message || String(error)) })
+    } finally {
+      setImportingCategorySettings(false)
+    }
+  }
+
+  async function openBankForm(bank?: BankSetting) {
+    if (bank) {
+      setEditingBank(bank)
+      
+      // Load channels for this bank
+      const { data: channelsData, error } = await supabase
+        .from('bank_settings_channels')
+        .select('channel_code')
+        .eq('bank_setting_id', bank.id)
+      
+      const selectedChannels = error ? [] : (channelsData || []).map(c => c.channel_code)
+      
+      setBankFormData({
+        account_number: bank.account_number,
+        bank_code: bank.bank_code,
+        bank_name: bank.bank_name || '',
+        account_name: bank.account_name || '',
+        is_active: bank.is_active,
+        use_for_claim_slips: bank.use_for_claim_slips === true,
+        selectedChannels,
+      })
+    } else {
+      setEditingBank(null)
+      setBankFormData({
+        account_number: '',
+        bank_code: '',
+        bank_name: '',
+        account_name: '',
+        is_active: true,
+        use_for_claim_slips: false,
+        selectedChannels: [],
+      })
+    }
+    setShowBankForm(true)
+  }
+
+  function closeBankForm() {
+    setShowBankForm(false)
+    setEditingBank(null)
+    setBankFormData({
+      account_number: '',
+      bank_code: '',
+      bank_name: '',
+      account_name: '',
+      is_active: true,
+      use_for_claim_slips: false,
+      selectedChannels: [],
+    })
+  }
+
+  async function saveBankSetting() {
+    try {
+      if (!bankFormData.account_number || !bankFormData.bank_code) {
+        showMessage({ message: 'กรุณากรอกเลขบัญชีและรหัสธนาคาร' })
+        return
+      }
+
+      if (bankFormData.selectedChannels.length === 0 && !bankFormData.use_for_claim_slips) {
+        showMessage({ message: 'กรุณาเลือกช่องทางการขายหรือบิลเคลมอย่างน้อย 1 รายการ' })
+        return
+      }
+
+      // Find bank name from BANK_CODES
+      const bankInfo = BANK_CODES.find(b => b.code === bankFormData.bank_code)
+      const bankName = bankInfo?.name || bankFormData.bank_name
+
+      let bankSettingId: string
+
+      // Prepare update/insert data
+      const bankData: any = {
+        account_number: bankFormData.account_number,
+        bank_code: bankFormData.bank_code,
+        bank_name: bankName,
+        is_active: bankFormData.is_active,
+        use_for_claim_slips: bankFormData.use_for_claim_slips,
+      }
+
+      // บิลเคลมใช้บัญชีได้เพียงบัญชีเดียว ปลดบัญชีเดิมก่อนบันทึกบัญชีใหม่
+      if (bankFormData.use_for_claim_slips) {
+        let clearClaimBankQuery = supabase
+          .from('bank_settings')
+          .update({ use_for_claim_slips: false })
+          .eq('use_for_claim_slips', true)
+        if (editingBank) clearClaimBankQuery = clearClaimBankQuery.neq('id', editingBank.id)
+        const { error: clearClaimBankError } = await clearClaimBankQuery
+        if (clearClaimBankError) throw clearClaimBankError
+      }
+
+      // Only include account_name if migration has been run
+      // Try to include it, but if column doesn't exist, it will be ignored
+      if (bankFormData.account_name) {
+        bankData.account_name = bankFormData.account_name
+      }
+
+      if (editingBank) {
+        // Update existing
+        bankData.updated_at = new Date().toISOString()
+        const { error } = await supabase
+          .from('bank_settings')
+          .update(bankData)
+          .eq('id', editingBank.id)
+
+        if (error) {
+          // If error is about account_name column, try without it
+          if (error.message.includes('account_name')) {
+            delete bankData.account_name
+            const { error: retryError } = await supabase
+              .from('bank_settings')
+              .update(bankData)
+              .eq('id', editingBank.id)
+            if (retryError) throw retryError
+          } else {
+            throw error
+          }
+        }
+        bankSettingId = editingBank.id
+        
+        // Delete old channels
+        const { error: deleteError } = await supabase
+          .from('bank_settings_channels')
+          .delete()
+          .eq('bank_setting_id', bankSettingId)
+
+        if (deleteError) {
+          // If table doesn't exist yet, that's okay
+          if (!deleteError.message.includes('does not exist')) {
+            throw deleteError
+          }
+        }
+        showMessage({ title: 'สำเร็จ', message: 'อัปเดตข้อมูลธนาคารสำเร็จ' })
+      } else {
+        // Insert new
+        const { data, error } = await supabase
+          .from('bank_settings')
+          .insert(bankData)
+          .select()
+          .single()
+
+        if (error) {
+          // If error is about account_name column, try without it
+          if (error.message.includes('account_name')) {
+            delete bankData.account_name
+            const { data: retryData, error: retryError } = await supabase
+              .from('bank_settings')
+              .insert(bankData)
+              .select()
+              .single()
+            if (retryError) throw retryError
+            bankSettingId = retryData.id
+          } else {
+            throw error
+          }
+        } else {
+          bankSettingId = data.id
+        }
+        showMessage({ title: 'สำเร็จ', message: 'เพิ่มข้อมูลธนาคารสำเร็จ' })
+      }
+
+      // Insert channels
+      if (bankFormData.selectedChannels.length > 0) {
+        const channelsToInsert = bankFormData.selectedChannels.map(channelCode => ({
+          bank_setting_id: bankSettingId,
+          channel_code: channelCode,
+        }))
+
+        const { error: channelsError } = await supabase
+          .from('bank_settings_channels')
+          .insert(channelsToInsert)
+
+        if (channelsError) {
+          // If table doesn't exist yet, show warning but don't fail
+          if (channelsError.message.includes('does not exist')) {
+            showMessage({ title: 'คำเตือน', message: 'เพิ่มข้อมูลธนาคารสำเร็จ แต่ไม่สามารถบันทึกช่องทางการขายได้ กรุณารัน migration 008_update_bank_settings.sql' })
+          } else {
+            throw channelsError
+          }
+        }
+      }
+
+      closeBankForm()
+      loadBankSettings()
+    } catch (error: any) {
+      console.error('Error saving bank setting:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
+  async function deleteBankSetting(id: string) {
+    const ok = await showConfirm({ title: 'ลบข้อมูลธนาคาร', message: 'ต้องการลบข้อมูลธนาคารนี้หรือไม่?' })
+    if (!ok) return
+
+    try {
+      const { error } = await supabase
+        .from('bank_settings')
+        .delete()
+        .eq('id', id)
+
+      if (error) throw error
+      showMessage({ title: 'สำเร็จ', message: 'ลบข้อมูลธนาคารสำเร็จ' })
+      loadBankSettings()
+    } catch (error: any) {
+      console.error('Error deleting bank setting:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
+  /* ─── Bill Header Settings CRUD ─── */
+  async function loadBillHeaders() {
+    setBillHeaderLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('bill_header_settings')
+        .select('*')
+        .order('created_at', { ascending: true })
+      if (error) throw error
+      setBillHeaders(data || [])
+    } catch (error: any) {
+      console.error('Error loading bill headers:', error)
+    } finally {
+      setBillHeaderLoading(false)
+    }
+  }
+
+  async function openBillHeaderForm(header?: BillHeaderSetting) {
+    if (header) {
+      setEditingBillHeader(header)
+      const { data: linkedBanks } = await supabase
+        .from('bank_settings')
+        .select('id')
+        .eq('bill_header_id', header.id)
+      setBillHeaderFormData({
+        company_key: header.company_key,
+        bill_code: header.bill_code || '',
+        company_name: header.company_name,
+        company_name_en: header.company_name_en || '',
+        address: header.address,
+        tax_id: header.tax_id,
+        branch: header.branch || 'สำนักงานใหญ่',
+        phone: header.phone || '',
+        logo_url: header.logo_url || '',
+        selectedBankIds: (linkedBanks || []).map((b: any) => b.id),
+      })
+      setLogoPreview(header.logo_url || null)
+    } else {
+      setEditingBillHeader(null)
+      setBillHeaderFormData({
+        company_key: '',
+        bill_code: '',
+        company_name: '',
+        company_name_en: '',
+        address: '',
+        tax_id: '',
+        branch: 'สำนักงานใหญ่',
+        phone: '',
+        logo_url: '',
+        selectedBankIds: [],
+      })
+      setLogoPreview(null)
+    }
+    setLogoFile(null)
+    setShowBillHeaderForm(true)
+  }
+
+  function closeBillHeaderForm() {
+    setShowBillHeaderForm(false)
+    setEditingBillHeader(null)
+    setLogoFile(null)
+    setLogoPreview(null)
+  }
+
+  async function saveBillHeader() {
+    if (!billHeaderFormData.company_name || !billHeaderFormData.address || !billHeaderFormData.tax_id) {
+      showMessage({ message: 'กรุณากรอกชื่อบริษัท ที่อยู่ และเลขผู้เสียภาษี' })
+      return
+    }
+    if (!billHeaderFormData.company_key) {
+      showMessage({ message: 'กรุณากรอกรหัสบริษัท (company key)' })
+      return
+    }
+    setBillHeaderSaving(true)
+    try {
+      let logoUrl = billHeaderFormData.logo_url
+      if (logoFile) {
+        const ext = logoFile.name.split('.').pop() || 'png'
+        const filePath = `${billHeaderFormData.company_key}_${Date.now()}.${ext}`
+        const { error: uploadError } = await supabase.storage
+          .from('bill-logos')
+          .upload(filePath, logoFile, { upsert: true })
+        if (uploadError) throw uploadError
+        const { data: urlData } = supabase.storage.from('bill-logos').getPublicUrl(filePath)
+        logoUrl = urlData.publicUrl
+      }
+
+      const payload = {
+        company_key: billHeaderFormData.company_key,
+        bill_code: billHeaderFormData.bill_code || null,
+        company_name: billHeaderFormData.company_name,
+        company_name_en: billHeaderFormData.company_name_en || null,
+        address: billHeaderFormData.address,
+        tax_id: billHeaderFormData.tax_id,
+        branch: billHeaderFormData.branch || null,
+        phone: billHeaderFormData.phone || null,
+        logo_url: logoUrl || null,
+        updated_at: new Date().toISOString(),
+      }
+
+      let headerId: string
+      if (editingBillHeader) {
+        const { error } = await supabase
+          .from('bill_header_settings')
+          .update(payload)
+          .eq('id', editingBillHeader.id)
+        if (error) throw error
+        headerId = editingBillHeader.id
+      } else {
+        const { data, error } = await supabase
+          .from('bill_header_settings')
+          .insert(payload)
+          .select()
+          .single()
+        if (error) throw error
+        headerId = data.id
+      }
+
+      // Unlink old banks from this header
+      await supabase
+        .from('bank_settings')
+        .update({ bill_header_id: null })
+        .eq('bill_header_id', headerId)
+
+      // Link selected banks
+      if (billHeaderFormData.selectedBankIds.length > 0) {
+        await supabase
+          .from('bank_settings')
+          .update({ bill_header_id: headerId })
+          .in('id', billHeaderFormData.selectedBankIds)
+      }
+
+      showMessage({ title: 'สำเร็จ', message: editingBillHeader ? 'อัปเดตหัวบิลสำเร็จ' : 'เพิ่มหัวบิลสำเร็จ' })
+      closeBillHeaderForm()
+      loadBillHeaders()
+      loadBankSettings()
+    } catch (error: any) {
+      console.error('Error saving bill header:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    } finally {
+      setBillHeaderSaving(false)
+    }
+  }
+
+  async function deleteBillHeader(id: string) {
+    const ok = await showConfirm({ title: 'ลบหัวบิล', message: 'ต้องการลบหัวบิลนี้หรือไม่?' })
+    if (!ok) return
+    try {
+      await supabase.from('bank_settings').update({ bill_header_id: null }).eq('bill_header_id', id)
+      const { error } = await supabase.from('bill_header_settings').delete().eq('id', id)
+      if (error) throw error
+      showMessage({ title: 'สำเร็จ', message: 'ลบหัวบิลสำเร็จ' })
+      loadBillHeaders()
+      loadBankSettings()
+    } catch (error: any) {
+      console.error('Error deleting bill header:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
+  // @ts-ignore TS6133 - kept for future use
+  async function fixOrderStatuses() {
+    const ok = await showConfirm({ title: 'แก้ไขสถานะบิล', message: 'ต้องการตรวจสอบและแก้ไขสถานะบิลทั้งหมดให้ถูกต้องตามข้อมูลในตารางหรือไม่?\n\nการดำเนินการนี้อาจใช้เวลาสักครู่' })
+    if (!ok) return
+
+    setFixingStatus(true)
+    setStatusFixResult(null)
+
+    try {
+      // 1. โหลดบิลทั้งหมดที่มี slip verification records
+      const { data: verifiedSlips, error: slipsError } = await supabase
+        .from('ac_verified_slips')
+        .select('order_id, validation_status, validation_errors, account_name_match, bank_code_match, amount_match')
+        .not('validation_status', 'is', null)
+
+      if (slipsError) throw slipsError
+
+      // 2. จัดกลุ่มตาม order_id
+      const orderVerificationMap = new Map<string, {
+        hasPassed: boolean
+        hasFailed: boolean
+        hasErrors: boolean
+        errors: string[]
+      }>()
+
+      verifiedSlips?.forEach((slip: any) => {
+        if (!orderVerificationMap.has(slip.order_id)) {
+          orderVerificationMap.set(slip.order_id, {
+            hasPassed: false,
+            hasFailed: false,
+            hasErrors: false,
+            errors: [],
+          })
+        }
+
+        const status = orderVerificationMap.get(slip.order_id)!
+        if (slip.validation_status === 'passed') {
+          status.hasPassed = true
+        } else if (slip.validation_status === 'failed') {
+          status.hasFailed = true
+        }
+
+        if (slip.validation_errors && Array.isArray(slip.validation_errors) && slip.validation_errors.length > 0) {
+          status.hasErrors = true
+          status.errors.push(...slip.validation_errors)
+        }
+      })
+
+      // 3. โหลดบิลทั้งหมด
+      const allOrders = await fetchAllSupabasePages<{
+        id: string
+        bill_no: string
+        status: string
+        total_amount: number
+        channel_code: string
+        requires_confirm_design: boolean | null
+      }>((from, to) =>
+        supabase
+          .from('or_orders')
+          .select('id, bill_no, status, total_amount, channel_code, requires_confirm_design')
+          .order('id', { ascending: true })
+          .range(from, to)
+      )
+
+      // 4. ตรวจสอบและแก้ไขสถานะ
+      const updates: Array<{ id: string; bill_no: string; currentStatus: string; newStatus: string; reason: string }> = []
+      const errors: string[] = []
+
+      for (const order of allOrders) {
+        const verification = orderVerificationMap.get(order.id)
+        
+        // ถ้ามี slip verification records
+        if (verification) {
+          let expectedStatus: string | null = null
+          let reason = ''
+
+          // ตรวจสอบสถานะที่ควรเป็น
+          if (verification.hasPassed && !verification.hasErrors && !verification.hasFailed) {
+            // ทุก slip ผ่าน validation → PUMP แยกคิว Confirm ตาม requires_confirm_design
+            const oc = (order as { channel_code?: string }).channel_code
+            const rcd = (order as { requires_confirm_design?: boolean }).requires_confirm_design
+            expectedStatus =
+              oc === 'PUMP'
+                ? pumpVerifiedRoutingStatus(rcd !== false)
+                : 'ตรวจสอบแล้ว'
+            reason = 'ทุกสลิปผ่านการตรวจสอบ'
+          } else if (verification.hasFailed || verification.hasErrors) {
+            // มี slip ที่ไม่ผ่าน → ควรเป็น "ตรวจสอบไม่ผ่าน"
+            expectedStatus = 'ตรวจสอบไม่ผ่าน'
+            reason = `พบข้อผิดพลาด: ${verification.errors.slice(0, 3).join(', ')}${verification.errors.length > 3 ? '...' : ''}`
+          }
+
+          // ถ้าสถานะไม่ตรงกับที่ควรเป็น
+          if (expectedStatus && order.status !== expectedStatus) {
+            // ตรวจสอบว่าบิลอยู่ในสถานะที่เกี่ยวข้องหรือไม่ (ไม่ใช่สถานะอื่นๆ เช่น "ยกเลิก", "จัดส่งแล้ว")
+            const irrelevantStatuses = ['ยกเลิก', 'จัดส่งแล้ว', 'ใบงานกำลังผลิต', 'ใบสั่งงาน', 'ย้ายจากใบงาน']
+            if (!irrelevantStatuses.includes(order.status)) {
+              updates.push({
+                id: order.id,
+                bill_no: order.bill_no,
+                currentStatus: order.status,
+                newStatus: expectedStatus,
+                reason,
+              })
+            }
+          }
+        } else {
+          // ถ้าไม่มี slip verification records แต่สถานะเป็น "ตรวจสอบแล้ว" หรือ "ตรวจสอบไม่ผ่าน"
+          // อาจเป็นบิลที่ถูกย้ายไปแล้วแต่ยังไม่มี slip records
+          // ไม่ต้องแก้ไขในกรณีนี้ เพราะอาจเป็นบิลที่ยังไม่ได้ตรวจสอบสลิป
+        }
+      }
+
+      // 5. อัพเดตสถานะ
+      let successCount = 0
+      let errorCount = 0
+
+      for (const update of updates) {
+        try {
+          const { error: updateError } = await supabase
+            .from('or_orders')
+            .update({ status: update.newStatus })
+            .eq('id', update.id)
+
+          if (updateError) {
+            errors.push(`บิล ${update.bill_no}: ${updateError.message}`)
+            errorCount++
+          } else {
+            successCount++
+          }
+        } catch (error: any) {
+          errors.push(`บิล ${update.bill_no}: ${error.message}`)
+          errorCount++
+        }
+      }
+
+      setStatusFixResult({
+        success: errorCount === 0,
+        message: `แก้ไขสถานะสำเร็จ ${successCount} รายการ${errorCount > 0 ? `, เกิดข้อผิดพลาด ${errorCount} รายการ` : ''}`,
+        details: {
+          totalChecked: allOrders?.length || 0,
+          needsUpdate: updates.length,
+          successCount,
+          errorCount,
+          updates: updates.slice(0, 20), // แสดง 20 รายการแรก
+          errors: errors.slice(0, 10), // แสดง 10 errors แรก
+        },
+      })
+    } catch (error: any) {
+      console.error('Error fixing order statuses:', error)
+      setStatusFixResult({
+        success: false,
+        message: `เกิดข้อผิดพลาด: ${error.message}`,
+        details: { error: error.message },
+      })
+    } finally {
+      setFixingStatus(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center py-12">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+      </div>
+    )
+  }
+
+  // Role ทั้งหมด — ใช้ใน dropdown จัดการสิทธิ์ผู้ใช้
+  const allRoles = [
+    'superadmin',
+    'admin',
+    'sales-tr',
+    'qc_order',
+    'sales-pump',
+    'qc_staff',
+    'packing_staff',
+    'account',
+    'store',
+    'production',
+    'production_mb',
+    'manager',
+    'technician',
+    'picker',
+    'auditor',
+    'hr',
+    'employee',
+  ]
+  const settingsRoles = [
+    'admin',
+    'sales-tr',
+    'qc_order',
+    'sales-pump',
+    'qc_staff',
+    'packing_staff',
+    'account',
+    'store',
+    'production',
+    'hr',
+  ] as const satisfies readonly DesktopRole[]
+  const roleLabel = (role: string) => {
+    return normalizeRole(role)
+  }
+
+  const getRoleMenuCompatibility = (menuKey: string, group: string, role: string) => {
+    const permissionGroup = group || menuKey
+    if (role !== 'admin' && PARTIALLY_RESTRICTED_GROUPS.has(permissionGroup)) {
+      return {
+        level: 'partial' as const,
+        label: 'จำกัดบางส่วน',
+        detail: 'เข้าเมนูได้ แต่การอ่าน แก้ไข อนุมัติ หรือข้อมูลที่เห็นอาจถูกจำกัดด้วย RLS/RPC และเงื่อนไขของปุ่ม',
+      }
+    }
+    return {
+      level: 'supported' as const,
+      label: 'Route รองรับ',
+      detail: 'สิทธิ์การแสดงเมนูและเข้า Route ตรงกับ checkbox; การทำรายการสำคัญยังอยู่ภายใต้ RLS/RPC',
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* เมนูย่อย — สไตล์เดียวกับเมนูออเดอร์ */}
+      <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6">
+        <div className="w-full overflow-x-auto px-2 scrollbar-thin sm:px-4 md:px-6 lg:px-8">
+          <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
+            {SETTINGS_TABS.filter((tab) => hasAccess(`settings-${tab.key}`)).map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setActiveTab(tab.key)}
+                className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap flex-shrink-0 transition-colors ${
+                  activeTab === tab.key
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-blue-600'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+        </div>
+      </div>
+
+      {/* Backup / Clear Data Tab */}
+      {activeTab === 'backup-clear' && hasAccess('settings-backup-clear') && (
+        <DataBackupClearPanel />
+      )}
+
+      {/* จุดบันทึกเวลา (GPS) Tab */}
+      {activeTab === 'clock-locations' && hasAccess('settings-clock-locations') && (
+        <ClockLocationsPanel canEdit={currentUser?.role === 'superadmin'} />
+      )}
+
+      {/* API EasySlip Tab */}
+      {activeTab === 'easyslip' && hasAccess('settings-easyslip') && (
+        <div className="space-y-6">
+          {/* Test EasySlip Connection Section */}
+          <div className="bg-white p-4 rounded-lg shadow">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold mb-1">ทดสอบการเชื่อมต่อ EasySlip API</h2>
+                <p className="text-sm text-gray-600">ตรวจสอบว่า Edge Function และ EasySlip API ทำงานได้ปกติ</p>
+              </div>
+              <button
+                onClick={testConnection}
+                disabled={testingConnection}
+                className={`px-4 py-2 rounded-xl font-semibold ${
+                  testingConnection
+                    ? 'bg-gray-400 text-white cursor-not-allowed'
+                    : 'bg-green-600 text-white hover:bg-green-700'
+                }`}
+              >
+                {testingConnection ? 'กำลังทดสอบ...' : 'ทดสอบการเชื่อมต่อ'}
+              </button>
+            </div>
+            
+            {connectionTestResult && (
+              <div className={`mt-4 p-4 rounded-lg ${
+                connectionTestResult.success
+                  ? 'bg-green-50 border border-green-200'
+                  : 'bg-red-50 border border-red-200'
+              }`}>
+                <div className={`font-semibold mb-2 ${
+                  connectionTestResult.success ? 'text-green-800' : 'text-red-800'
+                }`}>
+                  {connectionTestResult.success ? '✅' : '❌'} {connectionTestResult.message}
+                </div>
+                {connectionTestResult.details && (
+                  <div className="mt-2 text-sm text-gray-700 space-y-1">
+                    <div>Edge Function: {connectionTestResult.details.edgeFunctionReachable ? '✅ เข้าถึงได้' : '❌ ไม่สามารถเข้าถึงได้'}</div>
+                    <div>Secrets ตั้งค่าแล้ว: {connectionTestResult.details.secretsConfigured ? '✅ ตั้งค่าแล้ว' : '❌ ยังไม่ได้ตั้งค่า'}</div>
+                    <div>EasySlip API: {connectionTestResult.details.easyslipApiReachable ? '✅ เชื่อมต่อได้' : '❌ ไม่สามารถเชื่อมต่อได้'}</div>
+                    {connectionTestResult.details.error && (
+                      <div className="mt-2 p-3 bg-red-100 rounded border border-red-300">
+                        <div className="text-red-800 font-semibold mb-1">Error Details:</div>
+                        <div className="text-red-700 text-sm whitespace-pre-line">{connectionTestResult.details.error}</div>
+                        {connectionTestResult.details.error.includes('404') && (
+                          <div className="mt-2 text-xs text-red-600">
+                            <strong>หมายเหตุ:</strong> Error 404 จาก EasySlip API อาจเกิดจาก:
+                            <ul className="list-disc list-inside mt-1">
+                              <li>API endpoint ไม่ถูกต้อง</li>
+                              <li>Test payload ไม่ถูกต้อง (ใช้ 'test' แทน base64 image จริง)</li>
+                              <li>EasySlip service ยังไม่ได้เปิดใช้งาน</li>
+                            </ul>
+                            <div className="mt-2">
+                              <strong>แนะนำ:</strong> ลองทดสอบด้วยรูปภาพจริงในส่วน "ทดสอบการตรวจสอบสลิปด้วยรูปภาพจริง" ด้านล่าง
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {!connectionTestResult.success && connectionTestResult.details.easyslipApiReachable === false && (
+                      <div className="mt-3 p-3 bg-yellow-50 rounded border border-yellow-200">
+                        <div className="text-yellow-800 font-semibold mb-2">วิธีแก้ไข:</div>
+                        <ul className="text-yellow-700 text-sm space-y-1 list-disc list-inside">
+                          <li>ตรวจสอบว่า EasySlip service เปิดใช้งานแล้ว (ไปที่ https://developer.easyslip.com)</li>
+                          <li>ตรวจสอบว่า EASYSLIP_API_KEY ถูกต้อง (ใน Supabase Dashboard → Settings → Edge Functions → Secrets)</li>
+                          <li>ตรวจสอบ Logs ใน Supabase Dashboard → Edge Functions → verify-slip → Logs</li>
+                          <li>ตรวจสอบว่า Package/Plan ยังใช้งานได้</li>
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Test with Image Section */}
+          <div className="bg-white p-4 rounded-lg shadow">
+            <div>
+              <h2 className="text-lg font-semibold mb-1">ทดสอบการตรวจสอบสลิปด้วยรูปภาพจริง</h2>
+              <p className="text-sm text-gray-600 mb-4">อัปโหลดรูปสลิปเพื่อทดสอบการตรวจสอบจริง</p>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  เลือกรูปสลิป
+                </label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageSelect}
+                  className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                />
+                {imagePreview && (
+                  <div className="mt-4">
+                    <p className="text-sm text-gray-600 mb-2">ตัวอย่างรูป:</p>
+                    <img
+                      src={imagePreview}
+                      alt="Preview"
+                      className="max-w-xs border border-gray-300 rounded-lg"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <button
+                onClick={testWithImage}
+                disabled={testingWithImage || !selectedImage}
+                className={`px-4 py-2 rounded-xl font-semibold ${
+                  testingWithImage || !selectedImage
+                    ? 'bg-gray-400 text-white cursor-not-allowed'
+                    : 'bg-blue-600 text-white hover:bg-blue-700'
+                }`}
+              >
+                {testingWithImage ? 'กำลังทดสอบ...' : 'ทดสอบการตรวจสอบสลิป'}
+              </button>
+
+              {testImageResult && (
+                <div className={`mt-4 p-4 rounded-lg ${
+                  testImageResult.success
+                    ? 'bg-green-50 border border-green-200'
+                    : 'bg-red-50 border border-red-200'
+                }`}>
+                  <div className={`font-semibold mb-2 ${
+                    testImageResult.success ? 'text-green-800' : 'text-red-800'
+                  }`}>
+                    {testImageResult.success ? '✅' : '❌'} {testImageResult.message}
+                  </div>
+                  
+                  {testImageResult.success && testImageResult.data && (
+                    <div className="mt-3 text-sm text-gray-700 space-y-2">
+                      {testImageResult.amount !== undefined && (
+                        <div className="font-semibold text-lg text-green-700">
+                          ยอดเงิน: {testImageResult.amount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท
+                        </div>
+                      )}
+                      {testImageResult.transRef && (
+                        <div>เลขที่อ้างอิง: {testImageResult.transRef}</div>
+                      )}
+                      {testImageResult.date && (
+                        <div>วันที่: {new Date(testImageResult.date).toLocaleString('th-TH')}</div>
+                      )}
+                      {testImageResult.receiverBank && (
+                        <div>
+                          ธนาคารผู้รับ: {testImageResult.receiverBank.name || testImageResult.receiverBank.short} 
+                          {testImageResult.receiverBank.id && ` (${testImageResult.receiverBank.id})`}
+                        </div>
+                      )}
+                      {testImageResult.receiverAccount?.bank?.account && (
+                        <div>เลขบัญชีผู้รับ: {testImageResult.receiverAccount.bank.account}</div>
+                      )}
+                      {testImageResult.receiverAccount?.name?.th && (
+                        <div>ชื่อผู้รับ: {testImageResult.receiverAccount.name.th}</div>
+                      )}
+                    </div>
+                  )}
+
+                  {testImageResult.error && (
+                    <div className="mt-2 p-3 bg-red-100 rounded border border-red-300">
+                      <div className="text-red-800 font-semibold mb-1">Error Details:</div>
+                      <div className="text-red-700 text-sm whitespace-pre-line">{testImageResult.error}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Users Tab */}
+      {activeTab === 'users' && hasAccess('settings-users') && (() => {
+        const normalizedUserSearch = userSearch.trim().toLocaleLowerCase('th-TH')
+        const filteredUsers = (userRoleFilter === 'all'
+          ? users
+          : users.filter((u) => normalizeRole(u.role) === normalizeRole(userRoleFilter))
+        )
+          .filter((u) => !hideInactiveUsers || u.is_active !== false)
+          .filter((u) => !normalizedUserSearch || `${u.email || ''} ${u.username || ''}`.toLocaleLowerCase('th-TH').includes(normalizedUserSearch))
+          .sort((a, b) => {
+            const aRoleIndex = allRoles.indexOf(normalizeRole(a.role))
+            const bRoleIndex = allRoles.indexOf(normalizeRole(b.role))
+            const roleOrder = (aRoleIndex < 0 ? Number.MAX_SAFE_INTEGER : aRoleIndex)
+              - (bRoleIndex < 0 ? Number.MAX_SAFE_INTEGER : bRoleIndex)
+            if (roleOrder !== 0) return roleOrder
+
+            const aName = (a.username || a.email || '').trim()
+            const bName = (b.username || b.email || '').trim()
+            return aName.localeCompare(bName, ['th', 'en'], { sensitivity: 'base', numeric: true })
+          })
+        return (
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <h2 className="text-xl font-bold">ผู้ใช้ทั้งหมด</h2>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {currentUser?.role === 'superadmin' && (
+                <button
+                  type="button"
+                  onClick={() => setShowCreateUserModal(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition"
+                >
+                  + สร้าง User ใหม่
+                </button>
+              )}
+              <label className="relative block min-w-[230px]">
+                <span className="sr-only">ค้นหาผู้ใช้</span>
+                <svg className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m21 21-4.35-4.35m1.35-5.65a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
+                </svg>
+                <input
+                  type="search"
+                  value={userSearch}
+                  onChange={(e) => setUserSearch(e.target.value)}
+                  placeholder="ค้นหาอีเมล หรือ Username"
+                  className="w-full rounded-lg border border-gray-300 py-1.5 pl-9 pr-8 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                />
+                {userSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setUserSearch('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded px-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                    title="ล้างคำค้นหา"
+                    aria-label="ล้างคำค้นหา"
+                  >
+                    ✕
+                  </button>
+                )}
+              </label>
+              {(() => {
+                const inactiveCount = users.filter((u) => u.is_active === false).length
+                return (
+                  <button
+                    type="button"
+                    onClick={() => setHideInactiveUsers((v) => !v)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition ${
+                      hideInactiveUsers
+                        ? 'bg-amber-500 text-white border-amber-500 hover:bg-amber-600'
+                        : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                    }`}
+                    title={hideInactiveUsers ? 'คลิกเพื่อแสดง user ที่ปิดสถานะ' : 'คลิกเพื่อซ่อน user ที่ปิดสถานะ'}
+                  >
+                    {hideInactiveUsers ? 'แสดง user ที่ปิด' : 'ซ่อน user ที่ปิด'}
+                    {inactiveCount > 0 && <span className="text-xs opacity-80">({inactiveCount})</span>}
+                  </button>
+                )
+              })()}
+              <label className="text-sm font-medium text-gray-600">กรอง Role:</label>
+              <select
+                value={userRoleFilter}
+                onChange={(e) => setUserRoleFilter(e.target.value)}
+                className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="all">ทั้งหมด ({users.length})</option>
+                {allRoles.map((role) => {
+                  const count = users.filter((u) => normalizeRole(u.role) === normalizeRole(role)).length
+                  return (
+                    <option key={role} value={role}>
+                      {roleLabel(role)} ({count})
+                    </option>
+                  )
+                })}
+              </select>
+              {userRoleFilter !== 'all' && (
+                <button
+                  type="button"
+                  onClick={() => setUserRoleFilter('all')}
+                  className="text-xs text-gray-500 hover:text-red-500 px-2 py-1 rounded hover:bg-gray-100"
+                  title="ล้างตัวกรอง"
+                >
+                  ✕
+                </button>
+              )}
+              <span className="text-sm text-gray-400 ml-1">
+                {filteredUsers.length} รายการ
+              </span>
+            </div>
+          </div>
+        {filteredUsers.length === 0 ? (
+          <div className="text-center py-12 text-gray-500">
+            {userSearch.trim() ? `ไม่พบผู้ใช้ที่ตรงกับ “${userSearch.trim()}”` : 'ไม่พบข้อมูลผู้ใช้'}
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-blue-600 text-white">
+                  <th className="p-3 text-left font-semibold rounded-tl-xl">อีเมล</th>
+                  <th className="p-3 text-left font-semibold">Username</th>
+                  <th className="p-3 text-left font-semibold">Role</th>
+                  <th className="p-3 text-center font-semibold">สถานะ</th>
+                  <th className="p-3 text-center font-semibold" title="เปิดให้ user นี้เข้าหน้า Employee ผ่านมือถือ โดยไม่ต้องเปลี่ยน role">
+                    สิทธิ์ Employee
+                  </th>
+                  <th className="p-3 text-center font-semibold" title="เปิดสิทธิ์สวม role มือถือ (WMS ฝ่ายผลิต, อนุมัติใบเบิก, ช่างเทคนิค, หยิบสินค้า, ตรวจนับสต๊อก) โดยไม่ต้อง login หลาย user">
+                    สิทธิ์ Mobile
+                  </th>
+                  {currentUser?.role === 'superadmin' && (
+                    <th className="p-3 text-center font-semibold rounded-tr-xl">ลบ</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {filteredUsers.map((user, idx) => {
+                  const isInactive = user.is_active === false
+                  const isSelf = user.id === currentUser?.id
+                  return (
+                  <tr key={user.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${isInactive ? 'opacity-50' : idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                    <td className="p-3">
+                      <span className={isInactive ? 'line-through text-gray-400' : ''}>{user.email || '-'}</span>
+                      {isInactive && <span className="ml-2 text-xs bg-red-100 text-red-600 px-1.5 py-0.5 rounded">ระงับแล้ว</span>}
+                    </td>
+                    <td className="p-3">
+                      <input
+                        type="text"
+                        defaultValue={user.username || ''}
+                        placeholder="-"
+                        disabled={isInactive}
+                        onBlur={(e) => {
+                          const newVal = e.target.value.trim()
+                          if (newVal !== (user.username || '')) {
+                            updateUsername(user.id, newVal)
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                        }}
+                        className="px-3 py-1 border border-gray-300 rounded w-full max-w-[200px] focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none disabled:bg-gray-100"
+                      />
+                    </td>
+                    <td className="p-3">
+                      <select
+                        value={normalizeRole(user.role)}
+                        onChange={(e) => updateUserRole(user.id, e.target.value)}
+                        disabled={isInactive}
+                        className="px-3 py-1 border rounded disabled:bg-gray-100 disabled:text-gray-400"
+                      >
+                        {allRoles.map((role) => (
+                          <option key={role} value={role}>
+                            {roleLabel(role)}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="p-3 text-center">
+                      <button
+                        type="button"
+                        title={isSelf ? 'ไม่สามารถระงับบัญชีตัวเองได้' : isInactive ? 'คลิกเพื่อเปิดใช้งาน' : 'คลิกเพื่อระงับการใช้งาน'}
+                        onClick={() => handleToggleActive(user)}
+                        disabled={isSelf}
+                        className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${
+                          !isInactive ? 'bg-green-500' : 'bg-gray-300'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200 ${
+                            !isInactive ? 'translate-x-5' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </td>
+                    <td className="p-3 text-center">
+                      {user.role === 'employee' ? (
+                        <span className="text-xs text-gray-400" title="role employee เข้าหน้า Employee อยู่แล้ว">—</span>
+                      ) : (
+                        <button
+                          type="button"
+                          title={user.employee_access ? 'ปิดสิทธิ์เข้าหน้า Employee ผ่านมือถือ' : 'เปิดสิทธิ์เข้าหน้า Employee ผ่านมือถือ'}
+                          onClick={() => toggleEmployeeAccess(user)}
+                          disabled={isInactive}
+                          className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${
+                            user.employee_access ? 'bg-emerald-500' : 'bg-gray-300'
+                          }`}
+                        >
+                          <span
+                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200 ${
+                              user.employee_access ? 'translate-x-5' : 'translate-x-0'
+                            }`}
+                          />
+                        </button>
+                      )}
+                    </td>
+                    <td className="p-3 text-center">
+                      {(() => {
+                        const granted = getMobileAccess(user)
+                        const open = mobileAccessUserId === user.id
+                        return (
+                          <div className="relative inline-block">
+                            <button
+                              type="button"
+                              disabled={isInactive}
+                              onClick={(event) => {
+                                if (open) {
+                                  setMobileAccessUserId(null)
+                                  return
+                                }
+                                const rect = event.currentTarget.getBoundingClientRect()
+                                const popoverWidth = 256
+                                const estimatedHeight = 340
+                                setMobileAccessPopoverPosition({
+                                  top: Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - estimatedHeight - 8)),
+                                  left: Math.max(8, Math.min(rect.right - popoverWidth, window.innerWidth - popoverWidth - 8)),
+                                })
+                                setMobileAccessUserId(user.id)
+                              }}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition disabled:opacity-40 disabled:cursor-not-allowed ${
+                                granted.length > 0
+                                  ? 'bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100'
+                                  : 'bg-gray-50 border-gray-300 text-gray-500 hover:bg-gray-100'
+                              }`}
+                              title="เปิด/ปิดสิทธิ์ role มือถือของ user นี้"
+                            >
+                              {granted.length > 0 ? `${granted.length} โหมด` : '— ปิด —'} ▾
+                            </button>
+                            {open && createPortal(
+                              <>
+                                <div className="fixed inset-0 z-[90]" onClick={() => setMobileAccessUserId(null)} />
+                                <div
+                                  className="fixed z-[100] w-64 bg-white border border-gray-200 rounded-xl shadow-xl p-3 text-left space-y-2"
+                                  style={mobileAccessPopoverPosition}
+                                >
+                                  <p className="text-xs font-semibold text-gray-500 mb-1">สิทธิ์ Role มือถือ</p>
+                                  {MOBILE_MODE_ROLES.map((mode) => {
+                                    const isOwnRole = normalizeRole(user.role) === mode
+                                    const on = granted.includes(mode)
+                                    return (
+                                      <div key={mode} className="flex items-center justify-between gap-2">
+                                        <span className="text-sm text-gray-700">
+                                          {MOBILE_MODE_INFO[mode].emoji} {MOBILE_MODE_INFO[mode].label}
+                                          <span className="block text-[10px] text-gray-400">{mode}</span>
+                                        </span>
+                                        {isOwnRole ? (
+                                          <span className="text-xs text-gray-400" title="เป็น role นี้อยู่แล้ว">—</span>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            onClick={() => toggleMobileAccess(user, mode)}
+                                            className={`relative inline-flex h-5 w-10 flex-shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
+                                              on ? 'bg-blue-500' : 'bg-gray-300'
+                                            }`}
+                                          >
+                                            <span
+                                              className={`pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition duration-200 ${
+                                                on ? 'translate-x-5' : 'translate-x-0'
+                                              }`}
+                                            />
+                                          </button>
+                                        )}
+                                      </div>
+                                    )
+                                  })}
+                                  <p className="text-[10px] text-gray-400 pt-1 border-t border-gray-100">
+                                    เปิดแล้ว user จะเห็นหน้าเลือกโหมดเมื่อ login จากมือถือ
+                                  </p>
+                                </div>
+                              </>,
+                              document.body,
+                            )}
+                          </div>
+                        )
+                      })()}
+                    </td>
+                    {currentUser?.role === 'superadmin' && (
+                      <td className="p-3 text-center">
+                        <button
+                          type="button"
+                          title={isSelf ? 'ไม่สามารถลบบัญชีตัวเองได้' : user.role === 'superadmin' ? 'ไม่สามารถลบ superadmin ได้' : `ลบ ${user.username || user.email}`}
+                          onClick={() => handleDeleteUser(user)}
+                          disabled={isSelf || user.role === 'superadmin'}
+                          className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 hover:text-red-700 transition disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          🗑️
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        </div>
+        )
+      })()}
+
+      {activeTab === 'role-settings' && hasAccess('settings-role-settings') && (
+        <div className="bg-white p-6 rounded-lg shadow space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-bold">ตั้งค่า Role</h2>
+              <p className="mt-1 text-sm text-gray-500">Superadmin ไม่แสดงในตาราง เนื่องจากระบบอนุญาตให้เข้าถึงทุกเมนูเสมอ</p>
+            </div>
+            {roleSettingsView === 'desktop' && (
+              <button
+                onClick={saveRoleMenus}
+                disabled={savingRoleMenus || roleMenusLoading}
+                className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+              >
+                {savingRoleMenus ? 'กำลังบันทึก...' : roleMenusLoading ? 'กำลังโหลด...' : 'บันทึก'}
+              </button>
+            )}
+          </div>
+
+          <div className="flex gap-1 rounded-xl bg-gray-100 p-1 w-fit">
+            <button type="button" onClick={() => setRoleSettingsView('desktop')} className={`rounded-lg px-5 py-2 text-sm font-semibold transition ${roleSettingsView === 'desktop' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}>ตั้งค่า Desktop</button>
+            <button type="button" onClick={() => setRoleSettingsView('mobile')} className={`rounded-lg px-5 py-2 text-sm font-semibold transition ${roleSettingsView === 'mobile' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}>ตั้งค่า Mobile</button>
+          </div>
+
+          {roleSettingsView === 'desktop' ? <>
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <div className="font-semibold">Checkbox ควบคุมการเห็นเมนูและการเข้า Route ของ role Desktop</div>
+            <div className="mt-1 text-amber-800">RLS, RPC และสิทธิ์ของแต่ละปุ่มยังสามารถจำกัดการอ่าน แก้ไข หรืออนุมัติข้อมูลเพิ่มเติมได้</div>
+          </div>
+          <div className="flex flex-wrap gap-3 text-xs">
+            <span className="rounded-full bg-emerald-100 px-2.5 py-1 font-semibold text-emerald-700">● Route รองรับ</span>
+            <span className="rounded-full bg-amber-100 px-2.5 py-1 font-semibold text-amber-700">● จำกัดบางส่วนโดย RLS/RPC/ปุ่ม</span>
+          </div>
+          <div className="overflow-x-auto" style={{ maxHeight: '75vh' }}>
+            <table className="w-full border-collapse text-sm">
+              <thead className="sticky top-0 z-10">
+                <tr className="bg-blue-600 text-white">
+                  <th className="p-2 text-left font-semibold rounded-tl-xl sticky left-0 z-20 bg-blue-600 min-w-[180px]">เมนู</th>
+                  {settingsRoles.map((role, i) => (
+                    <th key={role} className={`p-2 text-center text-xs font-semibold whitespace-nowrap ${i === settingsRoles.length - 1 ? 'rounded-tr-xl' : ''}`}>{roleLabel(role)}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {MENU_ROLE_OPTIONS.map((menu) => {
+                  const isSub = !!menu.group
+                  return (
+                    <tr
+                      key={menu.key}
+                      className={`transition-colors duration-150 ${
+                        isSub
+                          ? 'bg-gray-50/70 hover:bg-blue-100'
+                          : 'bg-white border-t-2 border-gray-300 hover:bg-blue-200/60'
+                      }`}
+                    >
+                      <td
+                        className={`p-2 whitespace-nowrap sticky left-0 z-[5] transition-colors duration-150 ${
+                          isSub
+                            ? 'pl-8 text-gray-500 text-xs bg-gray-50/70 group-hover:bg-blue-100'
+                            : 'font-bold text-gray-800 bg-white'
+                        }`}
+                        style={{ backgroundColor: 'inherit' }}
+                      >
+                        {isSub && <span className="text-blue-300 mr-1">└</span>}
+                        {menu.label}
+                      </td>
+                      {settingsRoles.map((role) => (
+                        (() => {
+                          const compatibility = getRoleMenuCompatibility(menu.key, menu.group, role)
+                          const marketplaceBlocked = role === 'sales-pump' && (menu.key === 'marketplace' || menu.group === 'marketplace')
+                          return <td key={role} className="p-2 text-center" title={marketplaceBlocked ? 'sales-pump ไม่สามารถเข้า Marketplace ได้' : compatibility.detail}>
+                          <div className="flex items-center justify-center gap-1.5">
+                          <input
+                            type="checkbox"
+                            className="rounded border-gray-300 w-4 h-4 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                            checked={marketplaceBlocked ? false : (roleMenus?.[role]?.[menu.key] ?? false)}
+                            disabled={marketplaceBlocked}
+                            onChange={(e) => toggleRoleMenu(role, menu.key, e.target.checked)}
+                          />
+                          <span aria-label={compatibility.label} className={`inline-block h-2 w-2 rounded-full ${compatibility.level === 'supported' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                          </div>
+                        </td>
+                        })()
+                      ))}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          </> : (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                สิทธิ์ Mobile กำหนดจาก role และ route เฉพาะของระบบ จึงแสดงเพื่ออ้างอิงเท่านั้นและไม่สามารถเปิด–ปิดจากตารางนี้ได้
+              </div>
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {MOBILE_ROLE_ACCESS.map((item) => (
+                  <article key={item.role} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="font-bold text-gray-900">{item.label}</h3>
+                        <code className="mt-1 inline-block rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600">{item.role}</code>
+                      </div>
+                      <span className="rounded-full bg-blue-100 px-2.5 py-1 text-xs font-semibold text-blue-700">{item.path}</span>
+                    </div>
+                    <div className="mt-4 text-xs font-semibold uppercase tracking-wide text-gray-500">เมนูที่เข้าถึงได้</div>
+                    <ul className="mt-2 space-y-1.5">
+                      {item.menus.map((menu) => <li key={menu} className="flex gap-2 text-sm text-gray-700"><span className="text-emerald-500">✓</span><span>{menu}</span></li>)}
+                    </ul>
+                    <p className="mt-4 border-t pt-3 text-xs leading-5 text-gray-500">{item.note}</p>
+                  </article>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Bank Settings Tab */}
+      {activeTab === 'banks' && hasAccess('settings-banks') && (
+        <div className="space-y-6">
+          {/* Sub-tab navigation */}
+          <div className="flex gap-2 border-b border-gray-200">
+            <button
+              type="button"
+              onClick={() => setBankSubTab('bank-info')}
+              className={`px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors ${bankSubTab === 'bank-info' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
+            >
+              ข้อมูลธนาคาร
+            </button>
+            <button
+              type="button"
+              onClick={() => setBankSubTab('bill-header')}
+              className={`px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors ${bankSubTab === 'bill-header' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
+            >
+              ตั้งค่าหัวบิล
+            </button>
+          </div>
+
+          {/* Sub-tab: ข้อมูลธนาคาร */}
+          {bankSubTab === 'bank-info' && (<>
+          <div className="bg-white p-6 rounded-lg shadow">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-bold">ข้อมูลธนาคารสำหรับตรวจสลิป</h2>
+              <button
+                onClick={() => openBankForm()}
+                className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+              >
+                + เพิ่มข้อมูลธนาคาร
+              </button>
+            </div>
+
+            {bankSettings.length === 0 ? (
+              <div className="text-center py-12 text-gray-500">
+                ไม่พบข้อมูลธนาคาร
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="bg-blue-600 text-white">
+                      <th className="p-3 text-left font-semibold rounded-tl-xl">ชื่อบัญชี</th>
+                      <th className="p-3 text-left font-semibold">เลขบัญชี</th>
+                      <th className="p-3 text-left font-semibold">รหัสธนาคาร</th>
+                      <th className="p-3 text-left font-semibold">ชื่อธนาคาร</th>
+                      <th className="p-3 text-left font-semibold">ช่องทางการขาย</th>
+                      <th className="p-3 text-left font-semibold">สถานะ</th>
+                      <th className="p-3 text-left font-semibold rounded-tr-xl">การจัดการ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bankSettings.map((bank, idx) => (
+                      <tr key={bank.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                        <td className="p-3">{bank.account_name || '-'}</td>
+                        <td className="p-3">{bank.account_number}</td>
+                        <td className="p-3">{bank.bank_code}</td>
+                        <td className="p-3">{bank.bank_name || '-'}</td>
+                        <td className="p-3">
+                          {(bank.use_for_claim_slips || (bank.channels && bank.channels.length > 0)) ? (
+                            <div className="flex flex-wrap gap-1">
+                              {bank.use_for_claim_slips && (
+                                <span className="px-2 py-1 bg-amber-100 text-amber-800 rounded text-xs">
+                                  บิลเคลม (REQ)
+                                </span>
+                              )}
+                              {(bank.channels || []).map((ch, idx) => (
+                                <span
+                                  key={idx}
+                                  className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs"
+                                >
+                                  {ch.channel_name || ch.channel_code}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-gray-400 text-sm">-</span>
+                          )}
+                        </td>
+                        <td className="p-3">
+                          <span
+                            className={`px-2 py-1 rounded text-sm ${
+                              bank.is_active
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-gray-100 text-gray-800'
+                            }`}
+                          >
+                            {bank.is_active ? 'ใช้งาน' : 'ไม่ใช้งาน'}
+                          </span>
+                        </td>
+                        <td className="p-3">
+                          <button
+                            onClick={() => openBankForm(bank)}
+                            className="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm mr-2"
+                          >
+                            แก้ไข
+                          </button>
+                          <button
+                            onClick={() => deleteBankSetting(bank.id)}
+                            className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-sm"
+                          >
+                            ลบ
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Bank Form Modal */}
+          {showBankForm && (
+            <Modal
+              open
+              onClose={closeBankForm}
+              contentClassName="max-w-2xl w-full mx-4 my-8 overflow-y-auto"
+            >
+              <div className="p-6">
+                <h3 className="text-xl font-bold mb-4 pr-12">
+                  {editingBank ? 'แก้ไขข้อมูลธนาคาร' : 'เพิ่มข้อมูลธนาคาร'}
+                </h3>
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-1">
+                      ชื่อบัญชี
+                    </label>
+                    <input
+                      type="text"
+                      value={bankFormData.account_name}
+                      onChange={(e) =>
+                        setBankFormData({ ...bankFormData, account_name: e.target.value })
+                      }
+                      className="w-full px-3 py-2 border rounded-lg"
+                      placeholder="เช่น บัญชีหลัก, บัญชีสำรอง"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-1">
+                      เลขบัญชี <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={bankFormData.account_number}
+                      onChange={(e) =>
+                        setBankFormData({ ...bankFormData, account_number: e.target.value })
+                      }
+                      className="w-full px-3 py-2 border rounded-lg"
+                      placeholder="เช่น 123-456-7890"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-1">
+                      รหัสธนาคาร <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={bankFormData.bank_code}
+                      onChange={(e) => {
+                        const selectedBank = BANK_CODES.find(b => b.code === e.target.value)
+                        setBankFormData({
+                          ...bankFormData,
+                          bank_code: e.target.value,
+                          bank_name: selectedBank?.name || '',
+                        })
+                      }}
+                      className="w-full px-3 py-2 border rounded-lg"
+                    >
+                      <option value="">-- เลือกรหัสธนาคาร --</option>
+                      {BANK_CODES.map((bank) => (
+                        <option key={bank.code} value={bank.code}>
+                          {bank.code} - {bank.name} ({bank.abbreviation})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-1">ชื่อธนาคาร</label>
+                    <input
+                      type="text"
+                      value={bankFormData.bank_name}
+                      onChange={(e) =>
+                        setBankFormData({ ...bankFormData, bank_name: e.target.value })
+                      }
+                      className="w-full px-3 py-2 border rounded-lg"
+                      placeholder="ชื่อธนาคาร (จะถูกเติมอัตโนมัติเมื่อเลือกรหัสธนาคาร)"
+                      readOnly
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-1">
+                      ช่องทางการขาย <span className="text-red-500">*</span>
+                    </label>
+                    <div className="border rounded-lg p-3 max-h-48 overflow-y-auto">
+                      <label className="flex items-center mb-2 rounded-md bg-amber-50 px-2 py-2">
+                        <input
+                          type="checkbox"
+                          checked={bankFormData.use_for_claim_slips}
+                          onChange={(e) => setBankFormData({
+                            ...bankFormData,
+                            use_for_claim_slips: e.target.checked,
+                          })}
+                          className="mr-2"
+                        />
+                        <span className="text-sm font-medium text-amber-900">บิลเคลม (REQ)</span>
+                      </label>
+                      <div className="mb-2 border-t border-gray-200" />
+                      {channels.map((channel) => (
+                        <label key={channel.channel_code} className="flex items-center mb-2">
+                          <input
+                            type="checkbox"
+                            checked={bankFormData.selectedChannels.includes(channel.channel_code)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setBankFormData({
+                                  ...bankFormData,
+                                  selectedChannels: [...bankFormData.selectedChannels, channel.channel_code],
+                                })
+                              } else {
+                                setBankFormData({
+                                  ...bankFormData,
+                                  selectedChannels: bankFormData.selectedChannels.filter(
+                                    (c) => c !== channel.channel_code
+                                  ),
+                                })
+                              }
+                            }}
+                            className="mr-2"
+                          />
+                          <span className="text-sm">
+                            {channel.channel_name || channel.channel_code}
+                          </span>
+                        </label>
+                      ))}
+                      {channels.length === 0 && (
+                        <p className="text-gray-500 text-sm">ไม่มีช่องทางการขาย</p>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">
+                      เลือกได้หลายช่องทาง (ต้องเลือกอย่างน้อย 1 ช่องทาง)
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={bankFormData.is_active}
+                        onChange={(e) =>
+                          setBankFormData({ ...bankFormData, is_active: e.target.checked })
+                        }
+                        className="mr-2"
+                      />
+                      <span className="text-sm">ใช้งาน</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="flex gap-4 mt-6">
+                  <button
+                    onClick={saveBankSetting}
+                    className="flex-1 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                  >
+                    บันทึก
+                  </button>
+                </div>
+              </div>
+            </Modal>
+          )}
+          </>)}
+
+          {/* Sub-tab: ตั้งค่าหัวบิล */}
+          {bankSubTab === 'bill-header' && (
+          <div className="bg-white p-6 rounded-lg shadow">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-bold">ตั้งค่าหัวบิล</h2>
+              <button
+                onClick={() => openBillHeaderForm()}
+                className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+              >
+                + เพิ่มบริษัท
+              </button>
+            </div>
+
+            {billHeaderLoading ? (
+              <div className="flex justify-center py-12">
+                <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent" />
+              </div>
+            ) : billHeaders.length === 0 ? (
+              <div className="text-center py-12 text-gray-500">ไม่พบข้อมูลหัวบิล</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="bg-blue-600 text-white">
+                      <th className="p-3 text-left font-semibold rounded-tl-xl w-16">โลโก้</th>
+                      <th className="p-3 text-left font-semibold">ชื่อบริษัท</th>
+                      <th className="p-3 text-left font-semibold">รหัสบิล</th>
+                      <th className="p-3 text-left font-semibold">เลขผู้เสียภาษี</th>
+                      <th className="p-3 text-left font-semibold">บัญชีธนาคารที่ผูก</th>
+                      <th className="p-3 text-left font-semibold rounded-tr-xl">การจัดการ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {billHeaders.map((h, idx) => {
+                      const linkedBanks = bankSettings.filter(b => b.bill_header_id === h.id)
+                      return (
+                        <tr key={h.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                          <td className="p-3">
+                            {h.logo_url ? (
+                              <img src={h.logo_url} alt="logo" className="w-10 h-10 object-contain rounded" />
+                            ) : (
+                              <div className="w-10 h-10 bg-gray-100 rounded flex items-center justify-center text-gray-400 text-xs">N/A</div>
+                            )}
+                          </td>
+                          <td className="p-3">
+                            <div className="font-semibold text-sm">{h.company_name}</div>
+                            {h.company_name_en && <div className="text-xs text-gray-500">{h.company_name_en}</div>}
+                            <div className="text-xs text-gray-400 mt-0.5">{h.address}</div>
+                          </td>
+                          <td className="p-3 text-sm font-mono font-semibold text-blue-700">{h.bill_code || '-'}</td>
+                          <td className="p-3 text-sm">{h.tax_id}</td>
+                          <td className="p-3">
+                            {linkedBanks.length > 0 ? (
+                              <div className="flex flex-wrap gap-1">
+                                {linkedBanks.map(b => (
+                                  <span key={b.id} className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
+                                    {b.account_name || b.account_number}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-gray-400 text-sm">-</span>
+                            )}
+                          </td>
+                          <td className="p-3">
+                            <button onClick={() => openBillHeaderForm(h)} className="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm mr-2">แก้ไข</button>
+                            <button onClick={() => deleteBillHeader(h.id)} className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-sm">ลบ</button>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          )}
+
+          {/* Bill Header Form Modal */}
+          {showBillHeaderForm && (
+            <Modal
+              open
+              onClose={closeBillHeaderForm}
+              contentClassName="max-w-2xl w-full mx-4 my-8 overflow-y-auto"
+            >
+              <div className="p-6">
+                <h3 className="text-xl font-bold mb-4 pr-12">
+                  {editingBillHeader ? 'แก้ไขหัวบิล' : 'เพิ่มหัวบิล'}
+                </h3>
+                <div className="space-y-4">
+                  <div className="grid grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium mb-1">รหัสบริษัท <span className="text-red-500">*</span></label>
+                      <input
+                        type="text"
+                        value={billHeaderFormData.company_key}
+                        onChange={(e) => setBillHeaderFormData({ ...billHeaderFormData, company_key: e.target.value })}
+                        className="w-full px-3 py-2 border rounded-lg"
+                        placeholder="เช่น tr, odf"
+                        disabled={!!editingBillHeader}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">รหัสบิล</label>
+                      <input
+                        type="text"
+                        value={billHeaderFormData.bill_code}
+                        onChange={(e) => setBillHeaderFormData({ ...billHeaderFormData, bill_code: e.target.value.toUpperCase() })}
+                        className="w-full px-3 py-2 border rounded-lg"
+                        placeholder="เช่น TR, ODF"
+                      />
+                      <p className="text-xs text-gray-400 mt-1">ใช้นำหน้าเลขบิล เช่น TRIV...</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">เลขผู้เสียภาษี <span className="text-red-500">*</span></label>
+                      <input
+                        type="text"
+                        value={billHeaderFormData.tax_id}
+                        onChange={(e) => setBillHeaderFormData({ ...billHeaderFormData, tax_id: e.target.value })}
+                        className="w-full px-3 py-2 border rounded-lg"
+                        placeholder="เลขผู้เสียภาษี 13 หลัก"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">ชื่อบริษัท (ไทย) <span className="text-red-500">*</span></label>
+                    <input
+                      type="text"
+                      value={billHeaderFormData.company_name}
+                      onChange={(e) => setBillHeaderFormData({ ...billHeaderFormData, company_name: e.target.value })}
+                      className="w-full px-3 py-2 border rounded-lg"
+                      placeholder="ชื่อบริษัทภาษาไทย"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">ชื่อบริษัท (อังกฤษ)</label>
+                    <input
+                      type="text"
+                      value={billHeaderFormData.company_name_en}
+                      onChange={(e) => setBillHeaderFormData({ ...billHeaderFormData, company_name_en: e.target.value })}
+                      className="w-full px-3 py-2 border rounded-lg"
+                      placeholder="Company name in English"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">ที่อยู่ <span className="text-red-500">*</span></label>
+                    <textarea
+                      value={billHeaderFormData.address}
+                      onChange={(e) => setBillHeaderFormData({ ...billHeaderFormData, address: e.target.value })}
+                      className="w-full px-3 py-2 border rounded-lg"
+                      rows={2}
+                      placeholder="ที่อยู่เต็มรูปแบบ"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium mb-1">สาขา</label>
+                      <input
+                        type="text"
+                        value={billHeaderFormData.branch}
+                        onChange={(e) => setBillHeaderFormData({ ...billHeaderFormData, branch: e.target.value })}
+                        className="w-full px-3 py-2 border rounded-lg"
+                        placeholder="สำนักงานใหญ่"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">เบอร์โทร</label>
+                      <input
+                        type="text"
+                        value={billHeaderFormData.phone}
+                        onChange={(e) => setBillHeaderFormData({ ...billHeaderFormData, phone: e.target.value })}
+                        className="w-full px-3 py-2 border rounded-lg"
+                        placeholder="0XX-XXX-XXXX"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">โลโก้</label>
+                    <div className="flex items-center gap-4">
+                      {(logoPreview || billHeaderFormData.logo_url) && (
+                        <img src={logoPreview || billHeaderFormData.logo_url} alt="logo preview" className="w-16 h-16 object-contain border rounded" />
+                      )}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0]
+                          if (file) {
+                            setLogoFile(file)
+                            setLogoPreview(URL.createObjectURL(file))
+                          }
+                        }}
+                        className="text-sm"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">บัญชีธนาคารที่ผูก</label>
+                    <div className="max-h-40 overflow-y-auto border rounded-lg p-3 space-y-2">
+                      {bankSettings.length === 0 ? (
+                        <p className="text-gray-500 text-sm">ไม่มีบัญชีธนาคาร</p>
+                      ) : bankSettings.map((bank) => (
+                        <label key={bank.id} className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={billHeaderFormData.selectedBankIds.includes(bank.id)}
+                            onChange={(e) => {
+                              const ids = [...billHeaderFormData.selectedBankIds]
+                              if (e.target.checked) {
+                                ids.push(bank.id)
+                              } else {
+                                const i = ids.indexOf(bank.id)
+                                if (i >= 0) ids.splice(i, 1)
+                              }
+                              setBillHeaderFormData({ ...billHeaderFormData, selectedBankIds: ids })
+                            }}
+                          />
+                          <span className="text-sm">{bank.account_name || bank.bank_name || bank.bank_code} ({bank.account_number})</span>
+                        </label>
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">เลือกบัญชีธนาคารที่ลูกค้าโอนเงินเข้า เพื่อผูกกับหัวบิลนี้</p>
+                  </div>
+                </div>
+                <div className="flex gap-4 mt-6">
+                  <button
+                    onClick={saveBillHeader}
+                    disabled={billHeaderSaving}
+                    className="flex-1 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+                  >
+                    {billHeaderSaving ? 'กำลังบันทึก...' : 'บันทึก'}
+                  </button>
+                </div>
+              </div>
+            </Modal>
+          )}
+        </div>
+      )}
+
+      {/* ตั้งค่าสินค้า Tab */}
+      {activeTab === 'product-settings' && hasAccess('settings-product-settings') && (
+        <>
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex justify-between items-center mb-2">
+            <div>
+              <h2 className="text-xl font-bold">เปิด/ปิดหมวดหมู่สำหรับการขาย</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                หมวดที่ปิดจะไม่แสดงในตารางฟิลด์ด้านล่างและไม่แสดงใน Override — รวมถึงไม่ให้เลือกสินค้าในหมวดนั้นตอนเปิดบิล
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={saveCategoryFieldSettings}
+              disabled={savingProductSettings || productCategories.length === 0}
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+            >
+              {savingProductSettings ? 'กำลังบันทึก...' : 'บันทึก'}
+            </button>
+          </div>
+          {productCategories.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              ไม่พบหมวดหมู่สินค้า (ตรวจสอบว่ามีสินค้าใน pr_products และมี product_category)
+            </div>
+          ) : (
+            <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-3 gap-y-1.5">
+              {productCategories.map((category) => {
+                const active = getCategorySalesActive(category);
+                return (
+                  <label
+                    key={category}
+                    title={category}
+                    className={`flex items-center gap-2 px-2 py-1.5 rounded-md border text-sm cursor-pointer transition-colors ${
+                      active
+                        ? 'border-blue-200 bg-blue-50 text-gray-800'
+                        : 'border-gray-200 bg-gray-50 text-gray-400'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={active}
+                      onChange={(e) => setCategorySalesActiveFlag(category, e.target.checked)}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 shrink-0"
+                    />
+                    <span className="truncate">{category}</span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white p-6 rounded-lg shadow mt-6">
+          <div className="flex justify-between items-center mb-4">
+            <div>
+              <h2 className="text-xl font-bold">ตั้งค่าสินค้า — ข้อมูลที่อนุญาตให้กรอกต่อหมวดหมู่</h2>
+              <p className="text-sm text-gray-500 mt-1">เฉพาะหมวดที่เปิดใช้ในการขายด้านบน — บันทึกร่วมกับปุ่มในบล็อกด้านบน</p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <input
+                ref={categoryFileInputRef}
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) importCategoryFieldSettings(file)
+                  e.target.value = ''
+                }}
+              />
+              <button
+                type="button"
+                onClick={exportCategoryFieldSettings}
+                disabled={productCategories.length === 0}
+                className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="ดาวน์โหลดตั้งค่าหมวดหมู่ทั้งหมด (ฟิลด์ที่อนุญาต + เปิดการขาย) เป็นไฟล์ Excel"
+              >
+                Export หมวดหมู่
+              </button>
+              <button
+                type="button"
+                onClick={() => categoryFileInputRef.current?.click()}
+                disabled={importingCategorySettings || productCategories.length === 0}
+                className="px-3 py-2 bg-amber-600 text-white rounded-lg text-sm hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="นำเข้าไฟล์ Excel — จับคู่ด้วยชื่อหมวดหมู่ แล้วต้องกดบันทึกอีกครั้ง"
+              >
+                {importingCategorySettings ? 'กำลังนำเข้า...' : 'Import หมวดหมู่'}
+              </button>
+              <button
+                onClick={saveCategoryFieldSettings}
+                disabled={savingProductSettings || productCategories.length === 0}
+                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {savingProductSettings ? 'กำลังบันทึก...' : 'บันทึก'}
+              </button>
+            </div>
+          </div>
+          {productCategories.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">
+              ไม่พบหมวดหมู่สินค้า (ตรวจสอบว่ามีสินค้าใน pr_products และมี product_category)
+            </div>
+          ) : productCategoriesActiveForSales.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">
+              ไม่มีหมวดหมู่ที่เปิดใช้ในการขาย — เปิดหมวดจากตารางด้านบนเพื่อตั้งค่าฟิลด์
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr className="bg-blue-600 text-white">
+                    <th className="p-3 text-left font-semibold whitespace-nowrap rounded-tl-xl">ชื่อหมวดหมู่สินค้า</th>
+                    {PRODUCT_FIELD_KEYS.map(({ key, label }, i) => (
+                      <th key={key} className={`p-2 text-center font-semibold text-sm whitespace-nowrap ${i === PRODUCT_FIELD_KEYS.length - 1 ? 'rounded-tr-xl' : ''}`}>
+                        {label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {productCategoriesActiveForSales.map((category, idx) => (
+                    <tr key={category} className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                      <td className="p-3 border-r border-gray-200 font-semibold whitespace-nowrap">{category}</td>
+                      {PRODUCT_FIELD_KEYS.map(({ key }) => (
+                        <td key={key} className="p-2 text-center border-r border-gray-200">
+                          <input
+                            type="checkbox"
+                            checked={getCategoryFields(category)[key]}
+                            onChange={(e) => setCategoryField(category, key, e.target.checked)}
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Override ระดับสินค้า */}
+        <div className="bg-white p-6 rounded-lg shadow mt-6">
+          <div className="flex justify-between items-center mb-4">
+            <div>
+              <h2 className="text-xl font-bold">ตั้งค่าฟิลด์ระดับสินค้า (Override)</h2>
+              <p className="text-sm text-gray-500 mt-1">ช่องเส้นประแสดงค่าที่หมวดหมู่อนุญาต — คลิกเพื่อสลับ (ตามหมวดหมู่ → Override เปิด → Override เปิด (บังคับกรอก) → Override ปิด)</p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <input
+                ref={overrideFileInputRef}
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) importProductOverrides(file)
+                  e.target.value = ''
+                }}
+              />
+              <button
+                type="button"
+                onClick={exportProductOverrides}
+                disabled={allProducts.length === 0}
+                className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="ดาวน์โหลดค่า override ปัจจุบันทั้งหมดเป็นไฟล์ Excel (มีชีตวิธีกรอก)"
+              >
+                Export Override
+              </button>
+              <button
+                type="button"
+                onClick={() => overrideFileInputRef.current?.click()}
+                disabled={importingOverrides || allProducts.length === 0}
+                className="px-3 py-2 bg-amber-600 text-white rounded-lg text-sm hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="นำเข้าไฟล์ Excel — จับคู่สินค้าด้วย product_code แล้วต้องกดบันทึกอีกครั้ง"
+              >
+                {importingOverrides ? 'กำลังนำเข้า...' : 'Import Override'}
+              </button>
+              <button
+                onClick={saveProductOverrides}
+                disabled={savingProductOverrides || overrideEligibleProducts.length === 0}
+                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {savingProductOverrides ? 'กำลังบันทึก...' : 'บันทึก Override'}
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center gap-6 mb-3 text-xs text-gray-600">
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-4 h-4 rounded border-2 border-dashed border-emerald-300 bg-emerald-50 relative">
+                <svg className="w-3 h-3 text-emerald-400 absolute inset-0 m-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+              </span>
+              ตามหมวดหมู่: เปิด
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-4 h-4 rounded border-2 border-dashed border-gray-300 bg-gray-50 relative">
+                <svg className="w-3 h-3 text-gray-300 absolute inset-0 m-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+              </span>
+              ตามหมวดหมู่: ปิด
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-4 h-4 rounded border-2 border-amber-500 bg-amber-500 relative">
+                <svg className="w-3 h-3 text-white absolute inset-0 m-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+              </span>
+              Override เปิด
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-flex w-4 h-4 rounded border-2 border-violet-600 bg-violet-600 items-center justify-center text-[10px] font-bold text-white">!</span>
+              Override เปิด (บังคับกรอก)
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-4 h-4 rounded border-2 border-red-400 bg-red-50 relative">
+                <svg className="w-3 h-3 text-red-500 absolute inset-0 m-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+              </span>
+              Override ปิด
+            </span>
+          </div>
+          <div className="flex gap-3 mb-4 flex-wrap">
+            <input
+              type="text"
+              placeholder="ค้นหาชื่อหรือรหัสสินค้า..."
+              value={overrideSearchInput}
+              onChange={(e) => setOverrideSearchInput(e.target.value)}
+              className="flex-1 min-w-[200px] px-3 py-2 border rounded-lg text-sm"
+            />
+            <select
+              value={overrideCategoryFilter}
+              onChange={(e) => { setOverrideCategoryFilter(e.target.value); setOverridePage(1) }}
+              className="px-3 py-2 border rounded-lg text-sm"
+            >
+              <option value="">ทุกหมวดหมู่ (ที่เปิดการขาย)</option>
+              {productCategoriesActiveForSales.map((cat) => (
+                <option key={cat} value={cat}>{cat}</option>
+              ))}
+            </select>
+          </div>
+          {overrideEligibleProducts.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">
+              {allProducts.length === 0
+                ? 'ไม่พบสินค้า'
+                : 'ไม่มีสินค้าในหมวดที่เปิดใช้ในการขาย — เปิดหมวดจากตารางด้านบน'}
+            </div>
+          ) : filteredOverrideProducts.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              ไม่พบสินค้าที่ตรงกับการค้นหา
+            </div>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="bg-amber-600 text-white">
+                      <th className="p-2 text-left font-semibold whitespace-nowrap rounded-tl-xl">สินค้า</th>
+                      <th className="p-2 text-left font-semibold whitespace-nowrap text-xs">หมวดหมู่</th>
+                      {PRODUCT_FIELD_KEYS.map(({ key, label }, i) => (
+                        <th key={key} className={`p-1.5 text-center font-semibold text-xs whitespace-nowrap ${i === PRODUCT_FIELD_KEYS.length - 1 ? 'rounded-tr-xl' : ''}`}>
+                          {label}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paginatedOverrideProducts.map((product, idx) => {
+                      const catKey = (product.product_category || '').trim()
+                      const catSettings = catKey ? getCategoryFields(catKey) : defaultCategoryFields
+                      const overrideFields = getProductOverrideFields(product.id)
+                      const hasAny = productHasOverrides(product.id)
+                      return (
+                        <tr
+                          key={product.id}
+                          className={`border-b border-gray-200 hover:bg-amber-50 transition-colors ${hasAny ? 'bg-amber-50/50' : idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}
+                        >
+                          <td className="p-2 border-r border-gray-200 font-medium whitespace-nowrap max-w-[200px] truncate" title={`${product.product_code} — ${product.product_name}`}>
+                            <span className="text-gray-500 text-xs mr-1">{product.product_code}</span>
+                            {product.product_name}
+                          </td>
+                          <td className="p-2 border-r border-gray-200 text-xs text-gray-500 whitespace-nowrap">{catKey || '—'}</td>
+                          {PRODUCT_FIELD_KEYS.map(({ key }) => {
+                            const overrideVal = overrideFields[key]
+                            const categoryVal = catSettings[key]
+                            return (
+                              <td key={key} className="p-1 text-center border-r border-gray-200">
+                                <TriStateOverrideCheckbox
+                                  value={overrideVal}
+                                  categoryValue={categoryVal}
+                                  onChange={(v) => setProductOverrideField(product.id, key, v)}
+                                />
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex items-center justify-between mt-3 text-sm text-gray-600">
+                <span>
+                  แสดง {Math.min((overridePage - 1) * OVERRIDE_PAGE_SIZE + 1, filteredOverrideProducts.length)}–{Math.min(overridePage * OVERRIDE_PAGE_SIZE, filteredOverrideProducts.length)} จาก {filteredOverrideProducts.length} รายการ
+                  {filteredOverrideProducts.length < overrideEligibleProducts.length && ` (ทั้งหมด ${overrideEligibleProducts.length})`}
+                </span>
+                {overrideTotalPages > 1 && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setOverridePage(1)}
+                      disabled={overridePage <= 1}
+                      className="px-2 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed text-xs"
+                    >
+                      «
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setOverridePage((p) => Math.max(1, p - 1))}
+                      disabled={overridePage <= 1}
+                      className="px-2 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed text-xs"
+                    >
+                      ‹ ก่อนหน้า
+                    </button>
+                    <span className="px-2 py-1 font-medium text-xs">
+                      หน้า {overridePage} / {overrideTotalPages}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setOverridePage((p) => Math.min(overrideTotalPages, p + 1))}
+                      disabled={overridePage >= overrideTotalPages}
+                      className="px-2 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed text-xs"
+                    >
+                      ถัดไป ›
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setOverridePage(overrideTotalPages)}
+                      disabled={overridePage >= overrideTotalPages}
+                      className="px-2 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed text-xs"
+                    >
+                      »
+                    </button>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+        </>
+      )}
+
+      {/* ตั้งค่าเลขบิล-ช่องทาง Tab */}
+      {activeTab === 'bill-channel-map' && hasAccess('settings-bill-channel-map') && (
+        <div className="bg-white p-6 rounded-lg shadow space-y-4">
+          {/* Sub-tabs: จัดการช่องทาง / ตั้งค่าเลขบิล */}
+          <div className="flex gap-4 border-b border-gray-200">
+            <button
+              type="button"
+              onClick={() => setBillChannelSubTab('channels')}
+              className={`px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors ${billChannelSubTab === 'channels' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
+            >
+              จัดการช่องทาง
+            </button>
+            <button
+              type="button"
+              onClick={() => setBillChannelSubTab('prefix')}
+              className={`px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors ${billChannelSubTab === 'prefix' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
+            >
+              ตั้งค่าเลขบิล
+            </button>
+          </div>
+
+          {billChannelSubTab === 'channels' && (
+            <ChannelManagementPanel onChannelsChanged={loadChannels} />
+          )}
+
+          {billChannelSubTab === 'prefix' && (
+          <div className="space-y-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1">
+              <h2 className="text-xl font-bold">ตั้งค่าเลขบิล-ช่องทาง</h2>
+              <p className="text-sm text-gray-600 max-w-3xl">
+                ผูกช่องทางกับ prefix ของ <span className="font-semibold">เลขคำสั่งซื้อ</span> เพื่อกันกรอกผิดช่องทางในหน้าออเดอร์
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => loadChannelOrderNoPrefixes()}
+                disabled={orderNoPrefixLoading}
+                className="px-4 py-2 border border-gray-300 rounded-xl hover:bg-gray-50 font-semibold text-sm disabled:opacity-50"
+              >
+                {orderNoPrefixLoading ? 'กำลังโหลด...' : 'รีเฟรช'}
+              </button>
+              <button
+                type="button"
+                onClick={saveSelectedChannelPrefixes}
+                disabled={orderNoPrefixSaving || orderNoPrefixLoading}
+                className="px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold text-sm disabled:opacity-50"
+              >
+                {orderNoPrefixSaving ? 'กำลังบันทึก...' : 'บันทึก'}
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="space-y-2">
+              <label className="block text-sm font-semibold text-gray-700">ช่องทาง</label>
+              <select
+                value={selectedPrefixChannel}
+                onChange={(e) => setSelectedPrefixChannel(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base bg-white"
+              >
+                {channels.map((c) => (
+                  <option key={c.channel_code} value={c.channel_code}>
+                    {c.channel_code} — {c.channel_name}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500">
+                ถ้าไม่มี prefix ในช่องทางนั้น ระบบจะไม่บังคับตรวจ (เพื่อไม่กระทบช่องทางที่ยังไม่ตั้งค่า)
+              </p>
+            </div>
+
+            <div className="lg:col-span-2 space-y-2">
+              <label className="block text-sm font-semibold text-gray-700">Prefix ของเลขคำสั่งซื้อ (หลายค่าได้)</label>
+              <div className="flex gap-2 flex-wrap">
+                <input
+                  type="text"
+                  value={prefixInput}
+                  onChange={(e) => setPrefixInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter') return
+                    e.preventDefault()
+                    const channelCode = String(selectedPrefixChannel || '').trim()
+                    if (!channelCode) return
+                    const tokens = String(prefixInput || '')
+                      .split(',')
+                      .map(normalizePrefixToken)
+                      .filter(Boolean)
+                    if (tokens.length === 0) return
+                    const current = getSelectedChannelPrefixes(channelCode)
+                    setSelectedChannelPrefixes(channelCode, current.concat(tokens))
+                    setPrefixInput('')
+                  }}
+                  placeholder="พิมพ์ prefix เช่น 26,27 แล้วกด Enter"
+                  className="flex-1 min-w-[220px] px-3 py-2 border border-gray-300 rounded-xl text-base"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const channelCode = String(selectedPrefixChannel || '').trim()
+                    if (!channelCode) return
+                    const tokens = String(prefixInput || '')
+                      .split(',')
+                      .map(normalizePrefixToken)
+                      .filter(Boolean)
+                    if (tokens.length === 0) return
+                    const current = getSelectedChannelPrefixes(channelCode)
+                    setSelectedChannelPrefixes(channelCode, current.concat(tokens))
+                    setPrefixInput('')
+                  }}
+                  className="px-4 py-2 border border-blue-600 text-blue-700 rounded-xl hover:bg-blue-50 font-semibold"
+                >
+                  เพิ่ม
+                </button>
+              </div>
+
+              <div className="mt-2">
+                {selectedPrefixChannel ? (
+                  getSelectedChannelPrefixes(selectedPrefixChannel).length === 0 ? (
+                    <div className="text-sm text-gray-400 italic py-3">ยังไม่มี prefix สำหรับช่องทางนี้</div>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {getSelectedChannelPrefixes(selectedPrefixChannel).map((p) => (
+                        <span
+                          key={p}
+                          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-100 text-slate-700 text-sm font-semibold"
+                          title={`prefix: ${p}`}
+                        >
+                          {p}
+                          <button
+                            type="button"
+                            onClick={() => void removePrefix(selectedPrefixChannel, p)}
+                            className="text-slate-500 hover:text-red-600 font-bold"
+                            aria-label="remove prefix"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )
+                ) : (
+                  <div className="text-sm text-gray-400 italic py-3">กรุณาเลือกช่องทาง</div>
+                )}
+              </div>
+            </div>
+          </div>
+          </div>
+          )}
+        </div>
+      )}
+
+      {/* ผู้ขาย Tab */}
+      {activeTab === 'sellers' && hasAccess('settings-sellers') && (
+        <div className="bg-white p-6 rounded-lg shadow space-y-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1">
+              <h2 className="text-xl font-bold">จัดการผู้ขาย</h2>
+              <p className="text-sm text-gray-600 max-w-2xl">
+                ระบบดึงชื่อและข้อมูลผู้ขาย (ชื่อจีน, ช่องทางซื้อ, ประเภท) จากรายการสินค้าให้อัตโนมัติเมื่อมีการเพิ่มหรือแก้ไขสินค้า
+                คุณยังแก้ไขรายละเอียดผู้ขายได้จากปุ่มแก้ไข
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={syncSellersFromProductsManual}
+                disabled={sellerSyncing}
+                className="px-4 py-2 border border-blue-600 text-blue-700 rounded-xl hover:bg-blue-50 font-semibold text-sm disabled:opacity-50 whitespace-nowrap"
+              >
+                {sellerSyncing ? 'กำลังซิงก์...' : 'ซิงก์จากสินค้าตอนนี้'}
+              </button>
+              <button
+                type="button"
+                onClick={openSellerModalForAdd}
+                className="px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold text-sm whitespace-nowrap"
+              >
+                เพิ่มผู้ขาย
+              </button>
+            </div>
+          </div>
+
+          <input
+            type="text"
+            placeholder="ค้นหาชื่อผู้ขาย, ชื่อภาษาจีน หรือช่องทางซื้อ..."
+            value={sellerSearchInput}
+            onChange={(e) => setSellerSearchInput(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
+          />
+          {sellers.length === 0 ? (
+            <p className="text-gray-400 italic text-center py-8">ยังไม่มีข้อมูลผู้ขาย</p>
+          ) : (
+            <>
+              <div className="w-full flex justify-end pt-1">
+                <div className="flex flex-wrap items-start justify-end gap-4 sm:gap-6">
+                  <div className="w-[200px] max-w-full shrink-0">
+                    <label
+                      htmlFor="seller-visibility-filter"
+                      className="block text-sm font-semibold text-gray-700 mb-1 min-h-[1.25rem]"
+                    >
+                      สถานะ
+                    </label>
+                    <select
+                      id="seller-visibility-filter"
+                      value={sellerVisibilityFilter}
+                      onChange={(e) =>
+                        setSellerVisibilityFilter(e.target.value as 'active' | 'hidden' | 'all')
+                      }
+                      className="w-full px-3 py-2 border border-gray-300 rounded-xl text-sm bg-white"
+                    >
+                      <option value="active">ใช้งานอยู่</option>
+                      <option value="hidden">ที่ซ่อนอยู่</option>
+                      <option value="all">ทั้งหมด</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1 min-h-[1.25rem] leading-snug">
+                      ซ่อนอยู่ {sellerHiddenCount} รายการ
+                    </p>
+                  </div>
+                  <div className="w-[200px] max-w-full shrink-0">
+                    <label
+                      htmlFor="seller-type-filter"
+                      className="block text-sm font-semibold text-gray-700 mb-1 min-h-[1.25rem]"
+                    >
+                      กรองประเภทผู้ขาย
+                    </label>
+                    <select
+                      id="seller-type-filter"
+                      value={sellerTypeTableFilter}
+                      onChange={(e) =>
+                        setSellerTypeTableFilter(e.target.value as 'all' | 'thailand' | 'foreign')
+                      }
+                      className="w-full px-3 py-2 border border-gray-300 rounded-xl text-sm bg-white"
+                    >
+                      <option value="all">ทั้งหมด</option>
+                      <option value="thailand">ประเทศไทย</option>
+                      <option value="foreign">ต่างประเทศ</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1 min-h-[1.25rem] leading-snug tabular-nums">
+                      แสดง {sellersFilteredForTable.length} / {sellersAfterSearch.length} รายการ
+                    </p>
+                  </div>
+                </div>
+              </div>
+              {sellersFilteredForTable.length === 0 ? (
+                <p className="text-gray-400 italic text-center py-8">
+                  {sellerSearchInput.trim() ? 'ไม่พบผู้ขายที่ตรงกับการค้นหา' : 'ไม่มีรายการที่ตรงกับตัวกรอง'}
+                </p>
+              ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-blue-600 text-white">
+                  <th className="px-4 py-2.5 text-left font-semibold rounded-tl-xl w-12">#</th>
+                  <th className="px-4 py-2.5 text-left font-semibold">ชื่อผู้ขาย</th>
+                  <th className="px-4 py-2.5 text-left font-semibold">ชื่อภาษาจีน</th>
+                  <th className="px-4 py-2.5 text-left font-semibold">ช่องทางซื้อ</th>
+                  <th className="px-4 py-2.5 text-left font-semibold whitespace-nowrap">ประเภทผู้ขาย</th>
+                  <th className="px-4 py-2.5 text-right font-semibold rounded-tr-xl min-w-[260px]">การจัดการ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sellersFilteredForTable.map((s, idx) => (
+                  <tr key={s.id} className={`border-t hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                    <td className="px-4 py-2.5 text-gray-400">{idx + 1}</td>
+                    <td className="px-4 py-2.5 font-semibold">{s.name}</td>
+                    <td className="px-4 py-2.5 text-gray-700">{s.name_cn || '-'}</td>
+                    <td className="px-4 py-2.5 text-gray-700">{s.purchase_channel || '-'}</td>
+                    <td className="px-4 py-2.5 text-gray-700">
+                      {s.seller_type === 'thailand' ? 'ประเทศไทย' : 'ต่างประเทศ'}
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      <div className="flex gap-2 justify-end items-center flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => openSellerModalForEdit(s)}
+                          className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs font-semibold"
+                        >
+                          แก้ไข
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => toggleSellerVisibility(s)}
+                          disabled={sellerTogglingId === s.id}
+                          className={`relative inline-flex h-7 w-14 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+                            s.is_active ? 'bg-emerald-500' : 'bg-gray-400'
+                          }`}
+                          title={s.is_active ? 'กดเพื่อซ่อนผู้ขาย' : 'กดเพื่อเปิดใช้งานผู้ขาย'}
+                        >
+                          <span
+                            className={`inline-block h-5 w-5 transform rounded-full bg-white transition ${
+                              s.is_active ? 'translate-x-8' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                        <span
+                          className={`text-xs font-semibold ${s.is_active ? 'text-emerald-700' : 'text-gray-500'}`}
+                        >
+                          {sellerTogglingId === s.id ? 'กำลังบันทึก...' : s.is_active ? 'เปิด' : 'ซ่อน'}
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+              )}
+            </>
+          )}
+
+          {showSellerModal && (
+            <Modal
+              open
+              onClose={closeSellerModal}
+              contentClassName="max-w-lg w-full mx-4 my-8 overflow-y-auto"
+            >
+              <div className="p-6">
+                <h3 className="text-xl font-bold mb-4 pr-12">
+                  {sellerEditingId ? 'แก้ไขผู้ขาย' : 'เพิ่มผู้ขาย'}
+                </h3>
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">
+                      ชื่อผู้ขาย <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={sellerName}
+                      onChange={(e) => setSellerName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveSeller() }}
+                      placeholder="กรอกชื่อผู้ขาย"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
+                      autoFocus
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">ชื่อผู้ขายภาษาจีน</label>
+                    <input
+                      type="text"
+                      value={sellerNameCn}
+                      onChange={(e) => setSellerNameCn(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveSeller() }}
+                      placeholder="กรอกชื่อภาษาจีน"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">ช่องทางซื้อ</label>
+                    <input
+                      type="text"
+                      value={sellerPurchaseChannel}
+                      onChange={(e) => setSellerPurchaseChannel(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveSeller() }}
+                      placeholder="เช่น Taobao, 1688, Alibaba"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">ประเภทผู้ขาย</label>
+                    <select
+                      value={sellerType}
+                      onChange={(e) => setSellerType(e.target.value as 'thailand' | 'foreign')}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base bg-white"
+                    >
+                      <option value="thailand">ประเทศไทย</option>
+                      <option value="foreign">ต่างประเทศ</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="flex gap-3 mt-6">
+                  <button
+                    type="button"
+                    onClick={saveSeller}
+                    disabled={sellerSaving}
+                    className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold disabled:opacity-50"
+                  >
+                    {sellerSaving ? 'กำลังบันทึก...' : sellerEditingId ? 'อัปเดต' : 'เพิ่ม'}
+                  </button>
+                </div>
+              </div>
+            </Modal>
+          )}
+        </div>
+      )}
+
+      {/* โปรโมชั่น Tab */}
+      {activeTab === 'promotions' && hasAccess('settings-promotions') && (
+        <PromotionSettingsPanel />
+      )}
+
+      {activeTab === 'issue-types' && hasAccess('settings-issue-types') && (
+        <div className="bg-white p-6 rounded-lg shadow space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-bold">ประเภท Issue</h2>
+            <button
+              onClick={saveIssueType}
+              disabled={issueTypeSaving}
+              className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+            >
+              {issueTypeSaving ? 'กำลังบันทึก...' : issueTypeEditingId ? 'บันทึกการแก้ไข' : 'เพิ่มประเภท'}
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">ชื่อประเภท</label>
+              <input
+                value={issueTypeName}
+                onChange={(e) => setIssueTypeName(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg"
+                placeholder="เช่น ด่วน, ด่วนมาก"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">สี</label>
+              <input
+                type="color"
+                value={issueTypeColor}
+                onChange={(e) => setIssueTypeColor(e.target.value)}
+                className="h-10 w-20 border rounded-lg p-1 bg-white"
+              />
+            </div>
+            <div className="flex items-end">
+              {issueTypeEditingId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIssueTypeEditingId(null)
+                    setIssueTypeName('')
+                    setIssueTypeColor('#3B82F6')
+                  }}
+                  className="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                >
+                  ยกเลิกการแก้ไข
+                </button>
+              )}
+            </div>
+          </div>
+
+          {issueTypes.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">ยังไม่มีประเภท Issue</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-blue-600 text-white">
+                    <th className="p-3 text-left font-semibold rounded-tl-xl">ชื่อประเภท</th>
+                    <th className="p-3 text-left font-semibold">สี</th>
+                    <th className="p-3 text-left font-semibold">สถานะ</th>
+                    <th className="p-3 text-left font-semibold rounded-tr-xl">การจัดการ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {issueTypes.map((t, idx) => (
+                    <tr key={t.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                      <td className="p-3 font-medium">{t.name}</td>
+                      <td className="p-3">
+                        <span
+                          className="inline-flex items-center gap-2 px-2 py-1 rounded border"
+                          style={{ borderColor: t.color, color: t.color }}
+                        >
+                          <span className="inline-block w-3 h-3 rounded-full" style={{ background: t.color }} />
+                          {t.color}
+                        </span>
+                      </td>
+                      <td className="p-3">{t.is_active ? 'ใช้งาน' : 'ปิดใช้งาน'}</td>
+                      <td className="p-3 space-x-2">
+                        <button
+                          onClick={() => {
+                            setIssueTypeEditingId(t.id)
+                            setIssueTypeName(t.name)
+                            setIssueTypeColor(t.color || '#3B82F6')
+                          }}
+                          className="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-xs"
+                        >
+                          แก้ไข
+                        </button>
+                        <button
+                          onClick={() => deleteIssueType(t.id)}
+                          className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-xs"
+                        >
+                          ลบ
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'chat-history' && hasAccess('settings-chat-history') && (() => {
+        // รวม chat จาก 2 แหล่ง + กรองตาม source
+        type UnifiedChat = OrderChatLog & { _source: 'confirm' | 'issue'; _issueTitle?: string }
+        const confirmMapped: UnifiedChat[] = chatLogs.map((l) => ({ ...l, _source: 'confirm' }))
+        const allChats: UnifiedChat[] =
+          chatSource === 'confirm' ? confirmMapped
+          : chatSource === 'issue' ? issueChatLogs
+          : [...confirmMapped, ...issueChatLogs]
+
+        // จัดกลุ่มตาม bill_no
+        const billGroups: Record<string, { bill_no: string; sources: Set<string>; lastDate: string; count: number; issueTitle?: string }> = {}
+        allChats.forEach((c) => {
+          const key = c.bill_no
+          if (!billGroups[key]) {
+            billGroups[key] = { bill_no: c.bill_no, sources: new Set(), lastDate: c.created_at, count: 0, issueTitle: c._issueTitle }
+          }
+          billGroups[key].sources.add(c._source)
+          billGroups[key].count++
+          if (c.created_at > billGroups[key].lastDate) billGroups[key].lastDate = c.created_at
+        })
+        const billList = Object.values(billGroups).sort((a, b) => b.lastDate.localeCompare(a.lastDate))
+
+        return (
+        <div className="bg-white rounded-xl shadow space-y-0 overflow-hidden">
+          {/* ── Filter Bar ── */}
+          <div className="p-4 border-b border-gray-200 bg-gray-50">
+            <div className="flex flex-wrap items-end gap-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">จากวันที่</label>
+                <input type="date" value={chatFromDate} onChange={(e) => setChatFromDate(e.target.value)} className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">ถึงวันที่</label>
+                <input type="date" value={chatToDate} onChange={(e) => setChatToDate(e.target.value)} className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">ประเภทแชท</label>
+                <select value={chatSource} onChange={(e) => setChatSource(e.target.value as any)} className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none">
+                  <option value="all">ทั้งหมด</option>
+                  <option value="confirm">Confirm Chat</option>
+                  <option value="issue">Issue Chat</option>
+                </select>
+              </div>
+              <button onClick={loadChatLogs} disabled={chatLoading} className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 text-sm font-medium transition-colors">
+                {chatLoading ? 'กำลังโหลด...' : 'กรองข้อมูล'}
+              </button>
+            </div>
+          </div>
+
+          {chatLoading ? (
+            <div className="flex justify-center items-center py-16">
+              <div className="animate-spin rounded-full h-8 w-8 border-4 border-blue-200 border-t-blue-500" />
+            </div>
+          ) : billList.length === 0 ? (
+            <div className="flex flex-col items-center py-16 text-gray-400">
+              <svg className="w-12 h-12 mb-3 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+              <p className="text-sm">ไม่พบประวัติแชท</p>
+            </div>
+          ) : (
+            <div className="flex" style={{ minHeight: '480px' }}>
+              {/* ── Bill List (Left Panel) ── */}
+              <div className="w-80 shrink-0 border-r border-gray-200 overflow-y-auto bg-white" style={{ maxHeight: '65vh' }}>
+                {billList.map((bill) => (
+                  <button
+                    key={bill.bill_no}
+                    type="button"
+                    onClick={() => { setSelectedChatBill(bill.bill_no); loadAllMessagesForBill(bill.bill_no) }}
+                    className={`w-full text-left px-4 py-3 border-b border-gray-100 hover:bg-blue-50 transition-colors ${selectedChatBill === bill.bill_no ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-sm text-gray-900 truncate">{bill.bill_no}</span>
+                      <span className="text-xs text-gray-400 shrink-0">{bill.count} ข้อความ</span>
+                    </div>
+                    <div className="flex items-center gap-2 mt-1">
+                      {bill.sources.has('confirm') && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-600 font-medium">Confirm</span>
+                      )}
+                      {bill.sources.has('issue') && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">Issue</span>
+                      )}
+                      <span className="text-[11px] text-gray-400 ml-auto">{formatDateTime(bill.lastDate)}</span>
+                    </div>
+                    {bill.issueTitle && bill.sources.has('issue') && (
+                      <div className="text-[11px] text-gray-500 mt-0.5 truncate">Ticket: {bill.issueTitle}</div>
+                    )}
+                  </button>
+                ))}
+              </div>
+
+              {/* ── Chat Messages (Right Panel) ── */}
+              <div className="flex-1 flex flex-col bg-gray-50">
+                {!selectedChatBill ? (
+                  <div className="flex-1 flex flex-col items-center justify-center text-gray-400">
+                    <svg className="w-16 h-16 mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+                    <p className="text-sm">เลือกบิลเพื่อดูประวัติแชท</p>
+                  </div>
+                ) : (
+                  <>
+                    {/* Chat Header */}
+                    <div className="px-5 py-3 bg-white border-b border-gray-200 flex items-center justify-between shrink-0">
+                      <div>
+                        <h4 className="font-bold text-gray-900 text-sm">{selectedChatBill}</h4>
+                        <p className="text-xs text-gray-500">{selectedBillMessages.length} ข้อความ (ทั้งหมด)</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => deleteChatLogsByBill(selectedChatBill!)}
+                          className="inline-flex items-center gap-1 text-xs text-red-500 hover:text-red-700 px-2 py-1 rounded hover:bg-red-50 transition-colors"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                          ลบทั้งบิล
+                        </button>
+                        <button type="button" onClick={() => { setSelectedChatBill(null); setSelectedBillMessages([]) }} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-100 transition-colors">
+                          ปิด
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Chat Messages */}
+                    <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3 bg-gradient-to-b from-slate-100 to-slate-50" style={{ maxHeight: '55vh' }}>
+                      {selectedBillLoading ? (
+                        <div className="flex justify-center items-center py-8">
+                          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500" />
+                        </div>
+                      ) : selectedBillMessages.map((msg) => {
+                        const isIssue = msg._source === 'issue'
+                        const isPlan = isIssue && (msg as any)._sourceScope === 'plan'
+                        const isMe = !!currentUser && msg.sender_id === currentUser.id
+                        const isRight = isIssue ? isPlan : isMe
+                        const sourceLabel = isIssue
+                          ? (isPlan ? 'Issue · Plan' : 'Issue · ออเดอร์')
+                          : 'Confirm'
+                        return (
+                          <div key={msg.id} className={`flex ${isRight ? 'justify-end' : 'justify-start'} group`}>
+                            <div className={`max-w-[75%] rounded-2xl px-4 py-3 shadow-sm ${
+                              isRight
+                                ? isIssue
+                                  ? 'bg-emerald-500 text-white rounded-br-sm'
+                                  : 'bg-blue-500 text-white rounded-br-sm'
+                                : isIssue
+                                  ? 'bg-white text-gray-900 border border-amber-200 rounded-bl-sm'
+                                  : 'bg-white text-gray-900 border border-blue-200 rounded-bl-sm'
+                            }`}>
+                              <div className={`flex items-center gap-2 mb-1 ${isRight ? 'flex-row-reverse' : ''}`}>
+                                <span className={`text-xs font-bold ${
+                                  isRight ? (isIssue ? 'text-emerald-100' : 'text-blue-100') : isIssue ? 'text-amber-700' : 'text-blue-600'
+                                }`}>
+                                  {msg.sender_name}
+                                  <span className={`ml-1.5 px-1.5 py-0.5 rounded text-[10px] ${
+                                    isRight
+                                      ? isIssue ? 'bg-emerald-600/50 text-emerald-100' : 'bg-blue-600/50 text-blue-100'
+                                      : isIssue
+                                        ? 'bg-amber-100 text-amber-700'
+                                        : 'bg-blue-100 text-blue-600'
+                                  }`}>
+                                    {sourceLabel}
+                                  </span>
+                                </span>
+                                <span className={`text-xs ${isRight ? (isIssue ? 'text-emerald-200' : 'text-blue-200') : 'text-gray-400'}`}>
+                                  {formatDateTime(msg.created_at)}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => deleteChatLog(msg.id, msg._source)}
+                                  title="ลบข้อความนี้"
+                                  className={`opacity-0 group-hover:opacity-100 p-0.5 rounded transition-all ${
+                                    isRight ? (isIssue ? 'text-emerald-200 hover:text-red-200' : 'text-blue-200 hover:text-red-200') : 'text-gray-400 hover:text-red-500'
+                                  }`}
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                  </svg>
+                                </button>
+                              </div>
+                              <p className={`text-sm whitespace-pre-wrap select-text leading-relaxed ${isRight ? '' : 'text-gray-700'}`}>{msg.message}</p>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        )
+      })()}
+      {/* Security Tab — MFA สำหรับ superadmin */}
+      {activeTab === 'security' && hasAccess('settings-security') && (
+        <div className="p-4 sm:p-6">
+          <MfaEnrollPanel />
+        </div>
+      )}
+
+      {MessageModal}
+      {ConfirmModal}
+
+      {/* Modal สร้าง User ใหม่ */}
+      <Modal
+        open={showCreateUserModal}
+        onClose={() => { setShowCreateUserModal(false); setCreateUserForm({ email: '', password: '', username: '', role: 'sales-tr' }) }}
+        closeOnBackdropClick
+        contentClassName="max-w-md"
+      >
+        <div className="p-6">
+          <h2 className="text-lg font-bold mb-4 pr-12">สร้าง User ใหม่</h2>
+          <div className="space-y-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Email <span className="text-red-500">*</span></label>
+              <input
+                type="email"
+                value={createUserForm.email}
+                onChange={(e) => setCreateUserForm((f) => ({ ...f, email: e.target.value }))}
+                placeholder="user@example.com"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+              <input
+                type="text"
+                value={createUserForm.username}
+                onChange={(e) => setCreateUserForm((f) => ({ ...f, username: e.target.value }))}
+                placeholder="ชื่อที่แสดงในระบบ"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">รหัสผ่าน <span className="text-red-500">*</span></label>
+              <input
+                type="password"
+                value={createUserForm.password}
+                onChange={(e) => setCreateUserForm((f) => ({ ...f, password: e.target.value }))}
+                placeholder="อย่างน้อย 6 ตัวอักษร"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Role <span className="text-red-500">*</span></label>
+              <select
+                value={createUserForm.role}
+                onChange={(e) => setCreateUserForm((f) => ({ ...f, role: e.target.value }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              >
+                {allRoles.map((role) => (
+                  <option key={role} value={role}>{roleLabel(role)}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 mt-6">
+            <button
+              type="button"
+              onClick={handleCreateUser}
+              disabled={createUserLoading}
+              className="px-4 py-2 text-sm bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition disabled:opacity-50"
+            >
+              {createUserLoading ? 'กำลังสร้าง...' : 'สร้าง User'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  )
+}
+
+/** Checkbox override: ตามหมวดหมู่ → เปิด → เปิดและบังคับกรอก → ปิด → ตามหมวดหมู่ */
+function TriStateOverrideCheckbox({
+  value,
+  categoryValue,
+  onChange,
+}: {
+  value: boolean | null | 'required'
+  categoryValue: boolean
+  onChange: (v: boolean | null | 'required') => void
+}) {
+  function handleClick() {
+    if (value === null) onChange(true)
+    else if (value === true) onChange('required')
+    else if (value === 'required') onChange(false)
+    else onChange(null)
+  }
+
+  const title =
+    value === null
+      ? `ตามหมวดหมู่ (${categoryValue ? 'เปิด' : 'ปิด'}) — คลิกเพื่อ override เปิด`
+      : value === 'required'
+        ? 'Override: เปิด (บังคับกรอก) — คลิกเพื่อ override ปิด'
+        : value
+          ? 'Override: เปิด — คลิกเพื่อเปิดและบังคับกรอก'
+        : 'Override: ปิด — คลิกเพื่อกลับตามหมวดหมู่'
+
+  if (value === null) {
+    // แสดงค่าที่สืบทอดจากหมวดหมู่แบบจาง (เส้นประ) เพื่อให้เห็นค่าจริงก่อนตัดสินใจ override
+    return (
+      <button
+        type="button"
+        onClick={handleClick}
+        title={title}
+        className={`w-5 h-5 rounded border-2 border-dashed flex items-center justify-center cursor-pointer transition-colors mx-auto ${
+          categoryValue
+            ? 'border-emerald-300 bg-emerald-50 hover:border-emerald-400'
+            : 'border-gray-300 bg-gray-50 hover:border-gray-400'
+        }`}
+      >
+        {categoryValue ? (
+          <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+          </svg>
+        ) : (
+          <svg className="w-3.5 h-3.5 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        )}
+      </button>
+    )
+  }
+
+  if (value === true) {
+    return (
+      <button
+        type="button"
+        onClick={handleClick}
+        title={title}
+        className="w-5 h-5 rounded border-2 border-amber-500 bg-amber-500 flex items-center justify-center cursor-pointer hover:bg-amber-600 hover:border-amber-600 transition-colors mx-auto"
+      >
+        <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+        </svg>
+      </button>
+    )
+  }
+
+  if (value === 'required') {
+    return (
+      <button
+        type="button"
+        onClick={handleClick}
+        title={title}
+        className="w-5 h-5 rounded border-2 border-violet-600 bg-violet-600 flex items-center justify-center cursor-pointer hover:bg-violet-700 hover:border-violet-700 transition-colors mx-auto text-xs font-bold text-white"
+      >
+        !
+      </button>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      title={title}
+      className="w-5 h-5 rounded border-2 border-red-400 bg-red-50 flex items-center justify-center cursor-pointer hover:bg-red-100 hover:border-red-500 transition-colors mx-auto"
+    >
+      <svg className="w-3.5 h-3.5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+      </svg>
+    </button>
+  )
+}

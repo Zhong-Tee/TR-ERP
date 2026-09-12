@@ -13,7 +13,7 @@ import * as XLSX from 'xlsx'
 import Modal from '../components/ui/Modal'
 import IssueBoard from '../components/order/IssueBoard'
 import WorkOrderSelectionList from '../components/order/WorkOrderSelectionList'
-import WorkOrderManageList from '../components/order/WorkOrderManageList'
+import WorkOrderManageList, { CLAIM_WORK_ORDER_FILTER } from '../components/order/WorkOrderManageList'
 import { isAdminOrSuperadmin, isOperationalIssueRole, isRoleInAllowedList } from '../config/accessPolicy'
 import { getProductImageUrl } from '../components/wms/wmsUtils'
 import { localISODate } from '../lib/localDate'
@@ -814,6 +814,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const [manageWorkOrderSearch, setManageWorkOrderSearch] = useState('')
   const [jStatusFilter, setJStatusFilter] = useState('')
   const [jChannels, setJChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
+  const [hasClaimWorkOrders, setHasClaimWorkOrders] = useState(false)
   const [woStatusByName, setWoStatusByName] = useState<Record<string, string>>({})
   const [woStatusById, setWoStatusById] = useState<Record<string, string>>({})
   const [hideCompleted, setHideCompleted] = useState(true)
@@ -1161,12 +1162,22 @@ export default function Plan({ tvMode = false }: PlanProps) {
   useEffect(() => {
     ;(async () => {
       try {
-        const { data, error } = await supabase
-          .from('channels')
-          .select('channel_code, channel_name')
-          .order('channel_code', { ascending: true })
-        if (error) throw error
-        setJChannels(data || [])
+        const [channelsResult, claimResult] = await Promise.all([
+          supabase
+            .from('channels')
+            .select('channel_code, channel_name')
+            .order('channel_code', { ascending: true }),
+          supabase
+            .from('or_orders')
+            .select('work_order_id')
+            .not('work_order_id', 'is', null)
+            .or('claim_type.not.is.null,bill_no.like.REQ%')
+            .limit(1),
+        ])
+        if (channelsResult.error) throw channelsResult.error
+        if (claimResult.error) throw claimResult.error
+        setJChannels(channelsResult.data || [])
+        setHasClaimWorkOrders((claimResult.data || []).length > 0)
       } catch (error) {
         console.error('Error loading channels:', error)
       }
@@ -1175,11 +1186,29 @@ export default function Plan({ tvMode = false }: PlanProps) {
 
   const loadMenuCounts = useCallback(async () => {
     try {
+      const isClaimChannelFilter = jChannelFilter === CLAIM_WORK_ORDER_FILTER
+      let claimWorkOrderIds: string[] = []
+      if (isClaimChannelFilter) {
+        const { data: claimOrders, error: claimOrdersError } = await supabase
+          .from('or_orders')
+          .select('work_order_id')
+          .not('work_order_id', 'is', null)
+          .or('claim_type.not.is.null,bill_no.like.REQ%')
+        if (claimOrdersError) throw claimOrdersError
+        claimWorkOrderIds = Array.from(new Set(
+          (claimOrders || [])
+            .map((row: { work_order_id: string | null }) => row.work_order_id)
+            .filter((id): id is string => Boolean(id)),
+        ))
+      }
+
       const allWorkOrdersQuery = supabase
         .from('or_work_orders')
         .select('id', { count: 'exact', head: true })
       const allWorkOrdersFilteredByChannel = jChannelFilter
-        ? allWorkOrdersQuery.like('work_order_name', `${jChannelFilter}-%`)
+        ? isClaimChannelFilter
+          ? allWorkOrdersQuery.in('id', claimWorkOrderIds.length > 0 ? claimWorkOrderIds : ['00000000-0000-0000-0000-000000000000'])
+          : allWorkOrdersQuery.like('work_order_name', `${jChannelFilter}-%`)
         : allWorkOrdersQuery
       const allWorkOrdersFilteredByDateFrom = manageDateFrom
         ? allWorkOrdersFilteredByChannel.gte('created_at', `${manageDateFrom}T00:00:00.000Z`)
@@ -2826,6 +2855,9 @@ export default function Plan({ tvMode = false }: PlanProps) {
                       className="px-3 py-2 border border-gray-300 rounded-lg bg-white text-sm"
                     >
                       <option value="">ทั้งหมด</option>
+                      {hasClaimWorkOrders && (
+                        <option value={CLAIM_WORK_ORDER_FILTER}>{CLAIM_WORK_ORDER_FILTER}</option>
+                      )}
                       {jChannels.map((ch) => (
                         <option key={ch.channel_code} value={ch.channel_code}>
                           {ch.channel_name || ch.channel_code}

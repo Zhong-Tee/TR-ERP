@@ -1,0 +1,472 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { pdf, PDFViewer } from '@react-pdf/renderer'
+import { supabase } from '../../lib/supabase'
+import Modal from '../ui/Modal'
+import CashBillPDF from './pdf/CashBillPDF'
+import type { BillHeaderSetting } from '../../types'
+
+/* ─── Types ─── */
+interface CashBillItem {
+  desc: string
+  qty: number
+  price: number
+}
+
+interface CashBillOrder {
+  id: string
+  bill_no: string
+  customer_name: string
+  total_amount: number
+  billing_details?: {
+    tax_customer_name?: string | null
+    tax_customer_address?: string | null
+    tax_customer_phone?: string | null
+    tax_id?: string | null
+    tax_items?: { product_name: string; quantity: number; unit_price: number }[]
+    address_line?: string | null
+    sub_district?: string | null
+    district?: string | null
+    province?: string | null
+    postal_code?: string | null
+    mobile_phone?: string | null
+    cash_bill_no?: string | null
+  } | null
+}
+
+interface CashBillModalProps {
+  open: boolean
+  order: CashBillOrder | null
+  onClose: () => void
+  onConfirm: (order: CashBillOrder, invoiceNo: string) => void
+  submitting?: boolean
+  hideConfirm?: boolean
+  receiverAccount?: string | null
+}
+
+const TOTAL_ROWS = 6
+
+/* ─── Auto-generate invoice number ─── */
+async function generateNextInvoiceNo(companyCode: string): Promise<string> {
+  const now = new Date()
+  const yy = now.getFullYear().toString().slice(-2)
+  const mm = (now.getMonth() + 1).toString().padStart(2, '0')
+  const prefix = `CB${companyCode.toUpperCase()}${yy}${mm}`
+
+  try {
+    // Query all confirmed cash bills with cash_bill_no matching this prefix
+    const { data } = await supabase
+      .from('or_orders')
+      .select('billing_details')
+      .filter('billing_details->>cash_bill_no', 'like', `${prefix}%`)
+
+    let maxSeq = 0
+    if (data) {
+      data.forEach((row: { billing_details: Record<string, unknown> | null }) => {
+        const no = row.billing_details?.cash_bill_no as string | undefined
+        if (no && no.startsWith(prefix)) {
+          const seq = parseInt(no.slice(prefix.length), 10)
+          if (!isNaN(seq) && seq > maxSeq) maxSeq = seq
+        }
+      })
+    }
+
+    return prefix + (maxSeq + 1).toString().padStart(4, '0')
+  } catch (err) {
+    console.error('Error generating invoice number:', err)
+    return prefix + '0001'
+  }
+}
+
+/* ─── Component ─── */
+export default function CashBillModal({ open, order, onClose, onConfirm, submitting, hideConfirm, receiverAccount }: CashBillModalProps) {
+  const [billHeaders, setBillHeaders] = useState<BillHeaderSetting[]>([])
+  const [selectedHeaderId, setSelectedHeaderId] = useState<string>('')
+  const [invoiceNo, setInvoiceNo] = useState('')
+  const [refNo, setRefNo] = useState('')
+  const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [customerName, setCustomerName] = useState('')
+  const [customerAddress1, setCustomerAddress1] = useState('')
+  const [customerAddress2, setCustomerAddress2] = useState('')
+  const [items, setItems] = useState<CashBillItem[]>([])
+  const [exporting, setExporting] = useState(false)
+  const [mode, setMode] = useState<'edit' | 'preview'>('edit')
+
+  /* Load bill headers from DB */
+  useEffect(() => {
+    if (!open) return
+    ;(async () => {
+      const { data } = await supabase
+        .from('bill_header_settings')
+        .select('*')
+        .order('created_at', { ascending: true })
+      const headers = (data || []) as BillHeaderSetting[]
+      setBillHeaders(headers)
+
+      if (receiverAccount && headers.length > 0) {
+        const { data: bankMatch } = await supabase
+          .from('bank_settings')
+          .select('bill_header_id')
+          .eq('account_number', receiverAccount)
+          .not('bill_header_id', 'is', null)
+          .limit(1)
+        if (bankMatch && bankMatch.length > 0 && bankMatch[0].bill_header_id) {
+          setSelectedHeaderId(bankMatch[0].bill_header_id)
+          return
+        }
+      }
+      if (headers.length > 0) {
+        setSelectedHeaderId(headers[0].id)
+      }
+    })()
+  }, [open, receiverAccount])
+
+  const selectedHeader = billHeaders.find(h => h.id === selectedHeaderId) || null
+
+  /* Auto-generate invoice number when selected header changes */
+  useEffect(() => {
+    if (!open || !order || !selectedHeader) return
+    const code = selectedHeader.company_key.toUpperCase()
+
+    const existingNo = order.billing_details?.cash_bill_no
+    if (existingNo && typeof existingNo === 'string' && existingNo.includes(code)) {
+      setInvoiceNo(existingNo)
+    } else {
+      generateNextInvoiceNo(code).then(setInvoiceNo)
+    }
+  }, [open, order, selectedHeader])
+
+  /* Pre-fill data from order */
+  useEffect(() => {
+    if (!order) return
+    const bd = order.billing_details || {}
+    setRefNo(order.bill_no || '')
+    setCustomerName(bd.tax_customer_name || order.customer_name || '')
+
+    // Build address
+    const taxAddr = (bd.tax_customer_address || '').trim()
+    let fullAddr: string
+    if (taxAddr) {
+      fullAddr = taxAddr
+    } else {
+      const addrParts = [
+        bd.address_line || '',
+        bd.sub_district ? 'แขวง' + bd.sub_district : '',
+        bd.district ? 'เขต' + bd.district : '',
+        bd.province || '',
+        bd.postal_code || '',
+      ].filter(Boolean)
+      fullAddr = addrParts.join(' ')
+    }
+    if (fullAddr.length > 60) {
+      const breakIdx = fullAddr.lastIndexOf(' ', 60)
+      const splitAt = breakIdx > 30 ? breakIdx : 60
+      setCustomerAddress1(fullAddr.substring(0, splitAt))
+      setCustomerAddress2(fullAddr.substring(splitAt).trimStart())
+    } else {
+      setCustomerAddress1(fullAddr)
+      setCustomerAddress2('')
+    }
+
+    // Build items — ใช้ tax_items ก่อน ถ้าราคาเป็น 0 ทั้งหมดให้ดึงจาก or_order_items แทน
+    const taxItems = bd.tax_items || []
+    const allPricesZero = taxItems.length > 0 && taxItems.every((ti: { unit_price: number }) => !ti.unit_price || ti.unit_price <= 0)
+
+    if (taxItems.length > 0 && !allPricesZero) {
+      // tax_items มีราคาปกติ — ใช้ได้เลย
+      const DEDUPE_KEYWORDS = ['TWP', 'TWB']
+      const isDedupe = (name: string) => DEDUPE_KEYWORDS.some((kw) => name.includes(kw))
+      const result: CashBillItem[] = []
+      const seen = new Set<string>()
+      taxItems.forEach((ti: { product_name: string; quantity: number; unit_price: number }) => {
+        if (isDedupe(ti.product_name)) {
+          if (!seen.has(ti.product_name)) {
+            seen.add(ti.product_name)
+            result.push({ desc: ti.product_name, qty: 1, price: ti.unit_price })
+          }
+        } else {
+          result.push({ desc: ti.product_name, qty: ti.quantity, price: ti.unit_price })
+        }
+      })
+      setItems(result)
+    } else {
+      // tax_items ว่าง หรือราคาเป็น 0 ทั้งหมด → ดึงจาก or_order_items แทน
+      supabase
+        .from('or_order_items')
+        .select('product_name, quantity, unit_price, is_free')
+        .eq('order_id', order.id)
+        .order('created_at', { ascending: true })
+        .then(({ data: orderItems, error }) => {
+          if (error || !orderItems || orderItems.length === 0) {
+            // Fallback สุดท้าย: ใช้ยอดรวม
+            setItems([{ desc: 'สินค้า', qty: 1, price: order.total_amount || 0 }])
+            return
+          }
+          // กรองสินค้าของแถม (is_free) ออก
+          const paidItems = orderItems.filter((oi: { is_free?: boolean }) => !oi.is_free)
+          const itemsToUse = paidItems.length > 0 ? paidItems : orderItems
+          const DEDUPE_KEYWORDS = ['TWP', 'TWB']
+          const isDedupe = (name: string) => DEDUPE_KEYWORDS.some((kw) => name.includes(kw))
+          const result: CashBillItem[] = []
+          const seen = new Set<string>()
+          itemsToUse.forEach((oi: { product_name: string; quantity: number; unit_price: number }) => {
+            if (isDedupe(oi.product_name)) {
+              if (!seen.has(oi.product_name)) {
+                seen.add(oi.product_name)
+                result.push({ desc: oi.product_name, qty: 1, price: oi.unit_price || 0 })
+              }
+            } else {
+              result.push({ desc: oi.product_name, qty: oi.quantity || 1, price: oi.unit_price || 0 })
+            }
+          })
+          setItems(result.length > 0 ? result : [{ desc: 'สินค้า', qty: 1, price: order.total_amount || 0 }])
+        })
+    }
+  }, [order])
+
+  /* Padded items */
+  const filledItems: CashBillItem[] = (() => {
+    const arr = [...items]
+    while (arr.length < TOTAL_ROWS) arr.push({ desc: '', qty: 0, price: 0 })
+    return arr
+  })()
+
+  const grandTotal = filledItems.reduce((s, r) => s + (r.qty || 0) * (r.price || 0), 0)
+
+  const buildPdfElement = useCallback(() => {
+    const fallbackHeader: BillHeaderSetting = {
+      id: '', company_key: 'tr', bill_code: 'TR', company_name: 'ห้างหุ้นส่วนจำกัด ทีอาร์ คิดส์ช็อป',
+      company_name_en: 'TR Kidsshop Limited Partnership',
+      address: '1641,1643 ชั้นที่ 3 ถนนเพชรเกษม แขวงหลักสอง เขตบางแค กรุงเทพมหานคร 10160',
+      tax_id: '0103563005345', branch: 'สำนักงานใหญ่', phone: '082-934-1288',
+      logo_url: null, created_at: '', updated_at: '',
+    }
+    return (
+      <CashBillPDF
+        companyData={selectedHeader || fallbackHeader}
+        invoiceNo={invoiceNo}
+        refNo={refNo}
+        invoiceDate={invoiceDate}
+        customerName={customerName}
+        customerAddress1={customerAddress1}
+        customerAddress2={customerAddress2}
+        items={filledItems.filter((r) => r.desc || r.qty > 0 || r.price > 0)}
+        grandTotal={grandTotal}
+      />
+    )
+  }, [selectedHeader, invoiceNo, refNo, invoiceDate, customerName, customerAddress1, customerAddress2, filledItems, grandTotal])
+
+  const pdfDocument = useMemo(() => buildPdfElement(), [buildPdfElement])
+
+  function handleItemChange(idx: number, field: keyof CashBillItem, value: string) {
+    setItems(() => {
+      const copy = [...filledItems]
+      if (field === 'desc') copy[idx] = { ...copy[idx], desc: value }
+      else if (field === 'qty') copy[idx] = { ...copy[idx], qty: parseFloat(value) || 0 }
+      else copy[idx] = { ...copy[idx], price: parseFloat(value) || 0 }
+      return copy
+    })
+  }
+
+  /* Export PDF */
+  async function handleExportPDF() {
+    setExporting(true)
+    try {
+      const blob = await pdf(buildPdfElement()).toBlob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `บิลเงินสด-${invoiceNo}.pdf`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err: unknown) {
+      console.error('Error generating PDF:', err)
+      const msg = err instanceof Error ? err.message : String(err)
+      alert('เกิดข้อผิดพลาดในการสร้าง PDF:\n' + msg)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  function handleConfirm() {
+    if (order) onConfirm(order, invoiceNo)
+  }
+
+  if (!open || !order) return null
+
+  return (
+    <Modal open={open} onClose={onClose} contentClassName="max-w-[600px] w-full" closeOnBackdropClick>
+      <div className="p-4 space-y-3 max-h-[90vh] overflow-y-auto">
+        {/* ─── Controls Bar ─── */}
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-gray-50 rounded-xl px-4 py-3">
+          <div className="flex items-center gap-3">
+            <label className="text-sm font-medium text-gray-600">บริษัท:</label>
+            <select
+              value={selectedHeaderId}
+              onChange={(e) => setSelectedHeaderId(e.target.value)}
+              className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-sky-400"
+            >
+              {billHeaders.map((h) => (
+                <option key={h.id} value={h.id}>{h.company_name}</option>
+              ))}
+              {billHeaders.length === 0 && <option value="">ไม่มีข้อมูลหัวบิล</option>}
+            </select>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleExportPDF}
+              disabled={exporting}
+              className="px-4 py-2 bg-sky-500 text-white rounded-lg hover:bg-sky-600 text-sm font-semibold transition-colors disabled:opacity-50 inline-flex items-center gap-2"
+            >
+              {exporting ? (
+                <>
+                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  กำลังสร้าง PDF...
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  Export PDF
+                </>
+              )}
+            </button>
+            {!hideConfirm && (
+              <button
+                type="button"
+                onClick={handleConfirm}
+                disabled={submitting}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm font-semibold transition-colors disabled:opacity-50 inline-flex items-center gap-2"
+              >
+                {submitting ? (
+                  <>
+                    <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    กำลังยืนยัน...
+                  </>
+                ) : (
+                  'ยืนยันบิลเงินสด'
+                )}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* ─── Mode Toggle ─── */}
+        <div className="flex rounded-lg bg-gray-100 p-0.5">
+          <button type="button" onClick={() => setMode('edit')} className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${mode === 'edit' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>แก้ไข</button>
+          <button type="button" onClick={() => setMode('preview')} className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${mode === 'preview' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>พรีวิว PDF</button>
+        </div>
+
+        {/* ─── Preview Mode ─── */}
+        {mode === 'preview' && (
+          <div className="bg-[#525659] rounded-xl p-3 flex justify-center">
+            <PDFViewer
+              width={420}
+              height={595}
+              showToolbar={false}
+              style={{ border: 'none', borderRadius: '8px', backgroundColor: '#fff' }}
+            >
+              {pdfDocument}
+            </PDFViewer>
+          </div>
+        )}
+
+        {/* ─── Edit Form ─── */}
+        {mode === 'edit' && (
+        <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-4">
+          {/* Document Info */}
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">เลขที่ (อัตโนมัติ)</label>
+              <input type="text" value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)}
+                className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-sky-400 focus:border-sky-400 text-center bg-sky-50 font-semibold text-sky-700" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">วันที่</label>
+              <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)}
+                className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-sky-400 focus:border-sky-400" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">เลขที่อ้างอิง</label>
+              <input type="text" value={refNo} onChange={(e) => setRefNo(e.target.value)}
+                className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-sky-400 focus:border-sky-400 text-center" />
+            </div>
+          </div>
+
+          {/* Customer Info */}
+          <div className="bg-gray-50 rounded-lg p-3 space-y-2">
+            <h3 className="text-sm font-bold text-gray-700">ข้อมูลลูกค้า</h3>
+            <div className="grid grid-cols-1 gap-2">
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">ชื่อลูกค้า</label>
+                <input type="text" value={customerName} onChange={(e) => setCustomerName(e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-sky-400 focus:border-sky-400" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">ที่อยู่ บรรทัด 1</label>
+                <input type="text" value={customerAddress1} onChange={(e) => setCustomerAddress1(e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-sky-400 focus:border-sky-400" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">ที่อยู่ บรรทัด 2</label>
+                <input type="text" value={customerAddress2} onChange={(e) => setCustomerAddress2(e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-sky-400 focus:border-sky-400" />
+              </div>
+            </div>
+          </div>
+
+          {/* Items Table */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="bg-sky-500 text-white">
+                  <th className="px-2 py-2 text-left rounded-tl-lg">รายการ</th>
+                  <th className="px-2 py-2 text-center w-16">จำนวน</th>
+                  <th className="px-2 py-2 text-center w-24">หน่วยละ</th>
+                  <th className="px-2 py-2 text-right w-24 rounded-tr-lg">จำนวนเงิน</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filledItems.map((row, idx) => {
+                  const lineTotal = (row.qty || 0) * (row.price || 0)
+                  return (
+                    <tr key={idx} className={idx % 2 === 1 ? 'bg-sky-50/40 border-t border-gray-100' : 'border-t border-gray-100'}>
+                      <td className="px-1 py-0.5">
+                        <input type="text" value={row.desc} onChange={(e) => handleItemChange(idx, 'desc', e.target.value)}
+                          className="w-full border-0 bg-transparent px-1 py-0.5 text-sm focus:ring-1 focus:ring-sky-300 rounded"
+                          placeholder={idx === 0 ? 'ชื่อสินค้า' : ''} />
+                      </td>
+                      <td className="px-1 py-0.5">
+                        <input type="number" value={row.qty || ''} onChange={(e) => handleItemChange(idx, 'qty', e.target.value)}
+                          className="w-full border-0 bg-transparent px-1 py-0.5 text-sm text-center focus:ring-1 focus:ring-sky-300 rounded [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                      </td>
+                      <td className="px-1 py-0.5">
+                        <input type="number" value={row.price || ''} onChange={(e) => handleItemChange(idx, 'price', e.target.value)} step="0.01"
+                          className="w-full border-0 bg-transparent px-1 py-0.5 text-sm text-right focus:ring-1 focus:ring-sky-300 rounded [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                      </td>
+                      <td className="px-2 py-0.5 text-right text-sm font-medium">
+                        {lineTotal > 0 ? lineTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : ''}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Total */}
+          <div className="flex justify-end">
+            <div className="flex items-center gap-4 bg-sky-500 text-white rounded-lg px-4 py-2">
+              <span className="font-bold">รวมเงิน</span>
+              <span className="font-bold text-lg tabular-nums">
+                {grandTotal > 0 ? grandTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'} บาท
+              </span>
+            </div>
+          </div>
+        </div>
+        )}
+      </div>
+    </Modal>
+  )
+}

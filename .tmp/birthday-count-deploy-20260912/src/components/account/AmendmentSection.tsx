@@ -1,0 +1,972 @@
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { supabase } from '../../lib/supabase'
+import { Order } from '../../types'
+import { useAuthContext } from '../../contexts/AuthContext'
+import { useMenuAccess } from '../../contexts/MenuAccessContext'
+import { formatDateTime } from '../../lib/utils'
+import { isCondoTierExportProduct } from '../../lib/orderItemExportSort'
+import Modal from '../ui/Modal'
+
+type Props = {
+  orderToAmend?: Order & { order_items?: any[] }
+  onDone?: () => void
+}
+
+type AmendmentRow = {
+  id: string
+  amendment_no: string
+  order_id: string
+  bill_no: string | null
+  reason_type: string
+  reason_detail: string | null
+  status: string
+  requested_by: string | null
+  approved_by: string | null
+  rejected_reason: string | null
+  changes_json: Record<string, unknown> | null
+  items_before: unknown[] | null
+  items_after: unknown[] | null
+  created_at: string
+  approved_at: string | null
+  executed_at: string | null
+  requested_by_user?: { username: string | null; email: string | null } | null
+  approved_by_user?: { username: string | null; email: string | null } | null
+  order?: { channel_order_no: string | null } | null
+}
+
+const REASON_OPTIONS: { value: string; label: string }[] = [
+  { value: 'staff_error', label: 'พนักงานลงผิด' },
+  { value: 'customer_change', label: 'ลูกค้าขอเปลี่ยน' },
+]
+
+const reasonLabel = (reasonType: string) =>
+  REASON_OPTIONS.find((option) => option.value === reasonType)?.label ?? reasonType
+
+const isCondoTableItem = (item: any) =>
+  item?.is_detail_row === true ||
+  isCondoTierExportProduct(item?.product_name) ||
+  /คอนโด|CONDO/i.test(String(item?.product_name || ''))
+
+export default function AmendmentSection({ orderToAmend, onDone }: Props) {
+  const { user } = useAuthContext()
+  const { hasAccess } = useMenuAccess()
+
+  const [amendments, setAmendments] = useState<AmendmentRow[]>([])
+  const [amendmentsLoading, setAmendmentsLoading] = useState(false)
+  const [amendmentSearch, setAmendmentSearch] = useState('')
+  const [amendmentDateFrom, setAmendmentDateFrom] = useState('')
+  const [amendmentDateTo, setAmendmentDateTo] = useState('')
+  const [detailAmendment, setDetailAmendment] = useState<AmendmentRow | null>(null)
+  const [detailModalOpen, setDetailModalOpen] = useState(false)
+  const [detailOrder, setDetailOrder] = useState<any>(null)
+  const [detailOrderLoading, setDetailOrderLoading] = useState(false)
+  const [rejectReason, setRejectReason] = useState('')
+  const [rejectModalOpen, setRejectModalOpen] = useState(false)
+  const [actionSubmitting, setActionSubmitting] = useState(false)
+  const [resultModal, setResultModal] = useState<{ open: boolean; success: boolean; message: string }>({ open: false, success: false, message: '' })
+
+  const [reasonType, setReasonType] = useState<string>('staff_error')
+  const [reasonDetail, setReasonDetail] = useState('')
+  const [submitLoading, setSubmitLoading] = useState(false)
+  /** รายการบิลที่เลือกให้ยกเลิก (บางรายการ → changes_json.remove_item_ids) */
+  const [selectedRemoveIds, setSelectedRemoveIds] = useState<Set<string>>(new Set())
+  /** กันค่า selectedRemoveIds ถูกรีเซ็ตเป็นทุกรายการเมื่อ createModeItems เปลี่ยน reference */
+  const selectionInitForOrderRef = useRef<string | null>(null)
+
+  const isCreateMode = !!orderToAmend
+  const isApproverRole = user?.role === 'superadmin' || user?.role === 'admin'
+  const canApprove = hasAccess('account-amendment-approve') || isApproverRole
+
+  const loadAmendments = useCallback(async () => {
+    setAmendmentsLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('or_order_amendments')
+        .select('*, requested_by_user:us_users!requested_by(username, email), approved_by_user:us_users!approved_by(username, email), order:or_orders(channel_order_no)')
+        .order('created_at', { ascending: false })
+        .limit(50)
+      if (error) throw error
+      setAmendments((data || []) as AmendmentRow[])
+    } catch (e) {
+      console.error(e)
+      setAmendments([])
+    } finally {
+      setAmendmentsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isCreateMode) loadAmendments()
+  }, [isCreateMode, loadAmendments])
+
+  const createModeItems = useMemo(() => {
+    if (!orderToAmend) return [] as any[]
+    return (orderToAmend.order_items || (orderToAmend as any).or_order_items || []) as any[]
+  }, [orderToAmend])
+
+  useEffect(() => {
+    if (!orderToAmend?.id) {
+      selectionInitForOrderRef.current = null
+      return
+    }
+    const ids = createModeItems.map((i: any) => i.id).filter(Boolean) as string[]
+    if (ids.length === 0) return
+    const oid = orderToAmend.id
+    if (selectionInitForOrderRef.current !== oid) {
+      selectionInitForOrderRef.current = oid
+      setSelectedRemoveIds(new Set(ids))
+      return
+    }
+    setSelectedRemoveIds((prev) => (prev.size > 0 ? prev : new Set(ids)))
+  }, [orderToAmend?.id, createModeItems])
+
+  const toggleRemoveItem = (itemId: string) => {
+    setSelectedRemoveIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(itemId)) next.delete(itemId)
+      else next.add(itemId)
+      return next
+    })
+  }
+
+  const handleSubmitCancellation = async () => {
+    if (!orderToAmend || !user?.id) return
+    const lineIds = createModeItems.map((i: any) => i.id).filter(Boolean) as string[]
+    const removeIds = lineIds.filter((id) => selectedRemoveIds.has(id))
+    if (removeIds.length === 0) {
+      setResultModal({
+        open: true,
+        success: false,
+        message: 'กรุณาเลือกอย่างน้อย 1 รายการที่ต้องการนำออก / ยกเลิก',
+      })
+      return
+    }
+    const fullCancel = lineIds.length > 0 && removeIds.length >= lineIds.length
+    const changesJson = fullCancel ? {} : { remove_item_ids: removeIds }
+    setSubmitLoading(true)
+    try {
+      const { data, error } = await supabase.rpc('rpc_submit_amendment', {
+        p_order_id: orderToAmend.id,
+        p_reason_type: reasonType,
+        p_reason_detail: reasonDetail.trim() || null,
+        p_changes_json: changesJson,
+        p_items_after: [],
+        p_user_id: user.id,
+      })
+      if (error) throw error
+      setResultModal({
+        open: true,
+        success: true,
+        message:
+          (fullCancel
+            ? `ส่งคำขอยกเลิกบิลสำเร็จ เลขที่ ${(data as any)?.amendment_no ?? '-'}`
+            : `ส่งคำขอแก้ไขบิล (ลบ ${removeIds.length} รายการ) สำเร็จ เลขที่ ${(data as any)?.amendment_no ?? '-'}`) +
+          `\nรออนุมัติจาก superadmin / admin`,
+      })
+      onDone?.()
+    } catch (e: any) {
+      setResultModal({ open: true, success: false, message: e?.message || 'ส่งคำขอไม่สำเร็จ' })
+    } finally {
+      setSubmitLoading(false)
+    }
+  }
+
+  const handleApprove = async () => {
+    if (!detailAmendment || !user?.id || !canApprove) return
+    setActionSubmitting(true)
+    try {
+      const { data, error } = await supabase.rpc('rpc_approve_amendment', {
+        p_amendment_id: detailAmendment.id,
+        p_approver_id: user.id,
+      })
+      if (error) throw error
+      const result = data as any
+      const partial = result?.partial === true
+      const rawRemoveIds = detailAmendment.changes_json?.remove_item_ids
+      const removeIds = new Set(Array.isArray(rawRemoveIds) ? rawRemoveIds.map((id) => String(id)) : [])
+      const removedItems = (Array.isArray(detailAmendment.items_before) ? detailAmendment.items_before : [])
+        .filter((item: any) => item?.id && removeIds.has(String(item.id))) as any[]
+      const removedSummary = removedItems.length
+        ? `\nรายการที่นำออก: ${removedItems.map((item) => `${item.product_name || '-'} × ${item.quantity ?? '-'}`).join(', ')}`
+        : ''
+      setResultModal({
+        open: true,
+        success: true,
+        message: partial
+          ? `ดำเนินการแก้ไขบิลสำเร็จ (${result?.bill_no || detailAmendment.bill_no || '-'})${removedSummary}\nปรับแถว WMS: ${result?.cancelled_wms_count ?? 0} รายการ`
+          : `ยกเลิกบิลสำเร็จ (${result?.bill_no || detailAmendment.bill_no || '-'})\nWMS ที่ยกเลิก: ${result?.cancelled_wms_count ?? 0} รายการ\n\nกรุณาสร้างบิลใหม่ในหน้าออเดอร์`,
+      })
+      setDetailModalOpen(false)
+      setDetailAmendment(null)
+      loadAmendments()
+      onDone?.()
+    } catch (e: any) {
+      setResultModal({ open: true, success: false, message: e?.message || 'อนุมัติไม่สำเร็จ' })
+    } finally {
+      setActionSubmitting(false)
+    }
+  }
+
+  const handleRejectSubmit = async () => {
+    if (!detailAmendment || !user?.id || !canApprove) return
+    setActionSubmitting(true)
+    try {
+      const { error } = await supabase.rpc('rpc_reject_amendment', {
+        p_amendment_id: detailAmendment.id,
+        p_approver_id: user.id,
+        p_reason: rejectReason.trim() || 'ปฏิเสธโดยผู้มีสิทธิ์',
+      })
+      if (error) throw error
+      setResultModal({ open: true, success: true, message: 'ปฏิเสธคำขอยกเลิกแล้ว' })
+      setRejectModalOpen(false)
+      setDetailModalOpen(false)
+      setDetailAmendment(null)
+      setRejectReason('')
+      loadAmendments()
+      onDone?.()
+    } catch (e: any) {
+      setResultModal({ open: true, success: false, message: e?.message || 'ปฏิเสธไม่สำเร็จ' })
+    } finally {
+      setActionSubmitting(false)
+    }
+  }
+
+  const loadDetailOrder = useCallback(async (orderId: string) => {
+    setDetailOrderLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('or_orders')
+        .select('*, or_order_items(*)')
+        .eq('id', orderId)
+        .single()
+      if (error) throw error
+      setDetailOrder(data)
+    } catch (e) {
+      console.error('Error loading order detail:', e)
+      setDetailOrder(null)
+    } finally {
+      setDetailOrderLoading(false)
+    }
+  }, [])
+
+  const openDetail = (row: AmendmentRow) => {
+    setDetailAmendment(row)
+    setDetailModalOpen(true)
+    setRejectReason('')
+    loadDetailOrder(row.order_id)
+  }
+
+  const filteredAmendments = useMemo(() => {
+    const search = amendmentSearch.trim().toLocaleLowerCase('th-TH')
+    const fromTime = amendmentDateFrom
+      ? new Date(`${amendmentDateFrom}T00:00:00`).getTime()
+      : Number.NEGATIVE_INFINITY
+    const toTime = amendmentDateTo
+      ? new Date(`${amendmentDateTo}T23:59:59.999`).getTime()
+      : Number.POSITIVE_INFINITY
+    const statusLabels: Record<string, string> = {
+      pending: 'รออนุมัติ',
+      executed: 'ยกเลิกแล้ว',
+      approved: 'อนุมัติแล้ว',
+      rejected: 'ปฏิเสธ',
+    }
+
+    return amendments.filter((row) => {
+      const createdTime = new Date(row.created_at).getTime()
+      if (createdTime < fromTime || createdTime > toTime) return false
+      if (!search) return true
+
+      const requester = row.requested_by_user?.username
+        || row.requested_by_user?.email
+        || row.requested_by
+        || ''
+      const approver = row.approved_by_user?.username
+        || row.approved_by_user?.email
+        || row.approved_by
+        || ''
+      const searchableText = [
+        row.amendment_no,
+        row.bill_no,
+        row.order?.channel_order_no,
+        reasonLabel(row.reason_type),
+        row.reason_detail,
+        statusLabels[row.status] || row.status,
+        requester,
+        approver,
+      ].filter(Boolean).join(' ').toLocaleLowerCase('th-TH')
+      return searchableText.includes(search)
+    })
+  }, [amendments, amendmentSearch, amendmentDateFrom, amendmentDateTo])
+
+  const statusBadge = (status: string) => {
+    const map: Record<string, string> = {
+      pending: 'bg-amber-100 text-amber-800',
+      executed: 'bg-emerald-100 text-emerald-800',
+      approved: 'bg-emerald-100 text-emerald-800',
+      rejected: 'bg-red-100 text-red-800',
+    }
+    const labels: Record<string, string> = {
+      pending: 'รออนุมัติ',
+      executed: 'ยกเลิกแล้ว',
+      approved: 'อนุมัติแล้ว',
+      rejected: 'ปฏิเสธ',
+    }
+    return (
+      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${map[status] ?? 'bg-gray-100 text-gray-700'}`}>
+        {labels[status] ?? status}
+      </span>
+    )
+  }
+
+  // ──────── Create Mode: ขอยกเลิกบิล ────────
+  if (isCreateMode && orderToAmend) {
+    const items = createModeItems
+    return (
+      <div className="space-y-4">
+        <div className="bg-white rounded-xl border border-surface-200 shadow-sm p-4">
+          <div className="flex flex-wrap items-center gap-4 text-sm">
+            <span className="font-semibold text-gray-600">บิล:</span>
+            <span className="font-mono font-bold text-blue-600">{orderToAmend.bill_no}</span>
+            <span className="text-gray-400">|</span>
+            <span className="font-semibold text-gray-600">ลูกค้า:</span>
+            <span className="text-gray-800">{orderToAmend.customer_name}</span>
+            <span className="text-gray-400">|</span>
+            <span className="font-semibold text-gray-600">สถานะ:</span>
+            <span>{orderToAmend.status}</span>
+            <span className="text-gray-400">|</span>
+            <span className="font-semibold text-gray-600">ยอดรวม:</span>
+            <span>{Number(orderToAmend.total_amount ?? 0).toLocaleString('th-TH', { minimumFractionDigits: 2 })} บาท</span>
+          </div>
+        </div>
+
+        {items.length > 0 && (
+          <div className="bg-white rounded-xl border border-surface-200 shadow-sm p-4">
+            <h4 className="text-sm font-semibold text-gray-700 mb-1">รายการสินค้าในบิล — เลือกรายการที่ต้องการนำออก</h4>
+            <p className="text-xs text-gray-500 mb-3">เลือกครบทุกรายการเพื่อขอ<span className="font-semibold">ยกเลิกบิลทั้งใบ</span> เลือกบางรายการเพื่อขอ<span className="font-semibold">ลบเฉพาะบรรทัด</span> (หลังอนุมัติ)</p>
+            <div className="overflow-x-auto border border-gray-200 rounded-lg">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 text-left text-gray-600">
+                    <th className="px-3 py-2 font-semibold w-10">เลือก</th>
+                    <th className="px-3 py-2 font-semibold">#</th>
+                    <th className="px-3 py-2 font-semibold">ชื่อสินค้า</th>
+                    <th className="px-3 py-2 font-semibold w-24">จำนวน</th>
+                    <th className="px-3 py-2 font-semibold w-28">ราคา/หน่วย</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {items.map((item: any, i: number) => {
+                    const rid = item.id as string | undefined
+                    const checked = !!(rid && selectedRemoveIds.has(rid))
+                    return (
+                      <tr key={item.id || i} className={`text-gray-700 ${checked ? 'bg-red-50/60' : ''}`}>
+                        <td className="px-3 py-2 text-center">
+                          {rid ? (
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleRemoveItem(rid)}
+                              className="rounded border-gray-300"
+                              aria-label={`เลือกรายการ ${item.product_name || i + 1}`}
+                            />
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-gray-400">{i + 1}</td>
+                        <td className="px-3 py-2">{item.product_name || '-'}</td>
+                        <td className="px-3 py-2">{item.quantity ?? '-'}</td>
+                        <td className="px-3 py-2">{item.unit_price != null ? Number(item.unit_price).toLocaleString('th-TH') : '-'}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        <div className="bg-white rounded-xl border border-surface-200 shadow-sm p-6 space-y-6">
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm">
+            <p className="font-semibold text-amber-800 mb-1">
+              <i className="fas fa-exclamation-triangle mr-1"></i>
+              ยืนยันการขอยกเลิกบิลนี้
+            </p>
+            <p className="text-amber-700">
+              หลังอนุมัติ ระบบจะอัปเดตบิลและแถว WMS ให้สอดคล้องกับรายการที่เลือก (ยกเลิกทั้งใบหรือลบเฉพาะบรรทัด)
+              คุณสามารถสร้างบิลใหม่ได้ในหน้าออเดอร์เมื่อยกเลิกทั้งใบสำเร็จ
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">ประเภทเหตุผล</label>
+            <select
+              value={reasonType}
+              onChange={(e) => setReasonType(e.target.value)}
+              className="w-full max-w-xs border border-gray-200 rounded-lg px-3 py-2 bg-white text-sm"
+            >
+              {REASON_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">รายละเอียดเหตุผล</label>
+            <textarea
+              value={reasonDetail}
+              onChange={(e) => setReasonDetail(e.target.value)}
+              rows={3}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+              placeholder="อธิบายสั้นๆ ว่าทำไมต้องยกเลิกบิลนี้"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => onDone?.()}
+              className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-50"
+            >
+              ย้อนกลับ
+            </button>
+            <button
+              type="button"
+              onClick={handleSubmitCancellation}
+              disabled={submitLoading}
+              className="px-6 py-2 bg-red-600 text-white rounded-lg text-sm font-bold hover:bg-red-700 disabled:opacity-50 flex items-center gap-2"
+            >
+              {submitLoading ? <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" /> : <i className="fas fa-ban" />}
+              ส่งคำขอ
+            </button>
+          </div>
+        </div>
+
+        <Modal open={resultModal.open} onClose={() => setResultModal((m) => ({ ...m, open: false }))} contentClassName="max-w-md">
+          <div className="p-6">
+            <div className={`flex items-center gap-3 mb-4 ${resultModal.success ? 'text-emerald-600' : 'text-red-600'}`}>
+              <i className={`fas ${resultModal.success ? 'fa-check-circle' : 'fa-exclamation-circle'} text-2xl`} />
+              <p className="font-semibold">{resultModal.success ? 'สำเร็จ' : 'เกิดข้อผิดพลาด'}</p>
+            </div>
+            <p className="text-gray-700 text-sm whitespace-pre-line">{resultModal.message}</p>
+            <div className="mt-4 flex justify-end">
+              <button
+                onClick={() => setResultModal((m) => ({ ...m, open: false }))}
+                className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 font-medium hover:bg-gray-200"
+              >
+                ปิด
+              </button>
+            </div>
+          </div>
+        </Modal>
+      </div>
+    )
+  }
+
+  // ──────── List Mode: รายการคำขอยกเลิก ────────
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-surface-200 bg-surface-50/50">
+          <h2 className="text-lg font-semibold text-gray-800">
+            <i className="fas fa-ban mr-2 text-red-500" />
+            คำขอยกเลิกบิล
+          </h2>
+          <p className="text-sm text-gray-500 mt-0.5">รายการคำขอยกเลิก (ล่าสุด 50 รายการ)</p>
+        </div>
+        <div className="px-4 py-3 border-b border-surface-200 bg-white">
+          <div className="flex flex-col xl:flex-row xl:items-end gap-3">
+            <label className="flex-1 min-w-0">
+              <span className="block text-xs font-semibold text-gray-600 mb-1">ค้นหา</span>
+              <div className="relative">
+                <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm" />
+                <input
+                  type="search"
+                  value={amendmentSearch}
+                  onChange={(event) => setAmendmentSearch(event.target.value)}
+                  placeholder="เลขคำขอ / เลขบิล / เลขคำสั่งซื้อ / เหตุผล / ผู้ขอ / ผู้อนุมัติ"
+                  className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </div>
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label>
+                <span className="block text-xs font-semibold text-gray-600 mb-1">วันที่ขอ ตั้งแต่</span>
+                <input
+                  type="date"
+                  value={amendmentDateFrom}
+                  max={amendmentDateTo || undefined}
+                  onChange={(event) => setAmendmentDateFrom(event.target.value)}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </label>
+              <label>
+                <span className="block text-xs font-semibold text-gray-600 mb-1">ถึงวันที่</span>
+                <input
+                  type="date"
+                  value={amendmentDateTo}
+                  min={amendmentDateFrom || undefined}
+                  onChange={(event) => setAmendmentDateTo(event.target.value)}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </label>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setAmendmentSearch('')
+                setAmendmentDateFrom('')
+                setAmendmentDateTo('')
+              }}
+              disabled={!amendmentSearch && !amendmentDateFrom && !amendmentDateTo}
+              className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-600 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              ล้างตัวกรอง
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-gray-500">
+            แสดง {filteredAmendments.length.toLocaleString('th-TH')} จาก {amendments.length.toLocaleString('th-TH')} รายการ
+          </p>
+        </div>
+        {amendmentsLoading ? (
+          <div className="flex justify-center py-12">
+            <span className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent" />
+          </div>
+        ) : amendments.length === 0 ? (
+          <div className="text-center py-12 text-gray-500">
+            <i className="fas fa-inbox text-4xl mb-3 block" />
+            <p>ไม่มีรายการคำขอยกเลิก</p>
+          </div>
+        ) : filteredAmendments.length === 0 ? (
+          <div className="text-center py-12 text-gray-500">
+            <i className="fas fa-search text-4xl mb-3 block text-gray-300" />
+            <p>ไม่พบรายการที่ตรงกับตัวกรอง</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 text-left text-gray-600">
+                  <th className="px-4 py-3 font-semibold">เลขที่คำขอ</th>
+                  <th className="px-4 py-3 font-semibold">เลขบิล</th>
+                  <th className="px-4 py-3 font-semibold">เลขคำสั่งซื้อ</th>
+                  <th className="px-4 py-3 font-semibold">เหตุผล</th>
+                  <th className="px-4 py-3 font-semibold">สถานะ</th>
+                  <th className="px-4 py-3 font-semibold">ผู้ขอ</th>
+                  <th className="px-4 py-3 font-semibold">ผู้อนุมัติ</th>
+                  <th className="px-4 py-3 font-semibold">วันที่ขอ</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {filteredAmendments.map((row) => (
+                  <tr
+                    key={row.id}
+                    className="hover:bg-blue-50/50 cursor-pointer transition-colors"
+                    onClick={() => openDetail(row)}
+                  >
+                    <td className="px-4 py-3 font-mono text-blue-600 font-semibold">{row.amendment_no}</td>
+                    <td className="px-4 py-3 font-mono">{row.bill_no ?? '-'}</td>
+                    <td className="px-4 py-3 font-mono">{row.order?.channel_order_no || '-'}</td>
+                    <td className="px-4 py-3">{reasonLabel(row.reason_type)}</td>
+                    <td className="px-4 py-3">{statusBadge(row.status)}</td>
+                    <td className="px-4 py-3">{(row.requested_by_user?.username || row.requested_by_user?.email || row.requested_by) ?? '-'}</td>
+                    <td className="px-4 py-3">{(row.approved_by_user?.username || row.approved_by_user?.email || row.approved_by) ?? '-'}</td>
+                    <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{formatDateTime(row.created_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Detail Modal */}
+      <Modal open={detailModalOpen} onClose={() => { setDetailModalOpen(false); setDetailAmendment(null); setDetailOrder(null) }} contentClassName="max-w-7xl max-h-[90vh] overflow-y-auto">
+        {detailAmendment && (
+          <div className="p-6 space-y-4">
+            <div className="flex items-center justify-between gap-3 border-b border-gray-200 pb-3 pr-16">
+              <h3 className="text-lg font-bold text-gray-800">
+                <i className="fas fa-ban mr-2 text-red-500" />
+                {detailAmendment.amendment_no}
+              </h3>
+              {statusBadge(detailAmendment.status)}
+            </div>
+
+            {/* ข้อมูลคำขอยกเลิก */}
+            <div className="bg-gray-50 rounded-lg p-4">
+              <h4 className="text-sm font-semibold text-gray-700 mb-2">ข้อมูลคำขอยกเลิก</h4>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2 text-sm">
+                <div>
+                  <span className="text-gray-500 block">เลขบิล</span>
+                  <span className="font-mono font-bold text-blue-600">{detailAmendment.bill_no ?? '-'}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500 block">เลขคำสั่งซื้อ</span>
+                  <span className="font-mono font-bold text-blue-600">{detailOrder?.channel_order_no || detailAmendment.order?.channel_order_no || '-'}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500 block">ประเภทเหตุผล</span>
+                  <span className="font-semibold">{reasonLabel(detailAmendment.reason_type)}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500 block">ผู้ขอ</span>
+                  <span>{(detailAmendment.requested_by_user?.username || detailAmendment.requested_by_user?.email || detailAmendment.requested_by) ?? '-'}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500 block">ผู้อนุมัติ</span>
+                  <span>{(detailAmendment.approved_by_user?.username || detailAmendment.approved_by_user?.email || detailAmendment.approved_by) ?? '-'}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500 block">วันที่ขอ</span>
+                  <span>{formatDateTime(detailAmendment.created_at)}</span>
+                </div>
+                {detailAmendment.reason_detail && (
+                  <div className="col-span-2 md:col-span-4">
+                    <span className="text-gray-500 block">รายละเอียดเหตุผล</span>
+                    <span>{detailAmendment.reason_detail}</span>
+                  </div>
+                )}
+                {detailAmendment.approved_at && (
+                  <div>
+                    <span className="text-gray-500 block">วันที่ดำเนินการ</span>
+                    <span>{formatDateTime(detailAmendment.approved_at)}</span>
+                  </div>
+                )}
+                {detailAmendment.rejected_reason && (
+                  <div className="col-span-2 md:col-span-4">
+                    <span className="text-gray-500 block">เหตุผลการปฏิเสธ</span>
+                    <span className="text-red-600 font-semibold">{detailAmendment.rejected_reason}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* ข้อมูลบิลละเอียด */}
+            {detailOrderLoading ? (
+              <div className="flex justify-center py-6">
+                <span className="animate-spin rounded-full h-6 w-6 border-2 border-blue-500 border-t-transparent" />
+              </div>
+            ) : detailOrder ? (
+              <div className="bg-blue-50 rounded-lg p-4">
+                <h4 className="text-sm font-semibold text-blue-800 mb-2">
+                  <i className="fas fa-file-invoice mr-1" />
+                  ข้อมูลบิล
+                </h4>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2 text-sm">
+                  <div>
+                    <span className="text-gray-500 block">ช่องทาง</span>
+                    <span className="font-semibold">{detailOrder.channel_code || '-'}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block">สถานะ</span>
+                    <span className="font-semibold">{detailOrder.status || '-'}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block">ยอดรวม</span>
+                    <span className="font-bold text-green-700">{Number(detailOrder.total_amount ?? 0).toLocaleString('th-TH', { minimumFractionDigits: 2 })} บาท</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block">ใบสั่งงาน</span>
+                    <span className="font-mono">{detailOrder.work_order_name || '-'}</span>
+                  </div>
+                  <div className="col-span-2">
+                    <span className="text-gray-500 block">ชื่อลูกค้า</span>
+                    <span className="font-semibold">{detailOrder.customer_name || '-'}</span>
+                  </div>
+                  <div className="col-span-2">
+                    <span className="text-gray-500 block">ที่อยู่ลูกค้า</span>
+                    <span className="text-gray-700">{detailOrder.customer_address || '-'}</span>
+                  </div>
+                  {detailOrder.recipient_name && (
+                    <div>
+                      <span className="text-gray-500 block">ชื่อผู้รับ</span>
+                      <span>{detailOrder.recipient_name}</span>
+                    </div>
+                  )}
+                  {detailOrder.payment_method && (
+                    <div>
+                      <span className="text-gray-500 block">วิธีชำระเงิน</span>
+                      <span>{detailOrder.payment_method}</span>
+                    </div>
+                  )}
+                  {(detailOrder.shipping_cost != null && Number(detailOrder.shipping_cost) > 0) && (
+                    <div>
+                      <span className="text-gray-500 block">ค่าขนส่ง</span>
+                      <span>{Number(detailOrder.shipping_cost).toLocaleString('th-TH', { minimumFractionDigits: 2 })}</span>
+                    </div>
+                  )}
+                  {(detailOrder.discount != null && Number(detailOrder.discount) > 0) && (
+                    <div>
+                      <span className="text-gray-500 block">ส่วนลด</span>
+                      <span>{Number(detailOrder.discount).toLocaleString('th-TH', { minimumFractionDigits: 2 })}</span>
+                    </div>
+                  )}
+                  {detailOrder.promotion && (
+                    <div>
+                      <span className="text-gray-500 block">โปรโมชั่น</span>
+                      <span>{detailOrder.promotion}</span>
+                    </div>
+                  )}
+                  {detailOrder.confirm_note && (
+                    <div className="col-span-2 md:col-span-4">
+                      <span className="text-gray-500 block">หมายเหตุคอนเฟิร์ม</span>
+                      <span>{detailOrder.confirm_note}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : null}
+
+            {/* รายการสินค้า — คำขอบางรายการ: แสดงเฉพาะบรรทัดที่ขอนำออก (จาก items_before + remove_item_ids) */}
+            {(() => {
+              const itemsBefore = detailAmendment.items_before && Array.isArray(detailAmendment.items_before) ? detailAmendment.items_before : []
+              const rawRemove = detailAmendment.changes_json && (detailAmendment.changes_json as { remove_item_ids?: unknown }).remove_item_ids
+              const removeIds =
+                Array.isArray(rawRemove) && rawRemove.length > 0
+                  ? new Set(rawRemove.map((x) => String(x)))
+                  : null
+              const isPartialRequest = !!removeIds && removeIds.size > 0
+              let items: any[] = []
+              if (isPartialRequest && itemsBefore.length > 0) {
+                items = itemsBefore.filter((it: any) => it?.id && removeIds!.has(String(it.id)))
+              } else if (itemsBefore.length > 0) {
+                items = itemsBefore as any[]
+              } else {
+                items = detailOrder?.or_order_items || []
+              }
+              if (!items || items.length === 0) return null
+              const changeResult = detailAmendment.status === 'executed' || detailAmendment.status === 'approved'
+                ? 'นำออกแล้ว'
+                : detailAmendment.status === 'rejected'
+                  ? 'ไม่ได้ดำเนินการ'
+                  : 'รอนำออก'
+              const resultClasses = detailAmendment.status === 'executed' || detailAmendment.status === 'approved'
+                ? 'border-red-200 bg-red-50 text-red-700'
+                : detailAmendment.status === 'rejected'
+                  ? 'border-gray-200 bg-gray-50 text-gray-600'
+                  : 'border-amber-200 bg-amber-50 text-amber-700'
+              return (
+                <div>
+                  <h4 className="text-sm font-semibold text-gray-700 mb-2">
+                    <i className="fas fa-boxes mr-1 text-gray-500" />
+                    {isPartialRequest
+                      ? `${changeResult === 'นำออกแล้ว' ? 'รายการที่นำออกจากบิล' : 'รายการที่ขอนำออก'} (${items.length} รายการ)`
+                      : `รายการสินค้าในบิลก่อนยกเลิก (${items.length} รายการ)`}
+                  </h4>
+                  {isPartialRequest && changeResult !== 'นำออกแล้ว' && (
+                    <p className={`text-xs border rounded-lg px-2 py-1.5 mb-2 ${resultClasses}`}>
+                      {changeResult === 'ไม่ได้ดำเนินการ'
+                          ? 'คำขอนี้ถูกปฏิเสธ รายการด้านล่างจึงไม่ได้ถูกนำออกจากบิล'
+                          : 'รายการด้านล่างคือรายการที่เลือกขอนำออก และยังรอการอนุมัติ'}
+                    </p>
+                  )}
+                  <div className="border border-gray-200 rounded-lg overflow-x-auto">
+                    <table className="w-full min-w-[1320px] text-sm">
+                      <thead>
+                        <tr className="bg-gray-50">
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">#</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">ชื่อสินค้า</th>
+                          <th className="px-3 py-2 text-center font-semibold text-gray-600">จำนวน</th>
+                          <th className="px-3 py-2 text-right font-semibold text-gray-600">ราคา/หน่วย</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">สีหมึก</th>
+                           <th className="px-3 py-2 text-left font-semibold text-gray-600">ลายการ์ตูน</th>
+                           <th className="px-3 py-2 text-left font-semibold text-gray-600">เส้น</th>
+                           <th className="px-3 py-2 text-left font-semibold text-gray-600">ฟอนต์</th>
+                           <th className="px-3 py-2 text-left font-semibold text-gray-600">บรรทัด 1</th>
+                           <th className="px-3 py-2 text-left font-semibold text-gray-600">บรรทัด 2</th>
+                           <th className="px-3 py-2 text-left font-semibold text-gray-600">บรรทัด 3</th>
+                           <th className="px-3 py-2 text-left font-semibold text-gray-600">หมายเหตุ</th>
+                           {isPartialRequest && <th className="px-3 py-2 text-center font-semibold text-gray-600">ผลการเปลี่ยนแปลง</th>}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {items.map((item: any, i: number) => (
+                          <tr key={item?.id || i} className="hover:bg-gray-50/50">
+                            <td className="px-3 py-2 text-gray-400">{i + 1}</td>
+                            <td className="px-3 py-2 font-medium text-gray-800 max-w-[200px]">
+                              {item?.product_name ?? '-'}
+                              {item?.product_type && isCondoTableItem(item) && <span className="ml-1 text-xs text-gray-400">({item.product_type})</span>}
+                            </td>
+                            <td className="px-3 py-2 text-center font-semibold">{item?.quantity ?? '-'}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{item?.unit_price != null ? Number(item.unit_price).toLocaleString('th-TH') : '-'}</td>
+                            <td className="px-3 py-2 text-gray-700">{item?.ink_color || '-'}</td>
+                            <td className="px-3 py-2 text-gray-700">{item?.cartoon_pattern || '-'}</td>
+                            <td className="px-3 py-2 text-gray-700">{item?.line_pattern || '-'}</td>
+                            <td className="px-3 py-2 text-gray-700">{item?.font || '-'}</td>
+                            <td className="max-w-[180px] px-3 py-2 text-gray-700">{item?.line_1 || '-'}</td>
+                            <td className="max-w-[180px] px-3 py-2 text-gray-700">{item?.line_2 || '-'}</td>
+                            <td className="max-w-[180px] px-3 py-2 text-gray-700">{item?.line_3 || '-'}</td>
+                            <td className="max-w-[180px] px-3 py-2 text-gray-700">{item?.notes || '-'}</td>
+                             {isPartialRequest && (
+                               <td className="px-3 py-2 text-center">
+                                 <span className={`inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-semibold ${resultClasses}`}>
+                                   {changeResult}
+                                 </span>
+                               </td>
+                             )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {items.some((it: any) => it?.notes || it?.file_attachment) && (
+                    <div className="mt-2 space-y-1">
+                      {items.map((it: any, i: number) => (
+                        (it?.notes || it?.file_attachment) ? (
+                          <div key={i} className="text-xs text-gray-500 bg-gray-50 rounded px-2 py-1">
+                            <span className="font-semibold">#{i + 1} {it.product_name}:</span>
+                            {it.notes && <span className="ml-1">หมายเหตุ: {it.notes}</span>}
+                            {it.file_attachment && <span className="ml-1">[มีไฟล์แนบ]</span>}
+                          </div>
+                        ) : null
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+
+            {/* เก็บภาพรวมเดิมทั้งบิลไว้ตรวจสอบย้อนหลัง พร้อมแยกบรรทัดที่ถูกนำออกกับบรรทัดที่คงเดิม */}
+            {(() => {
+              const itemsBefore = Array.isArray(detailAmendment.items_before) ? detailAmendment.items_before as any[] : []
+              const rawRemove = detailAmendment.changes_json?.remove_item_ids
+              const removeIds = new Set(Array.isArray(rawRemove) ? rawRemove.map((id) => String(id)) : [])
+              if (removeIds.size === 0 || itemsBefore.length === 0) return null
+              const wasExecuted = detailAmendment.status === 'executed' || detailAmendment.status === 'approved'
+              return (
+                <div className="border-t border-gray-200 pt-4">
+                  <h4 className="mb-1 text-sm font-semibold text-gray-700">
+                    <i className="fas fa-history mr-1 text-blue-500" />
+                    รายการเดิมก่อนแก้ไข ({itemsBefore.length} รายการ)
+                  </h4>
+                  <p className="mb-2 text-xs text-gray-500">
+                    แสดงรายการทั้งหมดจาก snapshot ตอนสร้างคำขอ เพื่อเปรียบเทียบว่ารายการใดถูกนำออกและรายการใดยังคงอยู่
+                  </p>
+                  <div className="overflow-x-auto rounded-lg border border-gray-200">
+                    <table className="w-full min-w-[1320px] text-sm">
+                      <thead>
+                        <tr className="bg-gray-50">
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">#</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">ชื่อสินค้า</th>
+                          <th className="px-3 py-2 text-center font-semibold text-gray-600">จำนวน</th>
+                          <th className="px-3 py-2 text-right font-semibold text-gray-600">ราคา/หน่วย</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">สีหมึก</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">ลายการ์ตูน</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">เส้น</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">ฟอนต์</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">บรรทัด 1</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">บรรทัด 2</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">บรรทัด 3</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">หมายเหตุ</th>
+                          <th className="px-3 py-2 text-center font-semibold text-gray-600">ผล</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {itemsBefore.map((item: any, index: number) => {
+                          const wasRemoved = !!item?.id && removeIds.has(String(item.id))
+                          const resultLabel = wasRemoved
+                            ? (wasExecuted ? 'นำออกแล้ว' : detailAmendment.status === 'rejected' ? 'ไม่ได้ดำเนินการ' : 'รอนำออก')
+                            : 'คงเดิม'
+                          const resultClass = wasRemoved
+                            ? (wasExecuted
+                                ? 'border-red-200 bg-red-50 text-red-700'
+                                : detailAmendment.status === 'rejected'
+                                  ? 'border-gray-200 bg-gray-50 text-gray-600'
+                                  : 'border-amber-200 bg-amber-50 text-amber-700')
+                            : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                          return (
+                            <tr key={item?.id || index} className={wasRemoved && wasExecuted ? 'bg-red-50/40' : 'hover:bg-gray-50/50'}>
+                              <td className="px-3 py-2 text-gray-400">{index + 1}</td>
+                              <td className="max-w-[200px] px-3 py-2 font-medium text-gray-800">
+                                {item?.product_name ?? '-'}
+                                {item?.product_type && isCondoTableItem(item) && <span className="ml-1 text-xs text-gray-400">({item.product_type})</span>}
+                              </td>
+                              <td className="px-3 py-2 text-center font-semibold">{item?.quantity ?? '-'}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{item?.unit_price != null ? Number(item.unit_price).toLocaleString('th-TH') : '-'}</td>
+                              <td className="px-3 py-2 text-gray-700">{item?.ink_color || '-'}</td>
+                              <td className="px-3 py-2 text-gray-700">{item?.cartoon_pattern || '-'}</td>
+                              <td className="px-3 py-2 text-gray-700">{item?.line_pattern || '-'}</td>
+                              <td className="px-3 py-2 text-gray-700">{item?.font || '-'}</td>
+                              <td className="max-w-[180px] px-3 py-2 text-gray-700">{item?.line_1 || '-'}</td>
+                              <td className="max-w-[180px] px-3 py-2 text-gray-700">{item?.line_2 || '-'}</td>
+                              <td className="max-w-[180px] px-3 py-2 text-gray-700">{item?.line_3 || '-'}</td>
+                              <td className="max-w-[180px] px-3 py-2 text-gray-700">{item?.notes || '-'}</td>
+                              <td className="px-3 py-2 text-center">
+                                <span className={`inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-semibold ${resultClass}`}>
+                                  {resultLabel}
+                                </span>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )
+            })()}
+
+            {canApprove && detailAmendment.status === 'pending' && (
+              <div className="flex gap-2 pt-2 border-t border-gray-200">
+                  <button
+                    type="button"
+                    onClick={handleApprove}
+                    disabled={actionSubmitting}
+                    className="px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {actionSubmitting ? <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" /> : <i className="fas fa-check" />}
+                    อนุมัติยกเลิกบิล
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRejectModalOpen(true)}
+                    disabled={actionSubmitting}
+                    className="px-4 py-2 rounded-lg border border-red-300 text-red-600 font-semibold hover:bg-red-50 disabled:opacity-50"
+                  >
+                    <i className="fas fa-times mr-1" /> ปฏิเสธ
+                  </button>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      {/* Reject Modal */}
+      <Modal open={rejectModalOpen} onClose={() => setRejectModalOpen(false)} contentClassName="max-w-md">
+        <div className="p-6">
+          <h3 className="text-lg font-semibold text-gray-800 mb-2">เหตุผลในการปฏิเสธ</h3>
+          <textarea
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            rows={3}
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mb-4"
+            placeholder="ระบุเหตุผล (ถ้าไม่กรอกจะใช้ข้อความเริ่มต้น)"
+          />
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setRejectModalOpen(false)} className="px-4 py-2 rounded-lg border border-gray-300 text-gray-600 font-medium hover:bg-gray-50">
+              ยกเลิก
+            </button>
+            <button onClick={handleRejectSubmit} disabled={actionSubmitting} className="px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50">
+              {actionSubmitting ? <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent inline-block" /> : 'ยืนยันปฏิเสธ'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Result Modal */}
+      <Modal open={resultModal.open} onClose={() => setResultModal((m) => ({ ...m, open: false }))} contentClassName="max-w-md">
+        <div className="p-6">
+          <div className={`flex items-center gap-3 mb-4 ${resultModal.success ? 'text-emerald-600' : 'text-red-600'}`}>
+            <i className={`fas ${resultModal.success ? 'fa-check-circle' : 'fa-exclamation-circle'} text-2xl`} />
+            <p className="font-semibold">{resultModal.success ? 'สำเร็จ' : 'เกิดข้อผิดพลาด'}</p>
+          </div>
+          <p className="text-gray-700 text-sm whitespace-pre-line">{resultModal.message}</p>
+          <div className="mt-4 flex justify-end">
+            <button onClick={() => setResultModal((m) => ({ ...m, open: false }))} className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 font-medium hover:bg-gray-200">
+              ปิด
+            </button>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  )
+}

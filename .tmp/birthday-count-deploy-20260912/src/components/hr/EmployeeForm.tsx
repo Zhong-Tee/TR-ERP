@@ -1,0 +1,1225 @@
+import { useState, useEffect, useCallback } from 'react'
+import { FiUpload, FiTrash2 } from 'react-icons/fi'
+import {
+  upsertEmployee,
+  fetchDepartments,
+  fetchPositions,
+  fetchClockLocations,
+  fetchWorkSchedules,
+  uploadHRFile,
+  getHRFileUrl,
+  removeHRFiles,
+  previewNextEmployeeCode,
+} from '../../lib/hrApi'
+import { supabase } from '../../lib/supabase'
+import { fetchHRCompanies } from '../../lib/payrollApi'
+import SalaryHistoryPanel from './SalaryHistoryPanel'
+import PhotoLightbox from './PhotoLightbox'
+import EmployeeOpeningBalances from './EmployeeOpeningBalances'
+import type { HREmployee, HRDepartment, HRPosition, HRClockLocation, HRWorkSchedule, HRCompany } from '../../types'
+
+const BUCKET_PHOTOS = 'hr-photos'
+const BUCKET_DOCUMENTS = 'hr-documents'
+
+// รูปโปรไฟล์ต้องส่งผ่าน Telegram sendPhoto ได้ (URL ต้องเป็น JPG/PNG และไม่เกิน 5MB)
+const PHOTO_ALLOWED_EXTS = ['jpg', 'jpeg', 'png']
+const PHOTO_MAX_MB = 5
+
+const DOC_TYPES = [
+  'บัตรประชาชน',
+  'ใบรับรองแพทย์',
+  'หลักฐานการศึกษา',
+  'สัญญาจ้าง',
+  'อื่นๆ',
+] as const
+
+const PREFIX_OPTIONS = ['นาย', 'นางสาว', 'นาง'] as const
+const GENDER_OPTIONS = ['ชาย', 'หญิง'] as const
+
+/** ข้อมูลส่วนตัว / การทำงาน — โฟกัสขอบเขียว */
+const fieldClass =
+  'w-full px-3 py-2 border border-gray-300 rounded-lg outline-none transition-colors focus:border-emerald-600 focus:ring-2 focus:ring-emerald-500/35 focus:outline-none'
+
+type NumericInputValue = number | ''
+
+function formatNumericInput(value: NumericInputValue, integer = false): string {
+  if (value === '') return ''
+  return Number(value).toLocaleString('en-US', {
+    minimumFractionDigits: integer ? 0 : 2,
+    maximumFractionDigits: integer ? 0 : 2,
+  })
+}
+
+function parseNumericInput(value: string, integer = false): NumericInputValue {
+  const normalized = value.replace(/,/g, '').replace(integer ? /\D/g : /[^\d.]/g, '')
+  if (!normalized) return ''
+  const parsed = Number(normalized)
+  if (!Number.isFinite(parsed)) return ''
+  return integer ? Math.floor(parsed) : parsed
+}
+
+interface NumericInputProps {
+  value: NumericInputValue
+  onChange: (value: NumericInputValue) => void
+  integer?: boolean
+  placeholder?: string
+  className?: string
+  disabled?: boolean
+}
+
+/**
+ * Keeps the user's decimal draft intact while typing (including a trailing zero),
+ * then displays monetary values with exactly two decimal places when unfocused.
+ */
+function NumericInput({
+  value,
+  onChange,
+  integer = false,
+  placeholder,
+  className,
+  disabled = false,
+}: NumericInputProps) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const displayValue = draft ?? formatNumericInput(value, integer)
+
+  const handleChange = (rawValue: string) => {
+    const normalized = rawValue.replace(/,/g, '')
+    const validPattern = integer ? /^\d*$/ : /^\d*(?:\.\d{0,2})?$/
+    if (!validPattern.test(normalized)) return
+
+    setDraft(normalized)
+    onChange(parseNumericInput(normalized, integer))
+  }
+
+  return (
+    <input
+      type="text"
+      inputMode={integer ? 'numeric' : 'decimal'}
+      value={displayValue}
+      onFocus={() => setDraft(value === '' ? '' : integer ? String(value) : Number(value).toFixed(2))}
+      onChange={(e) => handleChange(e.target.value)}
+      onBlur={() => setDraft(null)}
+      placeholder={placeholder}
+      className={className}
+      disabled={disabled}
+    />
+  )
+}
+
+type DocEntry = { name: string; url: string; type: string; uploaded_at: string }
+
+interface EmployeeFormProps {
+  employee?: HREmployee
+  onSave: () => void
+  onClose: () => void
+}
+
+const emptyAddress = (): Record<string, string> => ({
+  house_no: '',
+  moo: '',
+  trok: '',
+  soi: '',
+  road: '',
+  tambon: '',
+  amphoe: '',
+  province: '',
+  postal_code: '',
+})
+
+const ADDRESS_FIELDS: readonly [string, string][] = [
+  ['house_no', 'บ้านเลขที่'],
+  ['moo', 'หมู่'],
+  ['trok', 'ตรอก'],
+  ['soi', 'ซอย'],
+  ['road', 'ถนน'],
+  ['tambon', 'ตำบล/แขวง'],
+  ['amphoe', 'อำเภอ/เขต'],
+  ['province', 'จังหวัด'],
+  ['postal_code', 'รหัสไปรษณีย์'],
+]
+
+export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
+  const [activeTab, setActiveTab] = useState(0)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [departments, setDepartments] = useState<HRDepartment[]>([])
+  const [positions, setPositions] = useState<HRPosition[]>([])
+  const [clockLocations, setClockLocations] = useState<HRClockLocation[]>([])
+  const [workSchedules, setWorkSchedules] = useState<HRWorkSchedule[]>([])
+  const [companies, setCompanies] = useState<HRCompany[]>([])
+
+  const [prefix, setPrefix] = useState('')
+  const [first_name, setFirstName] = useState('')
+  const [last_name, setLastName] = useState('')
+  const [first_name_en, setFirstNameEn] = useState('')
+  const [last_name_en, setLastNameEn] = useState('')
+  const [nickname, setNickname] = useState('')
+  const [citizen_id, setCitizenId] = useState('')
+  const [birth_date, setBirthDate] = useState('')
+  const [gender, setGender] = useState('')
+  const [religion, setReligion] = useState('')
+  const [nationality, setNationality] = useState('')
+  const [phone, setPhone] = useState('')
+  const [emergency_name, setEmergencyName] = useState('')
+  const [emergency_phone, setEmergencyPhone] = useState('')
+  const [emergency_relationship, setEmergencyRelationship] = useState('')
+  const [emergency_name_2, setEmergencyName2] = useState('')
+  const [emergency_phone_2, setEmergencyPhone2] = useState('')
+  const [emergency_relationship_2, setEmergencyRelationship2] = useState('')
+  const [address, setAddress] = useState<Record<string, string>>(emptyAddress())
+  const [current_address, setCurrentAddress] = useState<Record<string, string>>(emptyAddress())
+  const [photoFile, setPhotoFile] = useState<File | null>(null)
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null)
+  const [photoError, setPhotoError] = useState<string | null>(null)
+  const [showPhotoLarge, setShowPhotoLarge] = useState(false)
+
+  const [employee_code, setEmployeeCode] = useState('')
+  const [department_id, setDepartmentId] = useState('')
+  const [company_id, setCompanyId] = useState('')
+  const [position_id, setPositionId] = useState('')
+  const [hire_date, setHireDate] = useState('')
+  const [probation_end_date, setProbationEndDate] = useState('')
+  const [contract_end_date, setContractEndDate] = useState('')
+  const [salary, setSalary] = useState<number | ''>('')
+  const [position_allowance, setPositionAllowance] = useState<number | ''>('')
+  const [monthly_personal_tax, setMonthlyPersonalTax] = useState<number | ''>('')
+  const [monthly_social_security, setMonthlySocialSecurity] = useState<number | ''>('')
+  const [monthly_savings, setMonthlySavings] = useState<number | ''>('')
+  const [savings_maximum, setSavingsMaximum] = useState<number | ''>('')
+  const [monthly_student_loan, setMonthlyStudentLoan] = useState<number | ''>('')
+  const [monthly_company_loan, setMonthlyCompanyLoan] = useState<number | ''>('')
+  const [income_opening_balance, setIncomeOpeningBalance] = useState<number | ''>('')
+  const [personal_tax_opening_balance, setPersonalTaxOpeningBalance] = useState<number | ''>('')
+  const [social_security_opening_balance, setSocialSecurityOpeningBalance] = useState<number | ''>('')
+  const [ewf_opening_balance, setEwfOpeningBalance] = useState<number | ''>('')
+  const [student_loan_opening_balance, setStudentLoanOpeningBalance] = useState<number | ''>('')
+  const [savings_opening_balance, setSavingsOpeningBalance] = useState<number | ''>('')
+  const [company_loan_opening_balance, setCompanyLoanOpeningBalance] = useState<number | ''>('')
+  const [company_loan_opening_installments, setCompanyLoanOpeningInstallments] = useState<number | ''>('')
+  const [employment_status, setEmploymentStatus] = useState<HREmployee['employment_status']>('active')
+  const [contract_type, setContractType] = useState<HREmployee['contract_type']>('permanent')
+  const [work_mode, setWorkMode] = useState<NonNullable<HREmployee['work_mode']>>('office')
+  const [clock_location_id, setClockLocationId] = useState('')
+  const [work_schedule_id, setWorkScheduleId] = useState('')
+  const [user_id, setUserId] = useState('')
+  const [telegram_chat_id, setTelegramChatId] = useState('')
+
+  const [documents, setDocuments] = useState<DocEntry[]>([])
+  const [docUploadType, setDocUploadType] = useState<string>(DOC_TYPES[0])
+  const [docUploading, setDocUploading] = useState(false)
+  const [previewEmployeeCode, setPreviewEmployeeCode] = useState<string>('')
+  const [previewCodeLoading, setPreviewCodeLoading] = useState(false)
+
+  const loadOptions = useCallback(async () => {
+    try {
+      // หมายเหตุ: ตำแหน่งโหลดแยกตามแผนกที่เลือกใน effect ด้านล่าง (ไม่โหลดทั้งหมดที่นี่ กัน race ทับรายการที่กรองแล้ว)
+      const [deptRes, clockLocRes, schedRes, companyRes] = await Promise.all([
+        fetchDepartments(),
+        fetchClockLocations(true).catch(() => [] as HRClockLocation[]),
+        fetchWorkSchedules(true).catch(() => [] as HRWorkSchedule[]),
+        fetchHRCompanies().catch(() => [] as HRCompany[]),
+      ])
+      setDepartments(deptRes)
+      setClockLocations(clockLocRes)
+      setWorkSchedules(schedRes)
+      setCompanies(companyRes)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'โหลดตัวเลือกไม่สำเร็จ')
+    }
+  }, [])
+
+  useEffect(() => {
+    loadOptions()
+  }, [loadOptions])
+
+  useEffect(() => {
+    if (employee?.id) {
+      setPreviewEmployeeCode('')
+      return
+    }
+    let cancelled = false
+    setPreviewCodeLoading(true)
+    setPreviewEmployeeCode('')
+    previewNextEmployeeCode()
+      .then((code) => {
+        if (!cancelled && code) setPreviewEmployeeCode(code)
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewEmployeeCode('')
+      })
+      .finally(() => {
+        if (!cancelled) setPreviewCodeLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [employee?.id])
+
+  useEffect(() => {
+    if (employee) {
+      setPrefix(employee.prefix ?? '')
+      setFirstName(employee.first_name ?? '')
+      setLastName(employee.last_name ?? '')
+      setFirstNameEn(employee.first_name_en ?? '')
+      setLastNameEn(employee.last_name_en ?? '')
+      setNickname(employee.nickname ?? '')
+      setCitizenId(employee.citizen_id ?? '')
+      setBirthDate(employee.birth_date ? employee.birth_date.slice(0, 10) : '')
+      setGender(employee.gender ?? '')
+      setReligion(employee.religion ?? '')
+      setNationality(employee.nationality ?? '')
+      setPhone(employee.phone ?? '')
+      setEmergencyName(employee.emergency_contact?.name ?? '')
+      setEmergencyPhone(employee.emergency_contact?.phone ?? '')
+      setEmergencyRelationship(employee.emergency_contact?.relationship ?? '')
+      setEmergencyName2(employee.emergency_contact_2?.name ?? '')
+      setEmergencyPhone2(employee.emergency_contact_2?.phone ?? '')
+      setEmergencyRelationship2(employee.emergency_contact_2?.relationship ?? '')
+      setAddress(
+        employee.address && typeof employee.address === 'object'
+          ? { ...emptyAddress(), ...employee.address }
+          : emptyAddress()
+      )
+      setCurrentAddress(
+        employee.current_address && typeof employee.current_address === 'object'
+          ? { ...emptyAddress(), ...employee.current_address }
+          : emptyAddress()
+      )
+      setPhotoPreview(
+        employee.photo_url
+          ? employee.photo_url.startsWith('http')
+            ? employee.photo_url
+            : getHRFileUrl(BUCKET_PHOTOS, employee.photo_url)
+          : null
+      )
+
+      setEmployeeCode(employee.employee_code ?? '')
+      setDepartmentId(employee.department_id ?? '')
+      setCompanyId(employee.company_id ?? '')
+      setPositionId(employee.position_id ?? '')
+      setHireDate(employee.hire_date ? employee.hire_date.slice(0, 10) : '')
+      setProbationEndDate(
+        employee.probation_end_date ? employee.probation_end_date.slice(0, 10) : ''
+      )
+      setContractEndDate(
+        employee.contract_end_date ? employee.contract_end_date.slice(0, 10) : ''
+      )
+      setSalary(employee.salary ?? '')
+      setPositionAllowance(employee.position_allowance ?? '')
+      setMonthlyPersonalTax(employee.monthly_personal_tax ?? '')
+      setMonthlySocialSecurity(employee.monthly_social_security ?? '')
+      setMonthlySavings(employee.monthly_savings ?? '')
+      setSavingsMaximum(employee.savings_maximum ?? '')
+      setMonthlyStudentLoan(employee.monthly_student_loan ?? '')
+      setMonthlyCompanyLoan(employee.monthly_company_loan ?? '')
+      setIncomeOpeningBalance(employee.income_opening_balance ?? '')
+      setPersonalTaxOpeningBalance(employee.personal_tax_opening_balance ?? '')
+      setSocialSecurityOpeningBalance(employee.social_security_opening_balance ?? '')
+      setEwfOpeningBalance(employee.ewf_opening_balance ?? '')
+      setStudentLoanOpeningBalance(employee.student_loan_opening_balance ?? '')
+      setSavingsOpeningBalance(employee.savings_opening_balance ?? '')
+      setCompanyLoanOpeningBalance(employee.company_loan_opening_balance ?? '')
+      setCompanyLoanOpeningInstallments(employee.company_loan_opening_installments ?? '')
+      setEmploymentStatus(employee.employment_status)
+      setContractType(employee.contract_type === 'daily' ? 'daily' : 'permanent')
+      setWorkMode(employee.work_mode ?? 'office')
+      setClockLocationId(employee.clock_location_id ?? '')
+      setWorkScheduleId(employee.work_schedule_id ?? '')
+      setUserId(employee.user_id ?? '')
+      setTelegramChatId(employee.telegram_chat_id ?? '')
+      setDocuments(
+        Array.isArray(employee.documents)
+          ? employee.documents.map((d) => ({
+              name: d.name,
+              url: d.url,
+              type: d.type,
+              uploaded_at: d.uploaded_at,
+            }))
+          : []
+      )
+    } else {
+      setEmploymentStatus('active')
+      setContractType('permanent')
+      setEmployeeCode('')
+      setContractEndDate('')
+      setDocuments([])
+    }
+  }, [employee])
+
+  useEffect(() => {
+    if (department_id) {
+      fetchPositions(department_id).then(setPositions).catch(() => setPositions([]))
+    } else {
+      // ยังไม่เลือกแผนก → ไม่มีตัวเลือกตำแหน่ง
+      setPositions([])
+    }
+  }, [department_id])
+
+  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = '' // เคลียร์ค่าเพื่อให้เลือกไฟล์เดิมซ้ำได้
+    if (!file) return
+    const ext = (file.name.split('.').pop() ?? '').toLowerCase()
+    if (!PHOTO_ALLOWED_EXTS.includes(ext)) {
+      setPhotoError(`ไม่รองรับไฟล์ .${ext} — กรุณาใช้ไฟล์ JPG หรือ PNG (Telegram ไม่รองรับไฟล์ชนิดนี้)`)
+      return
+    }
+    if (file.size > PHOTO_MAX_MB * 1024 * 1024) {
+      setPhotoError(
+        `ไฟล์ใหญ่เกินไป (${(file.size / 1024 / 1024).toFixed(1)} MB) — ต้องไม่เกิน ${PHOTO_MAX_MB} MB มิฉะนั้นแจ้งเตือน Telegram จะส่งไม่ได้`
+      )
+      return
+    }
+    setPhotoError(null)
+    setPhotoFile(file)
+    setPhotoPreview(URL.createObjectURL(file))
+  }
+
+  const handleDocUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !employee?.id) return
+    setDocUploading(true)
+    setError(null)
+    try {
+      const path = `employees/${employee.id}/${Date.now()}_${file.name}`
+      await uploadHRFile(BUCKET_DOCUMENTS, path, file)
+      const newDoc: DocEntry = {
+        name: file.name,
+        url: path,
+        type: docUploadType,
+        uploaded_at: new Date().toISOString(),
+      }
+      setDocuments((prev) => [...prev, newDoc])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'อัปโหลดเอกสารไม่สำเร็จ')
+    } finally {
+      setDocUploading(false)
+      e.target.value = ''
+    }
+  }
+
+  const removeDocument = (index: number) => {
+    setDocuments((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  const renderAddressGrid = (
+    value: Record<string, string>,
+    onChange: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  ) => (
+    <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+      {ADDRESS_FIELDS.map(([key, label]) => (
+        <label key={key}>
+          <span className="block text-sm font-medium text-gray-700 mb-1">{label}</span>
+          <input
+            type="text"
+            value={value[key] ?? ''}
+            onChange={(e) => onChange((prev) => ({ ...prev, [key]: e.target.value }))}
+            className={fieldClass}
+          />
+        </label>
+      ))}
+    </div>
+  )
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    setSaving(true)
+    try {
+      let photoPath = employee?.photo_url
+      if (photoFile && employee?.id) {
+        // ตั้งชื่อไฟล์ใหม่ทุกครั้ง (timestamp) — path เดิมโดน CDN cache ทำให้รูปใหม่ไม่แสดง
+        const ext = (photoFile.name.split('.').pop() || 'jpg').toLowerCase()
+        const path = `${employee.id}/photo_${Date.now()}.${ext}`
+        await uploadHRFile(BUCKET_PHOTOS, path, photoFile)
+        photoPath = path
+      } else if (photoFile && !employee?.id) {
+        // New employee: upload after we have id
+        // We'll do one save without photo then update with photo
+      }
+
+      const payload: Partial<HREmployee> = {
+        id: employee?.id,
+        ...(employee?.id ? { employee_code: employee_code || undefined } : {}),
+        prefix: prefix || undefined,
+        first_name: first_name || '',
+        last_name: last_name || '',
+        first_name_en: first_name_en || undefined,
+        last_name_en: last_name_en || undefined,
+        nickname: nickname || undefined,
+        citizen_id: citizen_id || undefined,
+        birth_date: birth_date || undefined,
+        gender: gender || undefined,
+        religion: religion || undefined,
+        nationality: nationality || undefined,
+        phone: phone || undefined,
+        emergency_contact:
+          emergency_name || emergency_phone || emergency_relationship
+            ? {
+                name: emergency_name,
+                phone: emergency_phone,
+                relationship: emergency_relationship,
+              }
+            : undefined,
+        emergency_contact_2:
+          emergency_name_2 || emergency_phone_2 || emergency_relationship_2
+            ? {
+                name: emergency_name_2,
+                phone: emergency_phone_2,
+                relationship: emergency_relationship_2,
+              }
+            : undefined,
+        address: Object.values(address).some(Boolean) ? address : undefined,
+        current_address: Object.values(current_address).some(Boolean)
+          ? current_address
+          : undefined,
+        department_id: department_id || undefined,
+        company_id: company_id || undefined,
+        position_id: position_id || undefined,
+        hire_date: hire_date || undefined,
+        probation_end_date: probation_end_date || undefined,
+        contract_end_date: contract_end_date || null,
+        salary: typeof salary === 'number' ? salary : undefined,
+        position_allowance: contract_type === 'daily' ? 0 : typeof position_allowance === 'number' ? position_allowance : undefined,
+        monthly_personal_tax: typeof monthly_personal_tax === 'number' ? monthly_personal_tax : 0,
+        monthly_social_security: typeof monthly_social_security === 'number' ? monthly_social_security : 0,
+        monthly_savings: contract_type === 'daily' ? 0 : typeof monthly_savings === 'number' ? monthly_savings : 0,
+        savings_maximum: contract_type === 'daily' ? null : typeof savings_maximum === 'number' ? savings_maximum : null,
+        monthly_student_loan: typeof monthly_student_loan === 'number' ? monthly_student_loan : 0,
+        monthly_company_loan: contract_type === 'daily' ? 0 : typeof monthly_company_loan === 'number' ? monthly_company_loan : 0,
+        income_opening_balance: typeof income_opening_balance === 'number' ? income_opening_balance : 0,
+        personal_tax_opening_balance: typeof personal_tax_opening_balance === 'number' ? personal_tax_opening_balance : 0,
+        social_security_opening_balance: typeof social_security_opening_balance === 'number' ? social_security_opening_balance : 0,
+        ewf_opening_balance: typeof ewf_opening_balance === 'number' ? ewf_opening_balance : 0,
+        student_loan_opening_balance: typeof student_loan_opening_balance === 'number' ? student_loan_opening_balance : 0,
+        savings_opening_balance: typeof savings_opening_balance === 'number' ? savings_opening_balance : 0,
+        company_loan_opening_balance: typeof company_loan_opening_balance === 'number' ? company_loan_opening_balance : 0,
+        company_loan_opening_installments: typeof company_loan_opening_installments === 'number' ? Math.max(0, Math.floor(company_loan_opening_installments)) : 0,
+        employment_status,
+        contract_type,
+        work_mode,
+        clock_location_id: clock_location_id || undefined,
+        work_schedule_id: work_schedule_id || undefined,
+        user_id: user_id || undefined,
+        telegram_chat_id: telegram_chat_id || undefined,
+        documents: documents.length ? documents : undefined,
+      }
+
+      const saved = await upsertEmployee(payload)
+
+      if (photoFile && saved?.id && !photoPath) {
+        const ext = (photoFile.name.split('.').pop() || 'jpg').toLowerCase()
+        const path = `${saved.id}/photo_${Date.now()}.${ext}`
+        await uploadHRFile(BUCKET_PHOTOS, path, photoFile)
+        await upsertEmployee({ id: saved.id, photo_url: path })
+      } else if (photoPath && saved?.id) {
+        await upsertEmployee({ id: saved.id, photo_url: photoPath })
+      }
+
+      // อัปโหลดรูปใหม่สำเร็จ → ลบไฟล์รูปเก่าใน storage (fire-and-forget)
+      const oldPhoto = employee?.photo_url
+      if (photoFile && oldPhoto && oldPhoto !== photoPath && !oldPhoto.startsWith('http')) {
+        removeHRFiles(BUCKET_PHOTOS, [oldPhoto]).catch(() => {})
+      }
+
+      // พนักงานเข้าใหม่ → แจ้ง Telegram กลุ่ม HR (fire-and-forget ไม่ block การบันทึก)
+      if (!employee?.id && saved?.id) {
+        supabase.functions.invoke('hr-employee-notify', { body: { employee_ids: [saved.id] } }).catch(() => {})
+      }
+
+      onSave()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'บันทึกไม่สำเร็จ')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const tabs = [
+    { label: 'ข้อมูลส่วนตัว', index: 0 },
+    { label: 'ข้อมูลการทำงาน', index: 1 },
+    { label: 'ประวัติเงินเดือน', index: 2 },
+    { label: 'เอกสาร', index: 3 },
+    { label: 'ยอดยกมา (วันลา)', index: 4 },
+    { label: 'ยอดยกมา (เงินสะสม/กู้ยืม)', index: 5 },
+  ]
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col">
+      <div className="flex items-center p-4 pr-16 border-b border-gray-200 shrink-0">
+        <h2 className="text-lg font-semibold text-gray-900">
+          {employee ? 'แก้ไขพนักงาน' : 'เพิ่มพนักงาน'}
+        </h2>
+      </div>
+
+      <div className="flex border-b border-gray-200 shrink-0">
+        {tabs.map(({ label, index }) => (
+          <button
+            key={index}
+            type="button"
+            onClick={() => setActiveTab(index)}
+            className={`px-4 py-3 text-sm font-medium border-b-2 transition ${
+              activeTab === index
+                ? 'border-emerald-600 text-emerald-700'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {error && (
+        <div className="mx-4 mt-2 p-3 bg-red-50 text-red-700 rounded-lg text-sm shrink-0">
+          {error}
+        </div>
+      )}
+
+      <div className="p-4 flex-1 min-h-0">
+        {activeTab === 0 && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <label className="col-span-2 sm:col-span-1">
+                <span className="block text-sm font-medium text-gray-700 mb-1">คำนำหน้า</span>
+                <select
+                  value={prefix}
+                  onChange={(e) => setPrefix(e.target.value)}
+                  className={fieldClass}
+                >
+                  <option value="">-- เลือก --</option>
+                  {prefix &&
+                    !(PREFIX_OPTIONS as readonly string[]).includes(prefix) && (
+                      <option value={prefix}>{prefix}</option>
+                    )}
+                  {PREFIX_OPTIONS.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">ชื่อ *</span>
+                <input
+                  type="text"
+                  value={first_name}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  required
+                  className={fieldClass}
+                />
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">นามสกุล *</span>
+                <input
+                  type="text"
+                  value={last_name}
+                  onChange={(e) => setLastName(e.target.value)}
+                  required
+                  className={fieldClass}
+                />
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">ชื่อ (อังกฤษ)</span>
+                <input
+                  type="text"
+                  value={first_name_en}
+                  onChange={(e) => setFirstNameEn(e.target.value)}
+                  className={fieldClass}
+                />
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">นามสกุล (อังกฤษ)</span>
+                <input
+                  type="text"
+                  value={last_name_en}
+                  onChange={(e) => setLastNameEn(e.target.value)}
+                  className={fieldClass}
+                />
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">ชื่อเล่น</span>
+                <input
+                  type="text"
+                  value={nickname}
+                  onChange={(e) => setNickname(e.target.value)}
+                  className={fieldClass}
+                />
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">วันเกิด</span>
+                <input
+                  type="date"
+                  value={birth_date}
+                  onChange={(e) => setBirthDate(e.target.value)}
+                  className={fieldClass}
+                />
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">โทรศัพท์</span>
+                <input
+                  type="text"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  className={fieldClass}
+                />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-3 gap-4">
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">เพศ</span>
+                <select
+                  value={gender}
+                  onChange={(e) => setGender(e.target.value)}
+                  className={fieldClass}
+                >
+                  <option value="">-- เลือก --</option>
+                  {gender &&
+                    !(GENDER_OPTIONS as readonly string[]).includes(gender) && (
+                      <option value={gender}>{gender}</option>
+                    )}
+                  {GENDER_OPTIONS.map((g) => (
+                    <option key={g} value={g}>
+                      {g}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">ศาสนา</span>
+                <input
+                  type="text"
+                  value={religion}
+                  onChange={(e) => setReligion(e.target.value)}
+                  className={fieldClass}
+                />
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">สัญชาติ</span>
+                <input
+                  type="text"
+                  value={nationality}
+                  onChange={(e) => setNationality(e.target.value)}
+                  className={fieldClass}
+                />
+              </label>
+            </div>
+
+            <div className="border-t border-gray-200 pt-4">
+              <h4 className="text-sm font-semibold text-gray-800 mb-2">ข้อมูลบัตรประชาชน</h4>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-4">
+                <label>
+                  <span className="block text-sm font-medium text-gray-700 mb-1">เลขบัตรประชาชน</span>
+                  <input
+                    type="text"
+                    value={citizen_id}
+                    onChange={(e) => setCitizenId(e.target.value)}
+                    className={fieldClass}
+                  />
+                </label>
+              </div>
+              {renderAddressGrid(address, setAddress)}
+            </div>
+
+            <div className="border-t border-gray-200 pt-4">
+              <h4 className="text-sm font-semibold text-gray-800 mb-2">ผู้ติดต่อฉุกเฉิน</h4>
+              <div className="space-y-4">
+                <div>
+                  <span className="block text-xs font-medium text-gray-500 mb-1">คนที่ 1</span>
+                  <div className="grid grid-cols-3 gap-4">
+                    <label>
+                      <span className="block text-sm font-medium text-gray-700 mb-1">ชื่อ</span>
+                      <input
+                        type="text"
+                        value={emergency_name}
+                        onChange={(e) => setEmergencyName(e.target.value)}
+                        className={fieldClass}
+                      />
+                    </label>
+                    <label>
+                      <span className="block text-sm font-medium text-gray-700 mb-1">โทรศัพท์</span>
+                      <input
+                        type="text"
+                        value={emergency_phone}
+                        onChange={(e) => setEmergencyPhone(e.target.value)}
+                        className={fieldClass}
+                      />
+                    </label>
+                    <label>
+                      <span className="block text-sm font-medium text-gray-700 mb-1">ความสัมพันธ์</span>
+                      <input
+                        type="text"
+                        value={emergency_relationship}
+                        onChange={(e) => setEmergencyRelationship(e.target.value)}
+                        placeholder="บิดา, มารดา, ฯลฯ"
+                        className={fieldClass}
+                      />
+                    </label>
+                  </div>
+                </div>
+                <div>
+                  <span className="block text-xs font-medium text-gray-500 mb-1">คนที่ 2</span>
+                  <div className="grid grid-cols-3 gap-4">
+                    <label>
+                      <span className="block text-sm font-medium text-gray-700 mb-1">ชื่อ</span>
+                      <input
+                        type="text"
+                        value={emergency_name_2}
+                        onChange={(e) => setEmergencyName2(e.target.value)}
+                        className={fieldClass}
+                      />
+                    </label>
+                    <label>
+                      <span className="block text-sm font-medium text-gray-700 mb-1">โทรศัพท์</span>
+                      <input
+                        type="text"
+                        value={emergency_phone_2}
+                        onChange={(e) => setEmergencyPhone2(e.target.value)}
+                        className={fieldClass}
+                      />
+                    </label>
+                    <label>
+                      <span className="block text-sm font-medium text-gray-700 mb-1">ความสัมพันธ์</span>
+                      <input
+                        type="text"
+                        value={emergency_relationship_2}
+                        onChange={(e) => setEmergencyRelationship2(e.target.value)}
+                        placeholder="บิดา, มารดา, ฯลฯ"
+                        className={fieldClass}
+                      />
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="border-t border-gray-200 pt-4">
+              <h4 className="text-sm font-semibold text-gray-800 mb-2">ที่อยู่ปัจจุบัน</h4>
+              {renderAddressGrid(current_address, setCurrentAddress)}
+            </div>
+
+            <div className="border-t border-gray-200 pt-4">
+              <h4 className="text-sm font-semibold text-gray-800 mb-2">รูปถ่าย</h4>
+              <div className="flex items-center gap-4">
+                {photoPreview ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowPhotoLarge(true)}
+                    aria-label="ดูรูปขนาดใหญ่"
+                    className="w-24 h-24 rounded-xl border-2 border-gray-200 overflow-hidden bg-gray-100 hover:ring-2 hover:ring-emerald-400 transition-shadow"
+                  >
+                    <img
+                      src={photoPreview}
+                      alt=""
+                      className="w-full h-full object-cover"
+                    />
+                  </button>
+                ) : (
+                  <div className="w-24 h-24 rounded-xl border-2 border-gray-200 bg-gray-100 flex items-center justify-center">
+                    <span className="text-gray-400 text-sm">ไม่มีรูป</span>
+                  </div>
+                )}
+                <div>
+                  <label className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 cursor-pointer">
+                    <FiUpload />
+                    อัปโหลดรูป
+                    <input
+                      type="file"
+                      accept=".jpg,.jpeg,.png,image/jpeg,image/png"
+                      className="hidden"
+                      onChange={handlePhotoChange}
+                    />
+                  </label>
+                  <p className="text-xs text-gray-500 mt-1.5">
+                    รองรับ JPG, PNG ขนาดไม่เกิน {PHOTO_MAX_MB} MB (ไฟล์ใหญ่กว่านี้จะส่งแจ้งเตือน Telegram ไม่ได้)
+                  </p>
+                  {photoError && <p className="text-sm text-red-600 mt-1">{photoError}</p>}
+                </div>
+              </div>
+              {showPhotoLarge && photoPreview && (
+                <PhotoLightbox url={photoPreview} alt="รูปถ่ายพนักงาน" onClose={() => setShowPhotoLarge(false)} />
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 1 && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">รหัสพนักงาน</span>
+                {employee?.id ? (
+                  <input
+                    type="text"
+                    value={employee_code}
+                    readOnly
+                    disabled
+                    className={`${fieldClass} bg-gray-50 text-gray-700 disabled:bg-gray-100 disabled:text-gray-600 disabled:border-gray-200 disabled:focus:border-gray-200 disabled:focus:ring-0`}
+                  />
+                ) : (
+                  <input
+                    type="text"
+                    readOnly
+                    value={
+                      previewCodeLoading
+                        ? 'กำลังโหลดรหัส...'
+                        : previewEmployeeCode || '—'
+                    }
+                    className={`${fieldClass} bg-gray-50 text-gray-800 cursor-default`}
+                    title="รหัสที่จะได้เมื่อบันทึก (อาจเปลี่ยนหากมีผู้เพิ่มพร้อมกัน)"
+                  />
+                )}
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">บริษัทที่สังกัด</span>
+                <select value={company_id} onChange={(e) => setCompanyId(e.target.value)} className={fieldClass}>
+                  <option value="">-- เลือกบริษัท --</option>
+                  {companies.map((company) => (
+                    <option key={company.id} value={company.id}>{company.name_th}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">แผนก</span>
+                <select
+                  value={department_id}
+                  onChange={(e) => {
+                    // เปลี่ยนแผนก → ล้างตำแหน่งเดิม (คนละแผนกกัน) ให้เลือกใหม่จากรายการของแผนกที่เลือก
+                    setDepartmentId(e.target.value)
+                    setPositionId('')
+                  }}
+                  className={fieldClass}
+                >
+                  <option value="">-- เลือกแผนก --</option>
+                  {departments.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">ตำแหน่ง</span>
+                <select
+                  value={position_id}
+                  onChange={(e) => setPositionId(e.target.value)}
+                  disabled={!department_id}
+                  className={`${fieldClass} disabled:bg-gray-100 disabled:cursor-not-allowed`}
+                >
+                  <option value="">
+                    {department_id ? '-- เลือกตำแหน่ง --' : '-- เลือกแผนกก่อน --'}
+                  </option>
+                  {positions.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">วันที่เข้างาน</span>
+                <input
+                  type="date"
+                  value={hire_date}
+                  onChange={(e) => setHireDate(e.target.value)}
+                  className={fieldClass}
+                />
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">วันสิ้นสุดทดลองงาน</span>
+                <input
+                  type="date"
+                  value={probation_end_date}
+                  onChange={(e) => setProbationEndDate(e.target.value)}
+                  className={fieldClass}
+                />
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">
+                  {contract_type === 'daily' ? 'ค่าแรงรายวัน' : 'ฐานเงินเดือน'}
+                </span>
+                <NumericInput
+                  value={salary}
+                  onChange={setSalary}
+                  placeholder="เช่น 12,000.00"
+                  className={fieldClass}
+                />
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">เงินพิเศษ/ประจำตำแหน่ง</span>
+                <NumericInput
+                  value={position_allowance}
+                  onChange={setPositionAllowance}
+                  placeholder="เช่น 2,000.00"
+                  disabled={contract_type === 'daily'}
+                  className={`${fieldClass} disabled:bg-gray-100 disabled:cursor-not-allowed`}
+                />
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">เงินสะสม/เดือน</span>
+                <NumericInput
+                  value={monthly_savings}
+                  onChange={setMonthlySavings}
+                  placeholder="0.00"
+                  disabled={contract_type === 'daily'}
+                  className={`${fieldClass} disabled:bg-gray-100 disabled:cursor-not-allowed`}
+                />
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">ยอดเงินสะสมสูงสุด</span>
+                <NumericInput
+                  value={savings_maximum}
+                  onChange={setSavingsMaximum}
+                  placeholder="เว้นว่าง = ไม่จำกัด"
+                  disabled={contract_type === 'daily'}
+                  className={`${fieldClass} disabled:bg-gray-100 disabled:cursor-not-allowed`}
+                />
+                <span className="mt-1 block text-xs text-gray-500">
+                  ระบบจะหยุดหักเมื่อยอดสะสมรวมถึงจำนวนนี้
+                </span>
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">เงินกู้บริษัทฯ/เดือน</span>
+                <NumericInput
+                  value={monthly_company_loan}
+                  onChange={setMonthlyCompanyLoan}
+                  placeholder="0.00"
+                  disabled={contract_type === 'daily'}
+                  className={`${fieldClass} disabled:bg-gray-100 disabled:cursor-not-allowed`}
+                />
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">สถานะการจ้าง</span>
+                <select
+                  value={employment_status}
+                  onChange={(e) =>
+                    setEmploymentStatus(e.target.value as HREmployee['employment_status'])
+                  }
+                  className={fieldClass}
+                >
+                  <option value="active">ปฏิบัติงาน</option>
+                  <option value="probation">ทดลองงาน</option>
+                  <option value="resigned">ลาออก</option>
+                  <option value="terminated">ถูกเลิกจ้าง</option>
+                </select>
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">ประเภทสัญญาจ้าง</span>
+                <select
+                  value={contract_type ?? 'permanent'}
+                  onChange={(e) =>
+                    setContractType(e.target.value as HREmployee['contract_type'])
+                  }
+                  className={fieldClass}
+                >
+                  <option value="permanent">ประจำ</option>
+                  <option value="daily">รายวัน</option>
+                </select>
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">รูปแบบการทำงาน</span>
+                <select
+                  value={work_mode}
+                  onChange={(e) => setWorkMode(e.target.value as NonNullable<HREmployee['work_mode']>)}
+                  className={fieldClass}
+                >
+                  <option value="office">เข้าออฟฟิศ</option>
+                  <option value="hybrid">เข้าออฟฟิศ + WFH (ต้องขออนุมัติ)</option>
+                  <option value="wfh">WFH 100% (ไม่ต้องขออนุมัติ)</option>
+                  <option value="no_clock">ไม่ต้องบันทึกเวลาเข้างาน</option>
+                </select>
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">จุดบันทึกเวลา (GPS)</span>
+                <select
+                  value={clock_location_id}
+                  onChange={(e) => setClockLocationId(e.target.value)}
+                  disabled={work_mode === 'wfh' || work_mode === 'no_clock'}
+                  className={fieldClass}
+                >
+                  <option value="">{work_mode === 'wfh' || work_mode === 'no_clock' ? '— ไม่ตรวจพิกัดสำนักงาน —' : '— ใช้จุดที่ใกล้ที่สุดอัตโนมัติ —'}</option>
+                  {clockLocations.map((loc) => (
+                    <option key={loc.id} value={loc.id}>
+                      {loc.name} (รัศมี {loc.radius_m} ม.)
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">มาตรฐานเวลาทำงาน</span>
+                <select
+                  value={work_schedule_id}
+                  onChange={(e) => setWorkScheduleId(e.target.value)}
+                  className={fieldClass}
+                >
+                  <option value="">— ใช้ชุดค่าเริ่มต้น —</option>
+                  {workSchedules.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.work_start.slice(0, 5)}–{s.work_end.slice(0, 5)} น.){s.is_default ? ' • ค่าเริ่มต้น' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">User ID (ลิงก์ระบบ)</span>
+                <input
+                  type="text"
+                  value={user_id}
+                  onChange={(e) => setUserId(e.target.value)}
+                  placeholder="UUID ถ้ามี"
+                  className={fieldClass}
+                />
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">Telegram Chat ID</span>
+                <input
+                  type="text"
+                  value={telegram_chat_id}
+                  onChange={(e) => setTelegramChatId(e.target.value)}
+                  className={fieldClass}
+                />
+              </label>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 2 && (
+          <div className="space-y-4">
+            {employee?.id ? (
+              <SalaryHistoryPanel
+                employeeId={employee.id}
+                initialPayType={contract_type === 'daily' ? 'daily' : 'permanent'}
+                editable
+                onLatestSalaryChange={(latest) => {
+                  if (latest) {
+                    setSalary(latest.salary)
+                    setPositionAllowance(latest.position_allowance ?? '')
+                    setContractType(latest.pay_type)
+                  }
+                }}
+              />
+            ) : (
+              <p className="text-sm text-gray-600">
+                บันทึกพนักงานก่อน จึงจะเพิ่มประวัติเงินเดือนได้
+              </p>
+            )}
+          </div>
+        )}
+
+        {activeTab === 3 && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              เอกสารแนบของพนักงาน (อัปโหลดได้หลังจากบันทึกพนักงานแล้ว)
+            </p>
+            {employee?.id && (
+              <div className="flex flex-wrap items-end gap-3">
+                <select
+                  value={docUploadType}
+                  onChange={(e) => setDocUploadType(e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500"
+                >
+                  {DOC_TYPES.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+                {docUploadType === 'สัญญาจ้าง' && (
+                  <label className="min-w-[210px]">
+                    <span className="block text-sm font-medium text-gray-700 mb-1">
+                      วันที่หมดสัญญาจ้าง
+                    </span>
+                    <input
+                      type="date"
+                      value={contract_end_date}
+                      onChange={(e) => setContractEndDate(e.target.value)}
+                      className={fieldClass}
+                    />
+                  </label>
+                )}
+                <label className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 cursor-pointer disabled:opacity-50">
+                  <FiUpload />
+                  {docUploading ? 'กำลังอัปโหลด...' : 'อัปโหลดเอกสาร'}
+                  <input
+                    type="file"
+                    className="hidden"
+                    disabled={docUploading}
+                    onChange={handleDocUpload}
+                  />
+                </label>
+              </div>
+            )}
+            <ul className="border border-gray-200 rounded-xl divide-y divide-gray-100 overflow-hidden">
+              {documents.length === 0 ? (
+                <li className="px-4 py-6 text-center text-gray-500 text-sm">ยังไม่มีเอกสารแนบ</li>
+              ) : (
+                documents.map((doc, i) => (
+                  <li
+                    key={i}
+                    className="flex items-center justify-between gap-2 px-4 py-3 hover:bg-gray-50"
+                  >
+                    <div className="min-w-0">
+                      <span className="font-medium text-gray-900 block truncate">{doc.name}</span>
+                      <span className="text-xs text-gray-500">{doc.type}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeDocument(i)}
+                      className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg shrink-0"
+                      title="ลบ"
+                    >
+                      <FiTrash2 />
+                    </button>
+                  </li>
+                ))
+              )}
+            </ul>
+          </div>
+        )}
+
+        {activeTab === 4 && (
+          employee?.id
+            ? <EmployeeOpeningBalances employeeId={employee.id} />
+            : <p className="text-sm text-gray-600">บันทึกพนักงานก่อน จึงจะกรอกยอดยกมาได้</p>
+        )}
+
+        {activeTab === 5 && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {([
+              ['ยอดยกมารวมรายรับ', income_opening_balance, setIncomeOpeningBalance, false],
+              ['ยอดยกมาภาษีสะสม', personal_tax_opening_balance, setPersonalTaxOpeningBalance, false],
+              ['ยอดยกมา สปส.', social_security_opening_balance, setSocialSecurityOpeningBalance, false],
+              ['ยอดยกมา EWF', ewf_opening_balance, setEwfOpeningBalance, false],
+              ['ยอดยกมา กยศ. สะสม', student_loan_opening_balance, setStudentLoanOpeningBalance, false],
+              ['ยอดยกมาเงินสะสม', savings_opening_balance, setSavingsOpeningBalance, false],
+              ['ยอดยกมาเงินกู้บริษัทฯ', company_loan_opening_balance, setCompanyLoanOpeningBalance, false],
+              ['จำนวนงวดเงินกู้ยกมา', company_loan_opening_installments, setCompanyLoanOpeningInstallments, true],
+            ] as const).map(([label, value, setter, integer]) => (
+              <label key={label}>
+                <span className="block text-sm font-medium text-gray-700 mb-1">{label}</span>
+                <NumericInput
+                  value={value}
+                  onChange={setter}
+                  integer={integer}
+                  className={fieldClass}
+                />
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="flex justify-end gap-2 p-4 border-t border-gray-200 shrink-0">
+        {activeTab !== 4 && (
+          <button
+            type="submit"
+            disabled={saving}
+            className="px-6 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 disabled:opacity-50"
+          >
+            {saving ? 'กำลังบันทึก...' : 'บันทึก'}
+          </button>
+        )}
+      </div>
+    </form>
+  )
+}

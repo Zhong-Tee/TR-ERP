@@ -1,0 +1,1287 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { supabase } from '../../lib/supabase'
+import { buildIlikeOr } from '../../lib/searchFilter'
+import { formatDateTime } from '../../lib/utils'
+import { Issue, IssueMessage, IssueType, Order } from '../../types'
+import { useAuthContext } from '../../contexts/AuthContext'
+import Modal from '../ui/Modal'
+import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
+import OrderDetailView from './OrderDetailView'
+import { FiMessageCircle, FiInfo, FiCheckCircle } from 'react-icons/fi'
+import { canOperationalRoleSeeIssue, getIssueVisibilityScope, isSalesTrTeamRole, isSuperadmin } from '../../config/accessPolicy'
+import { fetchSalesTrTeamAdminValues } from '../../lib/salesTrTeam'
+import { getChatEnterToSendPref, setChatEnterToSendPref } from '../../lib/chatEnterToSendPrefs'
+import { STOP_PRODUCTION_ISSUE_SLUG } from '../../lib/issueTypeSlugs'
+import { deriveChatDeliveryStatuses, type ChatDeliveryStatus } from '../../lib/chatDeliveryReceipt'
+
+type IssueBoardProps = {
+  scope: 'orders' | 'plan'
+  workOrders?: Array<{ work_order_name: string }>
+  onOpenCountChange?: (count: number) => void
+  /** sales-tr: กรองเฉพาะบิลที่ admin_user ตรงค่านี้ (หน้า Orders — dropdown / เฉพาะฉัน) */
+  salesTrNarrowAdminUser?: string
+}
+
+type IssueWithOrder = Issue & {
+  order?: Pick<Order, 'id' | 'bill_no' | 'customer_name' | 'channel_code' | 'work_order_name' | 'admin_user'>
+  type?: IssueType | null
+  creatorName?: string
+  creatorRole?: string
+}
+
+type UnreadOrderChatRow = {
+  order_id: string
+  bill_no: string | null
+  customer_name: string | null
+  unread_count: number
+  last_message_at: string
+}
+
+export default function IssueBoard({
+  scope,
+  workOrders = [],
+  onOpenCountChange,
+  salesTrNarrowAdminUser,
+}: IssueBoardProps) {
+  const { user } = useAuthContext()
+  const navigate = useNavigate()
+  const [loading, setLoading] = useState(true)
+  const [issuesOn, setIssuesOn] = useState<IssueWithOrder[]>([])
+  const [issuesClosed, setIssuesClosed] = useState<IssueWithOrder[]>([])
+  const [types, setTypes] = useState<IssueType[]>([])
+  const [chatIssue, setChatIssue] = useState<IssueWithOrder | null>(null)
+  const [chatLogs, setChatLogs] = useState<IssueMessage[]>([])
+  const [chatLoading, setChatLoading] = useState(false)
+  const [chatMessage, setChatMessage] = useState('')
+  const [chatSending, setChatSending] = useState(false)
+  const [enterToSend, setEnterToSend] = useState(false)
+  const [activeTab, setActiveTab] = useState<'on' | 'close' | 'unread'>('on')
+
+  useEffect(() => {
+    if (!user?.id) {
+      setEnterToSend(false)
+      return
+    }
+    setEnterToSend(getChatEnterToSendPref(user.id, 'issue'))
+  }, [user?.id])
+  const [unreadOrderRows, setUnreadOrderRows] = useState<UnreadOrderChatRow[]>([])
+  const [loadingUnreadOrders, setLoadingUnreadOrders] = useState(false)
+  const [, setNewIssueCount] = useState(0)
+  const [, setNewChatCount] = useState(0)
+  const [detailIssue, setDetailIssue] = useState<IssueWithOrder | null>(null)
+  const [updatingIssue, setUpdatingIssue] = useState(false)
+  const [detailOrder, setDetailOrder] = useState<Order | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [createWorkOrder, setCreateWorkOrder] = useState('')
+  const [createOrderId, setCreateOrderId] = useState('')
+  const [createTitle, setCreateTitle] = useState('')
+  const [createTypeId, setCreateTypeId] = useState('')
+  const [preferStopProduction, setPreferStopProduction] = useState(false)
+  const [ordersForWorkOrder, setOrdersForWorkOrder] = useState<Order[]>([])
+  const [billSearch, setBillSearch] = useState('')
+  const [billSearchResults, setBillSearchResults] = useState<Order[]>([])
+  const [billSearching, setBillSearching] = useState(false)
+  const billSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const issueRealtimeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const loadIssuesRef = useRef<(options?: { silent?: boolean }) => Promise<void>>(async () => {})
+  const hasLoadedIssuesRef = useRef(false)
+  const [unreadByIssue, setUnreadByIssue] = useState<Record<string, number>>({})
+  const [deliveryByIssue, setDeliveryByIssue] = useState<Record<string, ChatDeliveryStatus>>({})
+  const issuesWithUnread = useMemo(
+    () => [...issuesOn, ...issuesClosed].filter((i) => (unreadByIssue[i.id] || 0) > 0),
+    [issuesOn, issuesClosed, unreadByIssue]
+  )
+  const [fromDate, setFromDate] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+  })
+  const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [now, setNow] = useState(() => Date.now())
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Tick every 60s so live elapsed time updates for open issues
+  useEffect(() => {
+    timerRef.current = setInterval(() => setNow(Date.now()), 60_000)
+    return () => { if (timerRef.current) clearInterval(timerRef.current) }
+  }, [])
+
+  /** Format elapsed time as ชม:นาที */
+  function formatElapsed(issue: IssueWithOrder): string {
+    let mins: number
+    if (issue.status === 'Close' && issue.duration_minutes != null) {
+      mins = issue.duration_minutes
+    } else if (issue.status === 'Close' && issue.closed_at) {
+      mins = Math.floor((new Date(issue.closed_at).getTime() - new Date(issue.created_at).getTime()) / 60_000)
+    } else {
+      mins = Math.floor((now - new Date(issue.created_at).getTime()) / 60_000)
+    }
+    if (mins < 0) mins = 0
+    const h = Math.floor(mins / 60)
+    const m = mins % 60
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
+  }
+
+  const workOrderOptions = useMemo(() => {
+    const names = workOrders.map((w) => w.work_order_name).filter(Boolean)
+    return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b))
+  }, [workOrders])
+
+  const [allWorkOrderNames, setAllWorkOrderNames] = useState<string[]>([])
+
+  async function loadAllWorkOrderNames() {
+    try {
+      const { data, error } = await supabase
+        .from('or_work_orders')
+        .select('work_order_name')
+        .order('created_at', { ascending: false })
+        .limit(200)
+      if (error) throw error
+      const names = (data || []).map((w: any) => w.work_order_name).filter(Boolean)
+      setAllWorkOrderNames(Array.from(new Set(names)) as string[])
+    } catch (err) {
+      console.error('Error loading work orders:', err)
+    }
+  }
+
+  const availableWorkOrders = scope === 'plan' ? workOrderOptions : allWorkOrderNames
+
+  const stopProductionTypeId = useMemo(
+    () => types.find((t) => (t.slug || '').trim() === STOP_PRODUCTION_ISSUE_SLUG)?.id ?? '',
+    [types]
+  )
+
+  useEffect(() => {
+    if (!createOpen) setPreferStopProduction(false)
+  }, [createOpen])
+
+  useEffect(() => {
+    loadTypes()
+  }, [])
+
+  useEffect(() => {
+    loadIssues()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [types.length, fromDate, toDate, salesTrNarrowAdminUser])
+
+  useEffect(() => {
+    const onTabChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ tab: 'on' | 'close' | 'unread' }>).detail
+      if (detail?.tab === 'on' || detail?.tab === 'close' || detail?.tab === 'unread') {
+        setActiveTab(detail.tab)
+      }
+    }
+    window.addEventListener('issue-tab-change', onTabChange)
+    return () => window.removeEventListener('issue-tab-change', onTabChange)
+  }, [])
+
+  useEffect(() => {
+    const scheduleIssuesRefresh = () => {
+      if (issueRealtimeTimerRef.current) clearTimeout(issueRealtimeTimerRef.current)
+      issueRealtimeTimerRef.current = setTimeout(() => {
+        issueRealtimeTimerRef.current = null
+        void loadIssuesRef.current({ silent: true })
+      }, 300)
+    }
+    const channel = supabase
+      .channel(`issue-board-${scope}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_issues' }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          const row = payload.new as Issue
+          if (row.status === 'On') setNewIssueCount((prev) => prev + 1)
+        }
+        scheduleIssuesRefresh()
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'or_issue_messages' }, (payload) => {
+        const row = payload.new as IssueMessage
+        const fromSelf = !!(user && row.sender_id === user.id)
+        if (!fromSelf) {
+          setNewChatCount((prev) => prev + 1)
+        }
+        if (chatIssue && chatIssue.id === row.issue_id) {
+          setChatLogs((prev) => (prev.some((m) => m.id === row.id) ? prev : [...prev, row]))
+          if (user) {
+            supabase.from('or_issue_reads').upsert({
+              issue_id: row.issue_id,
+              user_id: user.id,
+              last_read_at: new Date().toISOString(),
+            })
+          }
+        }
+        if ((!chatIssue || chatIssue.id !== row.issue_id) && !fromSelf) {
+          setUnreadByIssue((prev) => ({ ...prev, [row.issue_id]: (prev[row.issue_id] || 0) + 1 }))
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_issue_reads' }, (payload) => {
+        void (async () => {
+          const read = payload.new as { issue_id?: string; user_id?: string; last_read_at?: string }
+          if (!user || !read.issue_id || !read.user_id || read.user_id === user.id || !read.last_read_at) return
+          const { data: latestOwn } = await supabase
+            .from('or_issue_messages')
+            .select('created_at')
+            .eq('issue_id', read.issue_id)
+            .eq('sender_id', user.id)
+            .eq('is_hidden', false)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle()
+          if (latestOwn && new Date(read.last_read_at).getTime() >= new Date(latestOwn.created_at).getTime()) {
+            setDeliveryByIssue((prev) => ({ ...prev, [read.issue_id as string]: 'read' }))
+          }
+        })()
+      })
+      .subscribe()
+    return () => {
+      if (issueRealtimeTimerRef.current) clearTimeout(issueRealtimeTimerRef.current)
+      issueRealtimeTimerRef.current = null
+      supabase.removeChannel(channel)
+    }
+  }, [scope, chatIssue?.id, user?.id])
+
+  async function loadTypes() {
+    try {
+      const { data, error } = await supabase
+        .from('or_issue_types')
+        .select('*')
+        .eq('is_active', true)
+        .order('created_at', { ascending: true })
+      if (error) throw error
+      setTypes((data || []) as IssueType[])
+    } catch (error) {
+      console.error('Error loading issue types:', error)
+    }
+  }
+
+  async function loadIssues(options?: { silent?: boolean }) {
+    const showBlockingLoader = !options?.silent && !hasLoadedIssuesRef.current
+    if (showBlockingLoader) setLoading(true)
+    try {
+      let salesTrTeamSet: Set<string> | null = null
+      if (user && isSalesTrTeamRole(user.role)) {
+        try {
+          const vals = await fetchSalesTrTeamAdminValues(supabase)
+          salesTrTeamSet = new Set(vals)
+        } catch (e) {
+          console.error('IssueBoard sales-tr team:', e)
+          salesTrTeamSet = new Set()
+        }
+      }
+
+      let query = supabase
+        .from('or_issues')
+        .select('*')
+        .order('created_at', { ascending: false })
+      if (fromDate) query = query.gte('created_at', `${fromDate}T00:00:00.000Z`)
+      if (toDate) query = query.lte('created_at', `${toDate}T23:59:59.999Z`)
+      const { data: issues, error } = await query
+      if (error) throw error
+
+      let list = (issues || []) as Issue[]
+      const orderIds = Array.from(new Set(list.map((i) => i.order_id))).filter(Boolean)
+      let orderMap = new Map<string, Order>()
+      if (orderIds.length > 0) {
+        const { data: orders } = await supabase
+          .from('or_orders')
+          .select('id, bill_no, customer_name, channel_code, work_order_name, admin_user')
+          .in('id', orderIds)
+        orderMap = new Map((orders || []).map((o: any) => [o.id, o as Order]))
+      }
+      const creatorIds = Array.from(new Set(list.map((i) => i.created_by))).filter(Boolean)
+      let creatorMap = new Map<string, { name: string; role: string }>()
+      if (creatorIds.length > 0) {
+        const { data: creators, error: creatorsError } = await supabase.rpc('get_issue_creator_profiles', {
+          p_user_ids: creatorIds,
+        })
+        if (creatorsError) throw creatorsError
+        creatorMap = new Map((creators || []).map((u: { id: string; username?: string; role?: string }) => [
+          u.id,
+          { name: u.username || u.id, role: u.role || '' },
+        ]))
+      }
+      const typeMap = new Map(types.map((t) => [t.id, t]))
+      let withOrder: IssueWithOrder[] = list.map((i) => ({
+        ...i,
+        order: orderMap.get(i.order_id),
+        type: i.type_id ? typeMap.get(i.type_id) || null : null,
+        creatorName: creatorMap.get(i.created_by)?.name,
+        creatorRole: creatorMap.get(i.created_by)?.role,
+      }))
+      // sales-tr: issue ของบิลที่ผู้ลงข้อมูลเป็นสมาชิก sales-tr ทั้งทีม
+      // sales-pump: เฉพาะบิลตัวเอง
+      // production / qc_staff / packing_staff: issue ที่ตัวเองเปิด + issue ที่ฝ่ายขายเปิด
+      // superadmin / admin: ทั้งหมด
+      const visibilityScope = getIssueVisibilityScope(user?.role)
+      const ownerName = user?.username || user?.email || ''
+      if (visibilityScope === 'salesTrTeam' && salesTrTeamSet) {
+        withOrder = withOrder.filter((i) => salesTrTeamSet!.has((i.order?.admin_user || '').trim()))
+        const narrow = salesTrNarrowAdminUser?.trim()
+        if (narrow) {
+          withOrder = withOrder.filter((i) => (i.order?.admin_user || '').trim() === narrow)
+        }
+      } else if (visibilityScope === 'ownerOrders') {
+        withOrder = withOrder.filter((i) => (i.order?.admin_user || '') === ownerName)
+      } else if (visibilityScope === 'operational') {
+        withOrder = withOrder.filter((i) => canOperationalRoleSeeIssue(user?.id, i.created_by, i.creatorRole))
+      } else if (visibilityScope === 'none') {
+        withOrder = []
+      }
+
+      const onList = withOrder.filter((i) => i.status === 'On')
+      const closedList = withOrder.filter((i) => i.status === 'Close')
+      setIssuesOn(onList)
+      setIssuesClosed(closedList)
+      onOpenCountChange?.(onList.length)
+      setNewIssueCount(0)
+      setNewChatCount(0)
+      if (user) {
+        await loadUnreadCounts([...onList, ...closedList].map((i) => i.id))
+      }
+    } catch (error) {
+      console.error('Error loading issues:', error)
+    } finally {
+      hasLoadedIssuesRef.current = true
+      if (showBlockingLoader) setLoading(false)
+    }
+  }
+
+  loadIssuesRef.current = loadIssues
+
+  async function loadUnreadCounts(issueIds: string[]) {
+    if (!user || issueIds.length === 0) {
+      setUnreadByIssue({})
+      return
+    }
+    try {
+      const [{ data: reads }, { data: messages }] = await Promise.all([
+        supabase.from('or_issue_reads').select('issue_id, user_id, last_read_at').in('issue_id', issueIds),
+        supabase.from('or_issue_messages').select('issue_id, created_at, sender_id').eq('is_hidden', false).in('issue_id', issueIds),
+      ])
+      const readMap = new Map(
+        (reads || []).filter((r: any) => r.user_id === user.id).map((r: any) => [r.issue_id, new Date(r.last_read_at).getTime()])
+      )
+      const counts: Record<string, number> = {}
+      ;(messages || []).forEach((m: { issue_id: string; created_at: string; sender_id: string }) => {
+        if (user && m.sender_id === user.id) return
+        const lastRead = readMap.get(m.issue_id) ?? 0
+        const msgTime = new Date(m.created_at).getTime()
+        if (msgTime > lastRead) {
+          counts[m.issue_id] = (counts[m.issue_id] || 0) + 1
+        }
+      })
+      setUnreadByIssue(counts)
+      setDeliveryByIssue(deriveChatDeliveryStatuses(
+        user.id,
+        (messages || []).map((m: any) => ({ order_id: m.issue_id, sender_id: m.sender_id, created_at: m.created_at })),
+        (reads || []).map((r: any) => ({ order_id: r.issue_id, user_id: r.user_id, last_read_at: r.last_read_at })),
+      ))
+    } catch (error) {
+      console.error('Error loading unread counts:', error)
+    }
+  }
+
+  const loadUnreadOrderChatSummaries = useCallback(async () => {
+    if (!user) {
+      setUnreadOrderRows([])
+      return
+    }
+    setLoadingUnreadOrders(true)
+    try {
+      const { data, error } = await supabase.rpc('list_unread_order_chat_summaries', {
+        p_user_id: user.id,
+        p_role: (user.role || '').trim(),
+        p_username: (user.username || user.email || '').trim(),
+      })
+      if (error) throw error
+      const rows = (data || []) as Record<string, unknown>[]
+      setUnreadOrderRows(
+        rows.map((r) => ({
+          order_id: String(r.order_id),
+          bill_no: (r.bill_no as string) ?? null,
+          customer_name: (r.customer_name as string) ?? null,
+          unread_count: Number(r.unread_count ?? 0),
+          last_message_at: String(r.last_message_at ?? ''),
+        }))
+      )
+    } catch (e) {
+      console.error('loadUnreadOrderChatSummaries:', e)
+      setUnreadOrderRows([])
+    } finally {
+      setLoadingUnreadOrders(false)
+    }
+  }, [user])
+
+  useEffect(() => {
+    if (activeTab === 'unread') {
+      void loadUnreadOrderChatSummaries()
+    }
+  }, [activeTab, loadUnreadOrderChatSummaries])
+
+  useEffect(() => {
+    const onOrderChatRead = () => {
+      if (activeTab === 'unread') void loadUnreadOrderChatSummaries()
+    }
+    window.addEventListener('order-chat-read', onOrderChatRead)
+    return () => window.removeEventListener('order-chat-read', onOrderChatRead)
+  }, [activeTab, loadUnreadOrderChatSummaries])
+
+  function goToConfirmOrderChat(orderId: string) {
+    if (scope === 'plan') {
+      navigate('/orders')
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('navigate-to-order-chat', { detail: { orderId } }))
+      }, 200)
+      return
+    }
+    window.dispatchEvent(new CustomEvent('navigate-to-order-chat', { detail: { orderId } }))
+  }
+
+  async function openChat(issue: IssueWithOrder) {
+    setChatIssue(issue)
+    setChatMessage('')
+    setChatLogs([])
+    setChatLoading(true)
+    try {
+      if (user) {
+        await supabase.from('or_issue_reads').upsert({
+          issue_id: issue.id,
+          user_id: user.id,
+          last_read_at: new Date().toISOString(),
+        })
+        setUnreadByIssue((prev) => ({ ...prev, [issue.id]: 0 }))
+        window.dispatchEvent(new CustomEvent('issue-chat-read'))
+      }
+      const { data, error } = await supabase
+        .from('or_issue_messages')
+        .select('*')
+        .eq('issue_id', issue.id)
+        .eq('is_hidden', false)
+        .order('created_at', { ascending: true })
+      if (error) throw error
+      setChatLogs((data || []) as IssueMessage[])
+    } catch (error) {
+      console.error('Error loading issue messages:', error)
+    } finally {
+      setChatLoading(false)
+    }
+  }
+
+  async function sendChat() {
+    if (!chatIssue || !user) return
+    const message = chatMessage.trim()
+    if (!message) return
+    setChatSending(true)
+    try {
+      const payload = {
+        issue_id: chatIssue.id,
+        sender_id: user.id,
+        sender_name: user.username || user.email || 'ผู้ใช้',
+        message,
+        source_scope: scope,
+      }
+      const { data, error } = await supabase
+        .from('or_issue_messages')
+        .insert(payload)
+        .select('*')
+        .single()
+      if (error) throw error
+      if (data) {
+        setChatLogs((prev) => (prev.some((m) => m.id === (data as IssueMessage).id) ? prev : [...prev, data as IssueMessage]))
+      }
+      setDeliveryByIssue((prev) => ({ ...prev, [chatIssue.id]: 'sent' }))
+      setChatMessage('')
+    } catch (error: any) {
+      console.error('Error sending issue message:', error)
+      alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
+    } finally {
+      setChatSending(false)
+    }
+  }
+
+  async function handleHideIssueChat(chatId: string) {
+    try {
+      const { error } = await supabase
+        .from('or_issue_messages')
+        .update({ is_hidden: true })
+        .eq('id', chatId)
+      if (error) throw error
+      setChatLogs((prev) => prev.filter((log) => log.id !== chatId))
+    } catch (error: any) {
+      console.error('Error hiding issue chat:', error)
+      alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
+    }
+  }
+
+  function issueDeliveryStatus(issueId: string) {
+    const status = deliveryByIssue[issueId]
+    if (!status) return null
+    return (
+      <span
+        className={`inline-flex items-center whitespace-nowrap text-[10px] font-semibold ${status === 'read' ? 'text-blue-600' : 'text-gray-500'}`}
+        title={status === 'read' ? 'ผู้รับเปิดอ่าน Issue Chat แล้ว' : 'ส่งข้อความเข้าระบบแล้ว แต่ยังไม่มีผู้รับเปิดอ่าน'}
+      >
+        {status === 'read' ? '✓✓ อ่านแล้ว' : '✓ ส่งแล้ว'}
+      </span>
+    )
+  }
+
+  async function updateIssueStatus(issue: IssueWithOrder, status: 'On' | 'Close') {
+    setUpdatingIssue(true)
+    try {
+      const updates: Partial<Issue> = { status }
+      if (status === 'Close') {
+        const closedAt = new Date()
+        updates.closed_at = closedAt.toISOString()
+        updates.duration_minutes = Math.max(0, Math.floor((closedAt.getTime() - new Date(issue.created_at).getTime()) / 60_000))
+      }
+      if (status === 'On') {
+        updates.closed_at = null
+        updates.duration_minutes = null
+      }
+      const { error } = await supabase.from('or_issues').update(updates).eq('id', issue.id)
+      if (error) throw error
+      if (status === 'Close') {
+        supabase.functions.invoke('issue-notify', {
+          body: { issue_id: issue.id, event: 'closed', actor_id: user?.id },
+        }).catch(() => {})
+      }
+      setDetailIssue(null)
+      await loadIssues({ silent: true })
+    } catch (error: any) {
+      console.error('Error updating issue status:', error)
+      alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
+    } finally {
+      setUpdatingIssue(false)
+    }
+  }
+
+  async function loadOrdersForSelectedWorkOrder(name: string) {
+    setOrdersForWorkOrder([])
+    if (!name) return
+    try {
+      const { data, error } = await supabase
+        .from('or_orders')
+        .select('id, bill_no, customer_name, work_order_name, express_receipt_number')
+        .eq('work_order_name', name)
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      setOrdersForWorkOrder((data || []) as Order[])
+    } catch (error) {
+      console.error('Error loading orders by work order:', error)
+    }
+  }
+
+  function handleBillSearch(term: string) {
+    setBillSearch(term)
+    if (billSearchRef.current) clearTimeout(billSearchRef.current)
+    const q = term.trim()
+    if (!q) { setBillSearchResults([]); return }
+    setBillSearching(true)
+    billSearchRef.current = setTimeout(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('or_orders')
+          .select('id, bill_no, customer_name, work_order_name, express_receipt_number')
+          .or(buildIlikeOr(q, ['bill_no', 'customer_name', 'express_receipt_number']))
+          .order('created_at', { ascending: false })
+          .limit(20)
+        if (error) throw error
+        setBillSearchResults((data || []) as Order[])
+      } catch (err) {
+        console.error('Bill search error:', err)
+      } finally {
+        setBillSearching(false)
+      }
+    }, 400)
+  }
+
+  async function createIssue() {
+    if (!user) return
+    if (!createOrderId || !createTitle.trim()) {
+      alert('กรุณาเลือกบิลและกรอกหัวข้อ')
+      return
+    }
+    if (preferStopProduction) {
+      if (!stopProductionTypeId) {
+        alert('ไม่พบประเภท "หยุดผลิต" ในระบบ กรุณารัน migration หรือติดต่อผู้ดูแล')
+        return
+      }
+    }
+    setCreating(true)
+    try {
+      const payload = {
+        order_id: createOrderId,
+        work_order_name: createWorkOrder || null,
+        type_id: createTypeId || null,
+        title: createTitle.trim(),
+        status: 'On',
+        created_by: user.id,
+      }
+      const { data: created, error } = await supabase.from('or_issues').insert(payload).select('id').single()
+      if (error) throw error
+      supabase.functions.invoke('issue-notify', { body: { issue_id: created.id } }).catch(() => {})
+      setCreateOpen(false)
+      setCreateOrderId('')
+      setCreateWorkOrder('')
+      setCreateTitle('')
+      setCreateTypeId('')
+      setPreferStopProduction(false)
+      setBillSearch('')
+      setBillSearchResults([])
+      await loadIssues({ silent: true })
+    } catch (error: any) {
+      console.error('Error creating issue:', error)
+      alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  async function openOrderDetail(issue: IssueWithOrder) {
+    if (!issue.order?.id) return
+    setDetailLoading(true)
+    setDetailOrder(null)
+    try {
+      const { data, error } = await supabase
+        .from('or_orders')
+        .select('*, or_order_items(*)')
+        .eq('id', issue.order.id)
+        .single()
+      if (error) throw error
+      setDetailOrder(data as Order)
+    } catch (error) {
+      console.error('Error loading order detail:', error)
+      alert('เกิดข้อผิดพลาดในการโหลดรายละเอียดบิล')
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center py-12">
+        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-lg shadow px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          {[
+            { key: 'on' as const, label: `New Issue (${issuesOn.length})` },
+            { key: 'close' as const, label: `Close Issue (${issuesClosed.length})` },
+            { key: 'unread' as const, label: 'ข้อความยังไม่อ่าน' },
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setActiveTab(tab.key)}
+              className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                activeTab === tab.key ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-sm text-gray-600 font-medium">จาก</label>
+          <input
+            type="date"
+            value={fromDate}
+            onChange={(e) => setFromDate(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:border-blue-400"
+          />
+          <label className="text-sm text-gray-600 font-medium">ถึง</label>
+          <input
+            type="date"
+            value={toDate}
+            onChange={(e) => setToDate(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:border-blue-400"
+          />
+          <button
+            type="button"
+            onClick={() => { setCreateOpen(true); setCreateOrderId(''); setCreateWorkOrder(''); setCreateTitle(''); setCreateTypeId(''); setBillSearch(''); setBillSearchResults([]); if (scope !== 'plan') loadAllWorkOrderNames() }}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
+            เปิด Ticket
+          </button>
+        </div>
+      </div>
+      <div className="bg-white rounded-lg shadow overflow-hidden">
+        <div className="divide-y">
+          {activeTab === 'unread' ? (
+            <div className="p-5 space-y-8">
+              <section>
+                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">แชท Issue (Ticket)</h3>
+                {issuesWithUnread.length === 0 ? (
+                  <div className="text-center text-gray-500 py-6 bg-gray-50 rounded-lg">ไม่มีข้อความ Issue ยังไม่อ่าน</div>
+                ) : (
+                  <div className="space-y-3">
+                    {issuesWithUnread.map((issue) => (
+                      <div
+                        key={issue.id}
+                        className="flex flex-wrap items-center justify-between gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl"
+                      >
+                        <div>
+                          <div className="font-bold text-blue-700">{issue.order?.bill_no || '-'}</div>
+                          <div className="text-sm text-gray-700 mt-1">{issue.title}</div>
+                          <span className="inline-flex mt-2 min-w-[1.2rem] h-5 px-1.5 items-center justify-center rounded-full text-[10px] font-bold bg-red-500 text-white">
+                            {unreadByIssue[issue.id]}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => openChat(issue)}
+                          className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700"
+                        >
+                          <FiMessageCircle className="w-4 h-4" />
+                          เปิดแชท
+                        </button>
+                        {issueDeliveryStatus(issue.id)}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+              <section>
+                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">
+                  แชทคำสั่งซื้อ (Confirm){' '}
+                  <span className="font-normal text-gray-500 normal-case">— เปิดจากเมนู ออเดอร์ → Confirm</span>
+                </h3>
+                {loadingUnreadOrders ? (
+                  <div className="flex justify-center py-10">
+                    <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500" />
+                  </div>
+                ) : unreadOrderRows.length === 0 ? (
+                  <div className="text-center text-gray-500 py-6 bg-gray-50 rounded-lg">ไม่มีแชทบิลยังไม่อ่าน</div>
+                ) : (
+                  <div className="space-y-3">
+                    {unreadOrderRows.map((row) => (
+                      <div
+                        key={row.order_id}
+                        className="flex flex-wrap items-center justify-between gap-3 p-4 bg-orange-50 border border-orange-200 rounded-xl"
+                      >
+                        <div>
+                          <div className="font-bold text-blue-700">{row.bill_no || row.order_id}</div>
+                          {row.customer_name && <div className="text-sm text-gray-600 mt-1">{row.customer_name}</div>}
+                          <div className="text-xs text-gray-500 mt-1">
+                            ข้อความยังไม่อ่าน {row.unread_count} · ล่าสุด {row.last_message_at ? formatDateTime(row.last_message_at) : '-'}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => goToConfirmOrderChat(row.order_id)}
+                          className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700"
+                        >
+                          <FiMessageCircle className="w-4 h-4" />
+                          ไปหน้า Confirm เปิดแชท
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </div>
+          ) : (activeTab === 'on' ? issuesOn : issuesClosed).length === 0 ? (
+            <div className="p-6 text-center text-gray-500">ไม่พบรายการ</div>
+          ) : (
+            (activeTab === 'on' ? issuesOn : issuesClosed).map((issue) => (
+              <div key={issue.id} className="p-5 flex gap-4">
+                {/* ฝั่งซ้าย — เนื้อหาหลัก */}
+                <div className="flex-1 min-w-0 space-y-3">
+                  <div>
+                    <div className="text-lg font-bold text-blue-700 truncate">{issue.order?.bill_no || '-'}</div>
+                    <div className="text-base text-gray-800 mt-1">
+                      <span className="font-semibold text-gray-500">หัวข้อ:</span>{' '}
+                      {issue.title}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    {issue.type && (
+                      <span
+                        className="px-3 py-1.5 rounded-lg font-bold text-white"
+                        style={{ backgroundColor: issue.type.color }}
+                      >
+                        {issue.type.name}
+                      </span>
+                    )}
+                    <span className="px-3 py-1.5 rounded-lg bg-blue-100 text-blue-800 font-medium">
+                      ผู้สร้างบิล: {issue.order?.admin_user || '-'}
+                    </span>
+                    <span className="px-3 py-1.5 rounded-lg bg-purple-100 text-purple-800 font-medium">
+                      ผู้เปิด Ticket: {issue.creatorName || '-'}
+                    </span>
+                    <span className={`px-3 py-1.5 rounded-lg font-medium ${
+                      issue.work_order_name ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
+                    }`}>
+                      {issue.work_order_name || 'ไม่มีเลขใบงาน'}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {activeTab === 'on' && (
+                      <button
+                        type="button"
+                        onClick={() => setDetailIssue(issue)}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 bg-amber-500 text-white rounded-xl text-sm font-semibold hover:bg-amber-600 transition-colors"
+                      >
+                        <FiCheckCircle className="w-4 h-4" />
+                        สถานะ
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => openOrderDetail(issue)}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 transition-colors"
+                    >
+                      <FiInfo className="w-4 h-4" />
+                      รายละเอียด
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openChat(issue)}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 transition-colors"
+                    >
+                      <FiMessageCircle className="w-4 h-4" />
+                      Chat
+                    </button>
+                    {issueDeliveryStatus(issue.id)}
+                    {(unreadByIssue[issue.id] || 0) > 0 && (
+                      <span className="min-w-[1.2rem] h-5 px-1.5 flex items-center justify-center rounded-full text-[10px] font-bold bg-red-500 text-white animate-pulse">
+                        {unreadByIssue[issue.id]}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                {/* ฝั่งขวา — วันที่ + ระยะเวลา จัดชิดล่าง */}
+                <div className="shrink-0 flex flex-col items-end justify-end text-right space-y-1">
+                  <div className="text-sm text-gray-500">{formatDateTime(issue.created_at)}</div>
+                  <div className="text-xs text-gray-500">ระยะเวลาปิด Ticket</div>
+                  <div className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-lg font-mono font-bold ${
+                    issue.status === 'On'
+                      ? 'bg-orange-100 text-orange-700'
+                      : 'bg-gray-100 text-gray-600'
+                  }`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    {formatElapsed(issue)}
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      <Modal
+        open={!!detailIssue}
+        onClose={() => {
+          if (!updatingIssue) setDetailIssue(null)
+        }}
+        contentClassName="max-w-lg w-full"
+      >
+        {detailIssue && (() => {
+          const canManageTicket = user?.id === detailIssue.created_by || isSuperadmin(user?.role)
+          return (
+            <div className="p-6 space-y-4">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">รายละเอียด Ticket</h3>
+                <p className="text-sm text-gray-600 mt-1">{detailIssue.order?.bill_no || '-'}</p>
+              </div>
+              <div className="text-sm text-gray-700 space-y-1">
+                <div>หัวข้อ: <span className="font-medium">{detailIssue.title}</span></div>
+                <div>สถานะ: <span className="font-medium">{detailIssue.status}</span></div>
+                <div>ใบงาน: {detailIssue.work_order_name || 'ไม่มีเลขใบงาน'}</div>
+                <div>ผู้เปิดบิล: <span className="font-medium">{detailIssue.order?.admin_user || '-'}</span></div>
+                <div>ผู้สร้าง Ticket: <span className="font-medium">{detailIssue.creatorName || '-'}</span></div>
+                <div>ระยะเวลา: <span className="font-mono font-bold text-orange-600 text-lg">{formatElapsed(detailIssue)}</span></div>
+              </div>
+              {canManageTicket ? (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">สถานะ Ticket</label>
+                    <select
+                      value={detailIssue.status}
+                      onChange={(e) => setDetailIssue((prev) => (prev ? { ...prev, status: e.target.value as 'On' | 'Close' } : prev))}
+                      className="w-full px-3 py-2 border rounded-lg bg-white"
+                    >
+                      <option value="On">On</option>
+                      <option value="Close">Close</option>
+                    </select>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setDetailIssue(null)}
+                      disabled={updatingIssue}
+                      className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                    >
+                      ยกเลิก
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateIssueStatus(detailIssue, detailIssue.status)}
+                      disabled={updatingIssue}
+                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {updatingIssue ? 'กำลังบันทึก...' : 'บันทึก'}
+                    </button>
+                    {detailIssue.status === 'On' && (
+                      <button
+                        type="button"
+                        onClick={() => updateIssueStatus(detailIssue, 'Close')}
+                        disabled={updatingIssue}
+                        className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-50"
+                      >
+                        ปิด Ticket
+                      </button>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    เฉพาะผู้เปิด Ticket เท่านั้นที่สามารถปิดหรือเปลี่ยนสถานะได้
+                  </p>
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => setDetailIssue(null)}
+                      className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                    >
+                      ปิด
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })()}
+      </Modal>
+
+      <Modal
+        open={!!chatIssue}
+        onClose={() => {
+          if (!chatSending) setChatIssue(null)
+        }}
+        contentClassName="max-w-2xl w-full"
+      >
+        {chatIssue && (
+          <div className="flex flex-col max-h-[80vh]">
+            <div className="p-4 border-b bg-emerald-600 flex items-center justify-between rounded-t-xl">
+              <div>
+                <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+                  <FiMessageCircle className="w-5 h-5" /> Chat
+                </h3>
+                <p className="text-sm text-emerald-100">{chatIssue.order?.bill_no || '-'}</p>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gradient-to-b from-slate-100 to-slate-50">
+              {chatLoading ? (
+                <div className="flex justify-center items-center py-6">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500" />
+                </div>
+              ) : chatLogs.length === 0 ? (
+                <div className="text-center text-gray-500 py-6">ยังไม่มีข้อความ</div>
+              ) : (
+                chatLogs.map((log) => {
+                  const isPlan = log.source_scope === 'plan'
+                  const isMe =
+                    log.sender_id === user?.id ||
+                    (!!user?.username && log.sender_name === user.username) ||
+                    (!!user?.email && log.sender_name === user.email)
+                  const isRight = isMe
+                  const scopeLabel = isPlan ? 'Plan' : 'ออเดอร์'
+                  return (
+                    <div key={log.id} className={`flex ${isRight ? 'justify-end' : 'justify-start'} group`}>
+                      <div className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm border ${
+                        isRight
+                          ? 'bg-emerald-500/95 text-white border-emerald-400 rounded-br-sm'
+                          : 'bg-blue-50 text-gray-900 border-blue-200 rounded-bl-sm'
+                      }`}>
+                        <div className={`flex items-center gap-3 mb-1 ${isRight ? 'flex-row-reverse' : ''}`}>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${isRight ? 'bg-emerald-600/50 text-emerald-100' : 'bg-blue-100 text-blue-700'}`}>
+                            {isRight ? 'ผู้ส่ง' : 'ผู้รับ'}
+                          </span>
+                          <span className={`text-xs font-bold ${isRight ? 'text-emerald-100' : 'text-blue-700'}`}>
+                            {log.sender_name}
+                            <span className={`ml-1.5 px-1.5 py-0.5 rounded text-[10px] ${isRight ? 'bg-emerald-700/60 text-emerald-100' : 'bg-blue-100 text-blue-700'}`}>{scopeLabel}</span>
+                          </span>
+                          <span className={`text-xs ${isRight ? 'text-emerald-200' : 'text-gray-500'}`}>
+                            {formatDateTime(log.created_at)}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleHideIssueChat(log.id)}
+                            title="ซ่อนข้อความนี้"
+                            className={`opacity-0 group-hover:opacity-100 p-0.5 rounded transition-all ${
+                              isRight ? 'text-emerald-100 hover:text-red-200' : 'text-gray-400 hover:text-red-500'
+                            }`}
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
+                        <div className="text-sm whitespace-pre-wrap leading-relaxed">{log.message}</div>
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+            <div className="p-4 border-t bg-white space-y-3">
+              <textarea
+                value={chatMessage}
+                onChange={(e) => setChatMessage(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    if (e.shiftKey) {
+                      // Shift+Enter = ขึ้นบรรทัดใหม่ (default behavior)
+                      return
+                    }
+                    if (enterToSend && !e.nativeEvent.isComposing) {
+                      e.preventDefault()
+                      if (chatMessage.trim() && !chatSending) sendChat()
+                    }
+                  }
+                }}
+                rows={3}
+                placeholder={enterToSend ? 'พิมพ์ข้อความ... (Enter ส่ง, Shift+Enter ขึ้นบรรทัดใหม่)' : 'พิมพ์ข้อความ...'}
+                className="w-full px-4 py-3 border rounded-xl border-gray-300 focus:ring-2 focus:ring-blue-400 focus:border-blue-400 focus:outline-none text-sm bg-gray-50"
+              />
+              <div className="flex items-center justify-between">
+                <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={enterToSend}
+                    onChange={(e) => {
+                      const checked = e.target.checked
+                      setEnterToSend(checked)
+                      if (user?.id) setChatEnterToSendPref(user.id, 'issue', checked)
+                    }}
+                    className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <span className="text-sm text-gray-600">Enter ส่งข้อความ</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={sendChat}
+                  disabled={chatSending || chatMessage.trim() === ''}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 font-semibold transition-colors"
+                >
+                  <FiMessageCircle className="w-4 h-4" />
+                  {chatSending ? 'กำลังส่ง...' : 'ส่งข้อความ'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={!!detailOrder || detailLoading}
+        onClose={() => setDetailOrder(null)}
+        contentClassName="max-w-[96vw] w-full"
+      >
+        {detailLoading ? (
+          <div className="flex justify-center items-center py-12">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
+          </div>
+        ) : detailOrder ? (
+          <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} />
+        ) : (
+          <div className="text-center text-gray-500 py-8">ไม่พบรายละเอียดบิล</div>
+        )}
+      </Modal>
+
+      <Modal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        contentClassName="max-w-lg w-full"
+      >
+        <div className="p-6 space-y-4">
+          <h3 className="text-lg font-semibold text-gray-900">เปิด Ticket</h3>
+
+          {/* ค้นหาบิล */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">ค้นหาบิล</label>
+            <div className="relative">
+              <input
+                type="text"
+                value={billSearch}
+                onChange={(e) => handleBillSearch(e.target.value)}
+                placeholder="พิมพ์เลขบิลหรือชื่อลูกค้า..."
+                className="w-full px-3 py-2 border rounded-lg bg-white disabled:bg-gray-100"
+                disabled={!!createOrderId}
+              />
+              {createOrderId && (
+                <button
+                  type="button"
+                  onClick={() => { setCreateOrderId(''); setBillSearch(''); setBillSearchResults([]); setCreateWorkOrder(''); setOrdersForWorkOrder([]) }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-red-500 hover:text-red-700 bg-white px-1"
+                >
+                  ล้าง
+                </button>
+              )}
+            </div>
+            {billSearching && <p className="text-xs text-gray-400 mt-1">กำลังค้นหา...</p>}
+            {billSearchResults.length > 0 && !createOrderId && (
+              <div className="mt-1 border rounded-lg max-h-40 overflow-y-auto bg-white shadow-sm">
+                {billSearchResults.map((o) => (
+                  <button
+                    key={o.id}
+                    type="button"
+                    onClick={() => {
+                      setCreateOrderId(o.id)
+                      setBillSearch(o.bill_no || '')
+                      setBillSearchResults([])
+                      if (o.work_order_name) setCreateWorkOrder(o.work_order_name)
+                    }}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 border-b last:border-b-0"
+                  >
+                    <span className="font-semibold text-blue-600">
+                      {o.bill_no}
+                      <ExpressReceiptNumberInline value={o.express_receipt_number} />
+                    </span>
+                    {o.customer_name && <span className="text-gray-500 ml-2">{o.customer_name}</span>}
+                    {o.work_order_name && <span className="text-gray-400 ml-2 text-xs">[{o.work_order_name}]</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="relative flex items-center">
+            <hr className="flex-grow border-gray-200" />
+            <span className="px-2 text-xs text-gray-400">หรือเลือกจากใบงาน</span>
+            <hr className="flex-grow border-gray-200" />
+          </div>
+
+          {/* ใบงาน */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">ใบงาน</label>
+            <select
+              value={createWorkOrder}
+              onChange={(e) => {
+                const next = e.target.value
+                setCreateWorkOrder(next)
+                setCreateOrderId('')
+                setBillSearch('')
+                setBillSearchResults([])
+                loadOrdersForSelectedWorkOrder(next)
+              }}
+              className="w-full px-3 py-2 border rounded-lg bg-white disabled:bg-gray-100"
+              disabled={!!createOrderId}
+            >
+              <option value="">-- เลือกใบงาน --</option>
+              {availableWorkOrders.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* บิล */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">บิล</label>
+            <select
+              value={createOrderId}
+              onChange={(e) => {
+                setCreateOrderId(e.target.value)
+                const matched = ordersForWorkOrder.find((o) => o.id === e.target.value)
+                if (matched?.bill_no) setBillSearch(matched.bill_no)
+              }}
+              className="w-full px-3 py-2 border rounded-lg bg-white disabled:bg-gray-100"
+              disabled={!createWorkOrder || !!createOrderId}
+            >
+              <option value="">-- เลือกบิล --</option>
+              {ordersForWorkOrder.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.bill_no} {o.customer_name ? `(${o.customer_name})` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">ประเภท</label>
+            {preferStopProduction ? (
+              <div className="w-full px-3 py-2 border rounded-lg bg-amber-50 border-amber-200 text-amber-950 text-sm font-medium">
+                หยุดผลิต
+                {!stopProductionTypeId && (
+                  <span className="block text-xs text-red-600 font-normal mt-1">ยังไม่มีประเภทนี้ในฐานข้อมูล</span>
+                )}
+              </div>
+            ) : (
+              <select
+                value={createTypeId}
+                onChange={(e) => setCreateTypeId(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg bg-white"
+              >
+                <option value="">-- ไม่ระบุ --</option>
+                {types.map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            )}
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">หัวข้อ</label>
+            <input
+              value={createTitle}
+              onChange={(e) => setCreateTitle(e.target.value)}
+              className="w-full px-3 py-2 border rounded-lg"
+              placeholder="เช่น งานด่วน/ต้องแก้ไข"
+            />
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setPreferStopProduction((prev) => {
+                  const next = !prev
+                  if (next) {
+                    setCreateTypeId(stopProductionTypeId || '')
+                  } else {
+                    setCreateTypeId('')
+                  }
+                  return next
+                })
+              }}
+              disabled={creating}
+              title="ตั้งประเภท Ticket เป็น หยุดผลิต (แสดงป้ายบน Plan)"
+              className={`px-4 py-2 rounded-lg border text-sm font-semibold transition-colors disabled:opacity-50 ${
+                preferStopProduction
+                  ? 'bg-amber-800 text-white border-amber-950 ring-2 ring-amber-400'
+                  : 'bg-white text-amber-900 border-amber-700 hover:bg-amber-50'
+              }`}
+            >
+              หยุดผลิต
+            </button>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setCreateOpen(false)}
+                disabled={creating}
+                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={createIssue}
+                disabled={creating || (preferStopProduction && !stopProductionTypeId)}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              >
+                {creating ? 'กำลังบันทึก...' : 'บันทึก'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  )
+}

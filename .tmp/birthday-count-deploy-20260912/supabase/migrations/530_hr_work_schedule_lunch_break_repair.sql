@@ -1,0 +1,16 @@
+-- Repair production schema drift: the schedule editor reads and writes these
+-- columns, but some environments recorded the earlier migration without the
+-- columns actually being present.
+ALTER TABLE public.hr_work_schedules
+  ADD COLUMN IF NOT EXISTS lunch_start TIME NOT NULL DEFAULT '12:00',
+  ADD COLUMN IF NOT EXISTS lunch_end TIME NOT NULL DEFAULT '13:00';
+
+ALTER TABLE public.hr_work_schedules
+  DROP CONSTRAINT IF EXISTS hr_work_schedules_lunch_range_check;
+
+ALTER TABLE public.hr_work_schedules
+  ADD CONSTRAINT hr_work_schedules_lunch_range_check
+  CHECK (lunch_end > lunch_start);
+
+COMMENT ON COLUMN public.hr_work_schedules.lunch_start IS 'Start of unpaid lunch break';
+COMMENT ON COLUMN public.hr_work_schedules.lunch_end IS 'End of unpaid lunch break';

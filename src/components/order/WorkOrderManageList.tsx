@@ -29,6 +29,8 @@ import {
 import { downloadFlashWaybillXlsx } from '../../lib/flashWaybillExport'
 import { resolveWaybillCustomer } from '../../lib/waybillCustomer'
 
+export const CLAIM_WORK_ORDER_FILTER = '(Claim)'
+
 function pickSpareQtyForLine(lineQty: number, rawCategory: string): number {
   if (String(rawCategory || '').toUpperCase().includes('CONDO STAMP')) return Math.ceil(lineQty / 5)
   return lineQty
@@ -445,14 +447,32 @@ export default function WorkOrderManageList({
   async function loadWorkOrders() {
     setLoading(true)
     try {
+      const isClaimChannelFilter = channelFilter === CLAIM_WORK_ORDER_FILTER
+      let claimWorkOrderIds: string[] = []
+      if (isClaimChannelFilter) {
+        const { data: claimOrders, error: claimOrdersError } = await supabase
+          .from('or_orders')
+          .select('work_order_id')
+          .not('work_order_id', 'is', null)
+          .or('claim_type.not.is.null,bill_no.like.REQ%')
+        if (claimOrdersError) throw claimOrdersError
+        claimWorkOrderIds = Array.from(new Set(
+          (claimOrders || [])
+            .map((row: { work_order_id: string | null }) => row.work_order_id)
+            .filter((id): id is string => Boolean(id)),
+        ))
+      }
+
       let query = supabase
         .from('or_work_orders')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(200)
 
-      if (channelFilter) {
+      if (channelFilter && !isClaimChannelFilter) {
         query = query.like('work_order_name', `${channelFilter}-%`)
+      } else if (isClaimChannelFilter && claimWorkOrderIds.length > 0) {
+        query = query.in('id', claimWorkOrderIds)
       }
       if (dateFrom) {
         query = query.gte('created_at', `${dateFrom}T00:00:00.000Z`)
@@ -464,6 +484,7 @@ export default function WorkOrderManageList({
       const { data, error } = await query
       if (error) throw error
       let list: WorkOrder[] = (data || []) as WorkOrder[]
+      if (isClaimChannelFilter && claimWorkOrderIds.length === 0) list = []
       const searchRaw = searchTerm.trim()
       if (searchRaw) {
         const needle = searchRaw.toLowerCase()
@@ -1833,12 +1854,17 @@ export default function WorkOrderManageList({
             const searchNeedle = searchTerm.trim().toLowerCase()
             const isCancelledWorkOrder = isWorkOrderCancelledRecord(wo)
             const channelCode = channelByWo[wo.id] ?? ''
-            const isClaimWorkOrder = claimByWo[wo.id] || wo.work_order_name.trim().startsWith('(เคลม)')
+            const trimmedWorkOrderName = wo.work_order_name.trim()
+            const hasLegacyClaimPrefix = trimmedWorkOrderName.startsWith('(เคลม)')
+            const hasClaimPrefix = trimmedWorkOrderName.startsWith('(Claim)')
+            const isClaimWorkOrder = claimByWo[wo.id] || hasLegacyClaimPrefix || hasClaimPrefix
             // Older claim work orders were saved without the claim prefix. Keep
-            // their stored identifier intact, but present them consistently.
-            const displayWorkOrderName = isClaimWorkOrder && !wo.work_order_name.trim().startsWith('(เคลม)')
-              ? `(เคลม)${wo.work_order_name}`
-              : wo.work_order_name
+            // their stored identifier intact, but present all claim prefixes in English.
+            const displayWorkOrderName = hasLegacyClaimPrefix
+              ? `(Claim)${trimmedWorkOrderName.slice('(เคลม)'.length)}`
+              : isClaimWorkOrder && !hasClaimPrefix
+                ? `(Claim)${wo.work_order_name}`
+                : wo.work_order_name
             // ใบงานเคลม (มีบิล REQ) ใช้ปุ่มชุดเดียวกับ FBTR เสมอ: Export (ใบปะหน้า) + นำเข้าเลขพัสดุ
             const isWaybillSortChannel = WAYBILL_SORT_CHANNELS.includes(channelCode) && !claimByWo[wo.id]
             const canCancelWorkOrder = isRoleInAllowedList(user?.role, ['superadmin', 'sales-tr'])
@@ -1881,7 +1907,7 @@ export default function WorkOrderManageList({
                   <div className="flex flex-wrap gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
                     <button
                       type="button"
-                      onClick={(e) => onHeaderButtonClick(e, () => copyProduction(wo.id, wo.work_order_name))}
+                      onClick={(e) => onHeaderButtonClick(e, () => copyProduction(wo.id, displayWorkOrderName))}
                       disabled={updating || isCancelledWorkOrder}
                       title={isCancelledWorkOrder ? 'ใบงานนี้ถูกยกเลิกแล้ว ไม่สามารถคัดลอกข้อมูลได้' : undefined}
                       className="px-3 py-1.5 bg-orange-100 text-orange-800 rounded text-xs font-medium hover:bg-orange-200 disabled:opacity-50"
@@ -1898,7 +1924,7 @@ export default function WorkOrderManageList({
                     </button>
                     <button
                       type="button"
-                      onClick={(e) => onHeaderButtonClick(e, () => exportProduction(wo.id, wo.work_order_name))}
+                      onClick={(e) => onHeaderButtonClick(e, () => exportProduction(wo.id, displayWorkOrderName))}
                       disabled={updating}
                       className="px-3 py-1.5 bg-blue-100 text-blue-800 rounded text-xs font-medium hover:bg-blue-200 disabled:opacity-50"
                     >

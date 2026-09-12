@@ -1,0 +1,122 @@
+import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useAuthContext } from '../../../contexts/AuthContext'
+import CreateRequisition from './CreateRequisition'
+import ProductionWorkQueue from './ProductionWorkQueue'
+import ProductionReturn from './ProductionReturn'
+import ProductionParcelReturn from './ProductionParcelReturn'
+import ProductionBorrow from './ProductionBorrow'
+import { useWmsModal } from '../useWmsModal'
+import ModeSwitchButton from '../../ModeSwitchButton'
+
+type ViewKey = 'menu' | 'queue' | 'withdraw' | 'return' | 'borrow' | 'parcel-return'
+const MENU_ITEMS: { key: ViewKey; label: string; icon: string; desc: string; color: string }[] = [
+  { key: 'queue', label: 'บันทึกคิวงาน', icon: 'fas fa-clipboard-list', desc: 'ลงเวลาเริ่ม/เสร็จขั้นตอนการผลิต', color: 'from-blue-600 to-blue-800' },
+  { key: 'withdraw', label: 'เบิกของ', icon: 'fas fa-dolly', desc: 'สร้างใบเบิกสินค้า/วัตถุดิบ', color: 'from-emerald-600 to-emerald-800' },
+  { key: 'return', label: 'คืนของ', icon: 'fas fa-undo-alt', desc: 'คืนสินค้า/วัตถุดิบเข้าคลัง', color: 'from-orange-600 to-orange-800' },
+  { key: 'borrow', label: 'ยืมของ', icon: 'fas fa-hand-holding', desc: 'สร้างใบยืมสินค้า/วัตถุดิบ', color: 'from-cyan-600 to-cyan-800' },
+  { key: 'parcel-return', label: 'รับสินค้าตีกลับ', icon: 'fas fa-barcode', desc: 'สแกนเลขพัสดุรับคืนจากลูกค้า', color: 'from-purple-600 to-purple-800' },
+]
+
+export default function ProductionLayout() {
+  const navigate = useNavigate()
+  const { user, signOut } = useAuthContext()
+  const [activeView, setActiveView] = useState<ViewKey>('menu')
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
+  const [loggingOut, setLoggingOut] = useState(false)
+
+  const handleLogout = async () => {
+    const ok = await showConfirm({ title: 'ออกจากระบบ', message: 'ยืนยันออกจากระบบ?' })
+    if (!ok) return
+    setLoggingOut(true)
+    try {
+      await signOut()
+    } catch (error: any) {
+      showMessage({ message: 'เกิดข้อผิดพลาด: ' + error.message })
+    } finally {
+      setLoggingOut(false)
+    }
+  }
+
+  const activeLabel = MENU_ITEMS.find((m) => m.key === activeView)?.label || ''
+
+  return (
+    <div className="min-h-screen w-full bg-gray-50 text-gray-900 flex flex-col overflow-hidden rounded-none">
+      {/* Header */}
+      <header className="p-3 flex justify-between items-center gap-2 bg-emerald-600 text-white shadow-md sticky top-0 z-20">
+        <div className="flex items-center gap-3 min-w-0">
+          {activeView !== 'menu' && (
+            <button
+              type="button"
+              onClick={() => setActiveView('menu')}
+              className="shrink-0 w-9 h-9 rounded-xl bg-white/20 text-white flex items-center justify-center hover:bg-white/30 active:bg-white/10"
+            >
+              <i className="fas fa-arrow-left text-sm" />
+            </button>
+          )}
+          <div className="flex flex-col min-w-0">
+            <span className="text-xs text-emerald-100/80 font-bold uppercase truncate">
+              {activeView === 'menu' ? 'ฝ่ายผลิต' : activeLabel}
+            </span>
+            <span className="text-sm font-black leading-tight truncate">
+              {user?.username || user?.email || '---'}
+            </span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <ModeSwitchButton />
+          <button
+            type="button"
+            onClick={handleLogout}
+            disabled={loggingOut}
+            className="bg-red-500 hover:bg-red-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-50 whitespace-nowrap"
+          >
+            {loggingOut ? 'กำลังออก...' : 'ออกจากระบบ'}
+          </button>
+        </div>
+      </header>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto">
+        {activeView === 'menu' && (
+          <div className="p-4 space-y-3">
+            <div className="text-center py-4">
+              <div className="text-2xl font-black text-gray-800">ฝ่ายผลิต</div>
+              <div className="text-sm text-gray-500 mt-1">เลือกเมนูที่ต้องการ</div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {MENU_ITEMS.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => setActiveView(item.key)}
+                  className={`rounded-2xl bg-gradient-to-br ${item.color} p-4 text-left transition-all hover:scale-[1.02] active:scale-[0.98] shadow-lg`}
+                >
+                  <i className={`${item.icon} text-2xl text-white/80 mb-3 block`} />
+                  <div className="font-bold text-base text-white leading-tight">{item.label}</div>
+                  <div className="text-[10px] text-white/60 mt-1 leading-tight">{item.desc}</div>
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => navigate('/machinery')}
+                className="rounded-2xl bg-gradient-to-br from-slate-600 to-slate-800 p-4 text-left transition-all hover:scale-[1.02] active:scale-[0.98] shadow-lg"
+              >
+                <i className="fas fa-print text-2xl text-white/80 mb-3 block" aria-hidden />
+                <div className="font-bold text-base text-white leading-tight">Machinery</div>
+                <div className="text-[10px] text-white/60 mt-1 leading-tight">มอนิเตอร์สถานะเครื่องจักร</div>
+              </button>
+            </div>
+          </div>
+        )}
+        {activeView === 'queue' && <ProductionWorkQueue />}
+        {activeView === 'withdraw' && <CreateRequisition />}
+        {activeView === 'return' && <ProductionReturn />}
+        {activeView === 'borrow' && <ProductionBorrow />}
+        {activeView === 'parcel-return' && <ProductionParcelReturn />}
+      </div>
+      {MessageModal}
+      {ConfirmModal}
+    </div>
+  )
+}

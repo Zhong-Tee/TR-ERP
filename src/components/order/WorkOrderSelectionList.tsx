@@ -139,10 +139,10 @@ export default function WorkOrderSelectionList({
     }
   }
 
-  /** ป้ายช่องทางสำหรับกรอง — บิลเคลม (REQ) แยกเป็น "(เคลม)ช่องทาง" เช่น (เคลม)SPTR */
+  /** ป้ายช่องทางสำหรับกรอง — บิลเคลม (REQ) แยกเป็น "(Claim)ช่องทาง" เช่น (Claim)SPTR */
   const pillChannelKeyOf = (o: Order) => {
     const ch = o.channel_code || 'N/A'
-    return String(o.bill_no || '').startsWith('REQ') ? `(เคลม)${ch}` : ch
+    return String(o.bill_no || '').startsWith('REQ') ? `(Claim)${ch}` : ch
   }
   const channelCounts = orders.reduce<Record<string, number>>((acc, o) => {
     const key = pillChannelKeyOf(o)
@@ -187,7 +187,7 @@ export default function WorkOrderSelectionList({
       return
     }
     // Use the same channel key as the visible table so claim bills such as
-    // "(เคลม)SPTR" are not mixed into the regular "SPTR" selection.
+    // "(Claim)SPTR" are not mixed into the regular "SPTR" selection.
     const list = pillChannel ? orders.filter((o) => pillChannelKeyOf(o) === pillChannel) : orders
     if (list.length === 0) return
     const n = parseInt(selectQty, 10)
@@ -255,7 +255,7 @@ export default function WorkOrderSelectionList({
     try {
       const byChannel = selectedOrders.reduce<Record<string, Order[]>>((acc, o) => {
         // Keep claim bills in their own work order and make the claim origin
-        // visible in the generated name, e.g. "(เคลม)SPTR-170769-R1".
+        // visible in the generated name, e.g. "(Claim)SPTR-170769-R1".
         const ch = pillChannelKeyOf(o)
         if (!acc[ch]) acc[ch] = []
         acc[ch].push(o)
@@ -274,7 +274,7 @@ export default function WorkOrderSelectionList({
       let nextOrderIndex = (maxOrder?.[0]?.order_index ?? -1) + 1
 
       for (const [channelCode, channelOrders] of Object.entries(byChannel)) {
-        const claimPrefix = '(เคลม)'
+        const claimPrefix = '(Claim)'
         const prefix = channelCode.startsWith(claimPrefix)
           ? `${claimPrefix}${woPrefix(channelCode.slice(claimPrefix.length))}`
           : woPrefix(channelCode)

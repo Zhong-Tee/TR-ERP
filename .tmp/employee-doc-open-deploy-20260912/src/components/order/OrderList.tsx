@@ -1,0 +1,1556 @@
+import React, { useState, useEffect, useRef } from 'react'
+import { supabase } from '../../lib/supabase'
+import { buildIlikeOr, buildWhitespaceTolerantTrackingPattern } from '../../lib/searchFilter'
+import { fetchLatestRejectedManualSlipOrderIds, fetchLatestRejectedOverpayOrderIds } from '../../lib/rejectedOverpayRefunds'
+import { hasDuplicateSlipError, manualSlipSubmissionMode } from '../../lib/manualSlipRules'
+import { Order, OrderStatus } from '../../types'
+import { formatDateTime } from '../../lib/utils'
+import { useAuthContext } from '../../contexts/AuthContext'
+import Modal from '../ui/Modal'
+import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
+import UrgencyBadge from '../common/UrgencyBadge'
+import OrderDetailView from './OrderDetailView'
+import FailedClaimEditModal from '../claim/FailedClaimEditModal'
+import {
+  isSalesPumpOwnerScopedRole,
+  isSalesTrTeamRole,
+  resolveSalesPumpOwnerAdminName,
+} from '../../config/accessPolicy'
+
+type ManualSlipEligibility = {
+  allowed: boolean
+  reason: 'normal' | 'fallback_duplicate_review' | 'exact_trans_ref_duplicate' | 'cancelled_order'
+  requires_exception_review?: boolean
+  duplicate_order_id?: string
+  duplicate_bill_no?: string | null
+}
+
+interface OrderListProps {
+  /** กรองตามสถานะบิล (ไม่ใช้เมื่อ filterByRejectedOverpayRefund = true) */
+  status?: OrderStatus | OrderStatus[]
+  onOrderClick: (order: Order) => void
+  searchTerm?: string
+  channelFilter?: string
+  adminUserFilter?: string
+  showBillingStatus?: boolean
+  verifiedOnly?: boolean
+  onCountChange?: (count: number) => void
+  /** ป้องกันคลิกที่รายการแล้วไปแสดงที่ สร้าง/แก้ไข (ใช้กับ ตรวจสอบแล้ว, ยกเลิก) */
+  disableOrderClick?: boolean
+  /** แสดงปุ่ม "ย้ายไปรอลงข้อมูล" ด้านขวาสุด */
+  showMoveToWaitingButton?: boolean
+  onMoveToWaiting?: (order: Order) => void | Promise<void>
+  /** เปลี่ยนค่าเพื่อให้ list โหลดใหม่ (หลังย้ายสถานะ) */
+  refreshTrigger?: number
+  /** แสดงเฉพาะบิลที่มีรายการโอนคืน (โอนเกิน) ที่ถูกปฏิเสธ — ไม่กรองตาม status */
+  filterByRejectedOverpayRefund?: boolean
+  /** แสดงบิลที่รายการโอนคืนล่าสุดถูกปฏิเสธ รวมเข้ากับรายการตาม status (ใช้กับแท็บตรวจสอบไม่ผ่าน) */
+  includeRejectedOverpayRefundOrders?: boolean
+  /** แสดงปุ่ม "ลบบิล" (สำหรับเมนูรอลงข้อมูล) */
+  showDeleteButton?: boolean
+  onDelete?: (order: Order) => Promise<void>
+  /** กรองวันที่สร้าง (สำหรับเมนูจัดส่งแล้ว) */
+  dateFrom?: string
+  dateTo?: string
+  /** เมื่อคลิกที่รายการ ให้เปิด OrderDetailView แทน onOrderClick */
+  useDetailViewOnClick?: boolean
+  /** sales-tr: รายการค่า admin_user ของทีม (username/email จาก us_users role sales-tr) */
+  salesTrTeamAdminValues?: string[]
+  /** sales-tr: กรองเฉพาะผู้ใช้คนนี้ (ค่าต้องอยู่ในทีม) — ใช้กับแท็บรอลงข้อมูล */
+  narrowSalesTrAdminUser?: string
+  /** ซ่อนปุ่ม Action ทั้งหมด (ใช้กับหน้ารายการแบบดูอย่างเดียว) */
+  hideActionButtons?: boolean
+  /** เปิดรายละเอียดแบบดูอย่างเดียว (ปิด action แก้ลิงก์ใน detail) */
+  detailReadOnly?: boolean
+  /** ซ่อนบิลเคลม/REQ (claim_type ไม่ว่าง) ออกจากรายการ — ใช้กับแท็บรอลงข้อมูล เพราะบิลเคลมทำงานที่แท็บบิลเคลม */
+  excludeClaimBills?: boolean
+  /** โหลดสินค้า/รีวิวพร้อมรายการหรือไม่; ปิดได้เมื่อหน้ารายละเอียดรองรับ lazy-load */
+  loadOrderRelations?: boolean
+  /** เปิดเครื่องมือเลือกบิลและ Export CSV เลขพัสดุ (ใช้ในแท็บจัดส่งแล้ว) */
+  enableTrackingExport?: boolean
+  /** ตัวกรองรายการตรวจสอบไม่ผ่านที่เก็บเข้าประวัติ */
+  failureArchiveFilter?: 'active' | 'archived' | 'all'
+  /** เปิดปุ่มเก็บเข้าประวัติและการแบ่งหน้า */
+  enableFailureArchive?: boolean
+  onFailureArchiveChange?: () => void | Promise<void>
+}
+
+export default function OrderList({
+  status,
+  onOrderClick,
+  searchTerm = '',
+  channelFilter = '',
+  adminUserFilter = '',
+  showBillingStatus: _showBillingStatus = false,
+  verifiedOnly = false,
+  onCountChange,
+  disableOrderClick = false,
+  showMoveToWaitingButton = false,
+  onMoveToWaiting,
+  refreshTrigger = 0,
+  filterByRejectedOverpayRefund = false,
+  includeRejectedOverpayRefundOrders = false,
+  showDeleteButton = false,
+  onDelete,
+  dateFrom = '',
+  dateTo = '',
+  useDetailViewOnClick = false,
+  salesTrTeamAdminValues,
+  narrowSalesTrAdminUser,
+  hideActionButtons = false,
+  detailReadOnly = false,
+  excludeClaimBills = false,
+  loadOrderRelations = true,
+  enableTrackingExport = false,
+  failureArchiveFilter = 'all',
+  enableFailureArchive = false,
+  onFailureArchiveChange,
+}: OrderListProps) {
+  const { user } = useAuthContext()
+  const [orders, setOrders] = useState<Order[]>([])
+  const [loading, setLoading] = useState(true)
+  const [movingOrderId, setMovingOrderId] = useState<string | null>(null)
+  const [deleteConfirmOrder, setDeleteConfirmOrder] = useState<Order | null>(null)
+  const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null)
+  const [detailOrder, setDetailOrder] = useState<Order | null>(null)
+  const [failedClaimEditOrder, setFailedClaimEditOrder] = useState<Order | null>(null)
+  const [archiveConfirmOrder, setArchiveConfirmOrder] = useState<Order | null>(null)
+  const [archiveReason, setArchiveReason] = useState('')
+  const [archivingOrderId, setArchivingOrderId] = useState<string | null>(null)
+  const [failurePage, setFailurePage] = useState(1)
+  /** ป้องกัน request เก่าที่ตอบช้ากว่าเขียนทับผลจากตัวกรองล่าสุด */
+  const loadRequestRef = useRef(0)
+  const hasLoadedOrdersRef = useRef(false)
+  const previousRefreshTriggerRef = useRef(refreshTrigger)
+
+  useEffect(() => () => {
+    // ทำให้ request ที่ยังค้างอยู่หมดอายุเมื่อสลับออกจากแท็บนี้
+    loadRequestRef.current += 1
+  }, [])
+
+  const exportTrackingCsv = async () => {
+    if (orders.length === 0) return
+
+    const { data: channelRows, error: channelError } = await supabase
+      .from('channels')
+      .select('channel_code, default_carrier')
+    if (channelError) console.warn('Unable to load default carriers for tracking export:', channelError)
+    const carrierByChannel = new Map(
+      (channelRows || []).map((row: any) => [String(row.channel_code || '').toUpperCase(), String(row.default_carrier || '')]),
+    )
+    const csvCell = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`
+    const rows = [
+      ['เลขบิล', 'Trackno', 'ชื่อขนส่ง'],
+      ...orders.map((order) => [
+        order.bill_no,
+        order.tracking_number || '',
+        order.transport_meta?.carrier || carrierByChannel.get((order.channel_code || '').toUpperCase()) || '',
+      ]),
+    ]
+    const csv = '\uFEFF' + rows.map((row) => row.map(csvCell).join(',')).join('\r\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `tracking-export-${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  // ส่งตรวจสลิป modal
+  const [slipCheckOrder, setSlipCheckOrder] = useState<Order | null>(null)
+  const [slipCheckForms, setSlipCheckForms] = useState<{ transfer_date: string; transfer_time: string; transfer_amount: string }[]>([])
+  const [slipCheckSubmitting, setSlipCheckSubmitting] = useState(false)
+  const [slipCheckSlipUrls, setSlipCheckSlipUrls] = useState<string[]>([])
+  const [slipCheckSlipLoading, setSlipCheckSlipLoading] = useState(false)
+  const [slipCheckExceptionReview, setSlipCheckExceptionReview] = useState(false)
+  const [slipCheckResult, setSlipCheckResult] = useState<{ open: boolean; success: boolean; message: string }>({ open: false, success: false, message: '' })
+  const [slipCheckImageZoom, setSlipCheckImageZoom] = useState<string | null>(null)
+
+  async function openSlipCheckModal(order: Order) {
+    const { data: eligibilityData, error: eligibilityError } = await supabase.rpc('manual_slip_submission_eligibility', {
+      p_order_id: order.id,
+    })
+    if (eligibilityError) {
+      setSlipCheckResult({ open: true, success: false, message: 'ตรวจสอบสิทธิ์ส่งสลิปไม่สำเร็จ: ' + eligibilityError.message })
+      return
+    }
+    const eligibility = eligibilityData as ManualSlipEligibility
+    if (!eligibility.allowed) {
+      const message = eligibility.reason === 'exact_trans_ref_duplicate'
+        ? `สลิปนี้ถูกใช้แล้วในบิล ${eligibility.duplicate_bill_no || '-'} จึงไม่สามารถส่งตรวจสลิปมือได้`
+        : 'บิลถูกยกเลิกแล้ว จึงไม่สามารถส่งตรวจสลิปมือได้'
+      setSlipCheckResult({ open: true, success: false, message })
+      return
+    }
+    setSlipCheckExceptionReview(Boolean(eligibility.requires_exception_review))
+    setSlipCheckOrder(order)
+    setSlipCheckForms([])
+    setSlipCheckSlipUrls([])
+    setSlipCheckSlipLoading(true)
+    try {
+      const { data } = await supabase
+        .from('ac_verified_slips')
+        .select('slip_image_url, slip_storage_path')
+        .eq('order_id', order.id)
+        .or('is_deleted.is.null,is_deleted.eq.false')
+        .order('created_at', { ascending: true })
+      const rows = (data || []) as { slip_image_url?: string; slip_storage_path?: string | null }[]
+      const urls: string[] = []
+      for (const r of rows) {
+        if (r.slip_storage_path) {
+          const parts = r.slip_storage_path.split('/')
+          const bucket = parts[0] || 'slip-images'
+          const filePath = parts.slice(1).join('/')
+          const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(filePath, 3600)
+          if (signed?.signedUrl) { urls.push(signed.signedUrl); continue }
+          const retry = await supabase.storage.from('slip-images').createSignedUrl(filePath || r.slip_storage_path, 3600)
+          if (retry.data?.signedUrl) { urls.push(retry.data.signedUrl); continue }
+        }
+        if (r.slip_image_url) urls.push(r.slip_image_url)
+      }
+      setSlipCheckSlipUrls(urls)
+      const count = Math.max(urls.length, 1)
+      setSlipCheckForms(Array.from({ length: count }, () => ({ transfer_date: '', transfer_time: '', transfer_amount: '' })))
+    } catch (e) {
+      console.error('Error loading slips:', e)
+      setSlipCheckForms([{ transfer_date: '', transfer_time: '', transfer_amount: '' }])
+    } finally {
+      setSlipCheckSlipLoading(false)
+    }
+  }
+
+  async function handleSlipCheckSubmit() {
+    if (!slipCheckOrder) return
+    const filledForms = slipCheckForms.filter(f => f.transfer_date && f.transfer_time && f.transfer_amount)
+    if (filledForms.length === 0) return
+    setSlipCheckSubmitting(true)
+    try {
+      const payload = filledForms.map(f => ({
+        transfer_date: f.transfer_date,
+        transfer_time: f.transfer_time,
+        transfer_amount: parseFloat(f.transfer_amount),
+      }))
+      const { data, error } = await supabase.rpc('manual_slip_submit', {
+        p_order_id: slipCheckOrder.id,
+        p_entries: payload,
+      })
+      if (error) throw error
+      const result = (data || {}) as { inserted_count?: number; requires_exception_review?: boolean }
+      setSlipCheckResult({
+        open: true,
+        success: true,
+        message: result.requires_exception_review
+          ? `ส่งตรวจกรณีพิเศษเรียบร้อย ${result.inserted_count || filledForms.length} รายการ`
+          : `ส่งตรวจสลิปเรียบร้อย ${result.inserted_count || filledForms.length} รายการ`,
+      })
+      setSlipCheckOrder(null)
+      setSlipCheckExceptionReview(false)
+      void loadOrders()
+    } catch (e: any) {
+      setSlipCheckResult({ open: true, success: false, message: 'ส่งไม่สำเร็จ: ' + (e?.message || e) })
+    } finally {
+      setSlipCheckSubmitting(false)
+    }
+  }
+
+  useEffect(() => {
+    const isRealtimeRefresh = refreshTrigger !== previousRefreshTriggerRef.current
+    previousRefreshTriggerRef.current = refreshTrigger
+    void loadOrders({ silent: isRealtimeRefresh, reportError: !isRealtimeRefresh })
+  }, [
+    status,
+    searchTerm,
+    channelFilter,
+    adminUserFilter,
+    verifiedOnly,
+    refreshTrigger,
+    filterByRejectedOverpayRefund,
+    includeRejectedOverpayRefundOrders,
+    excludeClaimBills,
+    dateFrom,
+    dateTo,
+    salesTrTeamAdminValues,
+    narrowSalesTrAdminUser,
+    loadOrderRelations,
+    failureArchiveFilter,
+    enableFailureArchive,
+    user?.role,
+    user?.username,
+    user?.email,
+  ])
+
+  useEffect(() => {
+    setFailurePage(1)
+  }, [failureArchiveFilter, searchTerm, channelFilter, adminUserFilter, status])
+
+  function applySalesOrderAdminScope(query: any): any | null {
+    if (isSalesPumpOwnerScopedRole(user?.role)) {
+      const name = resolveSalesPumpOwnerAdminName(user?.role, user?.username, user?.email)
+      return name ? query.eq('admin_user', name) : query
+    }
+    if (isSalesTrTeamRole(user?.role)) {
+      const team = salesTrTeamAdminValues || []
+      if (team.length === 0) return null
+      let q = query.in('admin_user', team)
+      const pick = narrowSalesTrAdminUser?.trim()
+      if (pick) q = q.eq('admin_user', pick)
+      return q
+    }
+    return query
+  }
+
+  function applyFailureArchiveFilter(query: any): any {
+    if (!enableFailureArchive || failureArchiveFilter === 'all') return query
+    return failureArchiveFilter === 'archived'
+      ? query.not('failed_queue_archived_at', 'is', null)
+      : query.is('failed_queue_archived_at', null)
+  }
+
+  async function loadOrders(options?: { silent?: boolean; reportError?: boolean }) {
+    const requestId = ++loadRequestRef.current
+    const isLatestRequest = () => requestId === loadRequestRef.current
+    const isInitialLoad = !hasLoadedOrdersRef.current
+    const showBlockingLoader = !options?.silent && isInitialLoad
+    const commitEmptyResult = () => {
+      if (!isLatestRequest()) return
+      setOrders([])
+      onCountChange?.(0)
+      if (isInitialLoad) setLoading(false)
+    }
+    if (showBlockingLoader) setLoading(true)
+    try {
+      let filteredData: any[] = []
+      const orderSelect = loadOrderRelations ? '*, or_order_items(*), or_order_reviews(*)' : '*'
+      const searchRaw = searchTerm.trim()
+      let matchingSearchOrderIds: string[] | null = null
+
+      if (searchRaw) {
+        const whitespaceTolerantTrackingPattern = buildWhitespaceTolerantTrackingPattern(searchRaw)
+        const trackingMatchesPromise = whitespaceTolerantTrackingPattern
+          ? supabase
+              .from('or_orders')
+              .select('id')
+              .ilike('tracking_number', whitespaceTolerantTrackingPattern)
+          : Promise.resolve({ data: [] as { id: string }[], error: null })
+        const [orderMatches, productMatches, whitespaceTolerantTrackingMatches] = await Promise.all([
+          supabase
+            .from('or_orders')
+            .select('id')
+            .or(
+              buildIlikeOr(searchRaw, [
+                'bill_no',
+                'channel_order_no',
+                'customer_name',
+                'recipient_name',
+                'tracking_number',
+                'express_receipt_number',
+              ]),
+            ),
+          supabase
+            .from('or_order_items')
+            .select('order_id')
+            .or(buildIlikeOr(searchRaw, ['product_name'])),
+          trackingMatchesPromise,
+        ])
+        if (orderMatches.error) throw orderMatches.error
+        if (productMatches.error) throw productMatches.error
+        if (whitespaceTolerantTrackingMatches.error) throw whitespaceTolerantTrackingMatches.error
+
+        matchingSearchOrderIds = Array.from(
+          new Set([
+            ...(orderMatches.data || []).map((row: { id: string }) => String(row.id)),
+            ...(productMatches.data || []).map((row: { order_id: string }) => String(row.order_id)),
+            ...(whitespaceTolerantTrackingMatches.data || []).map((row: { id: string }) => String(row.id)),
+          ]),
+        )
+        if (matchingSearchOrderIds.length === 0) {
+          commitEmptyResult()
+          return
+        }
+      }
+
+      if (filterByRejectedOverpayRefund) {
+        // โหลดบิลที่ปฏิเสธโอนคืน: จาก ac_refunds (status=rejected, reason โอนเกิน) แล้วดึง or_orders
+        const { data: rejectedData } = await supabase
+          .from('ac_refunds')
+          .select('order_id')
+          .ilike('reason', '%โอนเกิน%')
+          .eq('status', 'rejected')
+        const orderIds = [...new Set((rejectedData || []).map((r: any) => r.order_id).filter(Boolean))]
+        if (orderIds.length === 0) {
+          commitEmptyResult()
+          return
+        }
+        let query = supabase
+          .from('or_orders')
+          .select(orderSelect)
+          .in('id', orderIds)
+          .order('created_at', { ascending: false })
+        if (matchingSearchOrderIds) {
+          query = query.in('id', matchingSearchOrderIds)
+        }
+        if (channelFilter) {
+          query = query.eq('channel_code', channelFilter)
+        }
+        if (adminUserFilter.trim()) {
+          query = query.eq('admin_user', adminUserFilter.trim())
+        }
+        query = applyFailureArchiveFilter(query)
+        query = applySalesOrderAdminScope(query)
+        if (query === null) {
+          commitEmptyResult()
+          return
+        }
+        const { data, error } = await query.limit(enableFailureArchive ? 500 : 100)
+        if (error) throw error
+        filteredData = data || []
+      } else {
+        let query = supabase
+          .from('or_orders')
+          .select(orderSelect)
+          .order('created_at', { ascending: false })
+
+        const statuses = status == null ? [] : Array.isArray(status) ? status : [status]
+        const isFilteringShipped = statuses.includes('จัดส่งแล้ว')
+        const dateField = isFilteringShipped ? 'shipped_time' : 'created_at'
+
+        if (status != null) {
+          if (Array.isArray(status)) {
+            query = query.in('status', status)
+          } else {
+            query = query.eq('status', status)
+          }
+        }
+
+        // ซ่อนบิลเคลม/REQ ออกจากรายการ (เช่น แท็บรอลงข้อมูล) — บิลเคลมจัดการที่แท็บบิลเคลม
+        if (excludeClaimBills) {
+          query = query.is('claim_type', null)
+        }
+
+        if (matchingSearchOrderIds) {
+          query = query.in('id', matchingSearchOrderIds)
+        }
+
+        if (channelFilter) {
+          query = query.eq('channel_code', channelFilter)
+        }
+        if (adminUserFilter.trim()) {
+          query = query.eq('admin_user', adminUserFilter.trim())
+        }
+        if (dateFrom) {
+          query = query.gte(dateField, `${dateFrom}T00:00:00.000Z`)
+        }
+        if (dateTo) {
+          query = query.lte(dateField, `${dateTo}T23:59:59.999Z`)
+        }
+        query = applyFailureArchiveFilter(query)
+        query = applySalesOrderAdminScope(query)
+        if (query === null) {
+          commitEmptyResult()
+          return
+        }
+
+        const { data, error } = await query.limit(enableFailureArchive ? 500 : 100)
+
+        if (error) throw error
+        filteredData = data || []
+
+        // แท็บตรวจสอบไม่ผ่าน: รวมบิลที่รายการโอนคืนล่าสุดถูกปฏิเสธ (คงสถานะจริงของบิลไว้)
+        if (includeRejectedOverpayRefundOrders) {
+          const loadedIds = new Set(filteredData.map((o: any) => o.id))
+          const [refundIds, manualSlipIds] = await Promise.all([
+            fetchLatestRejectedOverpayOrderIds(supabase),
+            fetchLatestRejectedManualSlipOrderIds(supabase),
+          ])
+          const rejectedIds = [...new Set([...refundIds, ...manualSlipIds])].filter(
+            (id) => !loadedIds.has(id),
+          )
+          if (rejectedIds.length > 0) {
+            let extraQuery = supabase
+              .from('or_orders')
+              .select(orderSelect)
+              .in('id', rejectedIds)
+              .neq('status', 'ยกเลิก')
+              .order('created_at', { ascending: false })
+            if (matchingSearchOrderIds) {
+              extraQuery = extraQuery.in('id', matchingSearchOrderIds)
+            }
+            if (channelFilter) {
+              extraQuery = extraQuery.eq('channel_code', channelFilter)
+            }
+            if (adminUserFilter.trim()) {
+              extraQuery = extraQuery.eq('admin_user', adminUserFilter.trim())
+            }
+            extraQuery = applyFailureArchiveFilter(extraQuery)
+            const scopedExtraQuery = applySalesOrderAdminScope(extraQuery)
+            if (scopedExtraQuery !== null) {
+              const { data: extraData } = await scopedExtraQuery.limit(enableFailureArchive ? 500 : 100)
+              filteredData = [...filteredData, ...(extraData || [])].sort(
+                (a: any, b: any) => String(b.created_at || '').localeCompare(String(a.created_at || '')),
+              )
+            }
+          }
+        }
+      }
+
+      // กรองข้อมูล verifiedOnly ใน client-side (เพราะ join อาจไม่ทำงานถูกต้อง)
+      // เมนู "ตรวจสอบแล้ว" แสดงทุกบิลที่ status = ตรวจสอบแล้ว (รวมบิลที่ไม่ได้ตรวจสลิปเพราะช่องทางไม่มี bank setting)
+      const statusIncludesVerified = status != null && (
+        Array.isArray(status) ? status.includes('ตรวจสอบแล้ว') : status === 'ตรวจสอบแล้ว'
+      )
+      if (verifiedOnly && !statusIncludesVerified) {
+        filteredData = filteredData.filter((order: any) => {
+          return order.or_order_reviews && 
+                 Array.isArray(order.or_order_reviews) &&
+                 order.or_order_reviews.some((review: any) => review.status === 'approved')
+        })
+      }
+
+      // แสดงผล query หลักทันที ไม่ต้องรอข้อมูลป้าย/สลิป/วิดีโอประกอบทั้งหมด
+      if (!isLatestRequest()) return
+      setOrders(filteredData)
+      onCountChange?.(filteredData.length)
+      if (isInitialLoad) setLoading(false)
+      
+      // Load verification statuses for each order
+      const orderIds = filteredData.map((o: any) => o.id)
+      if (orderIds.length > 0) {
+        // Load packing video URL (Google Drive) per order
+        try {
+          const { data: videoRows, error: videoErr } = await supabase
+            .from('pk_packing_videos')
+            .select('order_id, tracking_number, gdrive_url, recorded_at, created_at')
+            .in('order_id', orderIds)
+            .not('gdrive_url', 'is', null)
+            .order('created_at', { ascending: false })
+          if (videoErr) throw videoErr
+
+          const gdriveByOrderId = new Map<string, string>()
+          const gdriveByTracking = new Map<string, string>()
+          const packedAtByOrderId = new Map<string, string>()
+          const packedAtByTracking = new Map<string, string>()
+          for (const r of (videoRows || []) as any[]) {
+            const url = r?.gdrive_url ? String(r.gdrive_url) : ''
+            if (!url) continue
+            const oid = r?.order_id ? String(r.order_id) : ''
+            const tn = r?.tracking_number ? String(r.tracking_number).trim() : ''
+            const packedAt = r?.recorded_at || r?.created_at ? String(r.recorded_at || r.created_at) : ''
+            if (oid && !gdriveByOrderId.has(oid)) gdriveByOrderId.set(oid, url)
+            if (tn && !gdriveByTracking.has(tn)) gdriveByTracking.set(tn, url)
+            if (packedAt && oid && !packedAtByOrderId.has(oid)) packedAtByOrderId.set(oid, packedAt)
+            if (packedAt && tn && !packedAtByTracking.has(tn)) packedAtByTracking.set(tn, packedAt)
+          }
+
+          filteredData = filteredData.map((order: any) => {
+            const tn = order.tracking_number ? String(order.tracking_number).trim() : ''
+            const gdrive_url =
+              gdriveByOrderId.get(String(order.id)) ||
+              (tn ? gdriveByTracking.get(tn) : null) ||
+              null
+            const packing_recorded_at =
+              packedAtByOrderId.get(String(order.id)) ||
+              (tn ? packedAtByTracking.get(tn) : null) ||
+              null
+            return { ...order, packing_gdrive_url: gdrive_url, packing_recorded_at }
+          })
+        } catch (_e) {
+          // ignore video lookup failure
+        }
+
+        if (!isLatestRequest()) return
+
+        const { data: verifiedSlipsData } = await supabase
+          .from('ac_verified_slips')
+          .select('order_id, verified_amount, account_name_match, bank_code_match, amount_match, validation_status, validation_errors, easyslip_response')
+          .in('order_id', orderIds)
+          .eq('is_deleted', false)
+          .order('created_at', { ascending: true })
+        
+        // Map verification data to orders
+        const verifiedMap = new Map()
+        const orderIdToSlipsTotal = new Map<string, number>()
+        if (verifiedSlipsData) {
+          verifiedSlipsData.forEach((slip: any) => {
+            if (!verifiedMap.has(slip.order_id)) {
+              verifiedMap.set(slip.order_id, [])
+            }
+            verifiedMap.get(slip.order_id).push(slip)
+            const prev = orderIdToSlipsTotal.get(slip.order_id) ?? 0
+            orderIdToSlipsTotal.set(slip.order_id, prev + (Number(slip.verified_amount) || 0))
+          })
+        }
+
+        // Exact transRef duplicates are definitive and cannot be overridden by
+        // manual approval. Amount/date-only matches remain reviewable.
+        const statusValues = Array.isArray(status) ? status : status ? [status] : []
+        const listHasManualSlipActions = includeRejectedOverpayRefundOrders || filterByRejectedOverpayRefund ||
+          statusValues.some((value) => value === 'ตรวจสอบไม่ผ่าน' || value === 'ตรวจสอบไม่สำเร็จ') ||
+          filteredData.some((order: any) => order.status === 'ตรวจสอบไม่ผ่าน' || order.status === 'ตรวจสอบไม่สำเร็จ')
+        const exactDuplicateResult = listHasManualSlipActions
+          ? await supabase.rpc('manual_slip_exact_duplicate_orders', { p_order_ids: orderIds })
+          : { data: [], error: null }
+        const { data: exactDuplicateRows, error: exactDuplicateError } = exactDuplicateResult
+        const exactDuplicateByOrder = new Map<string, { duplicate_order_id: string; duplicate_bill_no: string | null }>()
+        for (const row of (exactDuplicateRows || []) as Array<{ order_id: string; duplicate_order_id: string; duplicate_bill_no: string | null }>) {
+          exactDuplicateByOrder.set(row.order_id, {
+            duplicate_order_id: row.duplicate_order_id,
+            duplicate_bill_no: row.duplicate_bill_no,
+          })
+        }
+        
+        // Add verification data and ยอดรวมสลิป (จาก ac_verified_slips ไม่รวมที่ลบ) ต่อ order
+        filteredData = filteredData.map((order: any) => {
+          const orderSlips = verifiedMap.get(order.id) || []
+          const hasDuplicateBadge = orderSlips.some((slip: any) => hasDuplicateSlipError(slip.validation_errors))
+          const exactDuplicate = exactDuplicateByOrder.get(order.id)
+          const slipsTotal = orderIdToSlipsTotal.get(order.id) ?? null
+          const orderTotal = order.total_amount != null ? Number(order.total_amount) : 0
+          const amountMatchesFromSlips =
+            slipsTotal != null && orderTotal > 0
+              ? Math.abs(slipsTotal - orderTotal) <= 0.01
+              : null
+          return {
+            ...order,
+            verified_slips: orderSlips,
+            slip_logs_total_amount: slipsTotal,
+            slip_logs_amount_matches: amountMatchesFromSlips,
+            manual_slip_exact_duplicate: Boolean(exactDuplicate) || (Boolean(exactDuplicateError) && hasDuplicateBadge),
+            manual_slip_duplicate_lookup_failed: Boolean(exactDuplicateError) && hasDuplicateBadge,
+            manual_slip_duplicate_bill_no: exactDuplicate?.duplicate_bill_no || null,
+            manual_slip_fallback_duplicate: hasDuplicateBadge && !exactDuplicate && !exactDuplicateError,
+          }
+        })
+
+        if (!isLatestRequest()) return
+
+        // Load refunds (โอนเกิน) to show "ตรวจสอบแล้ว (โอนเกิน)"
+        const { data: refundsData } = await supabase
+          .from('ac_refunds')
+          .select('order_id')
+          .in('order_id', orderIds)
+          .ilike('reason', '%โอนเกิน%')
+
+        const orderIdsWithOverpayRefund = new Set((refundsData || []).map((r: any) => r.order_id))
+
+        if (!isLatestRequest()) return
+
+        // Load refunds ที่ถูกปฏิเสธ (โอนเกิน) เพื่อแสดงป้าย "ปฏิเสธโอนคืน" + เหตุผลไม่อนุมัติ
+        const { data: rejectedRefundsData } = await supabase
+          .from('ac_refunds')
+          .select('order_id, rejected_reason')
+          .in('order_id', orderIds)
+          .ilike('reason', '%โอนเกิน%')
+          .eq('status', 'rejected')
+
+        const rejectedOverpayRefundByOrder = new Map<string, string | null>(
+          (rejectedRefundsData || []).map((r: any) => [r.order_id, r.rejected_reason ?? null]),
+        )
+
+        if (!isLatestRequest()) return
+
+        // Load manual slip check submissions (pending = ส่งตรวจแล้วรอบัญชี, rejected-only = ไม่อนุมัติ)
+        const { data: manualSlipData } = await supabase
+          .from('ac_manual_slip_checks')
+          .select('order_id, status, rejected_reason')
+          .in('order_id', orderIds)
+
+        const manualSlipByOrder = new Map<string, { hasPending: boolean; hasRejected: boolean; rejectedReason: string | null }>()
+        for (const r of manualSlipData || []) {
+          const oid = (r as any).order_id as string
+          const st = (r as any).status as string
+          const cur = manualSlipByOrder.get(oid) || { hasPending: false, hasRejected: false, rejectedReason: null }
+          if (st === 'pending') cur.hasPending = true
+          if (st === 'rejected') {
+            cur.hasRejected = true
+            if (!cur.rejectedReason && (r as any).rejected_reason) cur.rejectedReason = (r as any).rejected_reason
+          }
+          manualSlipByOrder.set(oid, cur)
+        }
+
+        filteredData = filteredData.map((order: any) => {
+          const slip = manualSlipByOrder.get(order.id)
+          let manual_slip_badge: 'none' | 'pending' | 'rejected' = 'none'
+          if (slip) {
+            if (slip.hasPending) manual_slip_badge = 'pending'
+            else if (slip.hasRejected) manual_slip_badge = 'rejected'
+          }
+          return {
+            ...order,
+            has_overpay_refund: orderIdsWithOverpayRefund.has(order.id),
+            has_rejected_overpay_refund: rejectedOverpayRefundByOrder.has(order.id),
+            rejected_overpay_reason: rejectedOverpayRefundByOrder.get(order.id) ?? null,
+            manual_slip_badge,
+            manual_slip_rejected_reason: slip?.rejectedReason ?? null,
+          }
+        })
+      }
+
+      if (isLatestRequest()) setOrders(filteredData)
+    } catch (error: any) {
+      if (!isLatestRequest()) return
+      console.error('Error loading orders:', error)
+      if (options?.reportError !== false) {
+        alert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
+      }
+    } finally {
+      if (isLatestRequest()) {
+        hasLoadedOrdersRef.current = true
+        if (isInitialLoad) setLoading(false)
+      }
+    }
+  }
+
+  const canArchiveFailure = ['superadmin', 'admin', 'account'].includes(user?.role ?? '')
+
+  async function archiveFailureOrder() {
+    if (!archiveConfirmOrder || !canArchiveFailure) return
+    const reason = archiveReason.trim()
+    if (!reason) return
+    setArchivingOrderId(archiveConfirmOrder.id)
+    try {
+      const { error } = await supabase
+        .from('or_orders')
+        .update({
+          failed_queue_archived_at: new Date().toISOString(),
+          failed_queue_archived_by: user?.id,
+          failed_queue_archived_by_name: user?.username || user?.email || 'ผู้ใช้งานระบบ',
+          failed_queue_archive_reason: reason,
+        })
+        .eq('id', archiveConfirmOrder.id)
+      if (error) throw error
+      setArchiveConfirmOrder(null)
+      setArchiveReason('')
+      await loadOrders()
+      await onFailureArchiveChange?.()
+    } catch (error: unknown) {
+      alert('เก็บเข้าประวัติไม่สำเร็จ: ' + (error instanceof Error ? error.message : String(error)))
+    } finally {
+      setArchivingOrderId(null)
+    }
+  }
+
+  async function restoreFailureOrder(order: Order) {
+    if (!canArchiveFailure) return
+    setArchivingOrderId(order.id)
+    try {
+      const { error } = await supabase
+        .from('or_orders')
+        .update({
+          failed_queue_archived_at: null,
+          failed_queue_archived_by: null,
+          failed_queue_archived_by_name: null,
+          failed_queue_archive_reason: null,
+        })
+        .eq('id', order.id)
+      if (error) throw error
+      await loadOrders()
+      await onFailureArchiveChange?.()
+    } catch (error: unknown) {
+      alert('นำรายการกลับมาดำเนินการไม่สำเร็จ: ' + (error instanceof Error ? error.message : String(error)))
+    } finally {
+      setArchivingOrderId(null)
+    }
+  }
+
+  const failurePageSize = 25
+  const failurePageCount = enableFailureArchive ? Math.max(1, Math.ceil(orders.length / failurePageSize)) : 1
+  const visibleOrders = enableFailureArchive
+    ? orders.slice((failurePage - 1) * failurePageSize, failurePage * failurePageSize)
+    : orders
+
+  useEffect(() => {
+    setFailurePage((page) => Math.min(page, failurePageCount))
+  }, [failurePageCount])
+
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center py-12">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-300"></div>
+      </div>
+    )
+  }
+
+  if (orders.length === 0) {
+    return (
+      <div className="text-center py-12 text-surface-500">
+        ไม่พบข้อมูลออเดอร์
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2.5">
+      {enableTrackingExport && (
+        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-3 rounded-xl border border-blue-200 bg-white/95 px-4 py-3 shadow-sm backdrop-blur">
+          <span className="text-sm text-gray-600">Export ตามผลการกรองปัจจุบัน {orders.length} รายการ</span>
+          <button
+            type="button"
+            onClick={exportTrackingCsv}
+            className="ml-auto rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+          >
+            Export CSV เลขพัสดุ
+          </button>
+        </div>
+      )}
+      {visibleOrders.map((order, orderIdx) => {
+        const channelCode = (order.channel_code || '').toUpperCase()
+        const channelColor =
+          channelCode.startsWith('TTTR') ? 'bg-blue-100 text-blue-700 border border-blue-200'
+          : channelCode.startsWith('LZTR') ? 'bg-purple-100 text-purple-700 border border-purple-200'
+          : channelCode.startsWith('SPTR') ? 'bg-orange-100 text-orange-700 border border-orange-200'
+          : channelCode.startsWith('FBTR') ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
+          : channelCode.startsWith('LNTR') ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+          : channelCode.startsWith('TLTR') ? 'bg-sky-100 text-sky-700 border border-sky-200'
+          : 'bg-slate-100 text-slate-600 border border-slate-200'
+
+        const statusStyle =
+          order.status === 'จัดส่งแล้ว' ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+          : order.status === 'ลงข้อมูลเสร็จสิ้น' ? 'bg-teal-100 text-teal-700 border border-teal-200'
+          : order.status === 'รอลงข้อมูล' ? 'bg-amber-100 text-amber-700 border border-amber-200'
+          : order.status === 'รอตรวจคำสั่งซื้อ' ? 'bg-yellow-100 text-yellow-700 border border-yellow-200'
+          : order.status === 'ตรวจสอบแล้ว' ? ((order as any).has_overpay_refund ? 'bg-orange-100 text-orange-700 border border-orange-200' : 'bg-sky-100 text-sky-700 border border-sky-200')
+          : order.status === 'ลงข้อมูลผิด' ? 'bg-rose-100 text-rose-700 border border-rose-200'
+          : order.status === 'ตรวจสอบไม่ผ่าน' || order.status === 'ตรวจสอบไม่สำเร็จ' ? 'bg-red-100 text-red-700 border border-red-200'
+          : order.status === 'ยกเลิก' ? 'bg-gray-200 text-gray-500 border border-gray-300'
+          : order.status === 'ใบสั่งงาน' || order.status === 'ย้ายจากใบงาน'
+            ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
+          : 'bg-slate-100 text-slate-600 border border-slate-200'
+        const showDesignBadge =
+          order.requires_confirm_design === true &&
+          [
+            'รอลงข้อมูล',
+            'ลงข้อมูลผิด',
+            'ตรวจสอบไม่ผ่าน',
+            'ตรวจสอบแล้ว',
+            'จัดส่งแล้ว',
+            'ยกเลิก',
+          ].includes(order.status)
+
+        const manualSlipMode = manualSlipSubmissionMode({
+          hasPending: (order as any).manual_slip_badge === 'pending',
+          hasDuplicateBadge: (order as any).verified_slips?.some((slip: any) => hasDuplicateSlipError(slip.validation_errors)) === true,
+          hasExactTransRefDuplicate: Boolean((order as any).manual_slip_exact_duplicate) && !(order as any).manual_slip_duplicate_lookup_failed,
+          duplicateLookupFailed: Boolean((order as any).manual_slip_duplicate_lookup_failed),
+        })
+        const exactManualSlipDuplicate = manualSlipMode === 'blocked_exact' || manualSlipMode === 'blocked_safe'
+        const manualSlipAlreadyPending = manualSlipMode === 'pending'
+        const manualSlipDisabled = exactManualSlipDuplicate || manualSlipAlreadyPending
+        const manualSlipButtonTitle = exactManualSlipDuplicate
+          ? ((order as any).manual_slip_duplicate_lookup_failed
+              ? 'ตรวจสอบเลขอ้างอิงสลิปซ้ำไม่สำเร็จ ระบบจึงปิดการส่งไว้เพื่อความปลอดภัย'
+              : `สลิปถูกใช้แล้วในบิล ${(order as any).manual_slip_duplicate_bill_no || '-'} ไม่สามารถส่งตรวจสลิปมือได้`)
+          : manualSlipAlreadyPending
+            ? 'ส่งตรวจสลิปมือแล้ว กรุณารอฝ่ายบัญชีดำเนินการ'
+            : (order as any).manual_slip_fallback_duplicate
+              ? 'ผลซ้ำจากยอดและเวลาเท่านั้น สามารถส่งตรวจกรณีพิเศษได้'
+              : 'ส่งตรวจสลิปมือ'
+
+        const cardBg = orderIdx % 2 === 0
+          ? 'bg-white border-l-4 border-l-blue-400 border border-gray-100'
+          : 'bg-slate-50 border-l-4 border-l-indigo-400 border border-gray-100'
+
+        return (
+        <div
+          key={order.id}
+          onClick={disableOrderClick ? undefined : () => (useDetailViewOnClick ? setDetailOrder(order) : onOrderClick(order))}
+          className={`${cardBg} p-5 rounded-2xl shadow-sm transition-all ${
+            disableOrderClick ? 'cursor-default' : 'hover:shadow-md hover:border-blue-200 cursor-pointer'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2.5 mb-2 flex-wrap">
+                <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-blue-700 text-xl font-bold hover:text-blue-900 hover:underline transition-colors">
+                  {order.bill_no}
+                  <ExpressReceiptNumberInline value={order.express_receipt_number} />
+                </button>
+                <UrgencyBadge order={order} />
+                {order.work_order_name && (
+                  <span className="text-xl font-bold text-emerald-700 select-all">
+                    {order.work_order_name}
+                  </span>
+                )}
+                {(order.claim_type != null || (order.bill_no || '').startsWith('REQ')) && (
+                  <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-pink-100 text-pink-700 border border-pink-200">
+                    เคลม
+                  </span>
+                )}
+                <span className={`px-2.5 py-1 rounded-full text-sm font-semibold ${channelColor}`}>
+                  {order.channel_code}
+                </span>
+                <span className={`px-2.5 py-1 rounded-full text-sm font-semibold ${statusStyle}`}>
+                  {order.status === 'ตรวจสอบแล้ว' && (order as any).has_overpay_refund
+                    ? 'ตรวจสอบแล้ว (โอนเกิน)'
+                    : order.status}
+                </span>
+                {order.failed_queue_archived_at && (
+                  <span
+                    className="px-2.5 py-1 rounded-full text-sm font-semibold bg-gray-200 text-gray-700 border border-gray-300"
+                    title={order.failed_queue_archive_reason || undefined}
+                  >
+                    เก็บเข้าประวัติแล้ว
+                  </span>
+                )}
+                {showDesignBadge && (
+                  <span className="px-2.5 py-1 rounded-full text-sm font-semibold bg-fuchsia-100 text-fuchsia-800 border border-fuchsia-200">
+                    ออกแบบ
+                  </span>
+                )}
+                {(order as any).has_rejected_overpay_refund && (
+                  <span
+                    className="px-2.5 py-1 bg-accent-300 text-surface-900 rounded-full text-sm font-semibold"
+                    title={(order as any).rejected_overpay_reason ? `เหตุผลไม่อนุมัติ: ${(order as any).rejected_overpay_reason}` : undefined}
+                  >
+                    ปฏิเสธโอนคืน
+                    {(order as any).rejected_overpay_reason && (
+                      <span className="font-medium">: {(order as any).rejected_overpay_reason}</span>
+                    )}
+                  </span>
+                )}
+                {/* แสดง คำขอใบกำกับภาษี / บิลเงินสด สำหรับสถานะ รอลงข้อมูล, ลงข้อมูลผิด, ตรวจสอบไม่ผ่าน, ตรวจสอบแล้ว */}
+                {order.billing_details && (
+                  <>
+                    {order.billing_details.request_tax_invoice && (
+                      <span className="px-2.5 py-1 bg-primary-100 text-primary-900 rounded-full text-sm font-semibold">
+                        ขอใบกำกับภาษี
+                      </span>
+                    )}
+                  </>
+                )}
+                {/* แสดงสถานะการตรวจสลิปในแถวเดียวกัน */}
+                {(order.status === 'ตรวจสอบแล้ว' || order.status === 'ตรวจสอบไม่ผ่าน') && 
+                 (order as any).verified_slips && 
+                 (order as any).verified_slips.length > 0 && (
+                  <>
+                    {(order as any).verified_slips.map((slip: any, idx: number) => {
+                      // ตรวจว่าสลิปนี้ตรวจจริงจาก EasySlip หรือไม่ — ถ้าไม่ได้เช็คจาก EasySlip ไม่แสดงกล่อง ชื่อบัญชี/สาขา/ยอดเงิน
+                      const hasEasySlipVerification = slip.easyslip_response != null
+                      // Check for duplicate slip status
+                      const isDuplicate = slip.validation_errors && 
+                        Array.isArray(slip.validation_errors) &&
+                        slip.validation_errors.some((err: string) => err.includes('สลิปซ้ำ'))
+                      
+                      const slipNumber = idx + 1
+                      const isMultipleSlips = (order as any).verified_slips.length > 1
+                      const hasAnyMatch = hasEasySlipVerification && (
+                        slip.account_name_match !== null ||
+                        slip.bank_code_match !== null ||
+                        slip.amount_match !== null ||
+                        (isMultipleSlips && (order as any).slip_logs_amount_matches !== null)
+                      )
+
+                      // ถ้ามีสลิปหลายใบ ใช้ผลรวมจาก ac_slip_verification_logs สำหรับยอดเงิน
+                      const amountMatchForDisplay =
+                        isMultipleSlips && (order as any).slip_logs_amount_matches !== null
+                          ? (order as any).slip_logs_amount_matches
+                          : slip.amount_match
+                      const orderTotalAmount = order.total_amount != null ? Number(order.total_amount) : null
+                      // เมื่อยอดไม่ตรง แยกว่า ขาด หรือ เกิน (สำหรับป้าย ยอดเงินขาด / ยอดเงินเกิน)
+                      let amountMismatchType: 'under' | 'over' | null = null
+                      if (amountMatchForDisplay === false && orderTotalAmount != null) {
+                        if (isMultipleSlips && (order as any).slip_logs_total_amount != null) {
+                          const slipTotal = Number((order as any).slip_logs_total_amount)
+                          amountMismatchType = slipTotal < orderTotalAmount ? 'under' : 'over'
+                        } else if (slip.verified_amount != null) {
+                          const slipAmount = Number(slip.verified_amount)
+                          amountMismatchType = slipAmount < orderTotalAmount ? 'under' : 'over'
+                        }
+                      }
+                      const amountLabel =
+                        amountMatchForDisplay === true
+                          ? 'ยอดเงิน'
+                          : amountMismatchType === 'under'
+                            ? 'ยอดเงินขาด'
+                            : amountMismatchType === 'over'
+                              ? 'ยอดเงินเกิน'
+                              : 'ยอดเงิน'
+                      const amountMatchTitle =
+                        isMultipleSlips && (order as any).slip_logs_total_amount != null
+                          ? `ยอดรวมสลิป ฿${Number((order as any).slip_logs_total_amount).toLocaleString()} ${(order as any).slip_logs_amount_matches ? 'ตรง' : (amountMismatchType === 'under' ? 'ขาด' : amountMismatchType === 'over' ? 'เกิน' : 'ไม่ตรง')} ยอดออเดอร์`
+                          : `สลิปที่ ${slipNumber}: ยอดเงิน ${slip.amount_match === null ? 'ไม่ระบุ' : (slip.amount_match ? 'ตรง' : (amountMismatchType === 'under' ? 'ขาด' : amountMismatchType === 'over' ? 'เกิน' : 'ไม่ตรง'))}`
+
+                      // ตรวจว่า API ถูกเรียกแต่ไม่ได้ข้อมูลกลับมา (สลิปหมดอายุ หรือ สลิปปลอม)
+                      const isNoDataFromApi = hasEasySlipVerification && !hasAnyMatch && !isDuplicate
+
+                      return (
+                        <React.Fragment key={idx}>
+                          {/* กรณี API ไม่คืนข้อมูล → แสดงป้ายสลิปหมดอายุ/สลิปปลอม */}
+                          {isNoDataFromApi && (
+                            <>
+                              {isMultipleSlips && (
+                                <span className="px-2.5 py-1 bg-surface-200 text-surface-800 rounded-full text-sm font-semibold border border-surface-300">
+                                  ใบที่ {slipNumber}
+                                </span>
+                              )}
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-semibold bg-red-100 text-red-700 border border-red-300" title={`สลิปที่ ${slipNumber}: ตรวจสอบแล้วไม่ได้ข้อมูลจาก API — สลิปอาจหมดอายุหรือเป็นสลิปปลอม`}>
+                                <span>สลิปหมดอายุ หรือ สลิปปลอม</span>
+                              </span>
+                            </>
+                          )}
+                          {hasAnyMatch && (
+                            <>
+                              {/* แสดงหมายเลขสลิป (เฉพาะเมื่อมีหลายใบ) */}
+                              {isMultipleSlips && (
+                                <span className="px-2.5 py-1 bg-surface-200 text-surface-800 rounded-full text-sm font-semibold border border-surface-300">
+                                  ใบที่ {slipNumber}
+                                </span>
+                              )}
+                              {isDuplicate && (
+                                <span className="px-2.5 py-1 bg-accent-200 text-surface-900 rounded-full text-sm font-semibold">
+                                  สลิปซ้ำ
+                                </span>
+                              )}
+                              {/* แสดงสถานะแต่ละรายการพร้อมหมายเลขสลิป */}
+                              <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-semibold ${
+                                slip.account_name_match !== null
+                                  ? (slip.account_name_match 
+                                      ? 'bg-secondary-200 text-secondary-900' 
+                                      : 'bg-accent-200 text-surface-900')
+                                  : 'bg-surface-100 text-surface-600'
+                              }`} title={`สลิปที่ ${slipNumber}: ชื่อบัญชี ${slip.account_name_match === null ? 'ไม่ระบุ' : (slip.account_name_match ? 'ตรง' : 'ไม่ตรง')}`}>
+                                {isMultipleSlips && <span className="font-bold">[{slipNumber}]</span>}
+                                <span>ชื่อบัญชี</span>
+                                {slip.account_name_match !== null && (
+                                  <span>{slip.account_name_match ? '✓' : '✗'}</span>
+                                )}
+                              </span>
+                              <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-semibold ${
+                                slip.bank_code_match !== null
+                                  ? (slip.bank_code_match 
+                                      ? 'bg-secondary-200 text-secondary-900' 
+                                      : 'bg-accent-200 text-surface-900')
+                                  : 'bg-surface-100 text-surface-600'
+                              }`} title={`สลิปที่ ${slipNumber}: สาขา ${slip.bank_code_match === null ? 'ไม่ระบุ' : (slip.bank_code_match ? 'ตรง' : 'ไม่ตรง')}`}>
+                                {isMultipleSlips && <span className="font-bold">[{slipNumber}]</span>}
+                                <span>สาขา</span>
+                                {slip.bank_code_match !== null && (
+                                  <span>{slip.bank_code_match ? '✓' : '✗'}</span>
+                                )}
+                              </span>
+                              <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-semibold ${
+                                amountMatchForDisplay !== null
+                                  ? (amountMatchForDisplay 
+                                      ? 'bg-secondary-200 text-secondary-900' 
+                                      : 'bg-accent-200 text-surface-900')
+                                  : 'bg-surface-100 text-surface-600'
+                              }`} title={amountMatchTitle}>
+                                {isMultipleSlips && <span className="font-bold">[{slipNumber}]</span>}
+                                <span>{amountLabel}</span>
+                                {amountMatchForDisplay !== null && (
+                                  <span>{amountMatchForDisplay ? '✓' : '✗'}</span>
+                                )}
+                              </span>
+                            </>
+                          )}
+                        </React.Fragment>
+                      )
+                    })}
+                  </>
+                )}
+              </div>
+              <div className="text-base text-surface-600 min-w-0">
+                <p className="mb-1 flex flex-wrap gap-x-4">
+                  {order.customer_name && (
+                    <span><span className="font-medium">ชื่อช่องทาง:</span> {order.customer_name}</span>
+                  )}
+                  {order.recipient_name && (
+                    <span><span className="font-medium">ชื่อลูกค้า:</span> {order.recipient_name}</span>
+                  )}
+                  {order.customer_address && (
+                    <span><span className="font-medium">ที่อยู่:</span> {order.customer_address}</span>
+                  )}
+                  {order.channel_order_no && (
+                    <span><span className="font-medium">เลขคำสั่งซื้อ:</span> {order.channel_order_no}</span>
+                  )}
+                  {order.tracking_number && (
+                    <span><span className="font-medium">เลขพัสดุ:</span> {order.tracking_number}</span>
+                  )}
+                </p>
+                <p className="mb-1 font-bold">
+                  ผู้สร้างบิล: {order.admin_user ?? '-'}
+                  {order.last_edited_by && (
+                    <span className="ml-4 font-medium text-surface-500">
+                      ผู้แก้ไขล่าสุด: {order.last_edited_by}
+                    </span>
+                  )}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              {(order as any).manual_slip_badge === 'pending' && (
+                <span className="px-2.5 py-1.5 bg-purple-100 text-purple-700 rounded-full text-xs font-semibold whitespace-nowrap">
+                  ส่งตรวจสลิปแล้ว
+                </span>
+              )}
+              {(order as any).manual_slip_badge === 'rejected' && (
+                <span
+                  className="px-2.5 py-1.5 bg-rose-100 text-rose-800 rounded-full text-xs font-semibold border border-rose-200 max-w-[22rem]"
+                  title={(order as any).manual_slip_rejected_reason ? `เหตุผลที่ไม่อนุมัติ: ${(order as any).manual_slip_rejected_reason}` : undefined}
+                >
+                  ไม่อนุมัติ
+                  {(order as any).manual_slip_rejected_reason && (
+                    <span className="font-medium">: {(order as any).manual_slip_rejected_reason}</span>
+                  )}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  const url = (order as any).packing_gdrive_url as string | null | undefined
+                  if (!url) return
+                  window.open(url, '_blank', 'noopener,noreferrer')
+                }}
+                disabled={!(order as any).packing_gdrive_url}
+                className="px-3 py-1.5 rounded-lg text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 whitespace-nowrap"
+                title={(order as any).packing_gdrive_url ? 'เปิดวิดีโอในแท็บใหม่' : 'ยังไม่พบวิดีโอของบิลนี้'}
+              >
+                วิดีโอ
+              </button>
+              {order.status === 'จัดส่งแล้ว' && (
+                <button
+                  type="button"
+                  onClick={async (e) => {
+                    e.stopPropagation()
+                    const url = (order as any).packing_gdrive_url as string | null | undefined
+                    if (!url) return
+                    try {
+                      await navigator.clipboard.writeText(url)
+                    } catch {
+                      alert('คัดลอกลิงค์ไม่สำเร็จ กรุณากดปุ่มวิดีโอแล้วคัดลอกจากแถบที่อยู่')
+                    }
+                  }}
+                  disabled={!(order as any).packing_gdrive_url}
+                  className="px-3 py-1.5 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 whitespace-nowrap"
+                  title={(order as any).packing_gdrive_url ? 'คัดลอกลิงค์วิดีโอ' : 'ยังไม่พบวิดีโอของบิลนี้'}
+                >
+                  คัดลองลิงค์
+                </button>
+              )}
+              <div className="text-right">
+                <div
+                  className={`text-xl font-bold ${
+                    order.status === 'ตรวจสอบไม่ผ่าน' || order.status === 'ตรวจสอบไม่สำเร็จ'
+                      ? 'text-accent-500'
+                      : order.status === 'ตรวจสอบแล้ว'
+                      ? 'text-secondary-700'
+                      : 'text-surface-700'
+                  }`}
+                >
+                  ฿{order.total_amount.toLocaleString()}
+                </div>
+                <div className="text-sm text-surface-500 mt-0.5">
+                  {formatDateTime(order.created_at)}
+                </div>
+                {order.failed_queue_archived_at && (
+                  <div className="mt-1 max-w-[260px] text-xs leading-5 text-gray-500">
+                    เก็บโดย {order.failed_queue_archived_by_name || '-'} · {formatDateTime(order.failed_queue_archived_at)}
+                    <div className="truncate" title={order.failed_queue_archive_reason || undefined}>
+                      เหตุผล: {order.failed_queue_archive_reason || '-'}
+                    </div>
+                  </div>
+                )}
+                {order.status === 'จัดส่งแล้ว' && (
+                  <div className="text-sm text-surface-500 mt-0.5 whitespace-nowrap">
+                    เวลาแพ็คสินค้า:{' '}
+                    {(order as any).packing_recorded_at
+                      ? formatDateTime((order as any).packing_recorded_at)
+                      : '-'}
+                  </div>
+                )}
+              </div>
+              {!hideActionButtons && (
+                order.status === 'ตรวจสอบไม่ผ่าน' ||
+                order.status === 'ตรวจสอบไม่สำเร็จ' ||
+                // แท็บตรวจสอบไม่ผ่าน: บิลที่ถูกปฏิเสธจากโอนคืน/ตรวจสลิปมือ (สถานะจริงอาจเป็นอย่างอื่น) ก็ให้ปุ่มจัดการครบ
+                (includeRejectedOverpayRefundOrders &&
+                  ((order as any).has_rejected_overpay_refund || (order as any).manual_slip_badge === 'rejected'))
+              ) ? (
+                <div className="flex flex-col gap-1.5 items-end">
+                  {showMoveToWaitingButton && onMoveToWaiting && !String(order.bill_no || '').startsWith('REQ') && (
+                    <button
+                      type="button"
+                      onClick={async (e) => {
+                        e.stopPropagation()
+                        if (movingOrderId) return
+                        setMovingOrderId(order.id)
+                        try {
+                          await onMoveToWaiting(order)
+                        } finally {
+                          setMovingOrderId(null)
+                        }
+                      }}
+                      disabled={movingOrderId === order.id}
+                      className="px-3 py-2 bg-accent-200 hover:bg-accent-300 disabled:opacity-50 text-surface-900 text-xs font-bold rounded-xl whitespace-nowrap transition"
+                    >
+                      {movingOrderId === order.id ? 'กำลังย้าย...' : 'ย้ายไปรอลงข้อมูล'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (String(order.bill_no || '').startsWith('REQ')) setFailedClaimEditOrder(order)
+                      else onOrderClick(order)
+                    }}
+                    className="px-3 py-2 bg-blue-500 hover:bg-blue-600 text-white text-xs font-bold rounded-xl whitespace-nowrap transition"
+                  >
+                    <i className="fas fa-edit mr-1"></i>
+                    แก้ไขบิล{String(order.bill_no || '').startsWith('REQ') ? ' (เคลม)' : ''}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); openSlipCheckModal(order) }}
+                    disabled={manualSlipDisabled}
+                    title={manualSlipButtonTitle}
+                    className="px-3 py-2 bg-orange-500 hover:bg-orange-600 disabled:bg-gray-300 disabled:text-gray-600 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl whitespace-nowrap transition"
+                  >
+                    <i className={`fas ${exactManualSlipDuplicate ? 'fa-ban' : 'fa-paper-plane'} mr-1`}></i>
+                    {exactManualSlipDuplicate
+                      ? 'ส่งตรวจไม่ได้'
+                      : manualSlipAlreadyPending
+                        ? 'รอตรวจสลิปมือ'
+                        : (order as any).manual_slip_fallback_duplicate
+                          ? 'ส่งตรวจกรณีพิเศษ'
+                          : 'ส่งตรวจสลิป'}
+                  </button>
+                  {enableFailureArchive && canArchiveFailure && !order.failed_queue_archived_at && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setArchiveReason('')
+                        setArchiveConfirmOrder(order)
+                      }}
+                      disabled={!!archivingOrderId}
+                      className="px-3 py-2 bg-gray-700 hover:bg-gray-800 disabled:opacity-50 text-white text-xs font-bold rounded-xl whitespace-nowrap transition"
+                    >
+                      เก็บเข้าประวัติ
+                    </button>
+                  )}
+                  {enableFailureArchive && canArchiveFailure && order.failed_queue_archived_at && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void restoreFailureOrder(order)
+                      }}
+                      disabled={!!archivingOrderId}
+                      className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl whitespace-nowrap transition"
+                    >
+                      {archivingOrderId === order.id ? 'กำลังนำกลับ...' : 'นำกลับมาดำเนินการ'}
+                    </button>
+                  )}
+                </div>
+              ) : null}
+              {/* บิลปฏิเสธโอนคืนที่ถูกรวมเข้าแท็บตรวจสอบไม่ผ่าน (สถานะอื่น เช่น จัดส่งแล้ว) ไม่ให้ย้ายกลับรอลงข้อมูล */}
+              {!hideActionButtons && showMoveToWaitingButton && onMoveToWaiting && !includeRejectedOverpayRefundOrders && order.status !== 'ตรวจสอบไม่ผ่าน' && order.status !== 'ตรวจสอบไม่สำเร็จ' && order.status !== 'ยกเลิก' && (
+                <button
+                  type="button"
+                  onClick={async (e) => {
+                    e.stopPropagation()
+                    if (movingOrderId) return
+                    setMovingOrderId(order.id)
+                    try {
+                      await onMoveToWaiting(order)
+                    } finally {
+                      setMovingOrderId(null)
+                    }
+                  }}
+                  disabled={movingOrderId === order.id}
+                  className="px-3 py-2.5 bg-accent-200 hover:bg-accent-300 disabled:opacity-50 text-surface-900 text-sm font-semibold rounded-xl whitespace-nowrap"
+                >
+                  {movingOrderId === order.id ? 'กำลังย้าย...' : 'ย้ายไปรอลงข้อมูล'}
+                </button>
+              )}
+              {!hideActionButtons && showDeleteButton && onDelete && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setDeleteConfirmOrder(order)
+                  }}
+                  disabled={!!deletingOrderId}
+                  className="px-3 py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-semibold rounded-xl whitespace-nowrap"
+                >
+                  ลบบิล
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+        )
+      })}
+      {enableFailureArchive && orders.length > failurePageSize && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-surface-200 bg-white px-4 py-3">
+          <span className="text-sm text-surface-600">
+            แสดง {(failurePage - 1) * failurePageSize + 1}–{Math.min(failurePage * failurePageSize, orders.length)} จาก {orders.length} รายการ
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setFailurePage((page) => Math.max(1, page - 1))}
+              disabled={failurePage === 1}
+              className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm disabled:opacity-40"
+            >
+              ก่อนหน้า
+            </button>
+            <span className="text-sm font-medium">หน้า {failurePage}/{failurePageCount}</span>
+            <button
+              type="button"
+              onClick={() => setFailurePage((page) => Math.min(failurePageCount, page + 1))}
+              disabled={failurePage === failurePageCount}
+              className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm disabled:opacity-40"
+            >
+              ถัดไป
+            </button>
+          </div>
+        </div>
+      )}
+      <Modal
+        open={!!archiveConfirmOrder}
+        onClose={() => { if (!archivingOrderId) setArchiveConfirmOrder(null) }}
+        contentClassName="max-w-md"
+      >
+        {archiveConfirmOrder && (
+          <div className="p-6">
+            <h3 className="text-xl font-semibold text-surface-900">เก็บรายการเข้าประวัติ</h3>
+            <p className="mt-2 text-sm text-surface-600">
+              บิล <strong>{archiveConfirmOrder.bill_no}</strong> จะถูกซ่อนจากคิวที่ต้องดำเนินการ โดยไม่ลบบิล สลิป หรือประวัติการตรวจสอบ
+            </p>
+            <label className="mt-4 block text-sm font-medium text-surface-700">
+              เหตุผล <span className="text-red-600">*</span>
+              <textarea
+                rows={3}
+                value={archiveReason}
+                onChange={(e) => setArchiveReason(e.target.value)}
+                placeholder="ระบุเหตุผลที่เก็บรายการเข้าประวัติ"
+                className="mt-1 w-full rounded-xl border border-surface-300 px-3 py-2 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+              />
+            </label>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setArchiveConfirmOrder(null)}
+                disabled={!!archivingOrderId}
+                className="rounded-xl border border-surface-300 px-4 py-2 text-sm disabled:opacity-50"
+              >
+                ย้อนกลับ
+              </button>
+              <button
+                type="button"
+                onClick={() => void archiveFailureOrder()}
+                disabled={!archiveReason.trim() || !!archivingOrderId}
+                className="rounded-xl bg-gray-800 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-900 disabled:opacity-40"
+              >
+                {archivingOrderId ? 'กำลังบันทึก...' : 'ยืนยันเก็บเข้าประวัติ'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+      <Modal
+        open={!!deleteConfirmOrder}
+        onClose={() => { if (!deletingOrderId) setDeleteConfirmOrder(null) }}
+        contentClassName="max-w-md"
+      >
+        {deleteConfirmOrder && (
+          <div className="p-6">
+            <h3 className="text-2xl font-semibold text-surface-900 mb-2">ยืนยันลบบิล</h3>
+            <p className="text-surface-700 text-base mb-4">
+              ต้องการลบบิล <strong>{deleteConfirmOrder.bill_no}</strong> และข้อมูลที่เกี่ยวข้อง (รวมถึงรูปสลิปใน Storage) ใช่หรือไม่? การดำเนินการนี้ไม่สามารถย้อนกลับได้
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmOrder(null)}
+                disabled={!!deletingOrderId}
+                className="px-4 py-2 border border-surface-300 rounded-xl hover:bg-surface-100 disabled:opacity-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!onDelete || !deleteConfirmOrder) return
+                  setDeletingOrderId(deleteConfirmOrder.id)
+                  try {
+                    await onDelete(deleteConfirmOrder)
+                    setDeleteConfirmOrder(null)
+                  } catch (_) {
+                    // caller may show error
+                  } finally {
+                    setDeletingOrderId(null)
+                  }
+                }}
+                disabled={!!deletingOrderId}
+                className="px-4 py-2 bg-accent-200 text-surface-900 rounded-xl hover:bg-accent-300 disabled:opacity-50 font-semibold"
+              >
+                {deletingOrderId ? 'กำลังลบ...' : 'ยืนยันลบ'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Detail Modal */}
+      <Modal open={!!detailOrder} onClose={() => setDetailOrder(null)} contentClassName="max-w-[96vw] w-full">
+        {detailOrder && <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} readOnly={detailReadOnly} />}
+      </Modal>
+
+      {/* ส่งตรวจสลิป Modal */}
+      <FailedClaimEditModal
+        order={failedClaimEditOrder}
+        onClose={() => setFailedClaimEditOrder(null)}
+        onSaved={async () => {
+          await loadOrders()
+        }}
+      />
+
+      <Modal open={!!slipCheckOrder} onClose={() => { setSlipCheckOrder(null); setSlipCheckExceptionReview(false) }} contentClassName="max-w-4xl w-full">
+        {slipCheckOrder && (
+          <div className="flex flex-col max-h-[90vh]">
+            <div className="p-6 border-b border-gray-200 shrink-0">
+              <h3 className="text-xl font-bold text-gray-800 mb-1">ส่งตรวจสลิป</h3>
+              <p className="text-sm text-gray-500">
+                บิล <span className="font-mono font-bold text-blue-600">{slipCheckOrder.bill_no}</span> — ยอดรวม ฿{slipCheckOrder.total_amount?.toLocaleString()}
+                {slipCheckSlipUrls.length > 0 && <span className="ml-2 text-gray-400">({slipCheckSlipUrls.length} สลิป)</span>}
+              </p>
+              {slipCheckExceptionReview && (
+                <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+                  <i className="fas fa-exclamation-triangle mr-2"></i>
+                  พบข้อมูลซ้ำจากยอดและเวลา แต่ไม่พบเลขอ้างอิงธุรกรรมซ้ำ — รายการนี้จะส่งเป็น “ตรวจสอบกรณีพิเศษ”
+                </div>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              {slipCheckSlipLoading ? (
+                <div className="flex justify-center py-12">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                </div>
+              ) : slipCheckForms.length === 0 ? (
+                <div className="text-center py-8 text-gray-400">
+                  <i className="fas fa-image text-3xl mb-2 block"></i>
+                  <p>ไม่พบรูปสลิป</p>
+                </div>
+              ) : (
+                slipCheckForms.map((form, idx) => (
+                  <div key={idx} className="border rounded-xl overflow-hidden bg-white shadow-sm">
+                    <div className="bg-gray-50 px-4 py-2 border-b flex items-center gap-2">
+                      <span className="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center">{idx + 1}</span>
+                      <span className="text-sm font-bold text-gray-700">สลิปที่ {idx + 1}</span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4">
+                      <div className="flex justify-center">
+                        {slipCheckSlipUrls[idx] ? (
+                          <img
+                            src={slipCheckSlipUrls[idx]}
+                            alt={`สลิป ${idx + 1}`}
+                            className="max-h-[300px] w-auto object-contain rounded-lg border cursor-pointer hover:border-blue-400 transition bg-gray-50"
+                            onClick={() => setSlipCheckImageZoom(slipCheckSlipUrls[idx])}
+                            onError={(e) => { e.currentTarget.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="200" height="200"%3E%3Crect fill="%23eee" width="200" height="200"/%3E%3Ctext fill="%23999" font-family="sans-serif" font-size="12" x="50%25" y="50%25" text-anchor="middle" dy=".3em"%3Eโหลดไม่ได้%3C/text%3E%3C/svg%3E' }}
+                          />
+                        ) : (
+                          <div className="w-full h-32 bg-gray-50 border rounded-lg flex items-center justify-center text-gray-400 text-sm">
+                            <i className="fas fa-image mr-2"></i>ไม่มีรูปสลิป
+                          </div>
+                        )}
+                      </div>
+                      <div className="space-y-3">
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-600 mb-1">วันที่โอน</label>
+                          <input
+                            type="date"
+                            value={form.transfer_date}
+                            onChange={(e) => setSlipCheckForms(prev => prev.map((f, i) => i === idx ? { ...f, transfer_date: e.target.value } : f))}
+                            className="w-full border rounded-lg px-3 py-2 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-600 mb-1">เวลาโอน</label>
+                          <input
+                            type="time"
+                            value={form.transfer_time}
+                            onChange={(e) => setSlipCheckForms(prev => prev.map((f, i) => i === idx ? { ...f, transfer_time: e.target.value } : f))}
+                            className="w-full border rounded-lg px-3 py-2 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-600 mb-1">ยอดโอน (บาท)</label>
+                          <input
+                            type="number"
+                            value={form.transfer_amount}
+                            onChange={(e) => setSlipCheckForms(prev => prev.map((f, i) => i === idx ? { ...f, transfer_amount: e.target.value } : f))}
+                            onWheel={(e) => e.currentTarget.blur()}
+                            placeholder="0.00"
+                            className="w-full border rounded-lg px-3 py-2 text-sm"
+                            step="0.01"
+                            min="0"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {slipCheckForms.length > 0 && (
+              <div className="p-4 border-t border-gray-200 shrink-0 bg-white flex items-center justify-between gap-4">
+                <div className="text-sm text-gray-500">
+                  กรอกข้อมูลแล้ว {slipCheckForms.filter(f => f.transfer_date && f.transfer_time && f.transfer_amount).length} / {slipCheckForms.length} รายการ
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => { setSlipCheckOrder(null); setSlipCheckExceptionReview(false) }}
+                    className="px-5 py-2.5 border border-gray-300 rounded-lg font-semibold text-gray-600 hover:bg-gray-50 transition"
+                  >
+                    ยกเลิก
+                  </button>
+                  <button
+                    onClick={handleSlipCheckSubmit}
+                    disabled={slipCheckSubmitting || slipCheckForms.filter(f => f.transfer_date && f.transfer_time && f.transfer_amount).length === 0}
+                    className="px-5 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition disabled:opacity-50"
+                  >
+                    {slipCheckSubmitting
+                      ? 'กำลังส่ง...'
+                      : `${slipCheckExceptionReview ? 'ยืนยันส่งกรณีพิเศษ' : 'ยืนยัน'} (${slipCheckForms.filter(f => f.transfer_date && f.transfer_time && f.transfer_amount).length} รายการ)`}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      {/* Slip zoom modal */}
+      <Modal open={!!slipCheckImageZoom} onClose={() => setSlipCheckImageZoom(null)} contentClassName="max-w-xl w-full">
+        {slipCheckImageZoom && (
+          <div className="p-4">
+            <img src={slipCheckImageZoom} alt="สลิปขยาย" className="max-w-full max-h-[75vh] h-auto mx-auto rounded-lg" />
+          </div>
+        )}
+      </Modal>
+
+      {/* ส่งตรวจสลิป result modal */}
+      <Modal open={slipCheckResult.open} onClose={() => setSlipCheckResult({ open: false, success: false, message: '' })} contentClassName="max-w-sm">
+        <div className="p-6 text-center">
+          <div className={`text-5xl mb-4 ${slipCheckResult.success ? 'text-green-500' : 'text-red-500'}`}>
+            <i className={`fas ${slipCheckResult.success ? 'fa-check-circle' : 'fa-times-circle'}`}></i>
+          </div>
+          <p className="text-gray-700 font-semibold mb-4">{slipCheckResult.message}</p>
+          <button
+            onClick={() => setSlipCheckResult({ open: false, success: false, message: '' })}
+            className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition"
+          >
+            ตกลง
+          </button>
+        </div>
+      </Modal>
+    </div>
+  )
+}

@@ -1,0 +1,1473 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import Modal from '../components/ui/Modal'
+import ModalCloseButton from '../components/ui/ModalCloseButton'
+import { useWmsModal } from '../components/wms/useWmsModal'
+import { useAuthContext } from '../contexts/AuthContext'
+import type { InventoryPR, InventoryPRItem, Product } from '../types'
+import {
+  loadPRList,
+  loadPRDetail,
+  createPR,
+  updatePR,
+  approvePR,
+  rejectPR,
+  cancelPR,
+  loadProductsWithLastPrice,
+  loadStockBalances,
+  loadPendingPOByProduct,
+  type PendingPOProductInfo,
+  loadActivePRByProduct,
+  type ActivePRProductInfo,
+  loadUserDisplayNames,
+  loadSellers,
+} from '../lib/purchaseApi'
+import { normalizeProductUnitName } from '../lib/productUnits'
+import { getPublicUrl } from '../lib/qcApi'
+import ZoomImage from '../components/ui/ZoomImage'
+
+const STATUS_MAP: Record<string, { label: string; color: string }> = {
+  pending: { label: 'รออนุมัติ', color: 'bg-yellow-100 text-yellow-800' },
+  approved: { label: 'อนุมัติแล้ว', color: 'bg-green-100 text-green-800' },
+  rejected: { label: 'ไม่อนุมัติ', color: 'bg-red-100 text-red-800' },
+  cancelled: { label: 'ยกเลิก', color: 'bg-gray-200 text-gray-600' },
+}
+
+const PR_ALLOWED_ROLES = ['superadmin', 'admin', 'account', 'store']
+const APPROVE_ROLES = ['superadmin', 'admin', 'account']
+const PRICE_VISIBLE_ROLES = ['superadmin', 'account']
+
+function getOpenPRStatusLabel(status: string): string {
+  return status === 'pending' ? 'เปิด PR แล้ว (รออนุมัติ)' : 'เปิด PR แล้ว (อนุมัติแล้ว)'
+}
+
+function getPendingPOStatusLabel(status: string): string {
+  if (status === 'ordered') return 'สั่งซื้อแล้ว'
+  if (status === 'partial') return 'รับเข้าบางส่วน'
+  return 'เปิด PO แล้ว'
+}
+
+interface DraftItem {
+  product_id: string
+  qty: number | ''
+  unit: string
+  estimated_price: number | null
+  note: string
+}
+
+export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedPrType?: string; hideCreate?: boolean } = {}) {
+  const navigate = useNavigate()
+  const { user } = useAuthContext()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
+
+  function parseOrderPoint(raw: unknown): number | null {
+    if (raw == null) return null
+    const s = String(raw).trim()
+    if (!s) return null
+    const n = Number(s.replace(/,/g, ''))
+    return Number.isFinite(n) && n > 0 ? n : null
+  }
+
+  // list state
+  const [prs, setPrs] = useState<(InventoryPR & { _itemCount?: number })[]>([])
+  const [products, setProducts] = useState<(Product & { last_price?: number | null })[]>([])
+  const [stockBalances, setStockBalances] = useState<Record<string, number>>({})
+  const [pendingPOByProduct, setPendingPOByProduct] = useState<Record<string, PendingPOProductInfo>>({})
+  const [activePRByProduct, setActivePRByProduct] = useState<Record<string, ActivePRProductInfo>>({})
+  const [loading, setLoading] = useState(true)
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [typeFilter, setTypeFilter] = useState('all')
+  const [search, setSearch] = useState('')
+  // Keep the initial list unfiltered so it matches the PR notification count.
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+
+  // sellers list
+  const [sellers, setSellers] = useState<{ id: string; name: string; name_cn?: string | null; seller_type?: string | null }[]>([])
+
+  // create / edit modal
+  const [createOpen, setCreateOpen] = useState(false)
+  const [editingPrId, setEditingPrId] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [selectedSupplierId, setSelectedSupplierId] = useState('')
+  const [selectedSupplierName, setSelectedSupplierName] = useState('')
+  const [draftItems, setDraftItems] = useState<DraftItem[]>([{ product_id: '', qty: 1, unit: '', estimated_price: null, note: '' }])
+  const [note, setNote] = useState('')
+  const [prType, setPrType] = useState<'normal' | 'urgent'>('normal')
+  const [productSearch, setProductSearch] = useState('')
+  const [filterType, setFilterType] = useState('')
+  const [filterSeller, setFilterSeller] = useState('')
+  const [filterSellerType, setFilterSellerType] = useState('')
+  const [bulkSelectedIds, setBulkSelectedIds] = useState<string[]>([])
+  const [bulkPickerOpen, setBulkPickerOpen] = useState(false)
+  const bulkPickerRef = useRef<HTMLDivElement>(null)
+
+  // supplier panel (right side)
+  const [supplierPanelSeller, setSupplierPanelSeller] = useState('')
+  const [supplierPanelIndex, setSupplierPanelIndex] = useState<number>(-1)
+
+  // detail modal
+  const [viewing, setViewing] = useState<InventoryPR | null>(null)
+  const [viewItems, setViewItems] = useState<InventoryPRItem[]>([])
+  const [detailLoading, setDetailLoading] = useState(false)
+
+  // user display names
+  const [userMap, setUserMap] = useState<Record<string, string>>({})
+
+  // approve/reject
+  const [updating, setUpdating] = useState(false)
+  const [rejectOpen, setRejectOpen] = useState(false)
+  const [rejectReason, setRejectReason] = useState('')
+
+  const canApprove = APPROVE_ROLES.includes(user?.role || '')
+  const canSeePrice = PRICE_VISIBLE_ROLES.includes(user?.role || '')
+  const canManagePR = PR_ALLOWED_ROLES.includes(user?.role || '')
+
+  const handleCreateFromTopBar = useCallback(() => { if (!hideCreate) setCreateOpen(true) }, [hideCreate])
+
+  useEffect(() => {
+    window.addEventListener('purchase-pr-create', handleCreateFromTopBar)
+    return () => window.removeEventListener('purchase-pr-create', handleCreateFromTopBar)
+  }, [handleCreateFromTopBar])
+
+  useEffect(() => {
+    if (!bulkPickerOpen) return
+    function onClickOutside(e: MouseEvent) {
+      if (bulkPickerRef.current && !bulkPickerRef.current.contains(e.target as Node)) {
+        setBulkPickerOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onClickOutside)
+    return () => document.removeEventListener('mousedown', onClickOutside)
+  }, [bulkPickerOpen])
+
+  const [debouncedSearch, setDebouncedSearch] = useState(search)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 400)
+    return () => clearTimeout(timer)
+  }, [search])
+
+  useEffect(() => {
+    loadAll()
+  }, [statusFilter, typeFilter, debouncedSearch, dateFrom, dateTo, fixedPrType, canSeePrice])
+
+  async function loadAll() {
+    setLoading(true)
+    try {
+      const [prData, prodData, stockData, sellerData, pendingPOData, activePRData] = await Promise.all([
+        loadPRList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined, prType: fixedPrType || (typeFilter !== 'all' ? typeFilter : undefined) }, canSeePrice),
+        products.length ? Promise.resolve(products) : loadProductsWithLastPrice(canSeePrice),
+        Object.keys(stockBalances).length ? Promise.resolve(stockBalances) : loadStockBalances(),
+        sellers.length ? Promise.resolve(sellers) : loadSellers(),
+        loadPendingPOByProduct(),
+        loadActivePRByProduct(),
+      ])
+      // Machinery requests stay on their request page while pending. Once approved,
+      // expose the same PR in the normal PR workflow so purchasing can create its PO.
+      const visiblePrData = fixedPrType
+        ? prData
+        : prData.filter((pr: any) => pr.pr_type !== 'machinery' || pr.status === 'approved')
+      const mappedPrs = visiblePrData.map((pr: any) => ({
+        ...pr,
+        _itemCount: pr.inv_pr_items?.length ?? 0,
+      }))
+      setPrs(mappedPrs)
+      if (!products.length) setProducts((prodData as any[]).filter((p: any) => p.product_type === 'FG' || p.product_type === 'RM'))
+      if (!Object.keys(stockBalances).length) setStockBalances(stockData as Record<string, number>)
+      if (!sellers.length) setSellers(sellerData as { id: string; name: string; name_cn?: string | null; seller_type?: string | null }[])
+      setPendingPOByProduct(pendingPOData)
+      setActivePRByProduct(activePRData)
+
+      const uids = mappedPrs.flatMap((pr: any) => [pr.requested_by, pr.approved_by]).filter(Boolean)
+      if (uids.length) {
+        const names = await loadUserDisplayNames(uids)
+        setUserMap((prev) => ({ ...prev, ...names }))
+      }
+      window.dispatchEvent(new CustomEvent('purchase-badge-refresh'))
+    } catch (e) {
+      console.error('Load PR failed:', e)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const productMap = useMemo(() => {
+    const m = new Map<string, Product & { last_price?: number | null }>()
+    products.forEach((p) => m.set(p.id, p))
+    return m
+  }, [products])
+
+  function getLastPurchasePrice(product?: (Product & { last_price?: number | null }) | null): number | null {
+    const raw = product?.last_price
+    const n = raw != null ? Number(raw) : NaN
+    return Number.isFinite(n) && n > 0 ? n : null
+  }
+
+  function getProductUnit(product?: (Product & { last_price?: number | null }) | null): string {
+    return normalizeProductUnitName(product?.unit_name)
+  }
+
+  /* ── Filter options extracted from products ── */
+  const uniqueTypes = useMemo(() => [...new Set(products.map((p) => p.product_type).filter(Boolean))].sort(), [products])
+  const uniqueSellers = useMemo(() => [...new Set(products.map((p) => p.seller_name).filter(Boolean) as string[])].sort(), [products])
+  const sellerTypeByName = useMemo(() => {
+    const m = new Map<string, 'thailand' | 'foreign'>()
+    sellers.forEach((s) => {
+      m.set(s.name, s.seller_type === 'thailand' ? 'thailand' : 'foreign')
+    })
+    return m
+  }, [sellers])
+
+  const filteredProducts = useMemo(() => {
+    let filtered = products
+    if (selectedSupplierName) filtered = filtered.filter((p) => p.seller_name === selectedSupplierName)
+    if (productSearch.trim()) {
+      const s = productSearch.toLowerCase()
+      filtered = filtered.filter(
+        (p) =>
+          p.product_code.toLowerCase().includes(s) ||
+          p.product_name.toLowerCase().includes(s) ||
+          (p.product_name_cn && p.product_name_cn.toLowerCase().includes(s)) ||
+          (p.seller_name && p.seller_name.toLowerCase().includes(s))
+      )
+    }
+    if (filterType) filtered = filtered.filter((p) => p.product_type === filterType)
+    if (filterSeller) filtered = filtered.filter((p) => p.seller_name === filterSeller)
+    if (filterSellerType) {
+      filtered = filtered.filter((p) => {
+        if (!p.seller_name) return false
+        return sellerTypeByName.get(p.seller_name) === filterSellerType
+      })
+    }
+    return filtered
+  }, [products, productSearch, filterType, filterSeller, filterSellerType, selectedSupplierName, sellerTypeByName])
+
+  const bulkPickableProducts = useMemo(() => {
+    const inDraft = new Set(draftItems.map((d) => d.product_id).filter(Boolean))
+    return filteredProducts.filter((p) => !inDraft.has(p.id))
+  }, [filteredProducts, draftItems])
+
+  /** ผู้ขายที่มีสินค้า "ถึงจุดสั่งซื้อ" (stock < order_point) */
+  const reorderPointCountBySeller = useMemo(() => {
+    const map: Record<string, number> = {}
+    for (const prod of products as any[]) {
+      const seller = (prod as any)?.seller_name as string | undefined
+      if (!seller) continue
+      if (!prod?.order_point) continue
+      const op = parseFloat(String(prod.order_point).replace(/,/g, ''))
+      if (Number.isNaN(op) || op <= 0) continue
+      const onHand = (stockBalances as any)[prod.id] ?? 0
+      if (onHand < op) {
+        map[seller] = (map[seller] || 0) + 1
+      }
+    }
+    return map
+  }, [products, stockBalances])
+
+  /* ── Supplier panel products ── */
+  const supplierProducts = useMemo(() => {
+    if (!supplierPanelSeller) return []
+    return products.filter((p) => p.seller_name === supplierPanelSeller)
+  }, [products, supplierPanelSeller])
+
+  /* ── Draft item helpers ── */
+  function addDraftItem() {
+    setDraftItems((prev) => [...prev, { product_id: '', qty: 1, unit: '', estimated_price: null, note: '' }])
+  }
+  function updateDraftItem(i: number, patch: Partial<DraftItem>) {
+    setDraftItems((prev) => prev.map((item, idx) => (idx === i ? { ...item, ...patch } : item)))
+  }
+  function setDraftQtyFromInput(index: number, value: string) {
+    if (value === '') {
+      updateDraftItem(index, { qty: '' })
+      return
+    }
+    const n = parseInt(value, 10)
+    if (!Number.isFinite(n) || n < 0) return
+    updateDraftItem(index, { qty: n })
+  }
+  function createEmptyDraftItem(): DraftItem {
+    return { product_id: '', qty: 1, unit: '', estimated_price: null, note: '' }
+  }
+
+  function removeDraftItem(i: number) {
+    if (draftItems.length <= 1) {
+      setSelectedSupplierId('')
+      setSelectedSupplierName('')
+      setSupplierPanelSeller('')
+      setSupplierPanelIndex(-1)
+      setDraftItems([createEmptyDraftItem()])
+      return
+    }
+    setDraftItems((prev) => prev.filter((_, idx) => idx !== i))
+  }
+
+  function resolveSellerByName(sellerName: string) {
+    return sellers.find((s) => s.name === sellerName)
+  }
+
+  function buildDraftItem(productId: string): DraftItem {
+    const prod = productMap.get(productId)
+    return {
+      product_id: productId,
+      qty: 1,
+      unit: getProductUnit(prod),
+      estimated_price: canSeePrice ? getLastPurchasePrice(prod) : null,
+      note: '',
+    }
+  }
+
+  function applySupplierFromProducts(prods: (Product & { last_price?: number | null })[]): boolean {
+    const sellerNames = [...new Set(prods.map((p) => p.seller_name).filter(Boolean) as string[])]
+    if (sellerNames.length > 1) {
+      showMessage({ message: 'กรุณาเลือกสินค้าจากผู้ขายเดียวกัน' })
+      return false
+    }
+    const sellerName = sellerNames[0]
+    if (sellerName) {
+      if (selectedSupplierName && selectedSupplierName !== sellerName) {
+        showMessage({ message: `สินค้าที่เลือกเป็นของผู้ขาย "${sellerName}" ไม่ตรงกับผู้ขายที่เลือก "${selectedSupplierName}"` })
+        return false
+      }
+      if (!selectedSupplierId) {
+        const seller = resolveSellerByName(sellerName)
+        if (seller) {
+          setSelectedSupplierId(seller.id)
+          setSelectedSupplierName(seller.name)
+        }
+      }
+    }
+    return true
+  }
+
+  function toggleBulkProduct(productId: string) {
+    setBulkSelectedIds((prev) =>
+      prev.includes(productId) ? prev.filter((id) => id !== productId) : [...prev, productId]
+    )
+  }
+
+  function confirmBulkAddProducts() {
+    if (bulkSelectedIds.length === 0) return
+    const prods = bulkSelectedIds.map((id) => productMap.get(id)).filter(Boolean) as (Product & { last_price?: number | null })[]
+    if (!applySupplierFromProducts(prods)) return
+
+    const inDraft = new Set(draftItems.map((d) => d.product_id).filter(Boolean))
+    const toAdd = bulkSelectedIds.filter((id) => !inDraft.has(id)).map((id) => buildDraftItem(id))
+    if (toAdd.length === 0) {
+      showMessage({ message: 'สินค้าที่เลือกถูกเพิ่มในรายการแล้วทั้งหมด' })
+      return
+    }
+
+    setDraftItems((prev) => {
+      if (prev.length === 1 && !prev[0].product_id) return toAdd
+      return [...prev.filter((d) => d.product_id), ...toAdd]
+    })
+    setBulkSelectedIds([])
+    setBulkPickerOpen(false)
+  }
+
+  function onSelectProduct(index: number, productId: string) {
+    if (productId && draftItems.some((d, i) => i !== index && d.product_id === productId)) {
+      showMessage({ message: 'สินค้านี้ถูกเพิ่มในรายการแล้ว' })
+      return
+    }
+    const prod = productMap.get(productId)
+    if (prod?.seller_name) {
+      if (selectedSupplierName && prod.seller_name !== selectedSupplierName) {
+        showMessage({ message: `สินค้านี้เป็นของผู้ขาย "${prod.seller_name}" ไม่ตรงกับผู้ขายที่เลือก "${selectedSupplierName}"` })
+        return
+      }
+      if (!selectedSupplierId) {
+        const seller = resolveSellerByName(prod.seller_name)
+        if (seller) {
+          setSelectedSupplierId(seller.id)
+          setSelectedSupplierName(seller.name)
+        }
+      }
+    }
+    updateDraftItem(index, {
+      product_id: productId,
+      unit: productId ? getProductUnit(prod) : '',
+      estimated_price: canSeePrice ? getLastPurchasePrice(prod) : null,
+    })
+  }
+
+  function addSupplierProduct(productId: string) {
+    if (draftItems.some((d) => d.product_id === productId)) return
+    const prod = productMap.get(productId)
+    if (prod && !applySupplierFromProducts([prod])) return
+    const newItem = buildDraftItem(productId)
+    setDraftItems((prev) => {
+      const insertAt = supplierPanelIndex >= 0 ? supplierPanelIndex + 1 : prev.length
+      return [...prev.slice(0, insertAt), newItem, ...prev.slice(insertAt)]
+    })
+  }
+
+  function handleViewSupplier(index: number) {
+    const item = draftItems[index]
+    const prod = item.product_id ? productMap.get(item.product_id) : null
+    const seller = prod?.seller_name
+    if (!seller) {
+      showMessage({ message: 'สินค้านี้ไม่มีข้อมูลผู้ขาย' })
+      return
+    }
+    setSupplierPanelSeller(seller)
+    setSupplierPanelIndex(index)
+  }
+
+  function closeSupplierPanel() {
+    setSupplierPanelSeller('')
+    setSupplierPanelIndex(-1)
+  }
+
+  /* ── Pull reorder-point items ── */
+  function loadReorderPointItems() {
+    if (!selectedSupplierName) { showMessage({ message: 'กรุณาเลือกผู้ขายก่อน' }); return }
+    const existingProductIds = new Set(draftItems.map((d) => d.product_id).filter(Boolean))
+    const reorderItems: DraftItem[] = []
+    for (const prod of products) {
+      if (prod.seller_name !== selectedSupplierName) continue
+      if (!prod.order_point) continue
+      if (existingProductIds.has(prod.id)) continue
+      const op = parseFloat(String(prod.order_point).replace(/,/g, ''))
+      if (isNaN(op) || op <= 0) continue
+      const onHand = stockBalances[prod.id] ?? 0
+      if (onHand < op) {
+        reorderItems.push({
+          product_id: prod.id,
+          qty: Math.ceil(op - onHand),
+          unit: getProductUnit(prod as any),
+          estimated_price: canSeePrice ? getLastPurchasePrice(prod as any) : null,
+          note: `คงเหลือ ${onHand} / จุดสั่งซื้อ ${prod.order_point}`,
+        })
+      }
+    }
+    if (reorderItems.length === 0) {
+      showMessage({ message: 'ไม่มีรายการที่ถึงจุดสั่งซื้อสำหรับผู้ขายนี้' })
+      return
+    }
+    setDraftItems((prev) => {
+      if (prev.length === 1 && !prev[0].product_id) return reorderItems
+      return [...prev, ...reorderItems]
+    })
+  }
+
+  function closeCreate() {
+    setCreateOpen(false)
+    setEditingPrId(null)
+    setSelectedSupplierId('')
+    setSelectedSupplierName('')
+    setSupplierPanelSeller('')
+    setSupplierPanelIndex(-1)
+    setProductSearch('')
+    setFilterType('')
+    setFilterSeller('')
+    setFilterSellerType('')
+    setBulkSelectedIds([])
+    setBulkPickerOpen(false)
+  }
+
+  function handleSupplierChange(sellerId: string) {
+    const seller = sellers.find((s) => s.id === sellerId)
+    setSelectedSupplierId(sellerId)
+    setSelectedSupplierName(seller?.name || '')
+    setDraftItems([createEmptyDraftItem()])
+    setBulkSelectedIds([])
+    setBulkPickerOpen(false)
+    setSupplierPanelSeller('')
+    setSupplierPanelIndex(-1)
+  }
+
+  /* ── Open Edit PR ── */
+  function openEditPR(pr: InventoryPR, items: any[]) {
+    setEditingPrId(pr.id)
+    const sellerId = pr.supplier_id || ''
+    const sellerName = pr.supplier_name || ''
+    setSelectedSupplierId(sellerId)
+    setSelectedSupplierName(sellerName)
+    setNote(pr.note || '')
+    setPrType((pr.pr_type as 'normal' | 'urgent') || 'normal')
+    setDraftItems(
+      items.map((item: any) => {
+        const currentProduct = productMap.get(item.product_id)
+        return {
+          product_id: item.product_id,
+          qty: Number(item.qty) || 1,
+          unit: getProductUnit(currentProduct),
+          estimated_price: getLastPurchasePrice(currentProduct) ?? (item.last_purchase_price != null ? Number(item.last_purchase_price) : null),
+          note: item.note || '',
+        }
+      })
+    )
+    setViewing(null)
+    setCreateOpen(true)
+  }
+
+  /* ── Create / Update PR ── */
+  async function handleCreatePR() {
+    if (!PR_ALLOWED_ROLES.includes(user?.role || '')) { showMessage({ message: 'ไม่มีสิทธิ์ทำรายการนี้' }); return }
+    if (!fixedPrType && !selectedSupplierId) { showMessage({ message: 'กรุณาเลือกผู้ขาย' }); return }
+    const valid = draftItems.filter((i) => i.product_id && (Number(i.qty) || 0) > 0)
+    if (!valid.length) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ' }); return }
+    const ids = valid.map((i) => i.product_id)
+    if (new Set(ids).size !== ids.length) { showMessage({ message: 'พบรายการสินค้าซ้ำ กรุณาตรวจสอบอีกครั้ง' }); return }
+    const procurementWarnings = valid
+      .map((item) => {
+        const active = activePRByProduct[item.product_id]
+        const prDetails = active?.pr_details.filter((detail) => detail.pr_id !== editingPrId) || []
+        const pendingPO = pendingPOByProduct[item.product_id]
+        return { product: productMap.get(item.product_id), prDetails, pendingPO }
+      })
+      .filter((entry) => entry.prDetails.length > 0 || (entry.pendingPO?.pending_qty || 0) > 0)
+    if (procurementWarnings.length > 0) {
+      const warningLines = procurementWarnings.slice(0, 10).map(({ product, prDetails, pendingPO }) => {
+        const documents = [
+          ...prDetails.map((detail) => `${detail.pr_no}: ${getOpenPRStatusLabel(detail.status)} ${detail.qty.toLocaleString()}`),
+          ...(pendingPO?.po_details || []).map((detail) => `${detail.po_no}: ${getPendingPOStatusLabel(detail.status)} ค้างรับ ${detail.pending_qty.toLocaleString()}`),
+        ]
+        return `• ${product?.product_code || '-'} - ${product?.product_name || 'สินค้า'}\n  ${documents.join('\n  ')}`
+      })
+      if (procurementWarnings.length > 10) warningLines.push(`• และอีก ${procurementWarnings.length - 10} รายการ`)
+      const proceed = await showConfirm({
+        title: 'พบสินค้าที่อยู่ระหว่างดำเนินการจัดซื้อ',
+        message: `${warningLines.join('\n')}\n\nกรุณาตรวจสอบก่อนสั่งซื้อซ้ำ ต้องการบันทึก PR ต่อหรือไม่?`,
+        confirmText: 'บันทึก PR ต่อ',
+        cancelText: 'กลับไปตรวจสอบ',
+      })
+      if (!proceed) return
+    }
+    setSaving(true)
+    try {
+      const itemPayload = valid.map((i) => {
+        const product = productMap.get(i.product_id)
+        const lastPurchase = getLastPurchasePrice(product)
+        return {
+          product_id: i.product_id,
+          qty: Number(i.qty) || 0,
+          unit: getProductUnit(product),
+          estimated_price: lastPurchase != null ? Number(lastPurchase) : null,
+          note: i.note || undefined,
+        }
+      })
+
+      if (editingPrId) {
+        await updatePR({
+          prId: editingPrId,
+          items: itemPayload,
+          note: note.trim() || undefined,
+          prType: fixedPrType || prType,
+          supplierId: selectedSupplierId,
+          supplierName: selectedSupplierName,
+        })
+      } else {
+        await createPR({
+          items: itemPayload,
+          note: note.trim() || undefined,
+          userId: user?.id,
+          prType,
+          supplierId: selectedSupplierId,
+          supplierName: selectedSupplierName,
+        })
+      }
+      setDraftItems([createEmptyDraftItem()])
+      setNote('')
+      setPrType('normal')
+      closeCreate()
+      await loadAll()
+    } catch (e: any) {
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: (editingPrId ? 'แก้ไข' : 'สร้าง') + ' PR ไม่สำเร็จ: ' + (e?.message || e) })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  /* ── View Detail ── */
+  async function openDetail(pr: InventoryPR) {
+    setViewing(pr)
+    setDetailLoading(true)
+    try {
+      const detail = await loadPRDetail(pr.id, canSeePrice)
+      setViewing(detail)
+      setViewItems(detail.inv_pr_items || [])
+      const missingUserIds = [detail.requested_by, detail.approved_by]
+        .filter((id): id is string => Boolean(id && !userMap[id]))
+      if (missingUserIds.length) {
+        const names = await loadUserDisplayNames(missingUserIds)
+        setUserMap((prev) => ({ ...prev, ...names }))
+      }
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+
+  /* ── Approve / Reject ── */
+  async function handleApprove() {
+    if (!viewing) return
+    const ok = await showConfirm({ title: 'อนุมัติ PR', message: `ยืนยันอนุมัติ PR ${viewing.pr_no} ?`, confirmText: 'อนุมัติ' })
+    if (!ok) return
+    setUpdating(true)
+    try {
+      await approvePR(viewing.id, user?.id || '')
+      setViewing(null)
+      await loadAll()
+    } catch (e: any) {
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'อนุมัติไม่สำเร็จ: ' + (e?.message || e) })
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  async function handleReject() {
+    if (!viewing || !rejectReason.trim()) { showMessage({ message: 'กรุณาระบุเหตุผล' }); return }
+    setUpdating(true)
+    try {
+      await rejectPR(viewing.id, user?.id || '', rejectReason.trim())
+      setRejectOpen(false)
+      setRejectReason('')
+      setViewing(null)
+      await loadAll()
+    } catch (e: any) {
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'ปฏิเสธไม่สำเร็จ: ' + (e?.message || e) })
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  async function handleCancel() {
+    if (!viewing) return
+    const ok = await showConfirm({ title: 'ยกเลิก PR', message: `ยืนยันยกเลิก PR ${viewing.pr_no} ?`, confirmText: 'ยกเลิก PR' })
+    if (!ok) return
+    setUpdating(true)
+    try {
+      await cancelPR(viewing.id)
+      setViewing(null)
+      await loadAll()
+    } catch (e: any) {
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'ยกเลิกไม่สำเร็จ: ' + (e?.message || e) })
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  const statusTabs = [
+    { key: 'all', label: 'ทั้งหมด' },
+    { key: 'pending', label: 'รออนุมัติ' },
+    { key: 'approved', label: 'อนุมัติแล้ว' },
+    { key: 'rejected', label: 'ไม่อนุมัติ' },
+    { key: 'cancelled', label: 'ยกเลิก' },
+  ]
+
+  return (
+    <div className="space-y-4 mt-12">
+      {/* ── Filter Bar ── */}
+      <div className="bg-white rounded-xl shadow-sm border p-4">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* status tabs */}
+          <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+            {statusTabs.map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setStatusFilter(t.key)}
+                className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
+                  statusFilter === t.key ? 'bg-white shadow text-emerald-700' : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          {/* type filter */}
+          {!fixedPrType && <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+            {[
+              { key: 'all', label: 'ทุกประเภท' },
+              { key: 'normal', label: 'ปกติ', color: 'text-blue-700' },
+              { key: 'urgent', label: 'ด่วน', color: 'text-red-700' },
+              { key: 'machinery', label: 'ช่าง', color: 'text-violet-700' },
+            ].map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setTypeFilter(t.key)}
+                className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
+                  typeFilter === t.key ? `bg-white shadow ${t.color || 'text-gray-800'}` : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>}
+          {/* search */}
+          <div className="flex-1 min-w-[200px]">
+            <input
+              type="text"
+              placeholder="ค้นหาเลขที่ PR..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
+            />
+          </div>
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="px-2 py-2 border rounded-lg text-sm" title="ตั้งแต่วันที่" />
+          <span className="text-gray-400 text-sm">-</span>
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="px-2 py-2 border rounded-lg text-sm" title="ถึงวันที่" />
+        </div>
+      </div>
+
+      {/* ── PR List ── */}
+      <div className="bg-white rounded-xl shadow-sm border">
+        {loading ? (
+          <div className="flex justify-center items-center py-16">
+            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-500" />
+          </div>
+        ) : prs.length === 0 ? (
+          <div className="text-center py-16 text-gray-400">ไม่พบรายการ PR</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 border-b">
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">เลขที่ PR</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">ประเภท PR</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้ขาย</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">วันที่สร้าง</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้สร้าง</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้อนุมัติ</th>
+                  <th className="px-4 py-3 text-center font-semibold text-gray-600">จำนวนรายการ</th>
+                  {canSeePrice && (
+                    <>
+                      <th className="px-4 py-3 text-right font-semibold text-gray-600">ยอดรวม</th>
+                      <th className="px-4 py-3 text-right font-semibold text-gray-600">ราคา/หน่วย</th>
+                    </>
+                  )}
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">หมายเหตุ</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">สถานะ</th>
+                  <th className="px-4 py-3 text-right font-semibold text-gray-600">จัดการ</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {prs.map((pr) => {
+                  const linkedPO = pr.inv_po?.[0]
+                  const st = linkedPO
+                    ? { label: `สร้าง PO แล้ว: ${linkedPO.po_no}`, color: 'bg-blue-100 text-blue-800' }
+                    : pr.status === 'approved'
+                      ? { label: 'รอสร้าง PO', color: 'bg-amber-100 text-amber-800' }
+                      : STATUS_MAP[pr.status] || { label: pr.status, color: 'bg-gray-100 text-gray-700' }
+                  const isUrgent = pr.pr_type === 'urgent'
+                  const items = ((pr as any).inv_pr_items || []) as Array<{
+                    qty?: number | null
+                    estimated_price?: number | null
+                    last_purchase_price?: number | null
+                  }>
+                  const totalQty = items.reduce((sum, item) => sum + (Number(item.qty) || 0), 0)
+                  const totalAmount = items.reduce((sum, item) => {
+                    const qty = Number(item.qty) || 0
+                    const unitPrice = item.last_purchase_price != null
+                      ? Number(item.last_purchase_price)
+                      : item.estimated_price != null
+                        ? Number(item.estimated_price)
+                        : 0
+                    return sum + qty * unitPrice
+                  }, 0)
+                  const pricePerUnit = totalQty > 0 ? totalAmount / totalQty : null
+                  return (
+                    <tr key={pr.id} className="hover:bg-gray-50/50 transition-colors">
+                      <td className="px-4 py-3 font-medium text-gray-900">{pr.pr_no}</td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${isUrgent ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>
+                        {pr.pr_type === 'machinery' ? 'Machinery' : isUrgent ? 'ด่วน' : 'ปกติ'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-gray-600 max-w-[120px] truncate">{pr.supplier_name || '-'}</td>
+                      <td className="px-4 py-3 text-gray-600">
+                        {pr.requested_at ? new Date(pr.requested_at).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}
+                      </td>
+                      <td className="px-4 py-3 text-gray-600">{pr.requested_by ? userMap[pr.requested_by] || '-' : '-'}</td>
+                      <td className="px-4 py-3 text-gray-600">{pr.approved_by ? userMap[pr.approved_by] || '-' : '-'}</td>
+                      <td className="px-4 py-3 text-center text-gray-600">{(pr as any)._itemCount || '-'}</td>
+                      {canSeePrice && (
+                        <>
+                          <td className="px-4 py-3 text-right text-gray-700">
+                            {totalAmount > 0 ? totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}
+                          </td>
+                          <td className="px-4 py-3 text-right text-gray-700">
+                            {pricePerUnit != null && totalAmount > 0
+                              ? pricePerUnit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ฿'
+                              : '-'}
+                          </td>
+                        </>
+                      )}
+                      <td className="px-4 py-3 text-gray-500 max-w-[200px] truncate">{pr.note || '-'}</td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${st.color}`}>
+                          {st.label}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          {!fixedPrType && pr.status === 'approved' && !linkedPO && (
+                            <button
+                              onClick={() => navigate(`/purchase/po?pr=${encodeURIComponent(pr.id)}`)}
+                              className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs font-semibold transition-colors"
+                            >
+                              สร้าง PO
+                            </button>
+                          )}
+                          {linkedPO && (
+                            <button
+                              onClick={() => navigate(`/purchase/po?search=${encodeURIComponent(linkedPO.po_no)}`)}
+                              className="px-3 py-1.5 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 text-xs font-semibold transition-colors"
+                            >
+                              ดู {linkedPO.po_no}
+                            </button>
+                          )}
+                          <button
+                            onClick={() => openDetail(pr)}
+                            className="px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg hover:bg-emerald-100 text-xs font-semibold transition-colors"
+                          >
+                            ดูรายละเอียด
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── Create PR Full-Screen ── */}
+      {createOpen && (
+        <div className="fixed right-0 bottom-0 z-50 flex flex-col bg-white" style={{ left: 'var(--content-offset-left, 16rem)', top: 'calc(4rem + var(--subnav-height, 0rem))' }} role="dialog" aria-modal="true">
+          <ModalCloseButton onClick={closeCreate} className="absolute right-4 top-4 z-20" />
+          {/* Supplier selector + Search + Filters */}
+          <div className="pl-6 pr-20 pt-5 pb-3 border-b bg-gray-50 shrink-0 space-y-2">
+            <div className="flex gap-3 items-center">
+              <select
+                value={selectedSupplierId}
+                onChange={(e) => handleSupplierChange(e.target.value)}
+                className={`w-56 px-3 py-2 border rounded-lg text-sm bg-white font-semibold focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none ${!selectedSupplierId ? 'border-red-300 text-red-600' : 'border-emerald-400 text-emerald-800'}`}
+              >
+                <option value="">-- เลือกผู้ขาย (บังคับ) --</option>
+                {sellers.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {reorderPointCountBySeller[s.name]
+                      ? `⚠ ${s.name} (${reorderPointCountBySeller[s.name]})`
+                      : s.name}
+                  </option>
+                ))}
+              </select>
+              <div className="flex-1">
+                <input
+                  type="text"
+                  placeholder="ค้นหาสินค้า... (รหัส, ชื่อ, ชื่อจีน, ผู้ขาย)"
+                  value={productSearch}
+                  onChange={(e) => setProductSearch(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
+                />
+              </div>
+              <button
+                onClick={loadReorderPointItems}
+                className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 text-sm font-semibold whitespace-nowrap transition-colors flex items-center gap-2"
+              >
+                <i className="fas fa-exclamation-triangle"></i>
+                ดึงข้อมูลจากจุดสั่งซื้อ
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-3 items-center">
+              <select
+                value={filterType}
+                onChange={(e) => setFilterType(e.target.value)}
+                className="px-3 py-1.5 border rounded-lg text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
+              >
+                <option value="">ประเภท: ทั้งหมด</option>
+                {uniqueTypes.map((t) => (
+                  <option key={t} value={t!}>{t === 'FG' ? 'FG (สินค้าสำเร็จรูป)' : t === 'RM' ? 'RM (วัตถุดิบ)' : t === 'PP' ? 'PP (สินค้าแปรรูป)' : t}</option>
+                ))}
+              </select>
+              <select
+                value={filterSeller}
+                onChange={(e) => setFilterSeller(e.target.value)}
+                className="px-3 py-1.5 border rounded-lg text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
+              >
+                <option value="">ผู้ขาย: ทั้งหมด</option>
+                {uniqueSellers.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+              <select
+                value={filterSellerType}
+                onChange={(e) => setFilterSellerType(e.target.value)}
+                className="px-3 py-1.5 border rounded-lg text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
+              >
+                <option value="">ประเภทผู้ขาย: ทั้งหมด</option>
+                <option value="thailand">ประเทศไทย</option>
+                <option value="foreign">ต่างประเทศ</option>
+              </select>
+              <div ref={bulkPickerRef} className="relative min-w-[280px] flex-1 max-w-xl">
+                <button
+                  type="button"
+                  onClick={() => setBulkPickerOpen((open) => !open)}
+                  className="w-full px-3 py-1.5 border rounded-lg text-sm bg-white text-left flex items-center justify-between gap-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
+                >
+                  <span className={`truncate ${bulkSelectedIds.length > 0 ? 'text-emerald-700 font-medium' : 'text-gray-600'}`}>
+                    {bulkSelectedIds.length > 0
+                      ? `เลือกแล้ว ${bulkSelectedIds.length} รายการ`
+                      : `เลือกสินค้า (${bulkPickableProducts.length} รายการ)`}
+                  </span>
+                  <i className={`fas fa-chevron-down text-xs text-gray-400 transition-transform shrink-0 ${bulkPickerOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {bulkPickerOpen && (
+                  <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+                    <div className="max-h-[min(70vh,40rem)] overflow-y-auto">
+                      {bulkPickableProducts.length === 0 ? (
+                        <div className="px-3 py-4 text-sm text-gray-400 text-center">ไม่พบสินค้าให้เลือก</div>
+                      ) : (
+                        bulkPickableProducts.map((p) => {
+                          const checked = bulkSelectedIds.includes(p.id)
+                          return (
+                            <label
+                              key={p.id}
+                              className={`flex items-start gap-2.5 px-3 py-2 cursor-pointer text-sm border-b border-gray-50 last:border-b-0 ${
+                                checked ? 'bg-emerald-50' : 'hover:bg-gray-50'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleBulkProduct(p.id)}
+                                className="mt-0.5 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 shrink-0"
+                              />
+                              <span className="min-w-0 leading-snug">
+                                <span className="font-medium text-gray-900">{p.product_code}</span>
+                                <span className="text-gray-600"> — {p.product_name}</span>
+                                {p.seller_name && <span className="text-gray-400"> ({p.seller_name})</span>}
+                              </span>
+                            </label>
+                          )
+                        })
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+              {bulkSelectedIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={confirmBulkAddProducts}
+                  className="px-4 py-1.5 bg-emerald-600 text-white rounded-lg text-sm font-semibold hover:bg-emerald-700 transition-colors whitespace-nowrap"
+                >
+                  ยืนยัน ({bulkSelectedIds.length})
+                </button>
+              )}
+              {(filterType || filterSeller || filterSellerType) && (
+                <button
+                  onClick={() => { setFilterType(''); setFilterSeller(''); setFilterSellerType('') }}
+                  className="px-3 py-1.5 text-sm text-red-600 hover:text-red-800 hover:bg-red-50 rounded-lg transition-colors"
+                >
+                  ล้างตัวกรอง
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Main content — two columns */}
+          <div className="flex-1 flex overflow-hidden min-h-0">
+            {/* Left: Draft items */}
+            <div className={`flex-1 overflow-y-auto p-6 transition-all ${supplierPanelSeller ? 'w-1/2' : 'w-full'}`}>
+              <div className="space-y-3">
+                {draftItems.map((item, index) => {
+                  const prod = item.product_id ? productMap.get(item.product_id) : null
+                  const imgUrl = prod ? getPublicUrl('product-images', prod.product_code) : ''
+                  const op = prod ? parseOrderPoint(prod.order_point) : null
+                  const onHand = prod ? (stockBalances[prod.id] ?? 0) : 0
+                  const isBelowOP = op != null && onHand < op
+                  return (
+                    <div key={`draft-${index}`} className={`border rounded-lg p-3 transition-colors ${supplierPanelIndex === index ? 'bg-emerald-50 border-emerald-300' : 'bg-gray-50/50'}`}>
+                      <div className="flex gap-3">
+                        {/* item number */}
+                        <div className="w-7 text-center text-sm font-bold text-gray-400 pt-5 shrink-0">{index + 1}</div>
+                        {/* product image */}
+                        {imgUrl ? (
+                          <ZoomImage src={imgUrl} />
+                        ) : (
+                          <div className="w-16 h-16 rounded-lg bg-gray-200 overflow-hidden flex-shrink-0">
+                            <div className="w-full h-full flex items-center justify-center text-gray-400 text-xs">ไม่มีรูป</div>
+                          </div>
+                        )}
+
+                        <div className="flex-1 space-y-2 min-w-0">
+                          {/* product select + supplier button */}
+                          <div className="flex gap-2">
+                            <select
+                              value={item.product_id}
+                              onChange={(e) => onSelectProduct(index, e.target.value)}
+                              className="flex-1 px-3 py-2 border rounded-lg bg-white text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
+                            >
+                              <option value="">เลือกสินค้า</option>
+                              {filteredProducts
+                                .filter((p) => p.id === item.product_id || !draftItems.some((d, di) => di !== index && d.product_id === p.id))
+                                .map((p) => (
+                                  <option key={p.id} value={p.id}>
+                                    {p.product_code} - {p.product_name}
+                                    {p.seller_name ? ` (${p.seller_name})` : ''}
+                                  </option>
+                                ))}
+                            </select>
+                            {item.product_id && prod?.seller_name && (
+                              <button
+                                onClick={() => handleViewSupplier(index)}
+                                className={`px-3 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
+                                  supplierPanelIndex === index
+                                    ? 'bg-emerald-600 text-white'
+                                    : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+                                }`}
+                              >
+                                <i className="fas fa-store mr-1"></i>
+                                ดูรายการผู้ขาย
+                              </button>
+                            )}
+                          </div>
+
+                          {/* product info */}
+                          {prod && (
+                            <div className="text-xs text-gray-500 flex flex-wrap gap-x-4">
+                              {prod.product_name_cn && <span>ชื่อจีน: {prod.product_name_cn}</span>}
+                              {prod.seller_name && <span>ผู้จัดจำหน่าย: {prod.seller_name}</span>}
+                              {prod.product_category && <span>หมวด: {prod.product_category}</span>}
+                              {canSeePrice && getLastPurchasePrice(prod) != null && (
+                                <span className="text-blue-600 font-medium">ราคาซื้อล่าสุด: {Number(getLastPurchasePrice(prod)).toLocaleString()} บาท</span>
+                              )}
+                              <span className="text-orange-600 font-medium">
+                                คงเหลือ: {(stockBalances[prod.id] ?? 0).toLocaleString()}
+                              </span>
+                              <span className={`${isBelowOP ? 'text-red-600' : 'text-gray-500'} font-medium`}>
+                                จุดสั่งซื้อ: {op != null ? op.toLocaleString() : '-'}
+                              </span>
+                            </div>
+                          )}
+                          {prod && (() => {
+                            const prDetails = (activePRByProduct[prod.id]?.pr_details || [])
+                              .filter((detail) => detail.pr_id !== editingPrId)
+                            if (!prDetails.length) return null
+                            return (
+                              <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                                <div className="flex items-center gap-1.5 font-bold">
+                                  <i className="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                                  สินค้านี้เปิด PR ไว้แล้ว
+                                </div>
+                                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                                  {prDetails.map((detail) => (
+                                    <span key={detail.pr_id}>
+                                      {detail.pr_no}: {getOpenPRStatusLabel(detail.status)} จำนวน {detail.qty.toLocaleString()} {getProductUnit(prod)}
+                                    </span>
+                                  ))}
+                                </div>
+                                <div className="mt-1 text-amber-700">กรุณาตรวจสอบก่อนเปิด PR ซ้ำ</div>
+                              </div>
+                            )
+                          })()}
+                          {prod && pendingPOByProduct[prod.id]?.pending_qty > 0 && (() => {
+                            const pending = pendingPOByProduct[prod.id]
+                            return (
+                              <div className="rounded-lg border border-orange-300 bg-orange-50 px-3 py-2 text-xs text-orange-800">
+                                <div className="flex items-center gap-1.5 font-bold">
+                                  <i className="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                                  สินค้านี้มี PO รอรับเข้า {pending.pending_qty.toLocaleString()} {getProductUnit(prod)}
+                                </div>
+                                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                                  {pending.po_details.map((detail) => (
+                                    <span key={detail.po_id} title={detail.expected_arrival_date ? `คาดว่าจะถึง ${detail.expected_arrival_date}` : undefined}>
+                                      {detail.po_no}: {detail.pending_qty.toLocaleString()}
+                                      {' '}({getPendingPOStatusLabel(detail.status)})
+                                    </span>
+                                  ))}
+                                </div>
+                                <div className="mt-1 text-orange-700">กรุณาตรวจสอบก่อนทำ PR สั่งซื้อซ้ำ</div>
+                              </div>
+                            )
+                          })()}
+
+                          {/* qty / unit / price */}
+                          <div className={`grid gap-2 ${canSeePrice ? 'grid-cols-4' : 'grid-cols-3'}`}>
+                            <div>
+                              <label className="block text-xs text-gray-500 mb-0.5">จำนวน</label>
+                              <input
+                                type="number"
+                                inputMode="numeric"
+                                min={0}
+                                step={1}
+                                value={item.qty}
+                                onFocus={() => {
+                                  if (item.qty === 0) updateDraftItem(index, { qty: '' })
+                                }}
+                                onBlur={() => {
+                                  if (item.qty === '') updateDraftItem(index, { qty: 0 })
+                                }}
+                                onChange={(e) => setDraftQtyFromInput(index, e.target.value)}
+                                onWheel={(e) => (e.target as HTMLInputElement).blur()}
+                                className="w-full px-2 py-1.5 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-500 mb-0.5">หน่วย</label>
+                              <div className="w-full px-2 py-1.5 border rounded-lg text-sm bg-gray-50 text-gray-700 min-h-[34px] flex items-center">
+                                {prod ? getProductUnit(prod) : '-'}
+                              </div>
+                            </div>
+                            {canSeePrice && (
+                              <div>
+                                <label className="block text-xs text-gray-500 mb-0.5">ราคาซื้อล่าสุด</label>
+                                <div className="w-full px-2 py-1.5 border rounded-lg text-sm bg-gray-50 text-gray-700 min-h-[34px] flex items-center">
+                                  {item.estimated_price != null
+                                    ? Number(item.estimated_price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                                    : '-'}
+                                </div>
+                              </div>
+                            )}
+                            <div className="flex items-end">
+                              <button
+                                onClick={() => removeDraftItem(index)}
+                                className="w-full px-2 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 text-sm transition-colors"
+                              >
+                                ลบ
+                              </button>
+                            </div>
+                          </div>
+
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              <button onClick={addDraftItem} className="mt-3 px-4 py-2 border-2 border-dashed border-gray-300 rounded-lg hover:border-emerald-400 hover:text-emerald-600 text-sm text-gray-500 w-full transition-colors">
+                + เพิ่มรายการสินค้า
+              </button>
+
+              {/* pr type + note */}
+              <div className="mt-4 space-y-3">
+                <div className="flex gap-4 items-center">
+                  <label className="text-sm font-medium text-gray-700">ประเภท PR:</label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPrType('normal')}
+                      className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${prType === 'normal' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                    >
+                      ปกติ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPrType('urgent')}
+                      className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${prType === 'urgent' ? 'bg-red-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                    >
+                      ด่วน
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    หมายเหตุ
+                  </label>
+                  <textarea
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
+                    rows={2}
+                    placeholder="หมายเหตุเพิ่มเติม (ถ้ามี)"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Right: Supplier products panel */}
+            {supplierPanelSeller && (
+              <div className="w-[480px] border-l overflow-y-auto bg-gray-50 shrink-0 flex flex-col">
+                <div className="px-4 py-3 border-b bg-blue-600 text-white flex items-center justify-between shrink-0">
+                  <div>
+                    <h3 className="text-sm font-bold">รายการสินค้าของ: {supplierPanelSeller}</h3>
+                    <p className="text-xs text-blue-200">{supplierProducts.length} รายการ</p>
+                  </div>
+                  <button onClick={closeSupplierPanel} className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/20 transition-all">
+                    <i className="fas fa-times"></i>
+                  </button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                  {supplierProducts.length === 0 ? (
+                    <div className="text-center py-8 text-gray-400 text-sm">ไม่พบรายการสินค้า</div>
+                  ) : (
+                    supplierProducts.map((p) => {
+                      const stock = stockBalances[p.id] ?? 0
+                      const op = parseOrderPoint((p as any)?.order_point)
+                      const isBelowOP = op != null && stock < op
+                      const imgUrl = getPublicUrl('product-images', p.product_code)
+                      const alreadyAdded = draftItems.some((d) => d.product_id === p.id)
+                      return (
+                        <div key={p.id} className="flex items-center gap-3 p-3 bg-white rounded-lg border hover:border-blue-300 transition-colors">
+                          {imgUrl ? (
+                            <ZoomImage src={imgUrl} />
+                          ) : (
+                            <div className="w-16 h-16 rounded-lg bg-gray-200 overflow-hidden flex-shrink-0">
+                              <div className="w-full h-full flex items-center justify-center text-gray-400 text-[10px]">-</div>
+                            </div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium text-gray-900 text-sm truncate">{p.product_code}</div>
+                            <div className="text-xs text-gray-500 truncate">{p.product_name}</div>
+                            <div className="flex gap-3 mt-0.5">
+                              <span className={`text-xs font-semibold ${stock > 0 ? 'text-green-600' : 'text-red-500'}`}>
+                                คงเหลือ: {stock.toLocaleString()}
+                              </span>
+                              <span className={`text-xs font-semibold ${isBelowOP ? 'text-red-600' : 'text-gray-500'}`}>
+                                จุดสั่งซื้อ: {op != null ? op.toLocaleString() : '-'}
+                              </span>
+                              {p.product_category && <span className="text-xs text-gray-400">{p.product_category}</span>}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => addSupplierProduct(p.id)}
+                            disabled={alreadyAdded}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
+                              alreadyAdded
+                                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                                : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                            }`}
+                          >
+                            <i className={`fas ${alreadyAdded ? 'fa-check' : 'fa-plus'} mr-1`}></i>
+                            {alreadyAdded ? 'เพิ่มแล้ว' : 'เพิ่ม'}
+                          </button>
+                        </div>
+                      )
+                    })
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Footer actions */}
+          <div className="px-6 py-3 border-t bg-white flex justify-between items-center shrink-0">
+            <div className="text-sm text-gray-500">
+              รายการทั้งหมด: <span className="font-bold text-gray-800">{draftItems.filter((i) => i.product_id).length}</span> รายการ
+            </div>
+            <div className="flex gap-3 mr-20">
+              <button onClick={handleCreatePR} disabled={saving} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-semibold transition-colors">
+                {saving ? 'กำลังบันทึก...' : editingPrId ? 'บันทึกการแก้ไข PR' : 'บันทึก PR'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Detail Modal ── */}
+      <Modal open={!!viewing} onClose={() => { setViewing(null); setRejectOpen(false) }} contentClassName="max-w-6xl">
+        <div className="p-6 space-y-5">
+          {detailLoading ? (
+            <div className="flex justify-center py-12">
+              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-500" />
+            </div>
+          ) : viewing ? (
+            <>
+              {/* header */}
+              <div className="flex items-start justify-between pr-14">
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900">รายละเอียด PR</h2>
+                  <p className="text-sm text-gray-500 mt-1">
+                    เลขที่: <span className="font-semibold text-gray-800">{viewing.pr_no}</span>
+                  </p>
+                </div>
+                <span className={`inline-block px-3 py-1 rounded-full text-xs font-semibold ${(STATUS_MAP[viewing.status] || { color: 'bg-gray-100 text-gray-700' }).color}`}>
+                  {(STATUS_MAP[viewing.status] || { label: viewing.status }).label}
+                </span>
+              </div>
+
+              {/* meta */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <div className="text-gray-500 text-xs">ผู้ขาย</div>
+                  <div className="font-medium">{viewing.supplier_name || '-'}</div>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <div className="text-gray-500 text-xs">วันที่สร้าง</div>
+                  <div className="font-medium">{viewing.requested_at ? new Date(viewing.requested_at).toLocaleString('th-TH') : '-'}</div>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <div className="text-gray-500 text-xs">ประเภท PR</div>
+                  <div className="font-medium">
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${viewing.pr_type === 'urgent' ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>
+                      {viewing.pr_type === 'machinery' ? 'Machinery' : viewing.pr_type === 'urgent' ? 'ด่วน' : 'ปกติ'}
+                    </span>
+                  </div>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <div className="text-gray-500 text-xs">จำนวนรายการ</div>
+                  <div className="font-medium">{viewItems.length} รายการ</div>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <div className="text-gray-500 text-xs">ผู้อนุมัติ</div>
+                  <div className="font-medium">{viewing.approved_by ? userMap[viewing.approved_by] || '-' : '-'}</div>
+                </div>
+                {viewing.approved_at && (
+                  <div className="bg-green-50 rounded-lg p-3">
+                    <div className="text-green-600 text-xs">วันที่อนุมัติ</div>
+                    <div className="font-medium text-green-800">{new Date(viewing.approved_at).toLocaleString('th-TH')}</div>
+                  </div>
+                )}
+                {viewing.rejected_at && (
+                  <div className="bg-red-50 rounded-lg p-3">
+                    <div className="text-red-600 text-xs">ไม่อนุมัติ</div>
+                    <div className="font-medium text-red-800">{viewing.rejection_reason || '-'}</div>
+                  </div>
+                )}
+              </div>
+
+              {viewing.note && (
+                <div className="bg-blue-50 rounded-lg p-3 text-sm">
+                  <span className="text-blue-600 font-medium">หมายเหตุ:</span> {viewing.note}
+                </div>
+              )}
+
+              {/* items table */}
+              <div className="overflow-x-auto border rounded-lg">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 border-b">
+                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-14">รูป</th>
+                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600">สินค้า</th>
+                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600">จำนวน</th>
+                      {canSeePrice && (
+                        <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ราคาซื้อล่าสุด</th>
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {viewItems.map((item: any) => {
+                      const prod = item.pr_products
+                      const imgUrl = prod ? getPublicUrl('product-images', prod.product_code) : ''
+                      const op = parseOrderPoint(prod?.order_point)
+                      const onHand = item.product_id ? (stockBalances[item.product_id] ?? 0) : 0
+                      const isBelowOP = op != null && onHand < op
+                      return (
+                        <tr key={item.id} className="hover:bg-gray-50/50">
+                          <td className="px-3 py-2">
+                            <div className="w-10 h-10 rounded bg-gray-200 overflow-hidden">
+                              {imgUrl ? (
+                                <img src={imgUrl} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center text-gray-400 text-[10px]">-</div>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="font-medium text-gray-900">{prod?.product_code} - {prod?.product_name}</div>
+                            <div className="text-xs text-gray-500 flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5">
+                              {prod?.product_name_cn && <span>{prod.product_name_cn}</span>}
+                              {prod?.seller_name && <span>ผู้จัดจำหน่าย: {prod.seller_name}</span>}
+                              {prod?.product_category && <span>หมวด: {prod.product_category}</span>}
+                              <span className="text-orange-600 font-medium">คงเหลือ: {onHand.toLocaleString()}</span>
+                              <span className={`${isBelowOP ? 'text-red-600' : 'text-gray-500'} font-medium`}>
+                                จุดสั่งซื้อ: {op != null ? op.toLocaleString() : '-'}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 text-right font-medium">
+                            {Number(item.qty).toLocaleString()} {item.unit || ''}
+                          </td>
+                          {canSeePrice && (
+                            <td className="px-3 py-2 text-right text-blue-600">
+                              {item.last_purchase_price != null
+                                ? Number(item.last_purchase_price).toLocaleString(undefined, { minimumFractionDigits: 2 })
+                                : item.product_id && productMap.get(item.product_id)?.last_price != null
+                                  ? Number(productMap.get(item.product_id)?.last_price).toLocaleString(undefined, { minimumFractionDigits: 2 })
+                                  : '-'}
+                            </td>
+                          )}
+                        </tr>
+                      )
+                    })}
+                    {!viewItems.length && (
+                      <tr><td colSpan={canSeePrice ? 4 : 3} className="px-3 py-8 text-center text-gray-400">ไม่มีรายการ</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* actions */}
+              <div className="flex justify-end gap-3 pt-3 border-t">
+                {canManagePR && viewing.status === 'pending' && !rejectOpen && (
+                  <button
+                    onClick={() => openEditPR(viewing, viewItems)}
+                    className="px-5 py-2.5 bg-amber-50 text-amber-700 rounded-lg hover:bg-amber-100 text-sm font-semibold transition-colors"
+                  >
+                    <i className="fas fa-edit mr-1"></i>
+                    แก้ไข PR
+                  </button>
+                )}
+                {canApprove && viewing.status === 'pending' && !rejectOpen && (
+                  <>
+                    <button
+                      onClick={() => setRejectOpen(true)}
+                      disabled={updating}
+                      className="px-5 py-2.5 bg-red-50 text-red-700 rounded-lg hover:bg-red-100 text-sm font-semibold disabled:opacity-50 transition-colors"
+                    >
+                      ไม่อนุมัติ
+                    </button>
+                    <button
+                      onClick={handleApprove}
+                      disabled={updating}
+                      className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm font-semibold disabled:opacity-50 transition-colors"
+                    >
+                      {updating ? 'กำลังดำเนินการ...' : 'อนุมัติ'}
+                    </button>
+                  </>
+                )}
+                {rejectOpen && (
+                  <div className="flex-1 flex gap-2 items-end">
+                    <div className="flex-1">
+                      <label className="block text-xs text-gray-500 mb-1">เหตุผลที่ไม่อนุมัติ</label>
+                      <input
+                        type="text"
+                        value={rejectReason}
+                        onChange={(e) => setRejectReason(e.target.value)}
+                        className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none"
+                        placeholder="ระบุเหตุผล..."
+                        autoFocus
+                      />
+                    </div>
+                    <button
+                      onClick={() => { setRejectOpen(false); setRejectReason('') }}
+                      className="px-3 py-2 border rounded-lg text-sm hover:bg-gray-50"
+                    >
+                      ยกเลิก
+                    </button>
+                    <button
+                      onClick={handleReject}
+                      disabled={updating}
+                      className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm font-semibold disabled:opacity-50"
+                    >
+                      ยืนยัน
+                    </button>
+                  </div>
+                )}
+                {canApprove && viewing.status === 'pending' && !rejectOpen && (
+                  <button
+                    onClick={handleCancel}
+                    disabled={updating}
+                    className="px-5 py-2.5 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 text-sm font-semibold disabled:opacity-50 transition-colors"
+                  >
+                    ยกเลิก PR
+                  </button>
+                )}
+              </div>
+            </>
+          ) : null}
+        </div>
+      </Modal>
+      {MessageModal}
+      {ConfirmModal}
+    </div>
+  )
+}

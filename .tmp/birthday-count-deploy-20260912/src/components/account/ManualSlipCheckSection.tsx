@@ -1,0 +1,761 @@
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { supabase } from '../../lib/supabase'
+import { Order } from '../../types'
+import { formatDateTime } from '../../lib/utils'
+import { isSlipOrderStatusConsideredUsed } from '../../lib/manualSlipRules'
+import Modal from '../ui/Modal'
+import OrderDetailView from '../order/OrderDetailView'
+
+type ManualSlipRow = {
+  id: string
+  order_id: string
+  bill_no: string | null
+  transfer_date: string
+  transfer_time: string
+  transfer_amount: number
+  submitted_by: string
+  submitted_at: string
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled'
+  reviewed_by: string | null
+  reviewed_at: string | null
+  rejected_reason: string | null
+  cancelled_at: string | null
+  submission_kind: 'manual' | 'duplicate_fallback_review'
+}
+
+type OrderGroup = {
+  order_id: string
+  bill_no: string | null
+  status: ManualSlipRow['status']
+  submitted_by: string
+  submitted_at: string
+  reviewed_by: string | null
+  reviewed_at: string | null
+  rejected_reason: string | null
+  entries: ManualSlipRow[]
+}
+
+type EditingCell = {
+  rowId: string
+  field: 'transfer_date' | 'transfer_time' | 'transfer_amount'
+} | null
+
+export default function ManualSlipCheckSection() {
+  const [rows, setRows] = useState<ManualSlipRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [filterTab, setFilterTab] = useState<'pending' | 'done'>('pending')
+
+  const [detailOrder, setDetailOrder] = useState<Order | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+
+  const [zoomImage, setZoomImage] = useState<string | null>(null)
+
+  const [checkResult, setCheckResult] = useState<{ open: boolean; message: string; type: 'success' | 'warning' | 'info' }>({ open: false, message: '', type: 'info' })
+  const [checkingOrderId, setCheckingOrderId] = useState<string | null>(null)
+
+  const [actionModal, setActionModal] = useState<{ open: boolean; group: OrderGroup | null }>({ open: false, group: null })
+  const [actionSubmitting, setActionSubmitting] = useState(false)
+  const [actionRejectReason, setActionRejectReason] = useState('')
+  const [disapproveModal, setDisapproveModal] = useState<{ open: boolean; group: OrderGroup | null }>({ open: false, group: null })
+  const [disapproveSubmitting, setDisapproveSubmitting] = useState(false)
+  const [disapproveReason, setDisapproveReason] = useState('')
+
+  const [editingCell, setEditingCell] = useState<EditingCell>(null)
+  const [editValue, setEditValue] = useState<string>('')
+  const [editSaving, setEditSaving] = useState(false)
+  const editInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (editingCell && editInputRef.current) {
+      editInputRef.current.focus()
+      editInputRef.current.select()
+    }
+  }, [editingCell])
+
+  const startEditing = useCallback((rowId: string, field: NonNullable<EditingCell>['field'], currentValue: string | number) => {
+    setEditingCell({ rowId, field })
+    setEditValue(String(currentValue))
+  }, [])
+
+  const cancelEditing = useCallback(() => {
+    setEditingCell(null)
+    setEditValue('')
+  }, [])
+
+  const saveEdit = useCallback(async () => {
+    if (!editingCell || editSaving) return
+    const { rowId, field } = editingCell
+    const row = rows.find(r => r.id === rowId)
+    if (!row) { cancelEditing(); return }
+
+    const originalValue = field === 'transfer_amount' ? String(row[field]) : row[field]
+    if (editValue.trim() === String(originalValue)) {
+      cancelEditing()
+      return
+    }
+
+    let updateValue: string | number = editValue.trim()
+    if (field === 'transfer_date') {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(updateValue)) {
+        setCheckResult({ open: true, message: 'รูปแบบวันที่ไม่ถูกต้อง (YYYY-MM-DD)', type: 'warning' })
+        return
+      }
+    } else if (field === 'transfer_time') {
+      if (!/^\d{2}:\d{2}$/.test(updateValue)) {
+        setCheckResult({ open: true, message: 'รูปแบบเวลาไม่ถูกต้อง (HH:MM)', type: 'warning' })
+        return
+      }
+    } else if (field === 'transfer_amount') {
+      const num = parseFloat(updateValue)
+      if (isNaN(num) || num < 0) {
+        setCheckResult({ open: true, message: 'ยอดโอนไม่ถูกต้อง', type: 'warning' })
+        return
+      }
+      updateValue = num
+    }
+
+    setEditSaving(true)
+    try {
+      const { error } = await supabase
+        .from('ac_manual_slip_checks')
+        .update({ [field]: updateValue })
+        .eq('id', rowId)
+      if (error) throw error
+      setRows(prev => prev.map(r => r.id === rowId ? { ...r, [field]: updateValue } : r))
+      cancelEditing()
+    } catch (e: any) {
+      setCheckResult({ open: true, message: 'บันทึกไม่สำเร็จ: ' + (e?.message || e), type: 'warning' })
+    } finally {
+      setEditSaving(false)
+    }
+  }, [editingCell, editValue, editSaving, rows, cancelEditing])
+
+  useEffect(() => {
+    void loadRows()
+    const channel = supabase
+      .channel('manual-slip-check-section')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_manual_slip_checks' }, () => {
+        void loadRows()
+      })
+      .subscribe()
+    return () => { void supabase.removeChannel(channel) }
+  }, [])
+
+  async function loadRows() {
+    setLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('ac_manual_slip_checks')
+        .select('*')
+        .order('submitted_at', { ascending: false })
+      if (error) throw error
+      setRows((data || []) as ManualSlipRow[])
+    } catch (e) {
+      console.error('Error loading manual slip checks:', e)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const orderGroups = useMemo(() => {
+    const map = new Map<string, OrderGroup>()
+    for (const row of rows) {
+      const existing = map.get(row.order_id)
+      if (existing) {
+        existing.entries.push(row)
+        if (!existing.rejected_reason && row.rejected_reason) existing.rejected_reason = row.rejected_reason
+      } else {
+        map.set(row.order_id, {
+          order_id: row.order_id,
+          bill_no: row.bill_no,
+          status: row.status,
+          submitted_by: row.submitted_by,
+          submitted_at: row.submitted_at,
+          reviewed_by: row.reviewed_by,
+          reviewed_at: row.reviewed_at,
+          rejected_reason: row.rejected_reason,
+          entries: [row],
+        })
+      }
+    }
+    return Array.from(map.values())
+  }, [rows])
+
+  const filteredGroups = useMemo(() => {
+    if (filterTab === 'pending') return orderGroups.filter(g => g.entries.some(e => e.status === 'pending'))
+    return orderGroups.filter(g => g.entries.every(e => e.status !== 'pending'))
+  }, [orderGroups, filterTab])
+
+  const pendingCount = useMemo(() => orderGroups.filter(g => g.entries.some(e => e.status === 'pending')).length, [orderGroups])
+  const doneCount = useMemo(() => orderGroups.filter(g => g.entries.every(e => e.status !== 'pending')).length, [orderGroups])
+
+  async function handleViewDetail(orderId: string) {
+    setDetailLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('or_orders')
+        .select('*, or_order_items(*)')
+        .eq('id', orderId)
+        .single()
+      if (error) throw error
+      const order = data as any
+      if (order.or_order_items) order.order_items = order.or_order_items
+      setDetailOrder(order as Order)
+    } catch (e) {
+      console.error('Error loading order detail:', e)
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+
+  async function handleCheckAllSlips(group: OrderGroup) {
+    setCheckingOrderId(group.order_id)
+    try {
+      const { data, error } = await supabase
+        .from('ac_verified_slips')
+        .select('id, order_id, verified_amount, easyslip_date, easyslip_response, or_orders!inner(bill_no, status)')
+        .or('is_deleted.is.null,is_deleted.eq.false')
+      if (error) throw error
+
+      const allResults: string[] = []
+      let totalFound = 0
+
+      for (let i = 0; i < group.entries.length; i++) {
+        const entry = group.entries[i]
+        const transferAmount = Number(entry.transfer_amount)
+        const transferDate = entry.transfer_date
+        const transferTime = entry.transfer_time
+
+        const matches = (data || []).filter((slip: any) => {
+          if (slip.order_id === group.order_id) return false
+          if (!isSlipOrderStatusConsideredUsed(slip.or_orders?.status)) return false
+          if (!slip.easyslip_date) return false
+          const d = new Date(slip.easyslip_date)
+          if (isNaN(d.getTime())) return false
+          const thaiDate = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' })
+          const thaiHours = d.toLocaleString('en-GB', { timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit', hour12: false })
+          const slipAmount = Number(slip.verified_amount) || 0
+          return thaiDate === transferDate && thaiHours === transferTime && Math.abs(slipAmount - transferAmount) <= 0.01
+        })
+
+        const label = `สลิปที่ ${i + 1} (${transferDate} ${transferTime} ฿${transferAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 })})`
+        if (matches.length > 0) {
+          totalFound += matches.length
+          const details = matches.map((m: any) => {
+            const billNo = m.or_orders?.bill_no || '-'
+            const d = new Date(m.easyslip_date)
+            const thaiDate = d.toLocaleDateString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: '2-digit', year: 'numeric' })
+            const thaiTime = d.toLocaleString('en-GB', { timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit', hour12: false })
+            const amount = Number(m.verified_amount).toLocaleString('th-TH', { minimumFractionDigits: 2 })
+            return `  บิล ${billNo} — ${thaiDate} ${thaiTime} ฿${amount}`
+          }).join('\n')
+          allResults.push(`⚠️ ${label}\n  → พบซ้ำ ${matches.length} รายการ:\n${details}`)
+        } else {
+          allResults.push(`✅ ${label}\n  → ไม่พบข้อมูลซ้ำ`)
+        }
+      }
+
+      const type = totalFound > 0 ? 'warning' : 'success'
+      const header = totalFound > 0
+        ? `พบข้อมูลซ้ำ ${totalFound} รายการ — สลิปอาจเคยถูกใช้แล้ว`
+        : 'ข้อมูลไม่ซ้ำทั้งหมด — ไม่พบรายการที่ตรงกันในระบบ'
+      setCheckResult({ open: true, message: `${header}\n\n${allResults.join('\n\n')}`, type })
+    } catch (e: any) {
+      setCheckResult({ open: true, message: 'ตรวจสอบไม่สำเร็จ: ' + (e?.message || e), type: 'info' })
+    } finally {
+      setCheckingOrderId(null)
+    }
+  }
+
+  async function applyManualSlipDecision(group: OrderGroup, action: 'approved' | 'rejected', rejectedReason?: string) {
+    const { data, error } = await supabase.rpc('manual_slip_decide', {
+      p_order_id: group.order_id,
+      p_action: action,
+      p_rejected_reason: action === 'rejected' ? rejectedReason?.trim() || null : null,
+    })
+    if (error) throw error
+    const result = (data || {}) as { order_status?: string }
+    return { orderUpdateStatus: result.order_status || (action === 'approved' ? 'ตรวจสอบแล้ว' : 'ตรวจสอบไม่ผ่าน'), action }
+  }
+
+  async function handleAction(action: 'approved' | 'rejected') {
+    if (!actionModal.group) return
+    setActionSubmitting(true)
+    try {
+      const { orderUpdateStatus } = await applyManualSlipDecision(actionModal.group, action, actionRejectReason)
+      setActionModal({ open: false, group: null })
+      setActionRejectReason('')
+      await loadRows()
+      setCheckResult({
+        open: true,
+        message:
+          action === 'approved'
+            ? orderUpdateStatus === 'ไม่ต้องออกแบบ'
+              ? 'อนุมัติแล้ว — สถานะบิลเป็น "ไม่ต้องออกแบบ" (คิว Confirm)'
+              : 'อนุมัติแล้ว — สถานะบิลเปลี่ยนเป็น "ตรวจสอบแล้ว"'
+            : 'ปฏิเสธแล้ว — สถานะบิลเปลี่ยนเป็น "ตรวจสอบไม่ผ่าน"',
+        type: action === 'approved' ? 'success' : 'warning',
+      })
+    } catch (e: any) {
+      setCheckResult({ open: true, message: 'ดำเนินการไม่สำเร็จ: ' + (e?.message || e), type: 'info' })
+    } finally {
+      setActionSubmitting(false)
+    }
+  }
+
+  async function confirmDisapproveTransfer() {
+    const group = disapproveModal.group
+    if (!group || disapproveSubmitting) return
+    setDisapproveSubmitting(true)
+    try {
+      await applyManualSlipDecision(group, 'rejected', disapproveReason)
+      await loadRows()
+      setDisapproveModal({ open: false, group: null })
+      setDisapproveReason('')
+      setCheckResult({
+        open: true,
+        message: 'ไม่อนุมัติแล้ว — สถานะบิลยังเป็น "ตรวจสอบไม่ผ่าน" ฝั่งออเดอร์แสดงป้ายไม่อนุมัติ',
+        type: 'warning',
+      })
+    } catch (e: any) {
+      setCheckResult({ open: true, message: 'ดำเนินการไม่สำเร็จ: ' + (e?.message || e), type: 'info' })
+    } finally {
+      setDisapproveSubmitting(false)
+    }
+  }
+
+  const statusColor = (s: string) => {
+    if (s === 'approved') return 'bg-green-100 text-green-700'
+    if (s === 'rejected') return 'bg-red-100 text-red-700'
+    if (s === 'cancelled') return 'bg-gray-200 text-gray-700'
+    return 'bg-yellow-100 text-yellow-800'
+  }
+  const statusLabel = (s: string) => {
+    if (s === 'approved') return 'อนุมัติแล้ว'
+    if (s === 'rejected') return 'ปฏิเสธแล้ว'
+    if (s === 'cancelled') return 'ยกเลิก'
+    return 'รอตรวจสอบ'
+  }
+
+  function renderEditable(row: ManualSlipRow, field: NonNullable<EditingCell>['field'], type: string, displayValue: string) {
+    const isEditing = editingCell?.rowId === row.id && editingCell.field === field
+    if (isEditing) {
+      return (
+        <input
+          ref={editInputRef}
+          type={type}
+          step={type === 'number' ? '0.01' : undefined}
+          min={type === 'number' ? '0' : undefined}
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
+          onWheel={type === 'number' ? (e) => e.currentTarget.blur() : undefined}
+          onBlur={() => saveEdit()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') saveEdit()
+            if (e.key === 'Escape') cancelEditing()
+          }}
+          disabled={editSaving}
+          className={`inline-block px-1.5 py-0.5 border border-blue-400 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 bg-blue-50 ${
+            type === 'date' ? 'w-[140px]' : type === 'time' ? 'w-[100px]' : 'w-[120px]'
+          } ${field === 'transfer_amount' ? 'font-bold text-blue-600' : 'font-semibold'}`}
+        />
+      )
+    }
+    return (
+      <span
+        className={`cursor-pointer hover:bg-yellow-100 hover:text-yellow-800 px-1 py-0.5 rounded transition select-none ${
+          field === 'transfer_amount' ? 'font-bold text-blue-600' : 'font-semibold'
+        }`}
+        onDoubleClick={() => row.status === 'pending' && startEditing(row.id, field, field === 'transfer_amount' ? row.transfer_amount : row[field])}
+        title={row.status === 'pending' ? 'ดับเบิ้ลคลิกเพื่อแก้ไข' : ''}
+      >
+        {displayValue}
+      </span>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50 flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-800">ตรวจสลิปมือ</h2>
+            <p className="text-sm text-gray-500 mt-0.5">รายการที่ส่งมาจากเมนูออเดอร์ (ตรวจสอบไม่ผ่าน)</p>
+          </div>
+          <button onClick={loadRows} className="px-3 py-1.5 border rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-50 transition">
+            <i className="fas fa-sync-alt mr-1"></i> รีเฟรช
+          </button>
+        </div>
+
+        {/* Filter tabs */}
+        <div className="px-6 py-3 border-b border-gray-100 flex gap-2">
+          <button
+            onClick={() => setFilterTab('pending')}
+            className={`px-4 py-2 rounded-lg text-sm font-bold transition ${filterTab === 'pending' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+          >
+            รายการใหม่
+            <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs ${filterTab === 'pending' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'}`}>
+              {pendingCount}
+            </span>
+          </button>
+          <button
+            onClick={() => setFilterTab('done')}
+            className={`px-4 py-2 rounded-lg text-sm font-bold transition ${filterTab === 'done' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+          >
+            เสร็จสิ้น
+            <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs ${filterTab === 'done' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'}`}>
+              {doneCount}
+            </span>
+          </button>
+        </div>
+
+        {loading ? (
+          <div className="flex justify-center py-12">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+          </div>
+        ) : filteredGroups.length === 0 ? (
+          <div className="text-center py-12 text-gray-400">
+            <i className="fas fa-inbox text-4xl mb-3 block"></i>
+            <p>{filterTab === 'pending' ? 'ไม่มีรายการใหม่' : 'ไม่มีรายการที่เสร็จสิ้น'}</p>
+          </div>
+        ) : (
+          <div className="divide-y">
+            {filteredGroups.map((group) => (
+              <div key={group.order_id} className="px-6 py-4 hover:bg-gray-50/50 transition">
+                <div className="flex flex-wrap items-start gap-4">
+                  {/* Slip thumbnails */}
+                  <div className="shrink-0">
+                    <SlipThumbnails orderId={group.order_id} onZoom={(url) => setZoomImage(url)} />
+                  </div>
+
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-mono font-bold text-blue-600 cursor-pointer hover:underline" onClick={() => handleViewDetail(group.order_id)}>
+                        {group.bill_no || '-'}
+                      </span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${statusColor(group.status)}`}>
+                        {statusLabel(group.status)}
+                      </span>
+                      {group.entries.some(e => e.submission_kind === 'duplicate_fallback_review') && (
+                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+                          ตรวจสอบกรณีพิเศษ
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Slip entries — one row per slip */}
+                    <div className="space-y-1 mt-2">
+                      {group.entries.map((entry, idx) => (
+                        <div key={entry.id} className="grid grid-cols-[auto_1fr_1fr_1fr] gap-3 text-sm items-center">
+                          <span className="text-xs text-gray-400 font-bold w-4 text-right">{idx + 1}.</span>
+                          <div>
+                            <span className="text-gray-500">วันที่โอน:</span>{' '}
+                            {renderEditable(entry, 'transfer_date', 'date', entry.transfer_date)}
+                          </div>
+                          <div>
+                            <span className="text-gray-500">เวลาโอน:</span>{' '}
+                            {renderEditable(entry, 'transfer_time', 'time', entry.transfer_time)}
+                          </div>
+                          <div>
+                            <span className="text-gray-500">ยอดโอน:</span>{' '}
+                            {renderEditable(entry, 'transfer_amount', 'number',
+                              `฿${Number(entry.transfer_amount).toLocaleString('th-TH', { minimumFractionDigits: 2 })}`
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="text-xs text-gray-400 mt-1">
+                      ส่งโดย: {group.submitted_by} — {formatDateTime(group.submitted_at)}
+                      {group.reviewed_by && (
+                        <span className="ml-3">| ตรวจโดย: {group.reviewed_by} — {group.reviewed_at ? formatDateTime(group.reviewed_at) : ''}</span>
+                      )}
+                    </div>
+                    {group.rejected_reason && group.entries.some(e => e.status === 'rejected') && (
+                      <div className="text-xs text-rose-700 bg-rose-50 border border-rose-100 rounded-lg px-2.5 py-1.5 mt-2 inline-block">
+                        <i className="fas fa-comment-dots mr-1"></i>
+                        เหตุผลที่ไม่อนุมัติ: <span className="font-semibold">{group.rejected_reason}</span>
+                      </div>
+                    )}
+                    {group.entries.some(e => e.status === 'cancelled') && (
+                      <div className="text-xs text-gray-700 bg-gray-100 border border-gray-200 rounded-lg px-2.5 py-1.5 mt-2 inline-block">
+                        <i className="fas fa-ban mr-1"></i>
+                        ปิดรายการอัตโนมัติ เนื่องจากบิลถูกยกเลิก
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex flex-col items-end gap-2 shrink-0">
+                    <div className="flex items-center gap-2 flex-wrap justify-end">
+                      <button
+                        onClick={() => handleViewDetail(group.order_id)}
+                        className="px-3 py-1.5 border border-gray-300 rounded-lg text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
+                      >
+                        <i className="fas fa-eye mr-1"></i> ดูบิล
+                      </button>
+                      {group.entries.some(e => e.status === 'pending') && (
+                        <>
+                          <button
+                            onClick={() => handleCheckAllSlips(group)}
+                            disabled={checkingOrderId === group.order_id}
+                            className="px-3 py-1.5 bg-sky-500 text-white rounded-lg text-xs font-bold hover:bg-sky-600 transition disabled:opacity-50"
+                          >
+                            {checkingOrderId === group.order_id ? (
+                              <span className="flex items-center gap-1"><span className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></span> ตรวจ...</span>
+                            ) : (
+                              <><i className="fas fa-search mr-1"></i> เช็คสลิป</>
+                            )}
+                          </button>
+                          <button
+                            onClick={() => setActionModal({ open: true, group })}
+                            className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 transition"
+                          >
+                            <i className="fas fa-check-circle mr-1"></i> ยืนยันการโอน
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {group.entries.some(e => e.status === 'pending') && (
+                      <button
+                        type="button"
+                        onClick={() => setDisapproveModal({ open: true, group })}
+                        disabled={disapproveSubmitting}
+                        className="px-3 py-1.5 border border-red-300 bg-red-50 text-red-700 rounded-lg text-xs font-bold hover:bg-red-100 transition disabled:opacity-50 w-full max-w-[11rem]"
+                      >
+                        <><i className="fas fa-times-circle mr-1"></i> ไม่อนุมัติ</>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Order Detail Modal */}
+      <Modal open={!!detailOrder} onClose={() => setDetailOrder(null)} contentClassName="max-w-[96vw] w-full">
+        {detailOrder && <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} />}
+      </Modal>
+
+      {detailLoading && (
+        <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center">
+          <div className="bg-white rounded-xl p-8 flex flex-col items-center gap-3">
+            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500"></div>
+            <p className="text-gray-600 font-semibold">กำลังโหลดข้อมูลบิล...</p>
+          </div>
+        </div>
+      )}
+
+      {/* Zoom image modal */}
+      <Modal open={!!zoomImage} onClose={() => setZoomImage(null)} contentClassName="max-w-xl w-full">
+        {zoomImage && (
+          <div className="p-4">
+            <img src={zoomImage} alt="สลิปขยาย" className="max-w-full max-h-[75vh] h-auto mx-auto rounded-lg" />
+          </div>
+        )}
+      </Modal>
+
+      {/* Check result modal */}
+      <Modal open={checkResult.open} onClose={() => setCheckResult({ open: false, message: '', type: 'info' })} contentClassName="max-w-lg">
+        <div className="p-6 text-center">
+          <div className={`text-5xl mb-4 ${checkResult.type === 'success' ? 'text-green-500' : checkResult.type === 'warning' ? 'text-amber-500' : 'text-blue-500'}`}>
+            <i className={`fas ${checkResult.type === 'success' ? 'fa-check-circle' : checkResult.type === 'warning' ? 'fa-exclamation-triangle' : 'fa-info-circle'}`}></i>
+          </div>
+          <p className="text-gray-700 font-semibold mb-4 whitespace-pre-line text-left">{checkResult.message}</p>
+          <button
+            onClick={() => setCheckResult({ open: false, message: '', type: 'info' })}
+            className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition"
+          >
+            ตกลง
+          </button>
+        </div>
+      </Modal>
+
+      {/* ไม่อนุมัติการโอน — ยืนยันใน Modal */}
+      <Modal
+        open={disapproveModal.open}
+        onClose={() => {
+          if (!disapproveSubmitting) {
+            setDisapproveModal({ open: false, group: null })
+            setDisapproveReason('')
+          }
+        }}
+        contentClassName="max-w-md"
+        ariaLabelledby="disapprove-modal-title"
+      >
+        {disapproveModal.group && (
+          <div className="p-6">
+            <div className="flex items-start gap-3 mb-4">
+              <div className="shrink-0 w-11 h-11 rounded-full bg-red-100 flex items-center justify-center text-red-600">
+                <i className="fas fa-times-circle text-xl" aria-hidden />
+              </div>
+              <div className="min-w-0">
+                <h3 id="disapprove-modal-title" className="text-lg font-bold text-gray-900">ไม่อนุมัติการโอน</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  ไม่อนุมัติการโอนสำหรับบิล{' '}
+                  <span className="font-mono font-bold text-blue-600">{disapproveModal.group.bill_no || '–'}</span>
+                  ?
+                </p>
+              </div>
+            </div>
+            <p className="text-sm text-gray-600 bg-red-50/80 border border-red-100 rounded-lg px-3 py-2.5 mb-4">
+              <span className="block">รายการจะถูกปิดในเมนูบัญชี และฝั่งออเดอร์จะแสดงป้าย</span>
+              <span className="block mt-1 font-semibold text-red-800">ไม่อนุมัติ</span>
+            </p>
+            <label className="block mb-6">
+              <span className="block text-sm font-semibold text-gray-700 mb-1">เหตุผลที่ไม่อนุมัติ</span>
+              <textarea
+                value={disapproveReason}
+                onChange={(e) => setDisapproveReason(e.target.value)}
+                rows={3}
+                placeholder="เช่น สลิปไม่ชัดเจน, ยอดโอนไม่ตรง, สลิปถูกใช้ไปแล้ว..."
+                disabled={disapproveSubmitting}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-300 focus:border-red-400 resize-none disabled:opacity-50"
+              />
+              <span className="block text-xs text-gray-400 mt-1">จะแสดงที่เมนูออเดอร์ (ตรวจสอบไม่ผ่าน) ให้ผู้ส่งเห็น</span>
+            </label>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setDisapproveModal({ open: false, group: null })
+                  setDisapproveReason('')
+                }}
+                disabled={disapproveSubmitting}
+                className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg font-semibold text-gray-700 hover:bg-gray-50 transition disabled:opacity-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={confirmDisapproveTransfer}
+                disabled={disapproveSubmitting}
+                className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700 transition disabled:opacity-50 inline-flex items-center justify-center gap-2"
+              >
+                {disapproveSubmitting ? (
+                  <>
+                    <span className="animate-spin rounded-full h-4 w-4 border-2 border-white/40 border-t-white" />
+                    กำลังดำเนินการ...
+                  </>
+                ) : (
+                  <>ยืนยันไม่อนุมัติ</>
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Approve/Reject confirmation modal */}
+      <Modal open={actionModal.open} onClose={() => { if (!actionSubmitting) { setActionModal({ open: false, group: null }); setActionRejectReason('') } }} contentClassName="max-w-md">
+        {actionModal.group && (
+          <div className="p-6">
+            <h3 className="text-lg font-bold text-gray-800 mb-2">ยืนยันการตรวจสอบ</h3>
+            <p className="text-gray-600 text-sm mb-1">
+              บิล <span className="font-mono font-bold text-blue-600">{actionModal.group.bill_no}</span>
+            </p>
+            <p className="text-gray-600 text-sm mb-4">
+              จำนวน {actionModal.group.entries.length} สลิป — ยอดรวม ฿{actionModal.group.entries.reduce((sum, e) => sum + Number(e.transfer_amount), 0).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+            </p>
+            <label className="block mb-4">
+              <span className="block text-sm font-semibold text-gray-700 mb-1">เหตุผลที่ไม่อนุมัติ (กรณีปฏิเสธ)</span>
+              <textarea
+                value={actionRejectReason}
+                onChange={(e) => setActionRejectReason(e.target.value)}
+                rows={2}
+                placeholder="เช่น สลิปไม่ชัดเจน, ยอดโอนไม่ตรง, สลิปถูกใช้ไปแล้ว..."
+                disabled={actionSubmitting}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-300 focus:border-red-400 resize-none disabled:opacity-50"
+              />
+              <span className="block text-xs text-gray-400 mt-1">ใช้เมื่อกด "ปฏิเสธ" — จะแสดงที่เมนูออเดอร์ (ตรวจสอบไม่ผ่าน)</span>
+            </label>
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setActionModal({ open: false, group: null }); setActionRejectReason('') }}
+                disabled={actionSubmitting}
+                className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg font-semibold text-gray-600 hover:bg-gray-50 transition disabled:opacity-50"
+              >
+                ปิด
+              </button>
+              <button
+                onClick={() => handleAction('rejected')}
+                disabled={actionSubmitting}
+                className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700 transition disabled:opacity-50"
+              >
+                {actionSubmitting ? 'กำลังดำเนินการ...' : 'ปฏิเสธ'}
+              </button>
+              <button
+                onClick={() => handleAction('approved')}
+                disabled={actionSubmitting}
+                className="flex-1 px-4 py-2.5 bg-green-600 text-white rounded-lg font-bold hover:bg-green-700 transition disabled:opacity-50"
+              >
+                {actionSubmitting ? 'กำลังดำเนินการ...' : 'อนุมัติ'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+    </div>
+  )
+}
+
+/** Slip thumbnail sub-component — loads slip images inline */
+function SlipThumbnails({ orderId, onZoom }: { orderId: string; onZoom: (url: string) => void }) {
+  const [urls, setUrls] = useState<string[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let mounted = true
+    async function load() {
+      try {
+        const { data } = await supabase
+          .from('ac_verified_slips')
+          .select('slip_image_url, slip_storage_path')
+          .eq('order_id', orderId)
+          .or('is_deleted.is.null,is_deleted.eq.false')
+          .order('created_at', { ascending: true })
+        const rows = (data || []) as { slip_image_url?: string; slip_storage_path?: string | null }[]
+        const result: string[] = []
+        for (const r of rows) {
+          if (r.slip_storage_path) {
+            const parts = r.slip_storage_path.split('/')
+            const bucket = parts[0] || 'slip-images'
+            const filePath = parts.slice(1).join('/')
+            const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(filePath, 3600)
+            if (signed?.signedUrl) { result.push(signed.signedUrl); continue }
+          }
+          if (r.slip_image_url) result.push(r.slip_image_url)
+        }
+        if (mounted) setUrls(result)
+      } catch (e) {
+        console.error('Error loading slip thumbnails:', e)
+      } finally {
+        if (mounted) setLoading(false)
+      }
+    }
+    load()
+    return () => { mounted = false }
+  }, [orderId])
+
+  if (loading) return <div className="w-16 h-16 bg-gray-100 rounded-lg animate-pulse"></div>
+  if (urls.length === 0) return <div className="w-16 h-16 bg-gray-100 rounded-lg flex items-center justify-center text-gray-400 text-xs">ไม่มี</div>
+
+  return (
+    <div className="flex gap-1">
+      {urls.map((url, i) => (
+        <img
+          key={i}
+          src={url}
+          alt={`สลิป ${i + 1}`}
+          className="w-16 h-16 object-cover rounded-lg border cursor-pointer hover:border-blue-400 transition bg-gray-50"
+          onClick={() => onZoom(url)}
+          onError={(e) => { e.currentTarget.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="64" height="64"%3E%3Crect fill="%23eee" width="64" height="64"/%3E%3Ctext fill="%23999" font-family="sans-serif" font-size="8" x="50%25" y="50%25" text-anchor="middle" dy=".3em"%3E-%3C/text%3E%3C/svg%3E' }}
+        />
+      ))}
+    </div>
+  )
+}

@@ -1,0 +1,4028 @@
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useAuthContext } from '../contexts/AuthContext'
+import { useMenuAccess } from '../contexts/MenuAccessContext'
+import type { QCItem, QCRecord, QCSession, QCAttempt, SettingsReason, InkType, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct, QCCategoryGroup } from '../types'
+import {
+  fetchWorkOrdersWithProgress,
+  fetchItemsByWorkOrder,
+  fetchOpenSessionForWo,
+  saveQcRecord,
+  fetchSettingsReasons,
+  fetchInkTypes,
+  fetchRejectItems,
+  fetchReports,
+  fetchSessionRecords,
+  searchHistoryByUid,
+  fetchReportUsers,
+  addReason,
+  addSubReason,
+  deleteReason,
+  updateReasonType,
+  updateInkHex,
+  getPublicUrl,
+  saveWorkOrderName,
+  setSessionBackup,
+  clearSessionBackup,
+  fetchChecklistTopics,
+  createChecklistTopic,
+  updateChecklistTopic,
+  deleteChecklistTopic,
+  fetchChecklistItems,
+  createChecklistItem,
+  deleteChecklistItem,
+  fetchChecklistTopicProducts,
+  addChecklistTopicProduct,
+  removeChecklistTopicProduct,
+  uploadChecklistFile,
+  searchProducts,
+  fetchChecklistForProduct,
+  generateChecklistTemplate,
+  importChecklistFromExcel,
+  fetchQcCategoryGroups,
+  createQcCategoryGroup,
+  updateQcCategoryGroup,
+  deleteQcCategoryGroup,
+  addQcCategoriesToGroup,
+  removeQcCategoryFromGroup,
+  fetchQcProductCategories,
+  submitQcRecheck,
+  resolveQcEscalation,
+  fetchQcAttemptsByItemUid,
+  fetchQcAttemptsBySession,
+} from '../lib/qcApi'
+import type { BulkImportResult } from '../lib/qcApi'
+import type { WorkOrderWithProgress } from '../lib/qcApi'
+import { supabase } from '../lib/supabase'
+import Modal from '../components/ui/Modal'
+import Papa from 'papaparse'
+import { isAdminOrSuperadmin } from '../config/accessPolicy'
+import UrgencyBadge, { WoUrgencyChips } from '../components/common/UrgencyBadge'
+import QcSkipAutomationSettings from '../components/qc/QcSkipAutomationSettings'
+import { stableOrderItemUnitKey } from '../lib/productionUnits'
+
+type QCView = 'qc' | 'reject' | 'report' | 'history' | 'settings'
+type QCStep = 'select' | 'working'
+type QcSkipEligibility = {
+  eligible: boolean
+  urgent: boolean
+  mandatory_qc: boolean
+  mandatory_reasons: string[]
+  reasons: string[]
+  remaining_items: number
+  backlog_work_orders: number
+  available_qc_workers: number
+  required_qc_workers: number
+  predicted_finish: string | null
+  pickup_deadline: string | null
+}
+
+const MENUS: { id: QCView; label: string }[] = [
+  { id: 'qc', label: 'QC Operation' },
+  { id: 'reject', label: 'งานไม่ผ่าน' },
+  { id: 'report', label: 'รายงานและตัวชี้วัด' },
+  { id: 'history', label: 'ประวัติการตรวจ' },
+  { id: 'settings', label: 'ตั้งค่า' },
+]
+
+/**
+ * แปลงกรุ๊ปหมวดหมู่สินค้าเป็น Map<หมวดหมู่ (ตัวพิมพ์ใหญ่), ชื่อกรุ๊ป>
+ * ตั้งค่ากรุ๊ปได้เองที่ QC → Settings → กรุ๊ปหมวดหมู่ (ตาราง qc_category_groups)
+ */
+function buildCategoryGroupMap(groups: QCCategoryGroup[]): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const g of groups) {
+    for (const c of g.categories) {
+      const key = (c || '').trim().toUpperCase()
+      if (key) map.set(key, g.name)
+    }
+  }
+  return map
+}
+
+function formatDate(d: string | Date | null): string {
+  if (!d) return '-'
+  const date = new Date(d)
+  if (isNaN(date.getTime())) return '-'
+  return date.toLocaleDateString('th-TH', { year: '2-digit', month: '2-digit', day: '2-digit' }) + ' ' + date.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+}
+
+function formatTime(d: string | Date | null): string {
+  if (!d) return '-'
+  const date = new Date(d)
+  if (isNaN(date.getTime())) return '-'
+  return date.toLocaleTimeString('th-TH')
+}
+
+function formatDuration(s: number | null | undefined): string {
+  if (s == null || s < 0) return '0s'
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = Math.floor(s % 60)
+  return `${h > 0 ? h + 'h ' : ''}${m > 0 ? m + 'm ' : ''}${sec}s`
+}
+
+const QC_MENU_KEY_MAP: Record<string, string> = {
+  qc: 'qc-operation',
+  reject: 'qc-reject',
+  report: 'qc-report',
+  history: 'qc-history',
+  settings: 'qc-settings',
+}
+
+export default function QC() {
+  const { user } = useAuthContext()
+  const { hasAccess } = useMenuAccess()
+  const canAlwaysSkipQc = isAdminOrSuperadmin(user?.role)
+  const isProduction = user?.role === 'production'
+  const roleViewOnly = isAdminOrSuperadmin(user?.role)
+
+  const { menuAccessLoading } = useMenuAccess()
+  const [currentView, setCurrentView] = useState<QCView>('qc')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (menuAccessLoading) return
+    const menuKey = QC_MENU_KEY_MAP[currentView] || currentView
+    if (!hasAccess(menuKey)) {
+      const first = MENUS.find((m) => hasAccess(QC_MENU_KEY_MAP[m.id] || m.id))
+      if (first) setCurrentView(first.id)
+    }
+  }, [menuAccessLoading])
+
+  // QC Operation
+  const [workOrdersWithProgress, setWorkOrdersWithProgress] = useState<WorkOrderWithProgress[]>([])
+  const [workOrdersLoading, setWorkOrdersLoading] = useState(true)
+  const [workOrdersError, setWorkOrdersError] = useState('')
+  const [qcState, setQcState] = useState<{ step: QCStep; startTime: Date | null; filename: string; sessionId: string | null }>({ step: 'select', startTime: null, filename: '', sessionId: null })
+  const [operationViewOnly, setOperationViewOnly] = useState(false)
+  const isViewOnly = roleViewOnly || (currentView === 'qc' && operationViewOnly)
+  const [qcData, setQcData] = useState<{ items: QCItem[] }>({ items: [] })
+  const [activeSessionItemUids, setActiveSessionItemUids] = useState<Set<string>>(new Set())
+  const [currentItem, setCurrentItem] = useState<QCItem | null>(null)
+  const [barcodeQuery, setBarcodeQuery] = useState('')
+  const [qcCategoryFilter, setQcCategoryFilter] = useState<string>('')
+  const [categoryGroups, setCategoryGroups] = useState<QCCategoryGroup[]>([])
+  const [showNotQcOnly, setShowNotQcOnly] = useState(false)
+  const [productExt, setProductExt] = useState('.jpg')
+  const [cartoonExt, setCartoonExt] = useState('.jpg')
+  const [imgErrors, setImgErrors] = useState({ product: false, cartoon: false })
+  const barcodeInputRef = useRef<HTMLInputElement>(null)
+  const workOrderReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const workOrderLoadRequestRef = useRef(0)
+  const hiddenCompletedWorkOrdersRef = useRef<Set<string>>(new Set())
+  const qcStepRef = useRef<QCStep>('select')
+  const rejectLoadRequestRef = useRef(0)
+  const currentItemStartedAtRef = useRef<string>(new Date().toISOString())
+
+  useEffect(() => {
+    if (currentItem?.uid) currentItemStartedAtRef.current = new Date().toISOString()
+  }, [currentItem?.uid])
+
+  useEffect(() => {
+    qcStepRef.current = qcState.step
+  }, [qcState.step])
+
+  // Reject
+  const [rejectData, setRejectData] = useState<QCRecord[]>([])
+  const [activeRejectTab, setActiveRejectTab] = useState<'queue' | 1 | 2 | 'escalated'>('queue')
+  const [currentRejectItem, setCurrentRejectItem] = useState<QCRecord | null>(null)
+  const [rejectSearchQuery, setRejectSearchQuery] = useState('')
+  const [currentTime, setCurrentTime] = useState(() => new Date())
+
+  // Reports
+  const [reports, setReports] = useState<QCSession[]>([])
+  const [reportAttempts, setReportAttempts] = useState<QCAttempt[]>([])
+  const [reportUsers, setReportUsers] = useState<{ id: string; username: string | null }[]>([])
+  const [reportFilter, setReportFilter] = useState({
+    startDate: new Date().toISOString().split('T')[0],
+    endDate: new Date().toISOString().split('T')[0],
+    user: '',
+    workOrder: '',
+  })
+  const [showSessionModal, setShowSessionModal] = useState(false)
+  const [finishConfirmOpen, setFinishConfirmOpen] = useState(false)
+
+  const ensurePlanDeptStart = useCallback(async (workOrderName: string) => {
+    if (!workOrderName) return
+    const now = new Date().toISOString()
+    const { error } = await supabase.rpc('merge_plan_tracks_by_name', {
+      p_job_name: workOrderName,
+      p_dept: 'QC',
+      p_patch: { 'เริ่มQC': { start_if_null: now } },
+    })
+    if (error) console.error('QC ensurePlanDeptStart error:', error.message)
+  }, [])
+
+  const ensurePlanDeptEnd = useCallback(async (workOrderName: string) => {
+    if (!workOrderName) return
+    const now = new Date().toISOString()
+    const procNames = ['เริ่มQC', 'เสร็จแล้ว']
+    const patch: Record<string, Record<string, string>> = {}
+    procNames.forEach((p) => {
+      patch[p] = { start_if_null: now, end: now }
+    })
+    const { error } = await supabase.rpc('merge_plan_tracks_by_name', {
+      p_job_name: workOrderName,
+      p_dept: 'QC',
+      p_patch: patch,
+    })
+    if (error) console.error('QC ensurePlanDeptEnd error:', error.message)
+  }, [])
+  const [switchJobConfirmOpen, setSwitchJobConfirmOpen] = useState(false)
+  const [sessionItems, setSessionItems] = useState<QCRecord[]>([])
+  const [sessionAttempts, setSessionAttempts] = useState<QCAttempt[]>([])
+
+  // History
+  const [historySearch, setHistorySearch] = useState('')
+  const [historyResults, setHistoryResults] = useState<QCRecord[]>([])
+  const [historyAttempts, setHistoryAttempts] = useState<QCAttempt[]>([])
+  const [historySearched, setHistorySearched] = useState(false)
+  const [currentHistoryRecord, setCurrentHistoryRecord] = useState<QCRecord | null>(null)
+
+  // Settings
+  const [reasons, setReasons] = useState<SettingsReason[]>([])
+  const [inkTypes, setInkTypes] = useState<InkType[]>([])
+  const [settingsTab, setSettingsTab] = useState<'reasons' | 'ink' | 'skip_logs' | 'checklist_topics' | 'category_groups' | 'skip_automation'>('reasons')
+  const [newReason, setNewReason] = useState('')
+  const [newReasonType, setNewReasonType] = useState<'Man' | 'Machine' | 'Material' | 'Method'>('Man')
+
+  // Skip QC (ไม่ต้อง QC)
+  const [skipQcLoading, setSkipQcLoading] = useState<string | null>(null)
+  const [skipQcConfirmWo, setSkipQcConfirmWo] = useState<string | null>(null)
+  const [skipEligibilityByWo, setSkipEligibilityByWo] = useState<Record<string, QcSkipEligibility>>({})
+  const [productionSkipReason, setProductionSkipReason] = useState('')
+  const [skipLogs, setSkipLogs] = useState<any[]>([])
+
+  // Sub-reason management (Settings)
+  const [addSubReasonParentId, setAddSubReasonParentId] = useState<string | null>(null)
+  const [newSubReason, setNewSubReason] = useState('')
+
+  // Checklist Topics (Settings)
+  const [clTopics, setClTopics] = useState<QCChecklistTopic[]>([])
+  const [clNewTopicName, setClNewTopicName] = useState('')
+  const [clSelectedTopic, setClSelectedTopic] = useState<QCChecklistTopic | null>(null)
+  const [clItems, setClItems] = useState<QCChecklistItem[]>([])
+  const [clProducts, setClProducts] = useState<QCChecklistTopicProduct[]>([])
+  const [clNewItemTitle, setClNewItemTitle] = useState('')
+  const [clNewItemFile, setClNewItemFile] = useState<File | null>(null)
+  const [clProductSearch, setClProductSearch] = useState('')
+  const [clProductResults, setClProductResults] = useState<{ product_code: string; product_name: string }[]>([])
+  const [clEditTopicId, setClEditTopicId] = useState<string | null>(null)
+  const [clEditTopicName, setClEditTopicName] = useState('')
+  const [clUploading, setClUploading] = useState(false)
+  const [clImporting, setClImporting] = useState(false)
+  const [clImportResult, setClImportResult] = useState<BulkImportResult | null>(null)
+  const clFileInputRef = useRef<HTMLInputElement>(null)
+
+  // Category Groups (Settings) — ตั้งค่ากรุ๊ปหมวดหมู่สำหรับตัวกรองใน QC Operation
+  const [cgAllCategories, setCgAllCategories] = useState<string[]>([])
+  const [cgNewGroupName, setCgNewGroupName] = useState('')
+  const [cgEditId, setCgEditId] = useState<string | null>(null)
+  const [cgEditName, setCgEditName] = useState('')
+  const [cgAddTargetId, setCgAddTargetId] = useState<string | null>(null)
+  const [cgAddSelected, setCgAddSelected] = useState<Set<string>>(new Set())
+  const [cgSaving, setCgSaving] = useState(false)
+  const [cgDeleteTarget, setCgDeleteTarget] = useState<QCCategoryGroup | null>(null)
+
+  // Checklist for QC Operation (in-memory checkbox state)
+  const [checklistItems, setChecklistItems] = useState<(QCChecklistItem & { topic_name: string })[]>([])
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set())
+
+  // Checklist for Reject view
+  const [rejectChecklistItems, setRejectChecklistItems] = useState<(QCChecklistItem & { topic_name: string })[]>([])
+  const [rejectCheckedIds, setRejectCheckedIds] = useState<Set<string>>(new Set())
+
+  // Delete reason confirm modal
+  const [deleteReasonModalOpen, setDeleteReasonModalOpen] = useState(false)
+  const [deleteReasonTarget, setDeleteReasonTarget] = useState<{ id: string; name: string } | null>(null)
+
+  // Fail reason Modal (แทน window.prompt)
+  const [failReasonModalOpen, setFailReasonModalOpen] = useState(false)
+  const [failReasonContext, setFailReasonContext] = useState<'qc' | 'reject'>('qc')
+  const [failReasonSelected, setFailReasonSelected] = useState<string | null>(null)
+  const [failReasonStep, setFailReasonStep] = useState<1 | 2>(1)
+  const [selectedParentReason, setSelectedParentReason] = useState<SettingsReason | null>(null)
+
+  const filteredMenus = MENUS.filter((m) => hasAccess(QC_MENU_KEY_MAP[m.id] || m.id))
+
+  const qcUsername = user?.username || user?.email || 'unknown'
+
+  const totalItems = qcData.items.reduce((a, i) => a + (i.qty || 1), 0)
+  const passedItems = qcData.items.filter((i) => i.status === 'pass').reduce((a, i) => a + (i.qty || 1), 0)
+  const failedItems = qcData.items.filter((i) => i.status === 'fail').reduce((a, i) => a + (i.qty || 1), 0)
+  const remainingItems = totalItems - passedItems - failedItems
+  const activeSessionItems = useMemo(
+    () => qcData.items.filter((item) => activeSessionItemUids.has(item.uid)),
+    [qcData.items, activeSessionItemUids]
+  )
+  const activeTotalItems = activeSessionItems.reduce((a, i) => a + (i.qty || 1), 0)
+  const activePassedItems = activeSessionItems.filter((i) => i.status === 'pass').reduce((a, i) => a + (i.qty || 1), 0)
+  const activeFailedItems = activeSessionItems.filter((i) => i.status === 'fail').reduce((a, i) => a + (i.qty || 1), 0)
+  const activeRemainingItems = activeTotalItems - activePassedItems - activeFailedItems
+  const canFinishSession = !isViewOnly && activeTotalItems > 0 && activeRemainingItems === 0 && activeFailedItems === 0
+
+  /** ชื่อกรุ๊ปของหมวดหมู่ — หมวดหมู่ที่ไม่ได้อยู่ในกรุ๊ปใดจะใช้ชื่อหมวดหมู่ตัวเอง */
+  const categoryGroupMap = useMemo(() => buildCategoryGroupMap(categoryGroups), [categoryGroups])
+  const qcCategoryGroup = useCallback(
+    (raw: string | null | undefined): string => {
+      const c = (raw || '').trim()
+      if (!c) return ''
+      return categoryGroupMap.get(c.toUpperCase()) || c
+    },
+    [categoryGroupMap]
+  )
+
+  const qcCategoryOptions = useMemo(() => {
+    const set = new Set<string>()
+    qcData.items.forEach((i) => {
+      const c = qcCategoryGroup(i.product_category)
+      if (c) set.add(c)
+    })
+    return Array.from(set).sort()
+  }, [qcData.items, qcCategoryGroup])
+
+  const itemsToShow = useMemo(() => {
+    let list = qcData.items
+    if (qcCategoryFilter) {
+      list = list.filter((i) => qcCategoryGroup(i.product_category) === qcCategoryFilter)
+    }
+    if (showNotQcOnly) {
+      list = list.filter((i) => i.status === 'pending')
+    }
+    return list
+  }, [qcData.items, qcCategoryFilter, showNotQcOnly, qcCategoryGroup])
+
+  // ถ้าตั้งค่ากรุ๊ปใหม่แล้วชื่อกรุ๊ปที่เลือกอยู่หายไป ให้กลับไปแสดง "ทั้งหมด"
+  useEffect(() => {
+    if (qcCategoryFilter && !qcCategoryOptions.includes(qcCategoryFilter)) {
+      setQcCategoryFilter('')
+    }
+  }, [qcCategoryOptions, qcCategoryFilter])
+
+  // เมื่อสลับตัวกรอง/ข้อมูลเปลี่ยน ให้เลือก currentItem ให้สอดคล้องกับรายการที่แสดง
+  useEffect(() => {
+    if (qcState.step !== 'working') return
+    if (itemsToShow.length === 0) {
+      setCurrentItem(null)
+      return
+    }
+    if (!currentItem || !itemsToShow.includes(currentItem)) {
+      const firstPending = itemsToShow.find((i) => i.status === 'pending')
+      setCurrentItem(firstPending || itemsToShow[0])
+    }
+  }, [qcState.step, itemsToShow])
+
+  /** รายการคงเหลือ (สถานะ pending) แยกตามหมวดสินค้า — ใช้เป็นตัวแทนแผนกในระบบปัจจุบัน */
+  const remainingByDept = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const i of qcData.items) {
+      if (i.status !== 'pending') continue
+      const dept = qcCategoryGroup(i.product_category) || 'ไม่ระบุหมวด'
+      const q = i.qty || 1
+      map.set(dept, (map.get(dept) || 0) + q)
+    }
+    return Array.from(map.entries()).sort((a, b) => {
+      if (b[1] !== a[1]) return b[1] - a[1]
+      return a[0].localeCompare(b[0], 'th')
+    })
+  }, [qcData.items, qcCategoryGroup])
+
+  const productImageUrl = currentItem ? getPublicUrl('product-images', currentItem.product_code, productExt) : ''
+  const cartoonImageUrl = currentItem ? getPublicUrl('cartoon-patterns', currentItem.cartoon_name, cartoonExt) : ''
+  const rejectProductImageUrl = currentRejectItem ? getPublicUrl('product-images', currentRejectItem.product_code, '.jpg') : ''
+  const rejectCartoonImageUrl = currentRejectItem ? getPublicUrl('cartoon-patterns', currentRejectItem.cartoon_name, '.jpg') : ''
+
+  function getInkColor(inkName: string | null | undefined): string {
+    if (!inkName) return '#ddd'
+    const ink = inkTypes.find((i) => i.ink_name === inkName)
+    return ink?.hex_code || '#ddd'
+  }
+
+  const [planStartTimes, setPlanStartTimes] = useState<Record<string, string | null>>({})
+
+  const loadWorkOrders = useCallback(async () => {
+    const requestId = ++workOrderLoadRequestRef.current
+    setWorkOrdersLoading(true)
+    setWorkOrdersError('')
+    try {
+      const fetchedList = await fetchWorkOrdersWithProgress(true)
+      if (requestId !== workOrderLoadRequestRef.current) return
+
+      // A completed card is removed optimistically after the close transaction.
+      // Keep it hidden if an older database snapshot/realtime request still
+      // contains it, then release the guard once a fresh query confirms removal.
+      const fetchedNames = new Set(fetchedList.map((workOrder) => workOrder.work_order_name))
+      hiddenCompletedWorkOrdersRef.current.forEach((workOrderName) => {
+        if (!fetchedNames.has(workOrderName)) hiddenCompletedWorkOrdersRef.current.delete(workOrderName)
+      })
+      const list = fetchedList.filter(
+        (workOrder) => !hiddenCompletedWorkOrdersRef.current.has(workOrder.work_order_name)
+      )
+      setWorkOrdersWithProgress(list)
+      if (isProduction && list.length > 0) {
+        const results = await Promise.all(list.map(async (workOrder) => {
+          const { data, error } = await supabase.rpc('rpc_qc_skip_eligibility', { p_work_order_name: workOrder.work_order_name })
+          return [workOrder.work_order_name, error ? null : data as QcSkipEligibility] as const
+        }))
+        if (requestId !== workOrderLoadRequestRef.current) return
+        setSkipEligibilityByWo(Object.fromEntries(results.filter((entry): entry is readonly [string, QcSkipEligibility] => Boolean(entry[1]))))
+      } else if (!isProduction) {
+        setSkipEligibilityByWo({})
+      }
+      if (list.length > 0) {
+        const names = list.map((w) => w.work_order_name)
+        const { data: planJobs } = await supabase
+          .from('plan_jobs')
+          .select('name, tracks')
+          .in('name', names)
+        if (requestId !== workOrderLoadRequestRef.current) return
+        const map: Record<string, string | null> = {}
+        ;(planJobs || []).forEach((pj: any) => {
+          const start = pj.tracks?.QC?.['เริ่มQC']?.start ?? null
+          if (start) map[pj.name] = start
+        })
+        setPlanStartTimes(map)
+      }
+    } catch (e) {
+      if (requestId !== workOrderLoadRequestRef.current) return
+      console.error('loadWorkOrders error:', e)
+      setWorkOrdersError('โหลดรายการรอ QC ไม่สำเร็จ กรุณาลองใหม่')
+    } finally {
+      if (requestId === workOrderLoadRequestRef.current) setWorkOrdersLoading(false)
+    }
+  }, [isProduction])
+
+  const scheduleWorkOrdersReload = useCallback((delayMs = 300) => {
+    if (workOrderReloadTimerRef.current) clearTimeout(workOrderReloadTimerRef.current)
+    workOrderReloadTimerRef.current = setTimeout(() => {
+      workOrderReloadTimerRef.current = null
+      void loadWorkOrders()
+    }, delayMs)
+  }, [loadWorkOrders])
+
+  const loadSettings = useCallback(async () => {
+    try {
+      const [r, i] = await Promise.all([fetchSettingsReasons(), fetchInkTypes()])
+      setReasons(r)
+      setInkTypes(i)
+    } catch (e) {
+      console.error(e)
+    }
+  }, [])
+
+  const refreshRejectItems = useCallback(async () => {
+    const requestId = ++rejectLoadRequestRef.current
+    const data = await fetchRejectItems()
+    // Realtime events can start overlapping requests. Only the newest response is
+    // allowed to replace the list, otherwise an older one-item snapshot can hide
+    // a second reject that was saved milliseconds later.
+    if (requestId === rejectLoadRequestRef.current) setRejectData(data)
+    return data
+  }, [])
+
+  const loadRejectItems = useCallback(async () => {
+    try {
+      await refreshRejectItems()
+    } catch (e) {
+      console.error(e)
+    }
+  }, [refreshRejectItems])
+
+  const loadCategoryGroups = useCallback(async () => {
+    try {
+      setCategoryGroups(await fetchQcCategoryGroups())
+    } catch (e) {
+      console.error(e)
+    }
+  }, [])
+
+  const loadCategoryGroupSettings = useCallback(async () => {
+    try {
+      const [groups, cats] = await Promise.all([fetchQcCategoryGroups(), fetchQcProductCategories()])
+      setCategoryGroups(groups)
+      setCgAllCategories(cats)
+    } catch (e) {
+      console.error(e)
+      alert('โหลดข้อมูลกรุ๊ปหมวดหมู่ไม่สำเร็จ')
+    }
+  }, [])
+
+  const handleAddCategoryGroup = async () => {
+    const name = cgNewGroupName.trim()
+    if (!name) return
+    if (categoryGroups.some((g) => g.name.toLowerCase() === name.toLowerCase())) {
+      alert('มีกรุ๊ปชื่อนี้อยู่แล้ว')
+      return
+    }
+    setCgSaving(true)
+    try {
+      const maxSort = categoryGroups.reduce((m, g) => Math.max(m, g.sort_order || 0), 0)
+      await createQcCategoryGroup(name, maxSort + 1)
+      setCgNewGroupName('')
+      await loadCategoryGroups()
+    } catch (e: any) {
+      alert('เพิ่มกรุ๊ปไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setCgSaving(false)
+    }
+  }
+
+  const handleRenameCategoryGroup = async (id: string) => {
+    const name = cgEditName.trim()
+    if (!name) return
+    setCgSaving(true)
+    try {
+      await updateQcCategoryGroup(id, { name })
+      setCgEditId(null)
+      setCgEditName('')
+      await loadCategoryGroups()
+    } catch (e: any) {
+      alert('เปลี่ยนชื่อกรุ๊ปไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setCgSaving(false)
+    }
+  }
+
+  const handleDeleteCategoryGroup = async () => {
+    if (!cgDeleteTarget) return
+    setCgSaving(true)
+    try {
+      await deleteQcCategoryGroup(cgDeleteTarget.id)
+      setCgDeleteTarget(null)
+      await loadCategoryGroups()
+    } catch (e: any) {
+      alert('ลบกรุ๊ปไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setCgSaving(false)
+    }
+  }
+
+  const handleSaveCategoryGroupMembers = async (groupId: string) => {
+    if (cgAddSelected.size === 0) {
+      setCgAddTargetId(null)
+      return
+    }
+    setCgSaving(true)
+    try {
+      await addQcCategoriesToGroup(groupId, Array.from(cgAddSelected))
+      setCgAddTargetId(null)
+      setCgAddSelected(new Set())
+      await loadCategoryGroups()
+    } catch (e: any) {
+      alert('บันทึกหมวดหมู่ไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setCgSaving(false)
+    }
+  }
+
+  const handleRemoveCategoryFromGroup = async (groupId: string, category: string) => {
+    setCgSaving(true)
+    try {
+      await removeQcCategoryFromGroup(groupId, category)
+      await loadCategoryGroups()
+    } catch (e: any) {
+      alert('เอาหมวดหมู่ออกจากกรุ๊ปไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setCgSaving(false)
+    }
+  }
+
+  const refreshActiveSessionItemUids = useCallback(async () => {
+    if (qcState.step !== 'working' || !qcState.filename) {
+      setActiveSessionItemUids(new Set())
+      return
+    }
+    const woName = qcState.filename.startsWith('WO-') ? qcState.filename.slice(3) : ''
+    if (!woName) {
+      setActiveSessionItemUids(new Set())
+      return
+    }
+    try {
+      const activeItems = await fetchItemsByWorkOrder(woName)
+      setActiveSessionItemUids(new Set(activeItems.map((item) => item.uid)))
+    } catch (e) {
+      console.error('refreshActiveSessionItemUids error:', e)
+    }
+  }, [qcState.step, qcState.filename])
+
+  // จำนวนรายการรอ QC (จำนวน work orders ที่ยังเหลือ)
+  const qcOperationCount = workOrdersWithProgress.length
+  // จำนวน reject items
+  const rejectCount = rejectData.length
+
+  // ส่งจำนวนรวมไปให้ Sidebar แสดงเรียลไทม์
+  useEffect(() => {
+    const total = qcOperationCount + rejectCount
+    window.dispatchEvent(new CustomEvent('sidebar-qc-counts', { detail: { total, qcOperation: qcOperationCount, reject: rejectCount } }))
+  }, [qcOperationCount, rejectCount])
+
+  useEffect(() => {
+    loadWorkOrders()
+    loadRejectItems()
+    loadSettings()
+    clearSessionBackup()
+    const t = setInterval(() => setCurrentTime(new Date()), 1000)
+    return () => clearInterval(t)
+  }, [loadWorkOrders, loadRejectItems, loadSettings])
+
+  // Realtime: อัปเดตจำนวน QC Operation + Reject เมื่อข้อมูลเปลี่ยน
+  useEffect(() => {
+    const channel = supabase
+      .channel('qc-page-realtime-counts')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_records' }, () => {
+        loadRejectItems()
+        if (qcStepRef.current === 'select') scheduleWorkOrdersReload()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_sessions' }, () => {
+        if (qcStepRef.current === 'select') scheduleWorkOrdersReload()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, () => {
+        if (qcStepRef.current === 'select') scheduleWorkOrdersReload()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
+        if (qcStepRef.current === 'select') scheduleWorkOrdersReload()
+        refreshActiveSessionItemUids()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_items' }, () => {
+        // การสร้างใบงานมัก insert work order/order ก่อน insert items ถ้าไม่โหลดคิวซ้ำ
+        // ใบงานจะค้างเป็นรายการว่างจนกว่าผู้ใช้จะรีเฟรชหน้าเอง
+        if (qcStepRef.current === 'select') scheduleWorkOrdersReload()
+        refreshActiveSessionItemUids()
+      })
+      .subscribe()
+    return () => {
+      if (workOrderReloadTimerRef.current) {
+        clearTimeout(workOrderReloadTimerRef.current)
+        workOrderReloadTimerRef.current = null
+      }
+      supabase.removeChannel(channel)
+    }
+  }, [loadRejectItems, refreshActiveSessionItemUids, scheduleWorkOrdersReload])
+
+  useEffect(() => {
+    if (currentView === 'reject') loadRejectItems()
+  }, [currentView, loadRejectItems])
+
+  useEffect(() => {
+    if (currentView === 'report') {
+      fetchReportUsers().then(setReportUsers).catch(console.error)
+    }
+  }, [currentView])
+
+  useEffect(() => {
+    if (currentView === 'settings') loadSettings()
+  }, [currentView, loadSettings])
+
+  // กรุ๊ปหมวดหมู่ใช้ในตัวกรองของ QC Operation — โหลดครั้งเดียวตอนเข้าหน้า
+  useEffect(() => {
+    loadCategoryGroups()
+  }, [loadCategoryGroups])
+
+  useEffect(() => {
+    if (qcState.step === 'working' && qcData.items.length > 0) {
+      setSessionBackup(qcState, qcData)
+    }
+  }, [qcState.step, qcState.startTime, qcState.filename, qcState.sessionId, qcData.items])
+
+  useEffect(() => {
+    refreshActiveSessionItemUids()
+  }, [refreshActiveSessionItemUids, qcData.items])
+
+  useEffect(() => {
+    setImgErrors({ product: false, cartoon: false })
+    setProductExt('.jpg')
+    setCartoonExt('.jpg')
+    if (currentItem) {
+      setTimeout(() => {
+        const el = document.getElementById('item-' + currentItem.uid)
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      }, 0)
+    }
+  }, [currentItem])
+
+  // Reset checklist selection whenever the *selected item* changes (even if product_code is the same).
+  useEffect(() => {
+    setCheckedIds(new Set())
+  }, [currentItem?.uid])
+
+  useEffect(() => {
+    if (currentItem?.product_code) {
+      fetchChecklistForProduct(currentItem.product_code)
+        .then(setChecklistItems)
+        .catch(() => setChecklistItems([]))
+    } else {
+      setChecklistItems([])
+    }
+  }, [currentItem?.product_code])
+
+  // Reset reject checklist selection whenever the *selected reject record* changes.
+  useEffect(() => {
+    setRejectCheckedIds(new Set())
+  }, [currentRejectItem?.id])
+
+  useEffect(() => {
+    if (currentRejectItem?.product_code) {
+      fetchChecklistForProduct(currentRejectItem.product_code)
+        .then(setRejectChecklistItems)
+        .catch(() => setRejectChecklistItems([]))
+    } else {
+      setRejectChecklistItems([])
+    }
+  }, [currentRejectItem?.product_code])
+
+  const allChecklistChecked = checklistItems.length === 0 || checklistItems.every((item) => checkedIds.has(item.id))
+  const allRejectChecklistChecked =
+    rejectChecklistItems.length === 0 || rejectChecklistItems.every((item) => rejectCheckedIds.has(item.id))
+
+  const focusBarcodeInput = useCallback(() => {
+    setTimeout(() => {
+      barcodeInputRef.current?.focus({ preventScroll: true })
+    }, 0)
+  }, [])
+
+  async function handleLoadWo(woName: string, viewOnly = false) {
+    if (!woName) return
+    const shouldViewOnly = roleViewOnly || viewOnly
+    setLoading(true)
+    setOperationViewOnly(shouldViewOnly)
+    setQcCategoryFilter('')
+    try {
+      const skipTrack = shouldViewOnly
+      if (!skipTrack) await ensurePlanDeptStart(woName)
+      const items = await fetchItemsByWorkOrder(woName)
+      if (items.length === 0) {
+        setWorkOrdersWithProgress((prev) => prev.filter((wo) => wo.work_order_name !== woName))
+        await loadWorkOrders()
+        alert('ไม่พบรายการในใบงานนี้')
+        return
+      }
+      saveWorkOrderName(woName)
+      const filename = `WO-${woName}`
+      let sessionId: string | null = null
+      let startTime: Date = new Date()
+      let planStart: string | null = null
+
+      const { data: planJob } = await supabase
+        .from('plan_jobs')
+        .select('tracks')
+        .eq('name', woName)
+        .order('date', { ascending: false })
+        .limit(1)
+        .single()
+      planStart = planJob?.tracks?.QC?.['เริ่มQC']?.start ?? null
+      if (planStart) startTime = new Date(planStart)
+
+      const openSession = await fetchOpenSessionForWo(woName)
+      if (openSession) {
+        sessionId = shouldViewOnly ? null : openSession.id
+        startTime = new Date(openSession.start_time)
+      } else {
+        if (!shouldViewOnly) {
+          const { data: newSession, error: sessErr } = await supabase
+            .from('qc_sessions')
+            .insert({
+              username: qcUsername,
+              filename,
+              start_time: startTime.toISOString(),
+              end_time: null,
+              total_items: 0,
+              pass_count: 0,
+              fail_count: 0,
+              skipped_count: 0,
+            })
+            .select('id')
+            .single()
+          if (sessErr) throw sessErr
+          sessionId = newSession?.id ?? null
+        } else {
+          // โหมดดูอย่างเดียว: ไม่สร้าง session และไม่บันทึกเวลาเริ่ม
+          sessionId = null
+          if (!planStart) startTime = new Date()
+        }
+      }
+
+      // Restore only the current open session. Historical sessions must never
+      // pre-approve a new run, even when a bill/sequence UID is reused.
+      const records = openSession ? await fetchSessionRecords(openSession.id) : []
+      const recordByStableKey = new Map<string, (typeof records)[number]>()
+      const legacyRecordByUid = new Map<string, (typeof records)[number]>()
+      records.forEach((record) => {
+        if (record.order_item_id && record.unit_index) {
+          recordByStableKey.set(stableOrderItemUnitKey(record.order_item_id, record.unit_index), record)
+        } else {
+          legacyRecordByUid.set(record.item_uid, record)
+        }
+      })
+      items.forEach((item) => {
+        const record = recordByStableKey.get(stableOrderItemUnitKey(item.source_order_item_id, item.unit_index))
+          ?? legacyRecordByUid.get(item.uid)
+          ?? (item.source_line_uid ? legacyRecordByUid.get(item.source_line_uid) : undefined)
+        if (record) {
+          item.status = record.status === 'skipped' ? 'pending' : record.status
+          item.fail_reason = record.fail_reason ?? undefined
+          item.check_time = record.created_at ? new Date(record.created_at) : undefined
+        }
+      })
+
+      setQcData({ items })
+      setActiveSessionItemUids(new Set(items.map((item) => item.uid)))
+      setQcState({ step: 'working', startTime, filename, sessionId })
+      const first = items.find((i) => i.status === 'pending') || items[0]
+      setCurrentItem(first)
+      focusBarcodeInput()
+    } catch (e: any) {
+      alert('โหลดไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function handleSwitchJob() {
+    if (isViewOnly) {
+      proceedSwitchJob()
+      return
+    }
+    if (qcData.items.some((i) => i.status !== 'pending')) {
+      setSwitchJobConfirmOpen(true)
+      return
+    }
+    proceedSwitchJob()
+  }
+
+  function proceedSwitchJob() {
+    setQcState({ step: 'select', startTime: null, filename: '', sessionId: null })
+    setQcData({ items: [] })
+    setActiveSessionItemUids(new Set())
+    setCurrentItem(null)
+    setQcCategoryFilter('')
+    setOperationViewOnly(false)
+    clearSessionBackup()
+    loadWorkOrders()
+  }
+
+  function handleScan() {
+    const q = barcodeQuery.trim().toUpperCase()
+    const found = qcData.items.find((i) => i.uid === q)
+    if (found) {
+      setCurrentItem(found)
+      setBarcodeQuery('')
+    } else if (q) {
+      alert('ไม่พบ UID นี้')
+    }
+    barcodeInputRef.current?.focus({ preventScroll: true })
+  }
+
+  function selectItem(item: QCItem) {
+    setCurrentItem(item)
+  }
+
+  function navigateItem(delta: number) {
+    const idx = qcData.items.indexOf(currentItem!)
+    const next = qcData.items[idx + delta]
+    if (next) setCurrentItem(next)
+  }
+
+  function openFailReasonModal(context: 'qc' | 'reject') {
+    setFailReasonContext(context)
+    setFailReasonSelected(null)
+    setFailReasonStep(1)
+    setSelectedParentReason(null)
+    setFailReasonModalOpen(true)
+  }
+
+  function closeFailReasonModal() {
+    setFailReasonModalOpen(false)
+    setFailReasonSelected(null)
+    setFailReasonStep(1)
+    setSelectedParentReason(null)
+  }
+
+  function confirmFailReason() {
+    const reason = failReasonSelected || null
+    if (!reason) return
+    closeFailReasonModal()
+    if (failReasonContext === 'qc') {
+      applyFailReasonQc(reason)
+    } else {
+      if (reason) applyFailReasonReject(reason)
+    }
+  }
+
+  async function applyFailReasonQc(reason: string | null) {
+    if (isViewOnly) { alert('โหมดดูอย่างเดียว ไม่สามารถบันทึกผล QC ได้'); return }
+    if (!currentItem || !qcState.sessionId) return
+    const updated = { ...currentItem, status: 'fail' as const, fail_reason: reason ?? undefined, check_time: new Date() }
+    try {
+      await saveQcRecord(qcState.sessionId, updated, qcUsername, currentItemStartedAtRef.current)
+    } catch (e: any) {
+      alert('บันทึกไม่สำเร็จ: ' + (e?.message || e))
+      return
+    }
+    setQcData((prev) => ({
+      items: prev.items.map((i) =>
+        i.uid === currentItem.uid ? { ...i, status: 'fail' as const, fail_reason: reason ?? undefined, check_time: new Date() } : i
+      ),
+    }))
+    const nextIdx = qcData.items.indexOf(currentItem) + 1
+    if (qcData.items[nextIdx]) setCurrentItem(qcData.items[nextIdx])
+    setBarcodeQuery('')
+    focusBarcodeInput()
+  }
+
+  async function applyFailReasonReject(reason: string) {
+    if (isViewOnly) { alert('บัญชี superadmin/admin ไม่อนุญาตให้ทำงาน QC สามารถดูข้อมูลได้อย่างเดียว'); return }
+    if (!currentRejectItem) return
+    setLoading(true)
+    try {
+      await submitQcRecheck(currentRejectItem.id, 'fail', reason, qcUsername)
+      const updatedList = await refreshRejectItems()
+      const changed = updatedList.find((r) => r.id === currentRejectItem.id)
+      const nextTab: 1 | 2 | 'escalated' = changed?.workflow_status === 'escalated'
+        ? 'escalated'
+        : (Math.min(changed?.retry_count || 1, 2) as 1 | 2)
+      const next = updatedList.find((r) => r.id !== currentRejectItem.id && (
+        nextTab === 'escalated' ? r.workflow_status === 'escalated' : r.workflow_status !== 'escalated' && r.retry_count === nextTab
+      ))
+      const nextAny = updatedList.find((r) => r.id !== currentRejectItem.id)
+      setCurrentRejectItem(changed || next || nextAny || null)
+      if (changed) setActiveRejectTab(nextTab)
+      else if (next) setActiveRejectTab(nextTab)
+      else if (nextAny) setActiveRejectTab(nextAny.workflow_status === 'escalated' ? 'escalated' : Math.min(nextAny.retry_count || 1, 2) as 1 | 2)
+      else setActiveRejectTab('queue')
+    } catch (e: any) {
+      alert('อัปเดตไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function markStatus(status: 'pass' | 'fail') {
+    if (isViewOnly) { alert('บัญชี superadmin/admin ไม่อนุญาตให้ทำงาน QC สามารถดูข้อมูลได้อย่างเดียว'); return }
+    if (!currentItem) return
+    if (status === 'pass' && !allChecklistChecked) {
+      alert('กรุณาตรวจเช็คเช็คลิสให้ครบทุกหัวข้อก่อนกด ผ่าน')
+      return
+    }
+    if (status === 'pass' && currentItem.status === 'fail') {
+      alert('รายการนี้ถูก Reject แล้ว กรุณาไปกด QC PASS ที่เมนู Reject')
+      return
+    }
+    if (status === 'pass') {
+      if (qcState.sessionId) {
+        try {
+          await saveQcRecord(qcState.sessionId, { ...currentItem, status: 'pass' }, qcUsername, currentItemStartedAtRef.current)
+        } catch (e: any) {
+          alert('บันทึกไม่สำเร็จ: ' + (e?.message || e))
+          return
+        }
+      }
+      const updatedItems = qcData.items.map((i) =>
+        i.uid === currentItem.uid ? { ...i, status: 'pass' as const, check_time: new Date() } : i
+      )
+      setQcData({ items: updatedItems })
+      const nextIdx = qcData.items.indexOf(currentItem) + 1
+      if (qcData.items[nextIdx]) setCurrentItem(qcData.items[nextIdx])
+      setBarcodeQuery('')
+      focusBarcodeInput()
+    } else {
+      openFailReasonModal('qc')
+    }
+  }
+
+  async function finishSession() {
+    if (isViewOnly) { alert('บัญชี superadmin/admin ไม่อนุญาตให้ทำงาน QC สามารถดูข้อมูลได้อย่างเดียว'); return }
+    if (!qcState.sessionId) {
+      alert('ไม่พบ session')
+      return
+    }
+    setLoading(true)
+    try {
+      // ยืนยันผลจากฐานข้อมูลจริงก่อนปิด session ป้องกัน UI แสดงครบแต่บาง record บันทึกไม่สำเร็จ
+      const persistedRecords = await fetchSessionRecords(qcState.sessionId)
+      const persistedStatusByStableKey = new Map(
+        persistedRecords
+          .filter((record) => record.order_item_id && record.unit_index)
+          .map((record) => [stableOrderItemUnitKey(record.order_item_id!, record.unit_index!), record.status])
+      )
+      const legacyStatusByUid = new Map(
+        persistedRecords
+          .filter((record) => !record.order_item_id || !record.unit_index)
+          .map((record) => [record.item_uid, record.status])
+      )
+      const missingPassCount = activeSessionItems.filter((item) => {
+        const status = persistedStatusByStableKey.get(stableOrderItemUnitKey(item.source_order_item_id, item.unit_index))
+          ?? legacyStatusByUid.get(item.uid)
+          ?? (item.source_line_uid ? legacyStatusByUid.get(item.source_line_uid) : undefined)
+        return status !== 'pass'
+      }).length
+      if (missingPassCount > 0) {
+        throw new Error(`ผลตรวจในฐานข้อมูลยังไม่ครบ ${missingPassCount} รายการ กรุณาตรวจรายการอีกครั้ง`)
+      }
+      const { error: finishError } = await supabase.rpc('qc_finish_session', { p_session_id: qcState.sessionId })
+      if (finishError) throw finishError
+      if (activeTotalItems > 0 && activePassedItems === activeTotalItems && activeFailedItems === 0) {
+        const woName = qcState.filename?.startsWith('WO-') ? qcState.filename.slice(3) : ''
+        if (woName) {
+          await ensurePlanDeptEnd(woName)
+        }
+      }
+      clearSessionBackup()
+      setQcState({ step: 'select', startTime: null, filename: '', sessionId: null })
+      setQcData({ items: [] })
+      setActiveSessionItemUids(new Set())
+      setCurrentItem(null)
+      setQcCategoryFilter('')
+      const finishedWoName = qcState.filename.startsWith('WO-') ? qcState.filename.slice(3) : ''
+      if (finishedWoName) {
+        hiddenCompletedWorkOrdersRef.current.add(finishedWoName)
+        setWorkOrdersWithProgress((previous) => previous.filter((workOrder) => workOrder.work_order_name !== finishedWoName))
+      }
+      // The close transaction is already complete. Refresh the expensive queue
+      // queries in the background so the operator returns to a clean queue now.
+      void loadRejectItems()
+      void loadWorkOrders()
+    } catch (e: any) {
+      alert('บันทึกไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleConfirmFinishSession() {
+    setFinishConfirmOpen(false)
+    await finishSession()
+  }
+
+  const filteredRejectItems = activeRejectTab === 'queue'
+    ? []
+    : rejectData.filter((i) => activeRejectTab === 'escalated'
+      ? i.workflow_status === 'escalated'
+      : i.workflow_status !== 'escalated' && i.retry_count === activeRejectTab
+    ).filter((i) => !rejectSearchQuery.trim() || i.item_uid.toUpperCase().includes(rejectSearchQuery.trim().toUpperCase()))
+
+  const sortedRejectQueue = [...rejectData].sort((a, b) => new Date(a.attempt_started_at || a.created_at).getTime() - new Date(b.attempt_started_at || b.created_at).getTime())
+
+  function getRejectDuration(createdAt: string) {
+    return formatDuration(Math.floor((currentTime.getTime() - new Date(createdAt).getTime()) / 1000))
+  }
+
+  function handleRejectScan() {
+    const q = rejectSearchQuery.trim().toUpperCase()
+    const found = rejectData.find((i) => i.item_uid === q)
+    if (found) {
+      setActiveRejectTab(found.workflow_status === 'escalated' ? 'escalated' : Math.min(found.retry_count || 1, 2) as 1 | 2)
+      setCurrentRejectItem(found)
+      setRejectSearchQuery('')
+    } else if (q) alert('ไม่พบใน Reject')
+  }
+
+  function navigateRejectItem(delta: number) {
+    if (filteredRejectItems.length === 0) return
+    const idx = filteredRejectItems.indexOf(currentRejectItem!)
+    const next = filteredRejectItems[idx + delta]
+    if (next) setCurrentRejectItem(next)
+  }
+
+  async function markRejectStatus(status: 'pass' | 'fail') {
+    if (isViewOnly) { alert('บัญชี superadmin/admin ไม่อนุญาตให้ทำงาน QC สามารถดูข้อมูลได้อย่างเดียว'); return }
+    if (!currentRejectItem) return
+    if (status === 'pass' && !allRejectChecklistChecked) {
+      alert('กรุณาเช็คผ่านหัวข้อการตรวจเช็คให้ครบทั้งหมดก่อนกด QC PASS')
+      return
+    }
+    if (status === 'pass') {
+      setLoading(true)
+      try {
+        await submitQcRecheck(currentRejectItem.id, 'pass', null, qcUsername)
+
+        // Sync สถานะกลับไปที่ qcData.items เพื่อให้ QC Operation แสดงผลถูกต้อง
+        const updatedItems = qcData.items.map((i) =>
+          (currentRejectItem.order_item_id && currentRejectItem.unit_index
+            ? i.source_order_item_id === currentRejectItem.order_item_id && i.unit_index === currentRejectItem.unit_index
+            : i.uid === currentRejectItem.item_uid || i.source_line_uid === currentRejectItem.item_uid)
+            ? { ...i, status: 'pass' as const, fail_reason: undefined, check_time: new Date() }
+            : i
+        )
+        setQcData((prev) => ({ ...prev, items: updatedItems }))
+
+        const updatedList = await refreshRejectItems()
+        const next = updatedList.find((r) => r.id !== currentRejectItem.id && r.retry_count === (currentRejectItem.retry_count || 1))
+        const nextAny = updatedList.find((r) => r.id !== currentRejectItem.id)
+        setCurrentRejectItem(next || nextAny || null)
+        if (next) setActiveRejectTab(next.workflow_status === 'escalated' ? 'escalated' : Math.min(next.retry_count || 1, 2) as 1 | 2)
+        else if (nextAny) setActiveRejectTab(nextAny.workflow_status === 'escalated' ? 'escalated' : Math.min(nextAny.retry_count || 1, 2) as 1 | 2)
+        else setActiveRejectTab('queue')
+      } catch (e: any) {
+        alert('อัปเดตไม่สำเร็จ: ' + (e?.message || e))
+      } finally {
+        setLoading(false)
+      }
+    } else {
+      openFailReasonModal('reject')
+    }
+  }
+
+  async function handleEscalationDecision(decision: 'special_recheck' | 'produce_new' | 'scrap' | 'return_source') {
+    if (!currentRejectItem || !isAdminOrSuperadmin(user?.role)) return
+    const labels = { special_recheck: 'อนุมัติตรวจใหม่กรณีพิเศษ', produce_new: 'สั่งผลิตใหม่', scrap: 'คัดทิ้ง', return_source: 'ส่งคืนต้นทาง' }
+    const reason = window.prompt(`กรุณาระบุเหตุผล: ${labels[decision]}`)?.trim()
+    if (!reason) return
+    setLoading(true)
+    try {
+      await resolveQcEscalation(currentRejectItem.id, decision, reason, qcUsername)
+      const updatedList = await refreshRejectItems()
+      const next = updatedList.find((r) => r.workflow_status === 'escalated') || updatedList[0] || null
+      setCurrentRejectItem(next)
+      setActiveRejectTab(next ? (next.workflow_status === 'escalated' ? 'escalated' : Math.min(next.retry_count || 1, 2) as 1 | 2) : 'queue')
+    } catch (e: any) {
+      alert('บันทึกการตัดสินใจไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function loadReports() {
+    setLoading(true)
+    try {
+      const base = await fetchReports({
+        startDate: reportFilter.startDate,
+        endDate: reportFilter.endDate,
+        user: reportFilter.user,
+      })
+
+      // Filter by work order name / filename (WO-...)
+      const woQuery = String(reportFilter.workOrder || '').trim()
+      const woFiltered = !woQuery
+        ? base
+        : base.filter((s) => {
+            const filename = String(s.filename || '')
+            const q = woQuery.toUpperCase()
+            const f = filename.toUpperCase()
+            if (f.includes(q)) return true
+            // also allow typing without "WO-" prefix
+            if (!q.startsWith('WO-') && f.includes(`WO-${q}`)) return true
+            return false
+          })
+
+      setReports(woFiltered)
+      const attempts = await Promise.all(woFiltered.map((session) => fetchQcAttemptsBySession(session.id)))
+      setReportAttempts(attempts.flat() as QCAttempt[])
+    } catch (e: any) {
+      alert('โหลดรายงานไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function showSessionDetails(session: QCSession) {
+    setLoading(true)
+    try {
+      const [data, attempts] = await Promise.all([fetchSessionRecords(session.id), fetchQcAttemptsBySession(session.id)])
+      setSessionItems(data)
+      const skippedRows: QCAttempt[] = data
+        .filter((record) => record.status === 'skipped' && !attempts.some((attempt) => attempt.qc_record_id === record.id))
+        .map((record) => ({
+          id: `skip-${record.id}`,
+          qc_record_id: record.id,
+          session_id: record.session_id,
+          item_uid: record.item_uid,
+          attempt_no: 0,
+          attempt_type: 'skip',
+          result: 'skipped',
+          fail_reason: null,
+          qc_by: record.qc_by,
+          started_at: record.created_at,
+          completed_at: record.created_at,
+          duration_seconds: 0,
+          created_at: record.created_at,
+        }))
+      setSessionAttempts([...(attempts as QCAttempt[]), ...skippedRows])
+      setShowSessionModal(true)
+    } catch (e: any) {
+      alert('โหลดไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function downloadReportCsv(session: QCSession) {
+    setLoading(true)
+    try {
+      const [data, attempts] = await Promise.all([fetchSessionRecords(session.id), fetchQcAttemptsBySession(session.id)])
+      if (!data.length) {
+        alert('ไม่มีรายการ')
+        return
+      }
+      const recordById = new Map(data.map((record) => [record.id, record]))
+      const auditRows = attempts.length ? attempts : data.map((r) => ({
+        qc_record_id: r.id, item_uid: r.item_uid, result: r.status, attempt_no: r.retry_count || 1,
+        attempt_type: (r.retry_count || 1) === 1 ? 'initial' : 'recheck', fail_reason: r.fail_reason,
+        qc_by: r.qc_by, started_at: r.created_at, completed_at: r.created_at, duration_seconds: r.reject_duration || 0,
+      }))
+      const rows = auditRows.map((a: any) => {
+        const r = recordById.get(a.qc_record_id) || data.find((record) => record.item_uid === a.item_uid)!
+        return {
+        Date: new Date(a.completed_at).toLocaleDateString('th-TH'),
+        Start_Time: new Date(a.started_at).toLocaleTimeString('th-TH'),
+        End_Time: new Date(a.completed_at).toLocaleTimeString('th-TH'),
+        Duration: formatDuration(a.duration_seconds),
+        Item_UID: a.item_uid,
+        Status: a.result,
+        Attempt: a.attempt_no,
+        Attempt_Type: a.attempt_type,
+        Fail_Reason: a.fail_reason || '-',
+        QC_By: a.qc_by,
+        product_name: r.product_name || '-',
+        product_code: r.product_code || '-',
+        Bill_No: r.bill_no || '-',
+        cartoon_name: r.cartoon_name || '-',
+        ink_color: r.ink_color || '-',
+        font: r.font || '-',
+        floor: r.floor || '-',
+        line1: r.line1 || '-',
+        line2: r.line2 || '-',
+        line3: r.line3 || '-',
+        remark: r.remark || '-',
+      }})
+      const csv = '\uFEFF' + Papa.unparse(rows)
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+      const link = document.createElement('a')
+      link.href = URL.createObjectURL(blob)
+      link.download = `Report_${session.filename}.csv`
+      link.click()
+      URL.revokeObjectURL(link.href)
+    } catch (e: any) {
+      alert('ดาวน์โหลดไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function searchHistory() {
+    if (!historySearch.trim()) return
+    setLoading(true)
+    setHistorySearched(true)
+    setCurrentHistoryRecord(null)
+    try {
+      const [data, attempts] = await Promise.all([
+        searchHistoryByUid(historySearch.trim()),
+        fetchQcAttemptsByItemUid(historySearch.trim()),
+      ])
+      setHistoryResults(data)
+      setHistoryAttempts(attempts as QCAttempt[])
+      if (data.length > 0) setCurrentHistoryRecord(data[0])
+      if (data.length === 0) alert('ไม่พบประวัติการตรวจสำหรับ UID นี้')
+    } catch (e: any) {
+      alert('ค้นหาไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleAddReason() {
+    if (!newReason.trim()) return
+    try {
+      await addReason(newReason.trim(), newReasonType)
+      setNewReason('')
+      setNewReasonType('Man')
+      await loadSettings()
+    } catch (e: any) {
+      alert('เพิ่มไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
+  async function handleAddSubReason(parentId: string, parentFailType: string) {
+    if (!newSubReason.trim()) return
+    try {
+      await addSubReason(parentId, newSubReason.trim(), parentFailType)
+      setNewSubReason('')
+      setAddSubReasonParentId(null)
+      await loadSettings()
+    } catch (e: any) {
+      alert('เพิ่มหัวข้อย่อยไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
+  function handleDeleteReason(id: string, name?: string) {
+    setDeleteReasonTarget({ id, name: name || '' })
+    setDeleteReasonModalOpen(true)
+  }
+
+  async function confirmDeleteReason() {
+    if (!deleteReasonTarget) return
+    try {
+      await deleteReason(deleteReasonTarget.id)
+      await loadSettings()
+    } catch (e: any) {
+      alert('ลบไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setDeleteReasonModalOpen(false)
+      setDeleteReasonTarget(null)
+    }
+  }
+
+  async function handleUpdateReasonType(id: string, failType: 'Man' | 'Machine' | 'Material' | 'Method') {
+    try {
+      await updateReasonType(id, failType)
+      await loadSettings()
+    } catch (e: any) {
+      alert('อัปเดตไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
+  async function handleUpdateInkHex(id: number, hexCode: string) {
+    try {
+      await updateInkHex(id, hexCode)
+      await loadSettings()
+    } catch (e: any) {
+      alert('อัปเดตไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
+  async function handleSkipQcConfirm() {
+    const woName = skipQcConfirmWo
+    if (!woName) return
+    let eligibilitySnapshot: QcSkipEligibility | null = skipEligibilityByWo[woName] || null
+    if (isProduction) {
+      if (!productionSkipReason.trim()) {
+        alert('กรุณาระบุเหตุผลที่ต้องข้าม QC')
+        return
+      }
+      const { data, error } = await supabase.rpc('rpc_qc_skip_eligibility', { p_work_order_name: woName })
+      if (error || !(data as QcSkipEligibility | null)?.eligible) {
+        alert(error?.message || 'ใบงานนี้ไม่เข้าเงื่อนไขข้าม QC แล้ว กรุณารีเฟรชข้อมูล')
+        await loadWorkOrders()
+        return
+      }
+      eligibilitySnapshot = data as QcSkipEligibility
+    }
+    setSkipQcConfirmWo(null)
+    setSkipQcLoading(woName)
+    try {
+      const items = await fetchItemsByWorkOrder(woName)
+      if (items.length === 0) {
+        setWorkOrdersWithProgress((prev) => prev.filter((wo) => wo.work_order_name !== woName))
+        await loadWorkOrders()
+        alert('ไม่พบรายการ')
+        return
+      }
+
+      const now = new Date()
+      const filename = `WO-${woName}`
+
+      // Reuse an open session when present; otherwise create it as open and
+      // close it only after every skipped record has been written successfully.
+      const existingSession = await fetchOpenSessionForWo(woName)
+      let skipSessionId = existingSession?.id ?? null
+      if (!skipSessionId) {
+        const { data: session, error: sessErr } = await supabase
+          .from('qc_sessions')
+          .insert({
+            username: qcUsername,
+            filename,
+            start_time: now.toISOString(),
+            end_time: null,
+            total_items: 0,
+            pass_count: 0,
+            fail_count: 0,
+            skipped_count: 0,
+            kpi_score: 0,
+          })
+          .select('id')
+          .single()
+        if (sessErr) throw sessErr
+        skipSessionId = session.id
+      }
+
+      // Record an authorized skip distinctly from an actual inspection pass.
+      const records = items.map((item) => ({
+        session_id: skipSessionId,
+        item_uid: item.uid,
+        order_id: item.source_order_id,
+        order_item_id: item.source_order_item_id,
+        unit_index: item.unit_index,
+        status: 'skipped',
+        result_source: 'skip',
+        workflow_status: 'closed',
+        is_rejected: false,
+        resolved_at: now.toISOString(),
+        last_result_at: now.toISOString(),
+        qc_by: qcUsername,
+        product_name: item.product_name,
+        product_code: item.product_code,
+        bill_no: item.bill_no,
+        cartoon_name: item.cartoon_name,
+        ink_color: item.ink_color,
+        font: item.font,
+        floor: item.floor,
+        line1: item.line1,
+        line2: item.line2,
+        line3: item.line3,
+        qty: item.qty,
+        remark: 'ข้ามการ QC',
+      }))
+      const { error: recErr } = await supabase.from('qc_records').upsert(records, {
+        onConflict: 'session_id,order_item_id,unit_index',
+      })
+      if (recErr) throw recErr
+
+      const { error: closeSkipError } = await supabase
+        .from('qc_sessions')
+        .update({
+          end_time: now.toISOString(),
+          total_items: items.length,
+          pass_count: 0,
+          fail_count: 0,
+          skipped_count: items.length,
+          kpi_score: 0,
+        })
+        .eq('id', skipSessionId)
+        .is('end_time', null)
+      if (closeSkipError) throw closeSkipError
+
+      // อัปเดต plan — superadmin/admin ไม่บันทึกเวลาเริ่ม
+      const skipTrackEnd = isAdminOrSuperadmin(user?.role)
+      if (!skipTrackEnd) await ensurePlanDeptStart(woName)
+      await ensurePlanDeptEnd(woName)
+
+      // บันทึก log
+      await supabase.from('qc_skip_logs').insert({
+        work_order_name: woName,
+        skipped_by: qcUsername,
+        total_items: items.length,
+        production_reason: isProduction ? productionSkipReason.trim() : null,
+        eligibility_snapshot: eligibilitySnapshot,
+        eligibility_source: isProduction ? 'production_conditional' : 'admin_override',
+        item_details: items.map((i) => ({
+          uid: i.uid,
+          product_name: i.product_name,
+          product_code: i.product_code,
+          bill_no: i.bill_no,
+          ink_color: i.ink_color,
+          qty: i.qty,
+        })),
+      })
+
+      // เอารายการใบงานออกจากหน้าให้ทันทีหลังข้าม QC สำเร็จ
+      hiddenCompletedWorkOrdersRef.current.add(woName)
+      setWorkOrdersWithProgress((prev) => prev.filter((wo) => wo.work_order_name !== woName))
+      setProductionSkipReason('')
+      void loadWorkOrders()
+      void loadRejectItems()
+    } catch (e: any) {
+      alert('เกิดข้อผิดพลาด: ' + (e?.message || e))
+    } finally {
+      setSkipQcLoading(null)
+    }
+  }
+
+  async function loadSkipLogs() {
+    try {
+      const { data, error } = await supabase
+        .from('qc_skip_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(100)
+      if (error) throw error
+      setSkipLogs(data || [])
+    } catch (e) {
+      console.error('Error loading skip logs:', e)
+    }
+  }
+
+  // --- Checklist Settings handlers ---
+  async function loadChecklistTopics() {
+    try {
+      const data = await fetchChecklistTopics()
+      setClTopics(data)
+    } catch (e: any) {
+      console.error('loadChecklistTopics error:', e)
+    }
+  }
+
+  async function handleCreateTopic() {
+    const name = clNewTopicName.trim()
+    if (!name) return
+    try {
+      await createChecklistTopic(name)
+      setClNewTopicName('')
+      await loadChecklistTopics()
+    } catch (e: any) {
+      alert('เพิ่มหัวข้อไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
+  async function handleDeleteTopic(id: string) {
+    if (!confirm('ลบหัวข้อนี้ รวมถึงหัวข้อย่อยและสินค้าที่เชื่อม?')) return
+    try {
+      await deleteChecklistTopic(id)
+      if (clSelectedTopic?.id === id) { setClSelectedTopic(null); setClItems([]); setClProducts([]) }
+      await loadChecklistTopics()
+    } catch (e: any) {
+      alert('ลบไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
+  async function handleSaveEditTopic() {
+    if (!clEditTopicId || !clEditTopicName.trim()) return
+    try {
+      await updateChecklistTopic(clEditTopicId, clEditTopicName.trim())
+      setClEditTopicId(null)
+      setClEditTopicName('')
+      await loadChecklistTopics()
+      if (clSelectedTopic?.id === clEditTopicId) {
+        setClSelectedTopic((prev) => prev ? { ...prev, name: clEditTopicName.trim() } : null)
+      }
+    } catch (e: any) {
+      alert('แก้ไขไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
+  async function handleSelectTopic(topic: QCChecklistTopic) {
+    setClSelectedTopic(topic)
+    try {
+      const [items, products] = await Promise.all([
+        fetchChecklistItems(topic.id),
+        fetchChecklistTopicProducts(topic.id),
+      ])
+      setClItems(items)
+      setClProducts(products)
+    } catch (e: any) {
+      console.error('loadTopicDetail error:', e)
+    }
+  }
+
+  async function handleAddChecklistItem() {
+    if (!clSelectedTopic || !clNewItemTitle.trim()) return
+    setClUploading(true)
+    try {
+      let fileUrl: string | null = null
+      let fileType: 'image' | 'pdf' | null = null
+      if (clNewItemFile) {
+        fileUrl = await uploadChecklistFile(clNewItemFile)
+        fileType = clNewItemFile.type === 'application/pdf' ? 'pdf' : 'image'
+      }
+      await createChecklistItem(clSelectedTopic.id, clNewItemTitle.trim(), fileUrl, fileType)
+      setClNewItemTitle('')
+      setClNewItemFile(null)
+      const items = await fetchChecklistItems(clSelectedTopic.id)
+      setClItems(items)
+      await loadChecklistTopics()
+    } catch (e: any) {
+      alert('เพิ่มหัวข้อย่อยไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setClUploading(false)
+    }
+  }
+
+  async function handleDeleteChecklistItem(id: string) {
+    if (!clSelectedTopic) return
+    try {
+      await deleteChecklistItem(id)
+      const items = await fetchChecklistItems(clSelectedTopic.id)
+      setClItems(items)
+      await loadChecklistTopics()
+    } catch (e: any) {
+      alert('ลบไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
+  async function handleSearchProducts() {
+    const q = clProductSearch.trim()
+    if (!q) { setClProductResults([]); return }
+    try {
+      const results = await searchProducts(q)
+      setClProductResults(results)
+    } catch (e: any) {
+      console.error('searchProducts error:', e)
+    }
+  }
+
+  async function handleAddProduct(product: { product_code: string; product_name: string }) {
+    if (!clSelectedTopic) return
+    try {
+      await addChecklistTopicProduct(clSelectedTopic.id, product.product_code, product.product_name)
+      const products = await fetchChecklistTopicProducts(clSelectedTopic.id)
+      setClProducts(products)
+      await loadChecklistTopics()
+    } catch (e: any) {
+      if (e?.message?.includes('duplicate') || e?.code === '23505') {
+        alert('สินค้านี้มีอยู่ในหัวข้อนี้แล้ว')
+      } else {
+        alert('เพิ่มสินค้าไม่สำเร็จ: ' + (e?.message || e))
+      }
+    }
+  }
+
+  async function handleRemoveProduct(id: string) {
+    if (!clSelectedTopic) return
+    try {
+      await removeChecklistTopicProduct(id)
+      const products = await fetchChecklistTopicProducts(clSelectedTopic.id)
+      setClProducts(products)
+      await loadChecklistTopics()
+    } catch (e: any) {
+      alert('ลบสินค้าไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
+  async function handleImportExcel(file: File) {
+    setClImporting(true)
+    setClImportResult(null)
+    try {
+      const result = await importChecklistFromExcel(file)
+      setClImportResult(result)
+      await loadChecklistTopics()
+    } catch (e: any) {
+      alert('นำเข้าไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setClImporting(false)
+    }
+  }
+
+  function navigateItemInList(delta: number) {
+    if (!currentItem || itemsToShow.length === 0) return
+    const idx = itemsToShow.indexOf(currentItem)
+    const nextIdx = idx === -1 ? 0 : idx + delta
+    const next = itemsToShow[nextIdx]
+    if (next) setCurrentItem(next)
+  }
+
+  function handleKeydown(e: React.KeyboardEvent) {
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName)) return
+    if (currentView === 'qc' && qcState.step === 'working') {
+      if (e.key === 'ArrowLeft') navigateItem(-1)
+      if (e.key === 'ArrowRight') navigateItem(1)
+      if (e.key === 'ArrowUp') { e.preventDefault(); navigateItemInList(-1) }
+      if (e.key === 'ArrowDown') { e.preventDefault(); navigateItemInList(1) }
+    }
+    if (currentView === 'reject' && currentRejectItem && activeRejectTab !== 'queue') {
+      if (e.key === 'ArrowLeft') navigateRejectItem(-1)
+      if (e.key === 'ArrowRight') navigateRejectItem(1)
+    }
+  }
+
+  useEffect(() => {
+    if (currentView === 'qc' && qcState.step === 'working' && !failReasonModalOpen) {
+      focusBarcodeInput()
+    }
+  }, [currentView, qcState.step, currentItem?.uid, failReasonModalOpen, focusBarcodeInput])
+
+  useEffect(() => {
+    const onGlobalKeydown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      const tagName = (target?.tagName || '').toUpperCase()
+      const isInputLike = ['INPUT', 'TEXTAREA', 'SELECT'].includes(tagName) || !!target?.isContentEditable
+      const isBarcodeInputFocused = target === barcodeInputRef.current
+      const isSpace = e.key === ' ' || e.code === 'Space'
+      const isZero = e.key === '0' || e.code === 'Digit0' || e.code === 'Numpad0'
+      const isShortcut = isSpace || isZero
+
+      if (!isShortcut) return
+      if (failReasonModalOpen || loading) return
+
+      // อนุญาตคีย์ลัดตอนโฟกัสช่องสแกนเฉพาะเมื่อยังไม่ได้พิมพ์/สแกนค่าใด ๆ
+      if (isInputLike && !(isBarcodeInputFocused && barcodeQuery.trim() === '')) return
+
+      if (currentView === 'qc' && qcState.step === 'working' && currentItem) {
+        e.preventDefault()
+        if (isSpace) void markStatus('pass')
+        else if (isZero) void markStatus('fail')
+        return
+      }
+
+      if (currentView === 'reject' && currentRejectItem && activeRejectTab !== 'queue') {
+        e.preventDefault()
+        if (isSpace) void markRejectStatus('pass')
+        else if (isZero) void markRejectStatus('fail')
+      }
+    }
+
+    window.addEventListener('keydown', onGlobalKeydown)
+    return () => {
+      window.removeEventListener('keydown', onGlobalKeydown)
+    }
+  }, [
+    currentView,
+    qcState.step,
+    currentItem,
+    currentRejectItem,
+    activeRejectTab,
+    failReasonModalOpen,
+    loading,
+    barcodeQuery,
+  ])
+
+  return (
+    <div className="w-full flex-1 min-h-0 flex flex-col outline-none" onKeyDown={handleKeydown} tabIndex={0}>
+      {/* เมนูย่อย — สไตล์เดียวกับเมนูออเดอร์ */}
+      <div className="shrink-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6">
+        <div className="w-full flex items-center gap-4 overflow-x-auto px-2 scrollbar-thin sm:px-4 md:px-6 lg:px-8">
+          <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3 flex-1" aria-label="Tabs">
+            {filteredMenus.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => setCurrentView(m.id)}
+                className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap flex-shrink-0 transition-colors ${
+                  currentView === m.id ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'
+                }`}
+              >
+                {m.label}
+                {m.id === 'qc' && qcOperationCount > 0 && (
+                  <span className="ml-1.5 bg-blue-500 text-white text-xs px-1.5 py-0.5 rounded-full">{qcOperationCount}</span>
+                )}
+                {m.id === 'reject' && rejectCount > 0 && (
+                  <span className="ml-1.5 bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full">{rejectCount}</span>
+                )}
+              </button>
+            ))}
+          </nav>
+        </div>
+      </div>
+
+      <div className="pt-4 flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+        {/* QC Operation */}
+        {currentView === 'qc' && (
+          <div className={qcState.step === 'working' ? 'flex flex-col flex-1 min-h-0' : 'space-y-4'}>
+            {qcState.step === 'select' && (
+              workOrdersError ? (
+                <div className="text-center py-12">
+                  <p className="text-red-600 font-medium">{workOrdersError}</p>
+                  <button
+                    type="button"
+                    onClick={() => loadWorkOrders()}
+                    disabled={workOrdersLoading}
+                    className="mt-3 px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {workOrdersLoading ? 'กำลังโหลด...' : 'ลองใหม่'}
+                  </button>
+                </div>
+              ) : workOrdersLoading && workOrdersWithProgress.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">กำลังโหลดรายการรอ QC...</div>
+              ) : workOrdersWithProgress.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">ไม่มีใบงานที่ยังมีรายการรอ QC ในขณะนี้</div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {workOrdersWithProgress.map((wo) => {
+                    const isAllDone = wo.remaining === 0
+                    const hasProgress = wo.pass_items > 0 || wo.fail_items > 0
+                    const skipEligibility = skipEligibilityByWo[wo.work_order_name]
+                    const canSkipThisWorkOrder = canAlwaysSkipQc || (isProduction && skipEligibility?.eligible === true)
+
+                    let cardClass = ''
+                    let borderLeftColor = ''
+                    if (isAllDone) {
+                      cardClass = 'bg-emerald-50/80 border-emerald-200 hover:bg-emerald-100 hover:shadow-md'
+                      borderLeftColor = 'border-l-emerald-500'
+                    } else if (hasProgress) {
+                      cardClass = 'bg-blue-50/80 border-blue-200 hover:bg-blue-100 hover:shadow-md'
+                      borderLeftColor = 'border-l-blue-500'
+                    } else {
+                      cardClass = 'bg-white border-gray-200 hover:bg-gray-50 hover:shadow-md'
+                      borderLeftColor = 'border-l-gray-400'
+                    }
+
+                    return (
+                      <div
+                        key={wo.id}
+                        className={`p-4 border border-l-4 rounded-xl text-left transition-all duration-200 shadow-sm ${cardClass} ${borderLeftColor}`}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-lg font-bold flex items-center gap-2 flex-wrap">
+                              <span className="truncate">{wo.work_order_name}</span>
+                              {hasProgress && !isAllDone && (
+                                <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-blue-500 text-white shadow-sm">
+                                  🔄 กำลัง QC
+                                </span>
+                              )}
+                              {isAllDone && (
+                                <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-emerald-500 text-white shadow-sm">
+                                  ✓ QC ครบ
+                                </span>
+                              )}
+                              {wo.reject_items > 0 && (
+                                <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-red-500 text-white shadow-sm">
+                                  Reject {wo.reject_items}
+                                </span>
+                              )}
+                              <WoUrgencyChips bills={wo.due_bills} />
+                            </div>
+                            <div className="text-sm text-gray-500 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                              <span className="text-blue-600 font-medium">คงเหลือ {wo.remaining}</span>
+                              <span className="text-gray-400">/</span>
+                              <span className="text-gray-600">ทั้งหมด {wo.total_items} ({wo.total_bills} บิล)</span>
+                              <span className="text-green-600 font-medium">Pass {wo.pass_items}</span>
+                              <span className="text-red-500 font-medium">Fail {wo.fail_items}</span>
+                              {planStartTimes[wo.work_order_name] && (
+                                <span className="text-indigo-600 font-medium">
+                                  ⏱ เริ่ม {new Date(planStartTimes[wo.work_order_name]!).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleLoadWo(wo.work_order_name, true)}
+                              disabled={loading || skipQcLoading === wo.work_order_name}
+                              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm font-semibold shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                              title="เปิดดูรายการโดยไม่บันทึกเวลาเริ่มและไม่สามารถทำ QC"
+                            >
+                              <i className="fas fa-eye" aria-hidden="true"></i>
+                              ดู
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleLoadWo(wo.work_order_name)}
+                              disabled={loading || skipQcLoading === wo.work_order_name || roleViewOnly}
+                              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold shadow-sm hover:bg-blue-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {loading ? 'กำลังโหลด...' : 'เริ่ม QC'}
+                            </button>
+                            {canSkipThisWorkOrder && (
+                              <button
+                                type="button"
+                                onClick={() => { setProductionSkipReason(''); setSkipQcConfirmWo(wo.work_order_name) }}
+                                className="px-3 py-2 rounded-lg bg-amber-500 text-white text-sm font-semibold shadow-sm hover:bg-amber-600 transition-colors"
+                              >
+                                {skipQcLoading === wo.work_order_name ? 'กำลังข้าม...' : 'ไม่ต้อง QC'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        {isProduction && skipEligibility && (
+                          <div className={`mt-3 rounded-lg px-3 py-2 text-xs ${skipEligibility.mandatory_qc ? 'bg-red-50 text-red-700' : skipEligibility.eligible ? 'bg-amber-50 text-amber-700' : 'bg-slate-50 text-slate-500'}`}>
+                            {skipEligibility.mandatory_qc
+                              ? `บังคับ QC: ${skipEligibility.mandatory_reasons.join(', ')}`
+                              : skipEligibility.reasons.length > 0
+                                ? `${skipEligibility.eligible ? 'อนุญาตข้าม QC' : 'ยังไม่เปิดสิทธิ์'} · ${skipEligibility.reasons.join(' · ')} · คนพร้อม ${skipEligibility.available_qc_workers}/${skipEligibility.required_qc_workers}`
+                                : 'ยังไม่เข้าเงื่อนไขความเร่งด่วน'}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            )}
+
+            {qcState.step === 'working' && (
+              <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+                <div className="shrink-0 bg-white rounded-xl shadow-sm p-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between lg:gap-6 w-full min-w-0">
+                  <div className="flex items-start gap-6 sm:gap-8 min-w-0 flex-1">
+                    <div className="flex items-end gap-6 sm:gap-8 shrink-0">
+                      <div className="text-center">
+                        <div className="text-xs text-gray-500 uppercase">ทั้งหมด</div>
+                        <div className="text-2xl font-bold">{totalItems}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs text-green-600 uppercase">ผ่าน</div>
+                        <div className="text-2xl font-bold text-green-600">{passedItems}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs text-red-600 uppercase">ไม่ผ่าน</div>
+                        <div className="text-2xl font-bold text-red-600">{failedItems}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs text-blue-600 uppercase">คงเหลือ</div>
+                        <div className="text-2xl font-bold text-blue-600">{remainingItems}</div>
+                      </div>
+                    </div>
+                    {remainingByDept.length > 0 && (
+                      <div className="flex flex-col items-start border-l border-gray-200 pl-4 sm:pl-5 min-w-0 flex-1">
+                        <div className="text-sm sm:text-base font-bold text-slate-600 tracking-wide">คงเหลือแยกแผนก (หมวดสินค้า)</div>
+                        <div className="flex flex-wrap gap-x-3 sm:gap-x-4 gap-y-1 mt-1 max-w-[min(100%,44rem)]">
+                          {remainingByDept.map(([dept, n]) => (
+                            <span key={dept} className="text-base sm:text-lg whitespace-nowrap">
+                              <span className="text-gray-700 font-medium">{dept}</span>{' '}
+                              <span className="font-bold text-blue-600 tabular-nums">{n}</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {/* กลุ่มปุ่มควบคุมฝั่งขวา — ยึดตำแหน่งคงที่ ไม่ขยับตามจำนวนหมวดสินค้า */}
+                  <div className="flex flex-col gap-2 shrink-0 lg:items-end">
+                    <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setShowNotQcOnly((v) => !v)}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors whitespace-nowrap ${
+                          showNotQcOnly
+                            ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700'
+                            : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+                        }`}
+                        title="กรองเฉพาะรายการที่ยังไม่ได้ตรวจ (pending)"
+                      >
+                        รายการไม่ได้ QC
+                      </button>
+                      {qcState.startTime && (
+                        <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-1.5">
+                          <span className="text-sm text-indigo-500 font-medium">⏱ เวลาเริ่ม:</span>
+                          <span className="text-sm font-bold text-indigo-700 tabular-nums">
+                            {qcState.startTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                      {qcState.filename && (
+                        <div className="px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 text-sm font-semibold whitespace-nowrap">
+                          ใบงาน: {qcState.filename.startsWith('WO-') ? qcState.filename.slice(3) : qcState.filename}
+                        </div>
+                      )}
+                      <input
+                        ref={barcodeInputRef}
+                        type="text"
+                        value={barcodeQuery}
+                        onChange={(e) => setBarcodeQuery(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleScan()}
+                        placeholder="สแกน UID"
+                        className="border rounded-lg px-3 py-1.5 w-48 uppercase"
+                      />
+                      <button onClick={handleScan} className="px-4 py-1.5 bg-gray-100 rounded-lg hover:bg-gray-200">
+                        ค้นหา
+                      </button>
+                      {canFinishSession && (
+                        <button onClick={() => setFinishConfirmOpen(true)} className="px-6 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-bold">
+                          FINISH JOB
+                        </button>
+                      )}
+                      <button onClick={handleSwitchJob} className="px-4 py-1.5 border border-blue-500 text-blue-600 rounded-lg hover:bg-blue-50">
+                        สลับใบงาน
+                      </button>
+                    </div>
+                    {activeRemainingItems === 0 && activeFailedItems > 0 && (
+                      <span className="text-sm text-red-500 font-medium bg-red-50 px-3 py-1.5 rounded-lg lg:text-right">
+                        มีรายการไม่ผ่าน {activeFailedItems} รายการ (เฉพาะที่ยัง Active) — ต้อง Pass ทุกรายการจึงจะจบงานได้
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex gap-4 flex-1 min-h-0 mt-4 min-w-0 overflow-hidden">
+                  <div className="w-[min(100%,22rem)] min-w-[15rem] max-w-[22rem] shrink-0 bg-white rounded-xl shadow-sm border flex flex-col overflow-hidden sm:min-w-[17rem]">
+                    <div className="p-3 border-b space-y-2.5">
+                      <div className="text-sm font-bold text-gray-700 uppercase tracking-wide">รายการ</div>
+                      {qcCategoryOptions.length > 0 && (
+                        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
+                          <label className="text-sm text-gray-600 font-medium whitespace-nowrap shrink-0">หมวดหมู่สินค้า</label>
+                          <select
+                            value={qcCategoryFilter}
+                            onChange={(e) => setQcCategoryFilter(e.target.value)}
+                            className="flex-1 min-w-0 rounded-lg border border-gray-200 px-2.5 py-2 text-sm"
+                          >
+                            <option value="">ทั้งหมด</option>
+                            {qcCategoryOptions.map((opt) => (
+                              <option key={opt} value={opt}>{opt}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                      {itemsToShow.map((item, index) => (
+                        <div
+                          key={item.uid}
+                          id={'item-' + item.uid}
+                          onClick={() => selectItem(item)}
+                          className={`p-3 rounded-lg border cursor-pointer flex justify-between items-start gap-2 ${
+                            item === currentItem ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-400' : 'border-gray-200 hover:bg-gray-50'
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="leading-snug">
+                              <span className="text-gray-500 font-bold text-base">{index + 1}. </span>
+                              <span className="font-bold uppercase text-base text-gray-900">{item.uid}</span>
+                              <UrgencyBadge order={item} className="ml-1.5" />
+                            </div>
+                            <div className="text-sm text-gray-600 mt-1 line-clamp-2 leading-snug">{item.product_name}</div>
+                          </div>
+                          {item.status === 'pass' && <span className="text-green-600 shrink-0 text-xl font-bold leading-none">✓</span>}
+                          {item.status === 'fail' && <span className="text-red-600 shrink-0 text-xl font-bold leading-none">✗</span>}
+                          {item.status === 'pending' && <span className="text-gray-300 shrink-0 text-xl leading-none">○</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex-1 min-w-[180px] max-w-[380px] flex flex-col gap-2 min-h-0 overflow-hidden">
+                    <div className="flex-1 min-h-0 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
+                      {currentItem && !imgErrors.product && currentItem.product_code !== '0' ? (
+                        <a
+                          href={productImageUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="w-full h-full flex items-center justify-center cursor-pointer"
+                          title="คลิกเปิดรูปในแท็บใหม่"
+                        >
+                          <img
+                            src={productImageUrl}
+                            alt="Product"
+                            className="w-full h-full object-contain p-2"
+                            onError={() => setImgErrors((e) => ({ ...e, product: true }))}
+                          />
+                        </a>
+                      ) : (
+                        <div className="text-gray-400 text-sm">ไม่มีรูปสินค้า (รหัสสินค้า: {currentItem?.product_code || '-'})</div>
+                      )}
+                    </div>
+                    <div className="flex-1 min-h-0 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
+                      {currentItem && !imgErrors.cartoon && currentItem.cartoon_name !== '0' ? (
+                        <a
+                          href={cartoonImageUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="w-full h-full flex items-center justify-center cursor-pointer"
+                          title="คลิกเปิดรูปลายการ์ตูนในแท็บใหม่"
+                        >
+                          <img
+                            src={cartoonImageUrl}
+                            alt="Pattern"
+                            className="w-full h-full object-contain p-2"
+                            onError={() => setImgErrors((e) => ({ ...e, cartoon: true }))}
+                          />
+                        </a>
+                      ) : (
+                        <div className="text-gray-400 text-sm">ไม่มีรูปลาย ({currentItem?.cartoon_name || '-'})</div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex-1 bg-white rounded-xl shadow-sm border flex flex-col min-w-0 min-h-0 basis-0 overflow-hidden">
+                    {currentItem ? (
+                      <>
+                        <div className="flex-1 min-h-0 overflow-auto p-4">
+                          <div className="border-b pb-3 mb-3 flex justify-between items-start">
+                          <div>
+                            <h2 className="text-xl font-bold text-gray-800 uppercase">{currentItem.product_name}</h2>
+                            <p className="text-xs text-gray-500">เลขบิล: {currentItem.bill_no} <UrgencyBadge order={currentItem} className="ml-1" /></p>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-[10px] text-gray-400 uppercase">UID</div>
+                            <div className="text-xl font-bold text-blue-600 uppercase">{currentItem.uid}</div>
+                          </div>
+                        </div>
+                        {(currentItem.line1 || currentItem.line2 || currentItem.line3) && (
+                        <div className="bg-gray-50 p-4 rounded-lg border mb-4">
+                          <div className="text-xs text-gray-400 font-semibold mb-2">ข้อความ</div>
+                          {currentItem.line1 && (
+                            <div className="text-lg font-bold text-gray-800 border-b border-gray-200 pb-2 flex items-baseline gap-2">
+                              <span className="text-xs text-gray-400 font-normal shrink-0">บรรทัด1</span>
+                              <span>{currentItem.line1}</span>
+                            </div>
+                          )}
+                          {currentItem.line2 && (
+                            <div className="text-lg font-bold text-gray-800 border-b border-gray-200 pb-2 pt-2 flex items-baseline gap-2">
+                              <span className="text-xs text-gray-400 font-normal shrink-0">บรรทัด2</span>
+                              <span>{currentItem.line2}</span>
+                            </div>
+                          )}
+                          {currentItem.line3 && (
+                            <div className="text-lg font-bold text-gray-800 pt-2 flex items-baseline gap-2">
+                              <span className="text-xs text-gray-400 font-normal shrink-0">บรรทัด3</span>
+                              <span>{currentItem.line3}</span>
+                            </div>
+                          )}
+                        </div>
+                        )}
+                        {(() => {
+                          const hasInk = !!currentItem.ink_color
+                          const hasFont = !!currentItem.font
+                          const cols = 1 + (hasInk ? 1 : 0) + (hasFont ? 1 : 0)
+                          return (
+                        <div className={`grid gap-2 mb-4 ${cols === 3 ? 'grid-cols-3' : cols === 2 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                          {hasInk && (
+                          <div className="bg-white p-2 rounded border">
+                            <div className="text-[11px] text-gray-400">สีหมึก</div>
+                            <div className="flex items-center gap-2">
+                              <span className="w-7 h-7 rounded-full border shrink-0" style={{ backgroundColor: getInkColor(currentItem.ink_color) }} />
+                              <span className="text-sm font-bold truncate flex-1">{currentItem.ink_color}</span>
+                              {currentItem.ink_color?.includes('กระดาษ') && (
+                                <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none">
+                                  <path d="M5.625 1.5H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" fill="#DBEAFE" stroke="#3B82F6" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                  <path d="M10.5 2.25H8.25m2.25 0v1.5a3.375 3.375 0 0 0 3.375 3.375h1.5A1.125 1.125 0 0 0 16.5 6V4.5" fill="#93C5FD" stroke="#3B82F6" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                  <path d="M8.25 13.5h7.5M8.25 16.5H12" stroke="#3B82F6" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                              )}
+                              {currentItem.ink_color?.includes('ผ้า') && (
+                                <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none">
+                                  <path d="M6.75 3 3 5.25v3h3l.75 1.5v8.25a1.5 1.5 0 0 0 1.5 1.5h7.5a1.5 1.5 0 0 0 1.5-1.5V9.75L18 8.25h3V5.25L17.25 3h-3a2.25 2.25 0 0 1-4.5 0h-3Z" fill="#FDE68A" stroke="#F59E0B" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                              )}
+                              {currentItem.ink_color?.includes('พลาสติก') && (
+                                <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none">
+                                  <path d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5m4.75-11.396c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082" fill="#D1FAE5" stroke="#10B981" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                  <path d="M19.8 15.3l-1.57.393A9.065 9.065 0 0 1 12 15a9.065 9.065 0 0 0-6.23.693L5 14.5m14.8.8 1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0 1 12 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" fill="#A7F3D0" stroke="#10B981" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                              )}
+                            </div>
+                          </div>
+                          )}
+                          {hasFont && (
+                          <div className="bg-white p-2 rounded border">
+                            <div className="text-[11px] text-gray-400">ฟอนต์</div>
+                            <div className="text-sm font-bold">{currentItem.font}</div>
+                          </div>
+                          )}
+                          <div className="bg-white p-2 rounded border">
+                            <div className="text-[11px] text-gray-400">จำนวน</div>
+                            <div className="text-xl font-bold">{currentItem.qty || 1} ชิ้น</div>
+                          </div>
+                        </div>
+                          )
+                        })()}
+                        {currentItem.file_attachment && currentItem.file_attachment.trim() !== '' && (
+                          <div className="bg-white p-2 rounded border mb-4">
+                            <div className="text-xs text-gray-400 mb-1">ไฟล์แนบ</div>
+                            <a
+                              href={currentItem.file_attachment.startsWith('http') ? currentItem.file_attachment : `https://${currentItem.file_attachment}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 font-medium text-sm"
+                            >
+                              <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                              </svg>
+                              เปิดไฟล์แนบ
+                            </a>
+                          </div>
+                        )}
+                        {currentItem.remark && (
+                          <div className="mb-2 text-sm">
+                            <span className="text-gray-500">หมายเหตุ: </span>
+                            <span className="font-medium">{currentItem.remark}</span>
+                          </div>
+                        )}
+                        </div>
+                        <div className="shrink-0 p-4 pt-2 border-t bg-gray-50/50 space-y-2">
+                          {isViewOnly ? (
+                            <div className="text-center py-3 text-sm text-gray-500 bg-gray-100 rounded-xl">
+                              <i className="fas fa-eye mr-2" aria-hidden="true"></i>
+                              โหมดดูอย่างเดียว — ไม่บันทึกเวลาเริ่มและไม่สามารถทำ QC ได้
+                            </div>
+                          ) : (
+                          <div className="flex gap-4">
+                            <button
+                              onClick={() => markStatus('fail')}
+                              className="flex-1 py-3 bg-red-500 text-white rounded-xl font-bold hover:bg-red-600"
+                            >
+                              ไม่ผ่าน (0)
+                            </button>
+                            <button
+                              onClick={() => markStatus('pass')}
+                              disabled={!allChecklistChecked || currentItem.status === 'fail'}
+                              title={
+                                currentItem.status === 'fail'
+                                  ? 'รายการนี้ถูก Reject แล้ว กรุณาไปกด QC PASS ที่เมนู Reject'
+                                  : !allChecklistChecked
+                                    ? 'กรุณาตรวจเช็คเช็คลิสให้ครบทุกหัวข้อก่อน'
+                                    : ''
+                              }
+                              className={`flex-1 py-3 rounded-xl font-bold ${
+                                allChecklistChecked && currentItem.status !== 'fail'
+                                  ? 'bg-green-500 text-white hover:bg-green-600'
+                                  : 'bg-green-300 text-white cursor-not-allowed opacity-60'
+                              }`}
+                            >
+                              ผ่าน (Space)
+                            </button>
+                          </div>
+                          )}
+                          <div className="flex gap-4">
+                            <button onClick={() => navigateItem(-1)} className="flex-1 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold">
+                              ก่อนหน้า
+                            </button>
+                            <button onClick={() => navigateItem(1)} className="flex-1 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold">
+                              ถัดไป
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center flex-1 text-gray-400">
+                        <p className="text-lg">สแกนบาร์โค้ดเพื่อเริ่ม</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Checklist Card (4th column) */}
+                  <div className="w-72 shrink-0 bg-white rounded-xl shadow-sm border flex flex-col min-h-0 overflow-hidden">
+                    <div className="p-3 border-b bg-green-50">
+                      <h3 className="font-bold text-green-800 text-sm flex items-center gap-2">
+                        <i className="fas fa-clipboard-check"></i>
+                        เช็คลิส หัวข้อการตรวจเช็ค
+                      </h3>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                      {!currentItem ? (
+                        <div className="py-8 text-center text-gray-400 text-sm">เลือกรายการเพื่อดูเช็คลิส</div>
+                      ) : checklistItems.length === 0 ? (
+                        <div className="py-8 text-center text-gray-400 text-sm">ไม่มีรายการเช็คลิสสำหรับสินค้านี้</div>
+                      ) : (
+                        (() => {
+                          const grouped: Record<string, (QCChecklistItem & { topic_name: string })[]> = {}
+                          checklistItems.forEach((item) => {
+                            if (!grouped[item.topic_name]) grouped[item.topic_name] = []
+                            grouped[item.topic_name].push(item)
+                          })
+                          return Object.entries(grouped).map(([topicName, items]) => (
+                            <div key={topicName} className="mb-2">
+                              <div className="text-xs font-bold text-gray-500 uppercase px-1 py-1 border-b border-gray-100">{topicName}</div>
+                              {items.map((item) => (
+                                <label
+                                  key={item.id}
+                                  className={`flex items-center gap-2 px-2 py-2 rounded cursor-pointer hover:bg-gray-50 ${
+                                    checkedIds.has(item.id) ? 'bg-green-50' : ''
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={checkedIds.has(item.id)}
+                                    onChange={() => {
+                                      setCheckedIds((prev) => {
+                                        const next = new Set(prev)
+                                        if (next.has(item.id)) next.delete(item.id)
+                                        else next.add(item.id)
+                                        return next
+                                      })
+                                    }}
+                                    disabled={isViewOnly}
+                                    className="w-4 h-4 rounded border-gray-300 text-green-600 focus:ring-green-500 shrink-0"
+                                  />
+                                  <span className={`flex-1 text-sm ${checkedIds.has(item.id) ? 'line-through text-gray-400' : 'text-gray-700'}`}>
+                                    {item.title}
+                                  </span>
+                                  {item.file_url && (
+                                    <a
+                                      href={item.file_url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="shrink-0 w-5 h-5 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center hover:bg-blue-200"
+                                      title="ดูคู่มือตรวจ QC"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      <i className="fas fa-info text-[10px]"></i>
+                                    </a>
+                                  )}
+                                </label>
+                              ))}
+                            </div>
+                          ))
+                        })()
+                      )}
+                    </div>
+                    {checklistItems.length > 0 && !isViewOnly && (
+                      <div className="shrink-0 p-2 border-t bg-gray-50">
+                        <button
+                          onClick={() => {
+                            if (checkedIds.size === checklistItems.length) {
+                              setCheckedIds(new Set())
+                            } else {
+                              setCheckedIds(new Set(checklistItems.map((i) => i.id)))
+                            }
+                          }}
+                          className={`w-full py-2 rounded-lg font-bold text-sm ${
+                            checkedIds.size === checklistItems.length
+                              ? 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                              : 'bg-green-500 text-white hover:bg-green-600'
+                          }`}
+                        >
+                          {checkedIds.size === checklistItems.length ? 'ยกเลิกทั้งหมด' : 'ผ่านทั้งหมด'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Reject */}
+        {currentView === 'reject' && (
+          <div className={activeRejectTab === 'queue' ? 'space-y-4' : 'flex flex-col flex-1 min-h-0 overflow-hidden'}>
+            <div className="shrink-0 bg-white rounded-xl shadow-sm p-4 flex flex-wrap items-center justify-between gap-4">
+              <div className="flex gap-2 flex-wrap">
+                <span className="bg-red-50 px-4 py-2 rounded-lg border border-red-100 text-red-600 font-bold">
+                  งานไม่ผ่านที่รอดำเนินการ: {rejectData.length}
+                </span>
+                {(['queue', 1, 2, 'escalated'] as const).map((tab) => (
+                  <button
+                    key={String(tab)}
+                    onClick={() => setActiveRejectTab(tab)}
+                    className={`px-4 py-2 rounded-lg font-bold text-sm ${
+                      activeRejectTab === tab ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    }`}
+                  >
+                    {tab === 'queue' ? 'คิวงาน' : tab === 'escalated' ? 'รอหัวหน้าตัดสินใจ' : `ตรวจซ้ำครั้งที่ ${tab}`}
+                    {tab !== 'queue' && (
+                      <span className="ml-1 opacity-80">({rejectData.filter((i) => tab === 'escalated' ? i.workflow_status === 'escalated' : i.workflow_status !== 'escalated' && i.retry_count === tab).length})</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={rejectSearchQuery}
+                  onChange={(e) => setRejectSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleRejectScan()}
+                  placeholder="สแกนหรือพิมพ์ UID"
+                  className="border-2 border-blue-400 rounded-full pl-4 pr-4 py-2 w-64 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                />
+                <button onClick={handleRejectScan} className="px-4 py-2 bg-blue-600 text-white rounded-full font-bold hover:bg-blue-700">
+                  ค้นหา
+                </button>
+                <button onClick={() => setRejectSearchQuery('')} className="px-4 py-2 bg-gray-200 rounded-full font-bold">
+                  ล้าง
+                </button>
+              </div>
+            </div>
+
+            {activeRejectTab === 'queue' ? (
+              <div className="bg-white rounded-xl shadow-sm overflow-auto">
+                <table className="w-full text-sm text-left">
+                  <thead className="bg-gray-100 text-gray-700 font-bold uppercase text-xs sticky top-0">
+                    <tr>
+                      <th className="px-3 py-3">#</th>
+                      <th className="px-3 py-3">ผู้ตรวจ</th>
+                      <th className="px-3 py-3">สินค้า / ใบงาน / UID</th>
+                      <th className="px-3 py-3">ข้อความ (1/2/3)</th>
+                      <th className="px-3 py-3">สีหมึก / ฟอนต์ / ชั้น</th>
+                      <th className="px-3 py-3">เหตุผลที่ไม่ผ่าน</th>
+                      <th className="px-3 py-3 text-center">ครั้งที่ตรวจ</th>
+                      <th className="px-3 py-3 text-center">เวลาที่รอดำเนินการ</th>
+                      <th className="px-3 py-3 text-right">ระยะเวลา</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedRejectQueue.map((item, idx) => (
+                      <tr
+                        key={item.id}
+                        onClick={() => {
+                          setActiveRejectTab(item.workflow_status === 'escalated' ? 'escalated' : Math.min(item.retry_count || 1, 2) as 1 | 2)
+                          setCurrentRejectItem(item)
+                        }}
+                        className="border-b hover:bg-blue-50 cursor-pointer"
+                      >
+                        <td className="px-3 py-3 font-bold text-gray-400">{idx + 1}</td>
+                        <td className="px-3 py-3 font-bold text-blue-600">{item.qc_by}</td>
+                        <td className="px-3 py-3">
+                          <div className="font-bold">{item.product_name || '-'}</div>
+                          <div className="text-gray-500 text-xs">ใบงาน: {item.bill_no || '-'} <UrgencyBadge order={item} className="ml-1" /></div>
+                          <div className="text-blue-600 font-mono text-xs">{item.item_uid}</div>
+                        </td>
+                        <td className="px-3 py-3 text-xs">
+                          {item.line1 && <div>1: {item.line1}</div>}
+                          {item.line2 && <div>2: {item.line2}</div>}
+                          {item.line3 && <div>3: {item.line3}</div>}
+                        </td>
+                        <td className="px-3 py-3 text-xs">
+                          สีหมึก: {item.ink_color || '-'} / ฟอนต์: {item.font || '-'} / ชั้น: {item.floor || '-'}
+                        </td>
+                        <td className="px-3 py-3 italic text-red-500 font-bold">{item.fail_reason || '-'}</td>
+                        <td className="px-3 py-3 text-center">
+                          <span className="bg-gray-100 px-2 py-1 rounded font-bold">
+                            {item.workflow_status === 'escalated' ? 'เกินกำหนด' : `ตรวจซ้ำ ${item.retry_count || 1}`}
+                          </span>
+                        </td>
+                        <td className="px-3 py-3 text-center whitespace-nowrap">{formatTime(item.attempt_started_at || item.created_at)}</td>
+                        <td className="px-3 py-3 text-right font-mono font-bold">{getRejectDuration(item.attempt_started_at || item.created_at)}</td>
+                      </tr>
+                    ))}
+                    {sortedRejectQueue.length === 0 && (
+                      <tr>
+                        <td colSpan={9} className="px-3 py-12 text-center text-gray-400">
+                          Queue is empty
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="flex gap-4 flex-1 min-h-0 mt-4 min-w-0 overflow-hidden">
+                <div className="w-56 shrink-0 bg-white rounded-xl shadow-sm border flex flex-col overflow-hidden min-w-0 sm:w-64">
+                  <div className="p-2 border-b text-xs font-bold text-gray-600 uppercase">รายการไม่ผ่าน (ครั้งที่ {activeRejectTab})</div>
+                  <div className="flex-1 overflow-y-auto p-1 space-y-1">
+                    {filteredRejectItems.map((item, index) => (
+                      <div
+                        key={item.id}
+                        onClick={() => setCurrentRejectItem(item)}
+                        className={`p-2 rounded border cursor-pointer flex justify-between items-center text-xs ${
+                          item === currentRejectItem ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-100 hover:bg-gray-50'
+                        }`}
+                      >
+                        <div className="truncate min-w-0">
+                          <span className="text-gray-400 font-bold">{index + 1}. </span>
+                          <span className="font-medium uppercase">{item.item_uid}</span>
+                          <br />
+                          <span className="text-gray-500 text-[10px]">{item.product_name}</span>
+                        </div>
+                      </div>
+                    ))}
+                    {filteredRejectItems.length === 0 && <div className="text-center py-8 text-gray-400 text-xs">ไม่มีรายการ</div>}
+                  </div>
+                </div>
+                <div className="flex-1 min-w-[180px] max-w-[380px] flex flex-col gap-2 min-h-0 overflow-hidden">
+                  <div className="flex-1 min-h-0 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
+                    {currentRejectItem?.product_code && currentRejectItem.product_code !== '0' ? (
+                      <a
+                        href={rejectProductImageUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full h-full flex items-center justify-center cursor-pointer"
+                        title="คลิกเปิดรูปในแท็บใหม่"
+                      >
+                        <img src={rejectProductImageUrl} alt="Product" className="w-full h-full object-contain p-2" />
+                      </a>
+                    ) : (
+                      <span className="text-gray-400 text-sm">ไม่มีรูปสินค้า (รหัสสินค้า: {currentRejectItem?.product_code || '-'})</span>
+                    )}
+                  </div>
+                  <div className="flex-1 min-h-0 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
+                    {currentRejectItem?.cartoon_name && currentRejectItem.cartoon_name !== '0' ? (
+                      <a
+                        href={rejectCartoonImageUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full h-full flex items-center justify-center cursor-pointer"
+                        title="คลิกเปิดรูปลายการ์ตูนในแท็บใหม่"
+                      >
+                        <img src={rejectCartoonImageUrl} alt="Pattern" className="w-full h-full object-contain p-2" />
+                      </a>
+                    ) : (
+                      <span className="text-gray-400 text-sm">ไม่มีรูปลาย ({currentRejectItem?.cartoon_name || '-'})</span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex-1 bg-white rounded-xl shadow-sm border flex flex-col min-w-0 min-h-0 basis-0 overflow-hidden">
+                  {currentRejectItem ? (
+                    <>
+                      <div className="flex-1 min-h-0 overflow-auto p-4">
+                        <div className="bg-red-50 p-3 rounded-lg border border-red-100 mb-3">
+                          <span className="text-xs font-bold text-red-500 uppercase">เหตุผลที่ไม่ผ่านครั้งก่อน</span>
+                          <p className="text-lg font-bold text-red-600">{currentRejectItem.fail_reason || '-'}</p>
+                        </div>
+                        <div className="border-b pb-3 mb-3 flex justify-between items-start">
+                          <div>
+                            <h2 className="text-xl font-bold text-gray-800 uppercase">{currentRejectItem.product_name}</h2>
+                            <p className="text-xs text-gray-500">ใบงาน: {currentRejectItem.bill_no} <UrgencyBadge order={currentRejectItem} className="ml-1" /></p>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-[10px] text-gray-400 uppercase">UID</div>
+                            <div className="text-xl font-bold text-blue-600 uppercase">{currentRejectItem.item_uid}</div>
+                          </div>
+                        </div>
+                        <div className="bg-gray-50 p-4 rounded-lg border mb-4">
+                          <div className="text-[10px] text-gray-400 uppercase mb-2">รายละเอียดข้อความ</div>
+                          <div className="text-lg font-bold text-gray-800 border-b border-gray-200 pb-2">{currentRejectItem.line1 || '-'}</div>
+                          <div className="text-lg font-bold text-gray-800 border-b border-gray-200 pb-2">{currentRejectItem.line2 || '-'}</div>
+                          <div className="text-lg font-bold text-gray-800">{currentRejectItem.line3 || '-'}</div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 mb-4">
+                          <div className="bg-white p-2 rounded border">
+                            <div className="text-xs text-gray-400 uppercase">สีหมึก</div>
+                            <div className="flex items-center gap-2">
+                              <span className="w-8 h-8 rounded-full border shrink-0" style={{ backgroundColor: getInkColor(currentRejectItem.ink_color) }} />
+                              <span className="font-bold truncate">{currentRejectItem.ink_color || '-'}</span>
+                            </div>
+                          </div>
+                          <div className="bg-white p-2 rounded border">
+                            <div className="text-xs text-gray-400 uppercase">ฟอนต์</div>
+                            <div className="font-bold">{currentRejectItem.font || '-'}</div>
+                          </div>
+                          <div className="bg-white p-2 rounded border">
+                            <div className="text-xs text-gray-400 uppercase">จำนวน</div>
+                            <div className="text-2xl font-bold">{currentRejectItem.qty || 1} ชิ้น</div>
+                          </div>
+                        </div>
+                        <div className="mb-2 text-sm">
+                          <span className="text-gray-500">ชั้น: </span>
+                          <span className="font-bold">{currentRejectItem.floor || '-'}</span>
+                        </div>
+                      </div>
+                      <div className="shrink-0 p-4 pt-2 border-t bg-gray-50/50 space-y-2">
+                        {isViewOnly && activeRejectTab !== 'escalated' && (
+                          <div className="text-center py-3 text-sm text-gray-500 bg-gray-100 rounded-xl">
+                            โหมดดูอย่างเดียว (superadmin/admin ไม่สามารถทำ QC ได้)
+                          </div>
+                        )}
+                        {activeRejectTab === 'escalated' && isAdminOrSuperadmin(user?.role) ? (
+                          <div className="grid grid-cols-2 gap-2">
+                            <button onClick={() => handleEscalationDecision('special_recheck')} className="py-3 rounded-xl bg-blue-600 text-white font-bold">อนุมัติตรวจใหม่</button>
+                            <button onClick={() => handleEscalationDecision('produce_new')} className="py-3 rounded-xl bg-orange-500 text-white font-bold">สั่งผลิตใหม่</button>
+                            <button onClick={() => handleEscalationDecision('return_source')} className="py-3 rounded-xl bg-amber-500 text-white font-bold">ส่งคืนต้นทาง</button>
+                            <button onClick={() => handleEscalationDecision('scrap')} className="py-3 rounded-xl bg-red-600 text-white font-bold">คัดทิ้ง</button>
+                          </div>
+                        ) : activeRejectTab === 'escalated' ? (
+                          <div className="text-center py-3 text-sm text-orange-700 bg-orange-50 rounded-xl">เกินจำนวนตรวจซ้ำ กรุณารอ superadmin/admin ตัดสินใจ</div>
+                        ) : <div className="flex gap-4">
+                          <button
+                            onClick={() => markRejectStatus('fail')}
+                            disabled={isViewOnly}
+                            className={`flex-1 py-3 border-2 rounded-xl font-bold ${
+                              isViewOnly
+                                ? 'border-red-300 text-red-300 cursor-not-allowed opacity-60'
+                                : 'border-red-500 text-red-500 hover:bg-red-50'
+                            }`}
+                          >
+                            ไม่ผ่าน
+                          </button>
+                          <button
+                            onClick={() => markRejectStatus('pass')}
+                            disabled={isViewOnly || !allRejectChecklistChecked}
+                            className={`flex-1 py-3 rounded-xl font-bold ${
+                              isViewOnly || !allRejectChecklistChecked
+                                ? 'bg-green-300 text-white cursor-not-allowed opacity-60'
+                                : 'bg-green-500 text-white hover:bg-green-600'
+                            }`}
+                            title={!allRejectChecklistChecked ? 'กรุณาเช็คผ่านหัวข้อการตรวจเช็คให้ครบทั้งหมดก่อน' : undefined}
+                          >
+                            QC PASS (Space)
+                          </button>
+                        </div>}
+                        <div className="flex gap-4">
+                          <button onClick={() => navigateRejectItem(-1)} className="flex-1 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-bold">
+                            ก่อนหน้า
+                          </button>
+                          <button onClick={() => navigateRejectItem(1)} className="flex-1 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold">
+                            ถัดไป
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center flex-1 text-gray-400">
+                      <p className="text-lg">เลือกรายการเพื่อดำเนินการ</p>
+                    </div>
+                  )}
+                </div>
+                {/* Checklist Card (4th column) — Reject */}
+                <div className="w-72 shrink-0 bg-white rounded-xl shadow-sm border flex flex-col min-h-0 overflow-hidden">
+                  <div className="p-3 border-b bg-green-50">
+                    <h3 className="font-bold text-green-800 text-sm flex items-center gap-2">
+                      <i className="fas fa-clipboard-check"></i>
+                      เช็คลิส หัวข้อการตรวจเช็ค
+                    </h3>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                    {!currentRejectItem ? (
+                      <div className="py-8 text-center text-gray-400 text-sm">เลือกรายการเพื่อดูเช็คลิส</div>
+                    ) : rejectChecklistItems.length === 0 ? (
+                      <div className="py-8 text-center text-gray-400 text-sm">ไม่มีรายการเช็คลิสสำหรับสินค้านี้</div>
+                    ) : (
+                      (() => {
+                        const grouped: Record<string, (QCChecklistItem & { topic_name: string })[]> = {}
+                        rejectChecklistItems.forEach((item) => {
+                          if (!grouped[item.topic_name]) grouped[item.topic_name] = []
+                          grouped[item.topic_name].push(item)
+                        })
+                        return Object.entries(grouped).map(([topicName, items]) => (
+                          <div key={topicName} className="mb-2">
+                            <div className="text-xs font-bold text-gray-500 uppercase px-1 py-1 border-b border-gray-100">{topicName}</div>
+                            {items.map((item) => (
+                              <label
+                                key={item.id}
+                                className={`flex items-center gap-2 px-2 py-2 rounded cursor-pointer hover:bg-gray-50 ${
+                                  rejectCheckedIds.has(item.id) ? 'bg-green-50' : ''
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={rejectCheckedIds.has(item.id)}
+                                  onChange={() => {
+                                    setRejectCheckedIds((prev) => {
+                                      const next = new Set(prev)
+                                      if (next.has(item.id)) next.delete(item.id)
+                                      else next.add(item.id)
+                                      return next
+                                    })
+                                  }}
+                                  disabled={isViewOnly}
+                                  className="w-4 h-4 rounded border-gray-300 text-green-600 focus:ring-green-500 shrink-0"
+                                />
+                                <span className={`flex-1 text-sm ${rejectCheckedIds.has(item.id) ? 'line-through text-gray-400' : 'text-gray-700'}`}>
+                                  {item.title}
+                                </span>
+                                {item.file_url && (
+                                  <a
+                                    href={item.file_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="shrink-0 w-5 h-5 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center hover:bg-blue-200"
+                                    title="ดูคู่มือตรวจ QC"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <i className="fas fa-info text-[10px]"></i>
+                                  </a>
+                                )}
+                              </label>
+                            ))}
+                          </div>
+                        ))
+                      })()
+                    )}
+                  </div>
+                  {rejectChecklistItems.length > 0 && !isViewOnly && (
+                    <div className="shrink-0 p-2 border-t bg-gray-50">
+                      <button
+                        onClick={() => {
+                          if (rejectCheckedIds.size === rejectChecklistItems.length) {
+                            setRejectCheckedIds(new Set())
+                          } else {
+                            setRejectCheckedIds(new Set(rejectChecklistItems.map((i) => i.id)))
+                          }
+                        }}
+                        className={`w-full py-2 rounded-lg font-bold text-sm ${
+                          rejectCheckedIds.size === rejectChecklistItems.length
+                            ? 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                            : 'bg-green-500 text-white hover:bg-green-600'
+                        }`}
+                      >
+                        {rejectCheckedIds.size === rejectChecklistItems.length ? 'ยกเลิกทั้งหมด' : 'ผ่านทั้งหมด'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Reports & KPI */}
+        {currentView === 'report' && (
+          <div className="bg-white rounded-xl shadow-sm p-6">
+            <h2 className="text-2xl font-bold mb-4">รายงานประสิทธิภาพ</h2>
+            <div className="flex flex-wrap gap-4 mb-6">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase">วันที่เริ่มต้น</label>
+                <input
+                  type="date"
+                  value={reportFilter.startDate}
+                  onChange={(e) => setReportFilter((f) => ({ ...f, startDate: e.target.value }))}
+                  className="border rounded px-2 py-1"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase">วันที่สิ้นสุด</label>
+                <input
+                  type="date"
+                  value={reportFilter.endDate}
+                  onChange={(e) => setReportFilter((f) => ({ ...f, endDate: e.target.value }))}
+                  className="border rounded px-2 py-1"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase">ผู้ตรวจคุณภาพ</label>
+                <select
+                  value={reportFilter.user}
+                  onChange={(e) => setReportFilter((f) => ({ ...f, user: e.target.value }))}
+                  className="border rounded px-2 py-1"
+                >
+                  <option value="">ผู้ตรวจทั้งหมด</option>
+                  {reportUsers.map((u) => (
+                    <option key={u.id} value={u.username || ''}>
+                      {u.username || u.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase">ใบงาน</label>
+                <input
+                  type="text"
+                  value={reportFilter.workOrder}
+                  onChange={(e) => setReportFilter((f) => ({ ...f, workOrder: e.target.value }))}
+                  placeholder="เช่น FBTR-... หรือ WO-FBTR-..."
+                  className="border rounded px-2 py-1"
+                />
+              </div>
+              <button onClick={loadReports} className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-bold self-end">
+                Filter
+              </button>
+            </div>
+            {reports.length > 0 && (
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+                <div className="rounded-xl bg-blue-50 p-3"><div className="text-xs text-gray-500">รอบตรวจทั้งหมด</div><div className="text-2xl font-bold text-blue-700">{reportAttempts.length}</div></div>
+                <div className="rounded-xl bg-red-50 p-3"><div className="text-xs text-gray-500">ไม่ผ่านครั้งแรก</div><div className="text-2xl font-bold text-red-600">{reportAttempts.filter((a) => a.attempt_no === 1 && a.result === 'fail').length}</div></div>
+                <div className="rounded-xl bg-orange-50 p-3"><div className="text-xs text-gray-500">รอบตรวจซ้ำ</div><div className="text-2xl font-bold text-orange-600">{reportAttempts.filter((a) => a.attempt_no > 1).length}</div></div>
+                <div className="rounded-xl bg-green-50 p-3"><div className="text-xs text-gray-500">ผ่านหลังแก้ไข</div><div className="text-2xl font-bold text-green-600">{reportAttempts.filter((a) => a.attempt_no > 1 && a.result === 'pass').length}</div></div>
+                <div className="rounded-xl bg-purple-50 p-3"><div className="text-xs text-gray-500">เวลาเฉลี่ยต่อรอบ</div><div className="text-lg font-bold text-purple-700">{formatDuration(reportAttempts.length ? reportAttempts.reduce((sum, a) => sum + a.duration_seconds, 0) / reportAttempts.length : 0)}</div></div>
+              </div>
+            )}
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-left">
+                <thead className="bg-gray-50 text-gray-700 font-bold uppercase text-xs">
+                  <tr>
+                    <th className="px-4 py-3 text-center">เริ่มตรวจ</th>
+                    <th className="px-4 py-3 text-center">เสร็จสิ้น</th>
+                    <th className="px-4 py-3">ผู้ตรวจ</th>
+                    <th className="px-4 py-3">ไฟล์</th>
+                    <th className="px-4 py-3 text-center">ทั้งหมด</th>
+                    <th className="px-4 py-3 text-center text-green-600">ผ่าน</th>
+                    <th className="px-4 py-3 text-center text-amber-600">ข้าม QC</th>
+                    <th className="px-4 py-3 text-center text-red-600">ไม่ผ่าน</th>
+                    <th className="px-4 py-3 text-center">ตัวชี้วัด (ชม:นาที:วินาที)</th>
+                    <th className="px-4 py-3 text-center">ดำเนินการ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {reports.map((s) => (
+                    <tr
+                      key={s.id}
+                      onClick={() => showSessionDetails(s)}
+                      className="border-b hover:bg-blue-50 cursor-pointer"
+                    >
+                      <td className="px-4 py-3 text-center">{formatDate(s.start_time)}</td>
+                      <td className="px-4 py-3 text-center font-bold text-blue-600">{formatDate(s.end_time)}</td>
+                      <td className="px-4 py-3 font-bold">{s.username}</td>
+                      <td className="px-4 py-3 truncate max-w-[200px] italic">{s.filename}</td>
+                      <td className="px-4 py-3 text-center font-bold">{s.total_items}</td>
+                      <td className="px-4 py-3 text-center font-bold text-green-600">{s.pass_count}</td>
+                      <td className="px-4 py-3 text-center font-bold text-amber-600">{s.skipped_count || 0}</td>
+                      <td className="px-4 py-3 text-center font-bold text-red-600">{s.fail_count}</td>
+                      <td className="px-4 py-3 text-center">
+                        <span className="bg-gray-100 px-2 py-1 rounded font-mono font-bold">{(() => {
+                          const totalSec = Math.round((s.kpi_score ?? 0) * (s.total_items || 1))
+                          const h = Math.floor(totalSec / 3600)
+                          const m = Math.floor((totalSec % 3600) / 60)
+                          const sec = totalSec % 60
+                          return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
+                        })()}</span>
+                      </td>
+                      <td className="px-4 py-3 text-center" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => downloadReportCsv(s)}
+                          className="text-blue-600 hover:text-blue-800 font-bold uppercase text-xs"
+                        >
+                          CSV
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {reports.length === 0 && (
+                    <tr>
+                      <td colSpan={9} className="px-4 py-8 text-center text-gray-400 italic">
+                        No records. Click Filter to load.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* History Check — layout เหมือน QC Operation */}
+        {currentView === 'history' && (
+          <div className={historySearched && historyResults.length > 0 ? 'flex flex-col flex-1 min-h-0 overflow-hidden' : 'space-y-4'}>
+            <div className="bg-white rounded-xl shadow-sm p-4 flex flex-wrap items-center gap-4">
+              <h2 className="text-xl font-bold">ตรวจสอบประวัติรายการ</h2>
+              <input
+                type="text"
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && searchHistory()}
+                placeholder="สแกน Barcode หรือพิมพ์ UID"
+                className="border-2 border-blue-400 rounded-lg px-4 py-2 flex-1 min-w-[200px]"
+              />
+              <button onClick={searchHistory} disabled={loading} className="px-5 py-2 bg-blue-600 text-white rounded-lg font-bold disabled:opacity-50">
+                Search
+              </button>
+              <button
+                onClick={() => {
+                  setHistorySearch('')
+                  setHistoryResults([])
+                  setHistorySearched(false)
+                  setCurrentHistoryRecord(null)
+                }}
+                className="px-5 py-2 bg-gray-200 rounded-lg font-bold hover:bg-gray-300"
+              >
+                Clear
+              </button>
+            </div>
+            {historySearched && historyResults.length > 0 && (
+              <div className="flex gap-4 flex-1 min-h-0 mt-4 overflow-hidden">
+                <div className="w-56 shrink-0 bg-white rounded-xl shadow-sm border flex flex-col overflow-hidden min-w-0 sm:w-64">
+                  <div className="p-2 border-b text-xs font-bold text-gray-600 uppercase">รายการประวัติ</div>
+                  <div className="flex-1 overflow-y-auto p-1 space-y-1">
+                    {historyResults.map((rec, index) => (
+                      <div
+                        key={rec.id}
+                        id={'history-item-' + rec.id}
+                        onClick={() => setCurrentHistoryRecord(rec)}
+                        className={`p-2 rounded border cursor-pointer flex justify-between items-center text-xs ${
+                          currentHistoryRecord?.id === rec.id ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-100 hover:bg-gray-50'
+                        }`}
+                      >
+                        <div className="truncate min-w-0">
+                          <span className="text-gray-400 font-bold">{index + 1}. </span>
+                          <span className="font-medium uppercase">{rec.item_uid}</span>
+                          <br />
+                          <span className="text-gray-500 text-[10px]">{rec.product_name || '-'}</span>
+                        </div>
+                        {rec.status === 'pass' && <span className="text-green-500 shrink-0">✓</span>}
+                        {rec.status === 'skipped' && <span className="text-amber-500 shrink-0">ข้าม</span>}
+                        {rec.status === 'fail' && <span className="text-red-500 shrink-0">✗</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex-1 min-w-[180px] max-w-[380px] flex flex-col gap-2 min-h-0 overflow-hidden">
+                  <div className="flex-1 min-h-0 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
+                    {currentHistoryRecord && currentHistoryRecord.product_code && currentHistoryRecord.product_code !== '0' ? (
+                      <a
+                        href={getPublicUrl('product-images', currentHistoryRecord.product_code, '.jpg')}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full h-full flex items-center justify-center cursor-pointer"
+                      >
+                        <img
+                          src={getPublicUrl('product-images', currentHistoryRecord.product_code, '.jpg')}
+                          alt="Product"
+                          className="w-full h-full object-contain p-2"
+                        />
+                      </a>
+                    ) : (
+                      <div className="text-gray-400 text-sm">ไม่มีรูปสินค้า (รหัสสินค้า: {currentHistoryRecord?.product_code || '-'})</div>
+                    )}
+                  </div>
+                  <div className="flex-1 min-h-0 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
+                    {currentHistoryRecord && currentHistoryRecord.cartoon_name && currentHistoryRecord.cartoon_name !== '0' ? (
+                      <a
+                        href={getPublicUrl('cartoon-patterns', currentHistoryRecord.cartoon_name, '.jpg')}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full h-full flex items-center justify-center cursor-pointer"
+                      >
+                        <img
+                          src={getPublicUrl('cartoon-patterns', currentHistoryRecord.cartoon_name, '.jpg')}
+                          alt="Pattern"
+                          className="w-full h-full object-contain p-2"
+                        />
+                      </a>
+                    ) : (
+                      <div className="text-gray-400 text-sm">ไม่มีรูปลาย ({currentHistoryRecord?.cartoon_name || '-'})</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex-1 bg-white rounded-xl shadow-sm border flex flex-col min-w-0 min-h-0 basis-0 overflow-hidden">
+                  {currentHistoryRecord ? (
+                    <>
+                      <div className="flex-1 min-h-0 overflow-auto p-4">
+                        <div className="border-b pb-3 mb-3 flex justify-between items-start">
+                          <div>
+                            <h2 className="text-xl font-bold text-gray-800 uppercase">{currentHistoryRecord.product_name || '-'}</h2>
+                            <p className="text-xs text-gray-500">ใบงาน: {currentHistoryRecord.bill_no || '-'}</p>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-[10px] text-gray-400 uppercase">UID</div>
+                            <div className="text-xl font-bold text-blue-600 uppercase">{currentHistoryRecord.item_uid}</div>
+                          </div>
+                        </div>
+                        <div className="bg-gray-50 p-4 rounded-lg border mb-4">
+                          <div className="text-[10px] text-gray-400 uppercase mb-2">รายละเอียดข้อความ</div>
+                          <div className="text-lg font-bold text-gray-800 border-b border-gray-200 pb-2">{currentHistoryRecord.line1 || '-'}</div>
+                          <div className="text-lg font-bold text-gray-800 border-b border-gray-200 pb-2">{currentHistoryRecord.line2 || '-'}</div>
+                          <div className="text-lg font-bold text-gray-800">{currentHistoryRecord.line3 || '-'}</div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 mb-4">
+                          <div className="bg-white p-2 rounded border">
+                            <div className="text-xs text-gray-400 uppercase">สีหมึก</div>
+                            <div className="flex items-center gap-2">
+                              <span className="w-8 h-8 rounded-full border shrink-0" style={{ backgroundColor: getInkColor(currentHistoryRecord.ink_color) }} />
+                              <span className="font-bold truncate">{currentHistoryRecord.ink_color || '-'}</span>
+                            </div>
+                          </div>
+                          <div className="bg-white p-2 rounded border">
+                            <div className="text-xs text-gray-400 uppercase">ฟอนต์</div>
+                            <div className="font-bold">{currentHistoryRecord.font || '-'}</div>
+                          </div>
+                          <div className="bg-white p-2 rounded border">
+                            <div className="text-xs text-gray-400 uppercase">จำนวน</div>
+                            <div className="text-2xl font-bold">{currentHistoryRecord.qty || 1} ชิ้น</div>
+                          </div>
+                        </div>
+                        <div className="mb-2 text-sm">
+                          <span className="text-gray-500">ชั้น: </span>
+                          <span className="font-bold">{currentHistoryRecord.floor || '-'}</span>
+                          {currentHistoryRecord.remark && (
+                            <>
+                              <span className="text-gray-500 ml-2">หมายเหตุ: </span>
+                              <span className="font-medium">{currentHistoryRecord.remark}</span>
+                            </>
+                          )}
+                        </div>
+                        <div className="mt-4 pt-4 border-t space-y-2">
+                          <div className="text-xs text-gray-500">
+                            ตรวจเมื่อ: {formatDate(currentHistoryRecord.created_at)} | โดย: {currentHistoryRecord.qc_by}
+                            {currentHistoryRecord.retry_count != null && currentHistoryRecord.retry_count > 1 && (
+                              <span className="ml-2">RETRY: {currentHistoryRecord.retry_count}</span>
+                            )}
+                          </div>
+                          <div className="flex gap-2 items-center">
+                            <span
+                              className={`px-4 py-2 rounded-xl font-bold ${
+                                currentHistoryRecord.status === 'pass'
+                                  ? 'bg-green-500 text-white'
+                                  : currentHistoryRecord.status === 'skipped'
+                                    ? 'bg-amber-500 text-white'
+                                    : 'bg-red-500 text-white'
+                              }`}
+                            >
+                              {currentHistoryRecord.status === 'pass' ? 'ผ่าน' : currentHistoryRecord.status === 'skipped' ? 'ข้าม QC' : 'ไม่ผ่าน'}
+                            </span>
+                            {currentHistoryRecord.status === 'fail' && currentHistoryRecord.fail_reason && (
+                              <span className="text-red-600 font-medium">เหตุผล: {currentHistoryRecord.fail_reason}</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="mt-4 pt-4 border-t">
+                          <h3 className="font-bold text-gray-800 mb-2">ลำดับการตรวจทั้งหมด</h3>
+                          <div className="space-y-2">
+                            {historyAttempts.filter((a) => a.item_uid.toUpperCase() === currentHistoryRecord.item_uid.toUpperCase()).map((attempt) => (
+                              <div key={attempt.id} className="rounded-lg border bg-white p-3 text-sm">
+                                <div className="flex flex-wrap justify-between gap-2">
+                                  <span className="font-bold">ครั้งที่ {attempt.attempt_no} · {attempt.attempt_type === 'initial' ? 'ตรวจครั้งแรก' : attempt.attempt_type === 'special_recheck' ? 'ตรวจกรณีพิเศษ' : 'ตรวจซ้ำ'}</span>
+                                  <span className={attempt.result === 'pass' ? 'text-green-600 font-bold' : 'text-red-600 font-bold'}>{attempt.result === 'pass' ? 'ผ่าน' : 'ไม่ผ่าน'}</span>
+                                </div>
+                                <div className="text-gray-500 mt-1">เริ่ม {formatDate(attempt.started_at)} · เสร็จ {formatDate(attempt.completed_at)} · ใช้เวลา {formatDuration(attempt.duration_seconds)}</div>
+                                <div className="text-gray-600">ผู้ตรวจ: {attempt.qc_by}{attempt.fail_reason ? ` · เหตุผล: ${attempt.fail_reason}` : ''}</div>
+                              </div>
+                            ))}
+                            {historyAttempts.length === 0 && <div className="text-gray-400">ข้อมูลเดิมอาจมีเฉพาะผลล่าสุด</div>}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="shrink-0 p-4 pt-2 border-t bg-gray-50/50 flex gap-4">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const idx = historyResults.indexOf(currentHistoryRecord)
+                            if (idx > 0) setCurrentHistoryRecord(historyResults[idx - 1])
+                          }}
+                          className="flex-1 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-bold"
+                        >
+                          ก่อนหน้า
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const idx = historyResults.indexOf(currentHistoryRecord)
+                            if (idx >= 0 && idx < historyResults.length - 1) setCurrentHistoryRecord(historyResults[idx + 1])
+                          }}
+                          className="flex-1 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold"
+                        >
+                          ถัดไป
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center flex-1 text-gray-400">
+                      <p className="text-lg">เลือกรายการจากรายการด้านซ้าย</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+            {historySearched && historyResults.length === 0 && (
+              <div className="bg-white rounded-xl shadow-sm p-8 text-center text-gray-500">ไม่พบประวัติการตรวจสำหรับ UID นี้</div>
+            )}
+          </div>
+        )}
+
+        {/* Settings */}
+        {currentView === 'settings' && (
+          <div className="bg-white rounded-xl shadow-sm p-6">
+            <h2 className="text-2xl font-bold mb-6">ตั้งค่าระบบ</h2>
+            <div className="flex border-b mb-6">
+              <button
+                onClick={() => setSettingsTab('reasons')}
+                className={`px-6 py-3 font-bold border-b-2 ${settingsTab === 'reasons' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500'}`}
+              >
+                เหตุผลที่ไม่ผ่าน
+              </button>
+              <button
+                onClick={() => setSettingsTab('ink')}
+                className={`px-6 py-3 font-bold border-b-2 ${settingsTab === 'ink' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500'}`}
+              >
+                สีหมึก
+              </button>
+              <button
+                onClick={() => { setSettingsTab('skip_logs'); loadSkipLogs() }}
+                className={`px-6 py-3 font-bold border-b-2 ${settingsTab === 'skip_logs' ? 'border-amber-500 text-amber-600' : 'border-transparent text-gray-500'}`}
+              >
+                รายการไม่ QC
+              </button>
+              <button
+                onClick={() => { setSettingsTab('checklist_topics'); loadChecklistTopics() }}
+                className={`px-6 py-3 font-bold border-b-2 ${settingsTab === 'checklist_topics' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500'}`}
+              >
+                หัวข้อQC
+              </button>
+              <button
+                onClick={() => { setSettingsTab('category_groups'); loadCategoryGroupSettings() }}
+                className={`px-6 py-3 font-bold border-b-2 ${settingsTab === 'category_groups' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500'}`}
+              >
+                กรุ๊ปหมวดหมู่
+              </button>
+              <button
+                onClick={() => setSettingsTab('skip_automation')}
+                className={`px-6 py-3 font-bold border-b-2 ${settingsTab === 'skip_automation' ? 'border-red-500 text-red-600' : 'border-transparent text-gray-500'}`}
+              >
+                เงื่อนไขไม่ต้อง QC
+              </button>
+            </div>
+            {settingsTab === 'skip_automation' && <QcSkipAutomationSettings />}
+            {settingsTab === 'reasons' && (
+              <div>
+                <div className="flex gap-2 mb-4 flex-wrap">
+                  <input
+                    type="text"
+                    value={newReason}
+                    onChange={(e) => setNewReason(e.target.value)}
+                    placeholder="เหตุผล Fail ใหม่"
+                    className="border rounded px-3 py-2 flex-1"
+                  />
+                  <select
+                    value={newReasonType}
+                    onChange={(e) => setNewReasonType(e.target.value as 'Man' | 'Machine' | 'Material' | 'Method')}
+                    className="border rounded px-3 py-2 bg-white"
+                  >
+                    <option value="Man">คน</option>
+                    <option value="Machine">เครื่องจักร</option>
+                    <option value="Material">วัสดุ</option>
+                    <option value="Method">วิธีการ</option>
+                  </select>
+                  <button onClick={handleAddReason} className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 font-bold">
+                    เพิ่ม
+                  </button>
+                </div>
+                <ul className="divide-y border rounded-xl overflow-hidden">
+                  {reasons.map((r) => (
+                    <li key={r.id} className="bg-white">
+                      <div className="py-3 px-4 flex justify-between items-center hover:bg-gray-50 gap-2">
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <span className="font-bold truncate">{r.reason_text}</span>
+                          {r.children && r.children.length > 0 && (
+                            <span className="text-xs text-gray-400">({r.children.length} หัวข้อย่อย)</span>
+                          )}
+                        </div>
+                        <select
+                          value={r.fail_type || 'Man'}
+                          onChange={(e) => handleUpdateReasonType(r.id, e.target.value as 'Man' | 'Machine' | 'Material' | 'Method')}
+                          className={`text-xs px-2 py-1 rounded-full border-0 cursor-pointer font-semibold shrink-0 ${
+                            r.fail_type === 'Machine' ? 'bg-orange-100 text-orange-700' :
+                            r.fail_type === 'Material' ? 'bg-green-100 text-green-700' :
+                            r.fail_type === 'Method' ? 'bg-purple-100 text-purple-700' :
+                            'bg-blue-100 text-blue-700'
+                          }`}
+                        >
+                          <option value="Man">คน</option>
+                          <option value="Machine">เครื่องจักร</option>
+                          <option value="Material">วัสดุ</option>
+                          <option value="Method">วิธีการ</option>
+                        </select>
+                        <button
+                          onClick={() => { setAddSubReasonParentId(addSubReasonParentId === r.id ? null : r.id); setNewSubReason('') }}
+                          className="text-blue-400 hover:text-blue-600 shrink-0" title="เพิ่มหัวข้อย่อย"
+                        >
+                          <i className="fas fa-plus-circle"></i>
+                        </button>
+                        <button onClick={() => handleDeleteReason(r.id, r.reason_text)} className="text-red-400 hover:text-red-600 shrink-0">
+                          <i className="fas fa-trash-alt"></i>
+                        </button>
+                      </div>
+                      {/* Sub-reasons */}
+                      {r.children && r.children.length > 0 && (
+                        <ul className="ml-8 mr-4 mb-2 border-l-2 border-blue-200">
+                          {r.children.map((sub) => (
+                            <li key={sub.id} className="py-2 px-4 flex items-center gap-2 text-sm hover:bg-blue-50 rounded-r">
+                              <span className="text-blue-400">↳</span>
+                              <span className="flex-1 truncate">{sub.reason_text}</span>
+                              <button onClick={() => handleDeleteReason(sub.id, sub.reason_text)} className="text-red-300 hover:text-red-500 shrink-0">
+                                <i className="fas fa-trash-alt text-xs"></i>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {/* Inline add sub-reason form */}
+                      {addSubReasonParentId === r.id && (
+                        <div className="ml-8 mr-4 mb-3 flex gap-2 items-center">
+                          <span className="text-blue-400">↳</span>
+                          <input
+                            type="text"
+                            value={newSubReason}
+                            onChange={(e) => setNewSubReason(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') handleAddSubReason(r.id, r.fail_type || 'Man') }}
+                            placeholder="หัวข้อย่อยใหม่..."
+                            className="border rounded px-3 py-1.5 text-sm flex-1"
+                            autoFocus
+                          />
+                          <button
+                            onClick={() => handleAddSubReason(r.id, r.fail_type || 'Man')}
+                            className="px-3 py-1.5 bg-blue-500 text-white rounded text-sm hover:bg-blue-600 font-bold"
+                          >
+                            เพิ่ม
+                          </button>
+                          <button
+                            onClick={() => { setAddSubReasonParentId(null); setNewSubReason('') }}
+                            className="px-3 py-1.5 border border-gray-300 rounded text-sm hover:bg-gray-100"
+                          >
+                            ยกเลิก
+                          </button>
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                  {reasons.length === 0 && <li className="py-8 text-center text-gray-400">ยังไม่มีเหตุผล — เพิ่มในช่องด้านบน</li>}
+                </ul>
+              </div>
+            )}
+            {settingsTab === 'ink' && (
+              <div>
+                <p className="text-gray-600 mb-4">แก้ไขรหัสสีหมึกสำหรับแสดงในหน้าตรวจคุณภาพ งานไม่ผ่าน และประวัติการตรวจ</p>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {inkTypes.map((ink) => (
+                    <div key={ink.id} className="p-4 border rounded-xl flex flex-wrap items-center justify-between gap-2 bg-white">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={ink.hex_code || '#cccccc'}
+                          onChange={(e) => handleUpdateInkHex(ink.id, e.target.value)}
+                          className="w-8 h-8 rounded border cursor-pointer p-0"
+                        />
+                        <span className="font-bold">{ink.ink_name}</span>
+                      </div>
+                      <input
+                        type="text"
+                        value={ink.hex_code || '#cccccc'}
+                        onChange={(e) => handleUpdateInkHex(ink.id, e.target.value)}
+                        className="w-20 border rounded px-2 py-1 text-sm font-mono"
+                      />
+                    </div>
+                  ))}
+                  {inkTypes.length === 0 && <div className="col-span-2 py-8 text-center text-gray-400">ไม่มีข้อมูลสีหมึก</div>}
+                </div>
+              </div>
+            )}
+            {settingsTab === 'skip_logs' && (
+              <div>
+                <p className="text-gray-600 mb-4">รายการใบงานที่ข้ามการ QC ทั้งหมด (ล่าสุด 100 รายการ)</p>
+                {skipLogs.length === 0 ? (
+                  <div className="py-8 text-center text-gray-400">ไม่มีรายการ</div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm border-collapse">
+                      <thead>
+                        <tr className="bg-gray-100">
+                          <th className="text-left px-4 py-3 font-semibold border-b">#</th>
+                          <th className="text-left px-4 py-3 font-semibold border-b">ใบงาน</th>
+                          <th className="text-left px-4 py-3 font-semibold border-b">ผู้ดำเนินการ</th>
+                          <th className="text-left px-4 py-3 font-semibold border-b">จำนวนรายการ</th>
+                          <th className="text-left px-4 py-3 font-semibold border-b">วันที่</th>
+                          <th className="text-left px-4 py-3 font-semibold border-b">รายละเอียด</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {skipLogs.map((log, idx) => (
+                          <tr key={log.id} className="border-b hover:bg-gray-50">
+                            <td className="px-4 py-3 text-gray-500">{idx + 1}</td>
+                            <td className="px-4 py-3 font-bold text-amber-700">{log.work_order_name}</td>
+                            <td className="px-4 py-3">{log.skipped_by}</td>
+                            <td className="px-4 py-3 text-center">{log.total_items}</td>
+                            <td className="px-4 py-3 text-gray-600">{new Date(log.created_at).toLocaleString('th-TH')}</td>
+                            <td className="px-4 py-3">
+                              {log.item_details && Array.isArray(log.item_details) && (
+                                <details className="cursor-pointer">
+                                  <summary className="text-blue-500 hover:text-blue-700 text-xs">ดูรายละเอียด ({log.item_details.length} รายการ)</summary>
+                                  <div className="mt-2 p-2 bg-gray-50 rounded text-xs space-y-1 max-h-40 overflow-y-auto">
+                                    {log.item_details.map((item: any, i: number) => (
+                                      <div key={i} className="flex gap-3">
+                                        <span className="text-gray-400">{i + 1}.</span>
+                                        <span className="font-mono text-gray-700">{item.uid}</span>
+                                        <span>{item.product_name}</span>
+                                        <span className="text-gray-500">{item.bill_no}</span>
+                                        {item.ink_color && <span className="text-purple-600">{item.ink_color}</span>}
+                                        {item.qty && <span className="text-gray-500">x{item.qty}</span>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </details>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+            {settingsTab === 'category_groups' && (() => {
+              // หมวดหมู่ทั้งหมด = ที่มีในสินค้า + ที่ถูกใส่กรุ๊ปไว้แล้ว (กันกรณีหมวดหมู่เก่าที่ไม่มีสินค้าเหลือ)
+              const allCats = Array.from(
+                new Set([...cgAllCategories, ...categoryGroups.flatMap((g) => g.categories)])
+              ).sort((a, b) => a.localeCompare(b, 'th'))
+              const groupOfCat = new Map<string, string>()
+              categoryGroups.forEach((g) => g.categories.forEach((c) => groupOfCat.set(c, g.name)))
+              const ungrouped = allCats.filter((c) => !groupOfCat.has(c))
+
+              return (
+                <div>
+                  <p className="text-gray-600 mb-4">
+                    รวมหลายหมวดหมู่สินค้าให้เป็นกรุ๊ปเดียว เพื่อใช้เป็นตัวกรอง “หมวดหมู่สินค้า” ในเมนู QC Operation
+                    <br />
+                    <span className="text-sm text-gray-500">
+                      หมวดหมู่ที่ไม่ได้อยู่ในกรุ๊ปใด จะแสดงเป็นตัวเลือกด้วยชื่อของตัวเอง • หนึ่งหมวดหมู่อยู่ได้กรุ๊ปเดียว (ถ้าเลือกซ้ำจะย้ายกรุ๊ปให้)
+                    </span>
+                  </p>
+
+                  <div className="flex gap-2 mb-6 flex-wrap">
+                    <input
+                      type="text"
+                      value={cgNewGroupName}
+                      onChange={(e) => setCgNewGroupName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') handleAddCategoryGroup() }}
+                      placeholder="ชื่อกรุ๊ปใหม่ (เช่น UV-CTTA-E)"
+                      className="border rounded px-3 py-2 flex-1 min-w-[240px]"
+                    />
+                    <button
+                      onClick={handleAddCategoryGroup}
+                      disabled={cgSaving || !cgNewGroupName.trim()}
+                      className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 font-bold disabled:opacity-50"
+                    >
+                      เพิ่มกรุ๊ป
+                    </button>
+                  </div>
+
+                  <div className="space-y-3">
+                    {categoryGroups.map((g) => (
+                      <div key={g.id} className="border rounded-xl p-4 bg-white">
+                        <div className="flex items-center gap-2 flex-wrap mb-3">
+                          {cgEditId === g.id ? (
+                            <>
+                              <input
+                                type="text"
+                                value={cgEditName}
+                                onChange={(e) => setCgEditName(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') handleRenameCategoryGroup(g.id) }}
+                                className="border rounded px-3 py-1.5 font-bold flex-1 min-w-[200px]"
+                                autoFocus
+                              />
+                              <button
+                                onClick={() => handleRenameCategoryGroup(g.id)}
+                                disabled={cgSaving}
+                                className="px-3 py-1.5 bg-blue-500 text-white rounded text-sm font-bold hover:bg-blue-600 disabled:opacity-50"
+                              >
+                                บันทึก
+                              </button>
+                              <button
+                                onClick={() => { setCgEditId(null); setCgEditName('') }}
+                                className="px-3 py-1.5 border border-gray-300 rounded text-sm hover:bg-gray-100"
+                              >
+                                ยกเลิก
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <span className="font-bold text-lg text-indigo-700">{g.name}</span>
+                              <span className="text-xs text-gray-400">({g.categories.length} หมวดหมู่)</span>
+                              <div className="flex-1"></div>
+                              <button
+                                onClick={() => {
+                                  setCgAddTargetId(cgAddTargetId === g.id ? null : g.id)
+                                  setCgAddSelected(new Set())
+                                }}
+                                className="px-3 py-1.5 bg-indigo-500 text-white rounded text-sm font-bold hover:bg-indigo-600"
+                              >
+                                <i className="fas fa-plus mr-1"></i>เลือกหมวดหมู่
+                              </button>
+                              <button
+                                onClick={() => { setCgEditId(g.id); setCgEditName(g.name) }}
+                                className="text-gray-400 hover:text-blue-600 px-2"
+                                title="เปลี่ยนชื่อกรุ๊ป"
+                              >
+                                <i className="fas fa-pen"></i>
+                              </button>
+                              <button
+                                onClick={() => setCgDeleteTarget(g)}
+                                className="text-red-400 hover:text-red-600 px-2"
+                                title="ลบกรุ๊ป"
+                              >
+                                <i className="fas fa-trash-alt"></i>
+                              </button>
+                            </>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap gap-2">
+                          {g.categories.map((c) => (
+                            <span key={c} className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full pl-3 pr-2 py-1 text-sm">
+                              {c}
+                              <button
+                                onClick={() => handleRemoveCategoryFromGroup(g.id, c)}
+                                disabled={cgSaving}
+                                className="text-indigo-400 hover:text-red-600 disabled:opacity-50"
+                                title="เอาออกจากกรุ๊ป"
+                              >
+                                <i className="fas fa-times"></i>
+                              </button>
+                            </span>
+                          ))}
+                          {g.categories.length === 0 && (
+                            <span className="text-sm text-gray-400">ยังไม่มีหมวดหมู่ในกรุ๊ปนี้ — กด “เลือกหมวดหมู่”</span>
+                          )}
+                        </div>
+
+                        {cgAddTargetId === g.id && (
+                          <div className="mt-4 border-t pt-3">
+                            <div className="text-sm font-semibold text-gray-600 mb-2">
+                              เลือกหมวดหมู่ที่ต้องการรวมเข้ากรุ๊ป “{g.name}”
+                            </div>
+                            {allCats.length === 0 ? (
+                              <div className="text-sm text-gray-400 py-3">ไม่พบหมวดหมู่สินค้าในระบบ</div>
+                            ) : (
+                              <div className="max-h-60 overflow-y-auto border rounded-lg p-2 grid grid-cols-2 md:grid-cols-3 gap-1">
+                                {allCats
+                                  .filter((c) => !g.categories.includes(c))
+                                  .map((c) => {
+                                    const owner = groupOfCat.get(c)
+                                    return (
+                                      <label key={c} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-50 cursor-pointer text-sm">
+                                        <input
+                                          type="checkbox"
+                                          checked={cgAddSelected.has(c)}
+                                          onChange={(e) => {
+                                            const next = new Set(cgAddSelected)
+                                            if (e.target.checked) next.add(c)
+                                            else next.delete(c)
+                                            setCgAddSelected(next)
+                                          }}
+                                          className="w-4 h-4"
+                                        />
+                                        <span className="truncate">{c}</span>
+                                        {owner && (
+                                          <span className="text-[10px] text-amber-600 bg-amber-50 border border-amber-200 rounded px-1 shrink-0">
+                                            ย้ายจาก {owner}
+                                          </span>
+                                        )}
+                                      </label>
+                                    )
+                                  })}
+                              </div>
+                            )}
+                            <div className="flex gap-2 mt-3">
+                              <button
+                                onClick={() => handleSaveCategoryGroupMembers(g.id)}
+                                disabled={cgSaving || cgAddSelected.size === 0}
+                                className="px-4 py-2 bg-indigo-500 text-white rounded-lg text-sm font-bold hover:bg-indigo-600 disabled:opacity-50"
+                              >
+                                เพิ่ม {cgAddSelected.size > 0 ? `(${cgAddSelected.size})` : ''}
+                              </button>
+                              <button
+                                onClick={() => { setCgAddTargetId(null); setCgAddSelected(new Set()) }}
+                                className="px-4 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-100"
+                              >
+                                ยกเลิก
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {categoryGroups.length === 0 && (
+                      <div className="py-8 text-center text-gray-400 border rounded-xl">
+                        ยังไม่มีกรุ๊ป — เพิ่มในช่องด้านบน (ตัวกรองจะแสดงหมวดหมู่ตามค่าจริงทั้งหมด)
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-6">
+                    <div className="text-sm font-semibold text-gray-600 mb-2">
+                      หมวดหมู่ที่ยังไม่อยู่ในกรุ๊ปใด ({ungrouped.length}) — แสดงเป็นตัวเลือกแยกด้วยชื่อตัวเอง
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {ungrouped.map((c) => (
+                        <span key={c} className="bg-gray-100 text-gray-600 border rounded-full px-3 py-1 text-sm">{c}</span>
+                      ))}
+                      {ungrouped.length === 0 && <span className="text-sm text-gray-400">ทุกหมวดหมู่ถูกจัดกรุ๊ปแล้ว</span>}
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
+            {settingsTab === 'checklist_topics' && (
+              <div>
+                {!clSelectedTopic ? (
+                  <>
+                    <div className="flex gap-2 mb-4 flex-wrap items-center">
+                      <input
+                        type="text"
+                        value={clNewTopicName}
+                        onChange={(e) => setClNewTopicName(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleCreateTopic()}
+                        placeholder="ชื่อหัวข้อใหญ่ใหม่"
+                        className="border rounded px-3 py-2 flex-1"
+                      />
+                      <button onClick={handleCreateTopic} className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 font-bold">
+                        เพิ่มหัวข้อ
+                      </button>
+                      <div className="w-px h-8 bg-gray-200 mx-1"></div>
+                      <button
+                        onClick={generateChecklistTemplate}
+                        className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-bold flex items-center gap-2"
+                      >
+                        <i className="fas fa-download text-sm"></i> ดาวน์โหลด Template
+                      </button>
+                      <button
+                        onClick={() => clFileInputRef.current?.click()}
+                        disabled={clImporting}
+                        className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 font-bold flex items-center gap-2 disabled:opacity-50"
+                      >
+                        <i className="fas fa-upload text-sm"></i> {clImporting ? 'กำลังนำเข้า...' : 'อัพโหลดนำเข้า'}
+                      </button>
+                      <input
+                        ref={clFileInputRef}
+                        type="file"
+                        accept=".xlsx,.xls"
+                        className="hidden"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0]
+                          if (f) handleImportExcel(f)
+                          e.target.value = ''
+                        }}
+                      />
+                    </div>
+                    {clImportResult && (
+                      <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-xl text-sm">
+                        <div className="font-bold text-blue-800 mb-2">ผลการนำเข้า</div>
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-2">
+                          <div className="bg-white rounded p-2 border text-center">
+                            <div className="text-xs text-gray-500">หัวข้อใหม่</div>
+                            <div className="text-lg font-bold text-green-600">{clImportResult.topicsCreated}</div>
+                          </div>
+                          <div className="bg-white rounded p-2 border text-center">
+                            <div className="text-xs text-gray-500">หัวข้อมีอยู่แล้ว</div>
+                            <div className="text-lg font-bold text-gray-500">{clImportResult.topicsExisting}</div>
+                          </div>
+                          <div className="bg-white rounded p-2 border text-center">
+                            <div className="text-xs text-gray-500">หัวข้อย่อยใหม่</div>
+                            <div className="text-lg font-bold text-blue-600">{clImportResult.itemsCreated}</div>
+                          </div>
+                          <div className="bg-white rounded p-2 border text-center">
+                            <div className="text-xs text-gray-500">สินค้าเชื่อมใหม่</div>
+                            <div className="text-lg font-bold text-green-600">{clImportResult.productsLinked}</div>
+                          </div>
+                          <div className="bg-white rounded p-2 border text-center">
+                            <div className="text-xs text-gray-500">สินค้าข้าม (ซ้ำ)</div>
+                            <div className="text-lg font-bold text-amber-600">{clImportResult.productsSkipped}</div>
+                          </div>
+                        </div>
+                        {clImportResult.errors.length > 0 && (
+                          <details className="mt-2">
+                            <summary className="text-red-600 cursor-pointer font-medium">ข้อผิดพลาด ({clImportResult.errors.length} รายการ)</summary>
+                            <ul className="mt-1 text-red-600 text-xs space-y-1 max-h-32 overflow-y-auto">
+                              {clImportResult.errors.map((err, i) => <li key={i}>{err}</li>)}
+                            </ul>
+                          </details>
+                        )}
+                        <button onClick={() => setClImportResult(null)} className="mt-2 text-xs text-gray-400 hover:text-gray-600">ปิด</button>
+                      </div>
+                    )}
+                    {clTopics.length === 0 ? (
+                      <div className="py-8 text-center text-gray-400">ยังไม่มีหัวข้อ QC — เพิ่มในช่องด้านบน</div>
+                    ) : (
+                      <div className="border rounded-xl overflow-hidden divide-y">
+                        {clTopics.map((topic) => (
+                          <div key={topic.id} className="py-3 px-4 flex items-center gap-3 hover:bg-gray-50">
+                            {clEditTopicId === topic.id ? (
+                              <div className="flex-1 flex gap-2 items-center">
+                                <input
+                                  type="text"
+                                  value={clEditTopicName}
+                                  onChange={(e) => setClEditTopicName(e.target.value)}
+                                  onKeyDown={(e) => e.key === 'Enter' && handleSaveEditTopic()}
+                                  className="border rounded px-3 py-1 flex-1"
+                                  autoFocus
+                                />
+                                <button onClick={handleSaveEditTopic} className="px-3 py-1 bg-blue-500 text-white rounded text-sm font-bold">บันทึก</button>
+                                <button onClick={() => setClEditTopicId(null)} className="px-3 py-1 border rounded text-sm">ยกเลิก</button>
+                              </div>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => handleSelectTopic(topic)}
+                                  className="flex-1 text-left min-w-0"
+                                >
+                                  <span className="font-bold text-gray-800">{topic.name}</span>
+                                  <span className="ml-3 text-xs text-gray-400">
+                                    {topic.items_count || 0} หัวข้อย่อย / {topic.products_count || 0} สินค้า
+                                  </span>
+                                </button>
+                                <button
+                                  onClick={() => { setClEditTopicId(topic.id); setClEditTopicName(topic.name) }}
+                                  className="text-blue-400 hover:text-blue-600 shrink-0" title="แก้ไข"
+                                >
+                                  <i className="fas fa-pen text-sm"></i>
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteTopic(topic.id)}
+                                  className="text-red-400 hover:text-red-600 shrink-0" title="ลบ"
+                                >
+                                  <i className="fas fa-trash-alt text-sm"></i>
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div>
+                    <button
+                      onClick={() => { setClSelectedTopic(null); setClItems([]); setClProducts([]); setClProductSearch(''); setClProductResults([]) }}
+                      className="mb-4 text-blue-600 hover:text-blue-800 font-bold flex items-center gap-1"
+                    >
+                      <i className="fas fa-arrow-left text-sm"></i> กลับหน้ารายการหัวข้อ
+                    </button>
+                    <h3 className="text-xl font-bold text-gray-800 mb-4">{clSelectedTopic.name}</h3>
+
+                    {/* Sub-items */}
+                    <div className="mb-6">
+                      <h4 className="font-bold text-gray-700 mb-3 flex items-center gap-2">
+                        <i className="fas fa-list-check text-green-500"></i> หัวข้อย่อย ({clItems.length})
+                      </h4>
+                      <div className="flex gap-2 mb-3 flex-wrap">
+                        <input
+                          type="text"
+                          value={clNewItemTitle}
+                          onChange={(e) => setClNewItemTitle(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && handleAddChecklistItem()}
+                          placeholder="ชื่อหัวข้อย่อยใหม่"
+                          className="border rounded px-3 py-2 flex-1"
+                        />
+                        <label className="flex items-center gap-2 px-3 py-2 border rounded cursor-pointer hover:bg-gray-50 text-sm">
+                          <i className="fas fa-paperclip text-gray-400"></i>
+                          <span className="text-gray-600 truncate max-w-[120px]">{clNewItemFile ? clNewItemFile.name : 'แนบไฟล์'}</span>
+                          <input
+                            type="file"
+                            accept="image/*,application/pdf"
+                            className="hidden"
+                            onChange={(e) => setClNewItemFile(e.target.files?.[0] || null)}
+                          />
+                        </label>
+                        <button
+                          onClick={handleAddChecklistItem}
+                          disabled={clUploading}
+                          className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 font-bold disabled:opacity-50"
+                        >
+                          {clUploading ? 'กำลังอัพโหลด...' : 'เพิ่ม'}
+                        </button>
+                      </div>
+                      {clItems.length === 0 ? (
+                        <div className="py-4 text-center text-gray-400 text-sm">ยังไม่มีหัวข้อย่อย</div>
+                      ) : (
+                        <ul className="border rounded-xl overflow-hidden divide-y">
+                          {clItems.map((item, idx) => (
+                            <li key={item.id} className="py-2.5 px-4 flex items-center gap-3 hover:bg-gray-50">
+                              <span className="text-gray-400 text-sm w-6 text-right">{idx + 1}.</span>
+                              <span className="flex-1 font-medium truncate">{item.title}</span>
+                              {item.file_url && (
+                                <a
+                                  href={item.file_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-blue-400 hover:text-blue-600 shrink-0"
+                                  title={item.file_type === 'pdf' ? 'ดูไฟล์ PDF' : 'ดูรูปภาพ'}
+                                >
+                                  <i className={`fas ${item.file_type === 'pdf' ? 'fa-file-pdf text-red-400' : 'fa-image text-green-400'}`}></i>
+                                </a>
+                              )}
+                              <button onClick={() => handleDeleteChecklistItem(item.id)} className="text-red-400 hover:text-red-600 shrink-0">
+                                <i className="fas fa-trash-alt text-xs"></i>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    {/* Linked products */}
+                    <div>
+                      <h4 className="font-bold text-gray-700 mb-3 flex items-center gap-2">
+                        <i className="fas fa-box text-blue-500"></i> สินค้าที่เชื่อม ({clProducts.length})
+                      </h4>
+                      <div className="flex gap-2 mb-3">
+                        <input
+                          type="text"
+                          value={clProductSearch}
+                          onChange={(e) => setClProductSearch(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && handleSearchProducts()}
+                          placeholder="ค้นหารหัสสินค้า / ชื่อสินค้า"
+                          className="border rounded px-3 py-2 flex-1"
+                        />
+                        <button onClick={handleSearchProducts} className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-bold">
+                          ค้นหา
+                        </button>
+                      </div>
+                      {clProductResults.length > 0 && (
+                        <div className="mb-3 border rounded-lg max-h-48 overflow-y-auto divide-y">
+                          {clProductResults.map((p) => (
+                            <div key={p.product_code} className="py-2 px-3 flex items-center justify-between hover:bg-blue-50 text-sm">
+                              <div className="min-w-0">
+                                <span className="font-mono font-bold text-blue-700">{p.product_code}</span>
+                                <span className="ml-2 text-gray-600 truncate">{p.product_name}</span>
+                              </div>
+                              <button
+                                onClick={() => handleAddProduct(p)}
+                                className="shrink-0 px-3 py-1 bg-green-500 text-white rounded text-xs font-bold hover:bg-green-600"
+                              >
+                                เพิ่ม
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {clProducts.length === 0 ? (
+                        <div className="py-4 text-center text-gray-400 text-sm">ยังไม่มีสินค้าเชื่อม — ค้นหาด้านบนเพื่อเพิ่ม</div>
+                      ) : (
+                        <div className="border rounded-xl overflow-hidden divide-y">
+                          {clProducts.map((p, idx) => (
+                            <div key={p.id} className="py-2.5 px-4 flex items-center gap-3 hover:bg-gray-50">
+                              <span className="text-gray-400 text-sm w-6 text-right">{idx + 1}.</span>
+                              <span className="font-mono font-bold text-blue-700">{p.product_code}</span>
+                              <span className="flex-1 truncate text-gray-600">{p.product_name}</span>
+                              <button onClick={() => handleRemoveProduct(p.id)} className="text-red-400 hover:text-red-600 shrink-0">
+                                <i className="fas fa-times"></i>
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Finish confirm Modal */}
+      <Modal
+        open={finishConfirmOpen}
+        onClose={() => setFinishConfirmOpen(false)}
+        contentClassName="max-w-md"
+      >
+        <div className="p-4 border-b bg-gray-50 font-bold text-gray-800">
+          บันทึกและจบงาน QC
+        </div>
+        <div className="p-4 text-sm text-gray-700">
+          ยืนยันการบันทึกผลและจบงาน QC ใช่หรือไม่?
+        </div>
+        <div className="p-4 border-t bg-gray-50 flex gap-3 justify-end">
+          <button
+            type="button"
+            onClick={() => setFinishConfirmOpen(false)}
+            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 font-medium"
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="button"
+            onClick={handleConfirmFinishSession}
+            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-medium"
+          >
+            ตกลง
+          </button>
+        </div>
+      </Modal>
+
+      {/* Skip QC confirm Modal */}
+      <Modal
+        open={!!skipQcConfirmWo}
+        onClose={() => setSkipQcConfirmWo(null)}
+        contentClassName="max-w-md"
+      >
+        <div className="p-4 border-b bg-amber-50 font-bold text-amber-800">
+          ยืนยัน ไม่ต้อง QC
+        </div>
+        <div className="p-4 text-sm text-gray-700">
+          <p>ต้องการข้ามการ QC ใบงาน <strong className="text-amber-700">{skipQcConfirmWo}</strong> ทั้งหมดใช่หรือไม่?</p>
+          <p className="mt-2 text-red-500 text-xs">* ระบบจะบันทึกทุกรายการเป็น "ข้าม QC" (ไม่ใช่ผลตรวจผ่าน) และจบงานอัตโนมัติ</p>
+        </div>
+          {isProduction && skipQcConfirmWo && skipEligibilityByWo[skipQcConfirmWo] && (
+            <div className="mx-4 mb-3 rounded-lg bg-amber-50 p-3 text-xs text-amber-800">
+              {skipEligibilityByWo[skipQcConfirmWo].reasons.join(' · ')}<br />
+              ค้าง {skipEligibilityByWo[skipQcConfirmWo].remaining_items} ชิ้น · คนพร้อม {skipEligibilityByWo[skipQcConfirmWo].available_qc_workers}/{skipEligibilityByWo[skipQcConfirmWo].required_qc_workers}
+            </div>
+          )}
+          {isProduction && (
+            <label className="mx-4 mb-4 block text-sm font-medium text-slate-700">
+              เหตุผลที่ต้องข้าม QC
+              <textarea value={productionSkipReason} onChange={(e) => setProductionSkipReason(e.target.value)} rows={3} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2" placeholder="ระบุสถานการณ์หรือเหตุผลเพิ่มเติม" />
+            </label>
+          )}
+        <div className="p-4 border-t bg-gray-50 flex gap-3 justify-end">
+          <button
+            type="button"
+            onClick={() => setSkipQcConfirmWo(null)}
+            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 font-medium"
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="button"
+            onClick={handleSkipQcConfirm}
+            disabled={isProduction && !productionSkipReason.trim()}
+            className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 font-medium disabled:opacity-50"
+          >
+            ยืนยัน ข้าม QC
+          </button>
+        </div>
+      </Modal>
+
+      {/* Switch job confirm Modal */}
+      <Modal
+        open={switchJobConfirmOpen}
+        onClose={() => setSwitchJobConfirmOpen(false)}
+        contentClassName="max-w-md"
+      >
+        <div className="p-4 border-b bg-gray-50 font-bold text-gray-800">
+          สลับใบงาน
+        </div>
+        <div className="p-4 text-sm text-gray-700">
+          มีการตรวจแล้ว บันทึกเซสชันปัจจุบันไว้หรือทิ้ง แล้วสลับใบงาน?
+        </div>
+        <div className="p-4 border-t bg-gray-50 flex gap-3 justify-end">
+          <button
+            type="button"
+            onClick={() => setSwitchJobConfirmOpen(false)}
+            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 font-medium"
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setSwitchJobConfirmOpen(false)
+              proceedSwitchJob()
+            }}
+            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-medium"
+          >
+            ตกลง
+          </button>
+        </div>
+      </Modal>
+
+      {/* Fail reason Modal — 2-step: เลือกเหตุผลหลัก → เลือกหัวข้อย่อย (ถ้ามี) */}
+      <Modal
+        open={failReasonModalOpen}
+        onClose={closeFailReasonModal}
+        closeOnBackdropClick
+        contentClassName="max-w-md"
+      >
+        <div className="p-4 border-b bg-gray-50 font-bold text-gray-800 flex items-center gap-2">
+          {failReasonStep === 2 && (
+            <button
+              type="button"
+              onClick={() => { setFailReasonStep(1); setSelectedParentReason(null); setFailReasonSelected(null) }}
+              className="text-blue-500 hover:text-blue-700"
+            >
+              <i className="fas fa-arrow-left"></i>
+            </button>
+          )}
+          <span>{failReasonStep === 1 ? 'เลือกเหตุผล Fail' : `${selectedParentReason?.reason_text} — เลือกหัวข้อย่อย`}</span>
+        </div>
+        <div className="p-4 space-y-3">
+          {failReasonStep === 1 && (
+            <>
+              {reasons.length > 0 ? (
+                <>
+                  <p className="text-sm text-gray-600 mb-2">เลือกเหตุผลจากรายการด้านล่าง</p>
+                  <div className="space-y-1 max-h-64 overflow-y-auto">
+                    {reasons.map((r) => (
+                      <button
+                        key={r.id}
+                        type="button"
+                        onClick={() => {
+                          if (r.children && r.children.length > 0) {
+                            setSelectedParentReason(r)
+                            setFailReasonStep(2)
+                            setFailReasonSelected(null)
+                          } else {
+                            setFailReasonSelected(r.reason_text)
+                          }
+                        }}
+                        className={`w-full text-left px-4 py-3 rounded-lg border-2 transition-colors flex items-center justify-between ${
+                          failReasonSelected === r.reason_text
+                            ? 'border-blue-500 bg-blue-50 text-blue-800 font-medium'
+                            : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                        }`}
+                      >
+                        <span>{r.reason_text}</span>
+                        {r.children && r.children.length > 0 && (
+                          <span className="text-xs text-gray-400 flex items-center gap-1">
+                            {r.children.length} ย่อย <i className="fas fa-chevron-right text-[10px]"></i>
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-gray-600">ยังไม่มีเหตุผลในการตั้งค่า กรุณาเพิ่มก่อนใช้งาน</p>
+              )}
+            </>
+          )}
+          {failReasonStep === 2 && selectedParentReason && (
+            <>
+              <p className="text-sm text-gray-600 mb-2">เลือกหัวข้อย่อยของ <strong>{selectedParentReason.reason_text}</strong></p>
+              <div className="space-y-1 max-h-64 overflow-y-auto">
+                {/* ตัวเลือก: เลือก parent โดยไม่ระบุย่อย */}
+                <button
+                  type="button"
+                  onClick={() => setFailReasonSelected(selectedParentReason.reason_text)}
+                  className={`w-full text-left px-4 py-3 rounded-lg border-2 transition-colors ${
+                    failReasonSelected === selectedParentReason.reason_text
+                      ? 'border-blue-500 bg-blue-50 text-blue-800 font-medium'
+                      : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  {selectedParentReason.reason_text} (ไม่ระบุรายละเอียด)
+                </button>
+                {selectedParentReason.children?.map((sub) => {
+                  const combined = `${selectedParentReason.reason_text} > ${sub.reason_text}`
+                  return (
+                    <button
+                      key={sub.id}
+                      type="button"
+                      onClick={() => setFailReasonSelected(combined)}
+                      className={`w-full text-left px-4 py-3 rounded-lg border-2 transition-colors ${
+                        failReasonSelected === combined
+                          ? 'border-blue-500 bg-blue-50 text-blue-800 font-medium'
+                          : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      <span className="text-blue-400 mr-1">↳</span> {sub.reason_text}
+                    </button>
+                  )
+                })}
+              </div>
+            </>
+          )}
+        </div>
+        <div className="p-4 border-t bg-gray-50 flex gap-3 justify-end">
+          <button
+            type="button"
+            onClick={closeFailReasonModal}
+            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 font-medium"
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="button"
+            onClick={confirmFailReason}
+            disabled={!failReasonSelected}
+            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+          >
+            ตกลง
+          </button>
+        </div>
+      </Modal>
+
+      {/* Delete category group confirm Modal */}
+      <Modal
+        open={!!cgDeleteTarget}
+        onClose={() => setCgDeleteTarget(null)}
+        closeOnBackdropClick
+        contentClassName="max-w-sm"
+      >
+        <div className="p-4 border-b bg-gray-50 font-bold text-gray-800 flex items-center gap-2">
+          <i className="fas fa-exclamation-triangle text-red-500"></i>
+          <span>ยืนยันการลบกรุ๊ป</span>
+        </div>
+        <div className="p-5 text-sm text-gray-700">
+          <p>ต้องการลบกรุ๊ป <strong className="text-red-600">"{cgDeleteTarget?.name}"</strong> หรือไม่?</p>
+          <p className="text-xs text-gray-400 mt-2">
+            หมวดหมู่ {cgDeleteTarget?.categories.length || 0} รายการในกรุ๊ปนี้จะกลับไปแสดงเป็นตัวเลือกแยกตามชื่อหมวดหมู่เดิม (ข้อมูลสินค้าไม่ถูกลบ)
+          </p>
+        </div>
+        <div className="p-4 border-t bg-gray-50 flex gap-3 justify-end">
+          <button
+            type="button"
+            onClick={() => setCgDeleteTarget(null)}
+            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 font-medium"
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="button"
+            onClick={handleDeleteCategoryGroup}
+            disabled={cgSaving}
+            className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 font-medium disabled:opacity-50"
+          >
+            ลบ
+          </button>
+        </div>
+      </Modal>
+
+      {/* Delete reason confirm Modal */}
+      <Modal
+        open={deleteReasonModalOpen}
+        onClose={() => { setDeleteReasonModalOpen(false); setDeleteReasonTarget(null) }}
+        closeOnBackdropClick
+        contentClassName="max-w-sm"
+      >
+        <div className="p-4 border-b bg-gray-50 font-bold text-gray-800 flex items-center gap-2">
+          <i className="fas fa-exclamation-triangle text-red-500"></i>
+          <span>ยืนยันการลบ</span>
+        </div>
+        <div className="p-5 text-sm text-gray-700">
+          <p>ต้องการลบเหตุผล <strong className="text-red-600">"{deleteReasonTarget?.name}"</strong> หรือไม่?</p>
+          <p className="text-xs text-gray-400 mt-2">หากเป็นหัวข้อหลักที่มีหัวข้อย่อย หัวข้อย่อยจะถูกลบทั้งหมด</p>
+        </div>
+        <div className="p-4 border-t bg-gray-50 flex gap-3 justify-end">
+          <button
+            type="button"
+            onClick={() => { setDeleteReasonModalOpen(false); setDeleteReasonTarget(null) }}
+            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 font-medium"
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="button"
+            onClick={confirmDeleteReason}
+            className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 font-medium"
+          >
+            ลบ
+          </button>
+        </div>
+      </Modal>
+
+      {/* Session detail modal */}
+      <Modal open={showSessionModal} onClose={() => setShowSessionModal(false)} contentClassName="max-w-[96vw] w-full max-h-[90vh] flex flex-col">
+        <div className="p-4 pr-16 border-b flex items-center bg-gray-50 font-bold">
+          <h3 className="text-xl">รายการตรวจสอบในเซสชัน</h3>
+        </div>
+        <div className="flex-1 overflow-auto">
+          <table className="w-full text-sm text-left">
+            <thead className="bg-gray-100 text-gray-700 font-bold uppercase text-xs sticky top-0">
+              <tr>
+                <th className="px-3 py-2 text-center">#</th>
+                <th className="px-3 py-2 text-center">เริ่ม / เสร็จ</th>
+                <th className="px-3 py-2">ระยะเวลา</th>
+                <th className="px-3 py-2">รหัสรายการ</th>
+                <th className="px-3 py-2 text-center">ผลตรวจ</th>
+                <th className="px-3 py-2 text-center">ครั้งที่ตรวจ</th>
+                <th className="px-3 py-2">สินค้า / ใบงาน</th>
+                <th className="px-3 py-2">ข้อความ (1/2/3)</th>
+                <th className="px-3 py-2">สีหมึก / ฟอนต์ / ชั้น</th>
+                <th className="px-3 py-2">เหตุผลที่ไม่ผ่าน</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sessionAttempts.map((attempt, idx) => {
+                const item = sessionItems.find((record) => record.id === attempt.qc_record_id)
+                return <tr key={attempt.id} className="border-b hover:bg-gray-50">
+                  <td className="px-3 py-2 text-center font-bold text-gray-400">{idx + 1}</td>
+                  <td className="px-3 py-2 text-center whitespace-nowrap">{formatTime(attempt.started_at)} → {formatTime(attempt.completed_at)}</td>
+                  <td className="px-3 py-2 text-center font-bold">{formatDuration(attempt.duration_seconds)}</td>
+                  <td className="px-3 py-2 font-mono font-bold text-blue-600">{attempt.item_uid}</td>
+                  <td className="px-3 py-2 text-center">
+                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${attempt.result === 'pass' ? 'bg-green-500 text-white' : attempt.result === 'skipped' ? 'bg-amber-500 text-white' : 'bg-red-500 text-white'}`}>
+                      {attempt.result === 'pass' ? 'ผ่าน' : attempt.result === 'skipped' ? 'ข้าม QC' : 'ไม่ผ่าน'}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-center font-bold">{attempt.attempt_no}</td>
+                  <td className="px-3 py-2">
+                    <div className="font-bold">{item?.product_name || '-'}</div>
+                    <div className="text-xs text-blue-600">ใบงาน: {item?.bill_no || '-'}</div>
+                  </td>
+                  <td className="px-3 py-2 text-xs">
+                    {item?.line1 && <div>1: {item.line1}</div>}
+                    {item?.line2 && <div>2: {item.line2}</div>}
+                    {item?.line3 && <div>3: {item.line3}</div>}
+                  </td>
+                  <td className="px-3 py-2 text-xs">
+                    สีหมึก: {item?.ink_color || '-'} / ฟอนต์: {item?.font || '-'} / ชั้น: {item?.floor || '-'}
+                  </td>
+                  <td className="px-3 py-2 italic font-bold text-red-500">{attempt.fail_reason || '-'}</td>
+                </tr>
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Modal>
+    </div>
+  )
+}

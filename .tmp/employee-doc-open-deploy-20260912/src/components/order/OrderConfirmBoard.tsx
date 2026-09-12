@@ -1,0 +1,2482 @@
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { FiEdit3, FiLink, FiMessageCircle, FiPlus, FiTrash2, FiX } from 'react-icons/fi'
+import * as XLSX from 'xlsx'
+import { supabase } from '../../lib/supabase'
+import { fetchAllSupabasePages } from '../../lib/supabasePagination'
+import { getChatEnterToSendPref, setChatEnterToSendPref } from '../../lib/chatEnterToSendPrefs'
+import { formatDateTime, getBangkokCalendarDayUtcBoundsISO } from '../../lib/utils'
+import { buildBillLineItemsExportMulti, buildProductionLikeExportMulti } from '../../lib/orderProductionExcel'
+import { Order, OrderStatus, OrderChatLog } from '../../types'
+import Modal from '../ui/Modal'
+import { useAuthContext } from '../../contexts/AuthContext'
+import { isSalesPumpOwnerScopedRole, isSalesTrTeamRole } from '../../config/accessPolicy'
+import { fetchSalesTrTeamAdminValues } from '../../lib/salesTrTeam'
+import { orderQualifiesForConfirmBoard } from '../../lib/pumpConfirmRouting'
+import { buildProductionExportRows, productionRowsToTsv } from '../../lib/productionExportRows'
+import OrderDetailView from './OrderDetailView'
+import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
+import UrgencyBadge from '../common/UrgencyBadge'
+import { deriveChatDeliveryStatuses, type ChatDeliveryStatus } from '../../lib/chatDeliveryReceipt'
+
+/** ใช้ให้สอดคล้อง RPC unread: username / email ใน us_users + อีเมล JWT (ถ้ามี) — ไม่สนตัวพิมพ์ */
+function salesPumpAdminMatchesUser(
+  adminUser: string | null | undefined,
+  u: { username?: string | null; email?: string | null },
+  jwtEmailLower: string
+): boolean {
+  const au = (adminUser || '').trim().toLowerCase()
+  if (!au) return false
+  const un = (u.username || '').trim().toLowerCase()
+  const em = (u.email || '').trim().toLowerCase()
+  return au === un || (!!em && au === em) || (!!jwtEmailLower && au === jwtEmailLower)
+}
+
+/* ─────────────────────── Types & Constants ─────────────────────── */
+
+type ConfirmColumnKey = 'new' | 'noDesign' | 'design' | 'designed' | 'waiting' | 'confirmed' | 'completed'
+
+type ViewMode = 'default' | 'new' | 'noDesign' | 'completed'
+
+interface ConfirmColumn {
+  key: ConfirmColumnKey
+  title: string
+  status: OrderStatus
+  actionLabel?: string
+  actionTargetStatus?: OrderStatus
+  headerGradient: string
+  countBadge: string
+  actionBtn?: string
+}
+
+/** คอลัมน์ปกติ (default view): รอออกแบบ, ออกแบบแล้ว, รอคอนเฟิร์มแบบ, คอนเฟิร์มแล้ว */
+const DEFAULT_COLUMNS: ConfirmColumn[] = [
+  {
+    key: 'design',
+    title: 'รอออกแบบ',
+    status: 'รอออกแบบ',
+    actionLabel: 'เปลี่ยนสถานะ',
+    actionTargetStatus: 'ออกแบบแล้ว',
+    headerGradient: 'bg-gradient-to-r from-violet-500 to-purple-600',
+    countBadge: 'bg-violet-50 text-violet-700 ring-1 ring-violet-200',
+    actionBtn:
+      'bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700 text-white shadow-sm',
+  },
+  {
+    key: 'designed',
+    title: 'ออกแบบแล้ว',
+    status: 'ออกแบบแล้ว',
+    actionLabel: 'เปลี่ยนสถานะ',
+    actionTargetStatus: 'รอคอนเฟิร์ม',
+    headerGradient: 'bg-gradient-to-r from-indigo-500 to-blue-600',
+    countBadge: 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200',
+    actionBtn:
+      'bg-gradient-to-r from-indigo-500 to-blue-600 hover:from-indigo-600 hover:to-blue-700 text-white shadow-sm',
+  },
+  {
+    key: 'waiting',
+    title: 'รอคอนเฟิร์มแบบ',
+    status: 'รอคอนเฟิร์ม',
+    actionLabel: 'คอนเฟิร์มแล้ว',
+    actionTargetStatus: 'คอนเฟิร์มแล้ว',
+    headerGradient: 'bg-gradient-to-r from-amber-500 to-orange-500',
+    countBadge: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
+    actionBtn:
+      'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white shadow-sm',
+  },
+  {
+    key: 'confirmed',
+    title: 'คอนเฟิร์มแล้ว',
+    status: 'คอนเฟิร์มแล้ว',
+    actionLabel: 'ส่งผลิต',
+    actionTargetStatus: 'เสร็จสิ้น',
+    headerGradient: 'bg-gradient-to-r from-emerald-500 to-green-600',
+    countBadge: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200',
+    actionBtn:
+      'bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white shadow-sm',
+  },
+]
+
+/** คอลัมน์ "งานใหม่" (new view) */
+const NEW_COLUMN: ConfirmColumn = {
+  key: 'new',
+  title: 'รายการ Order ใหม่',
+  status: 'ตรวจสอบแล้ว',
+  actionLabel: 'เปลี่ยนสถานะ',
+  actionTargetStatus: 'รอออกแบบ',
+  headerGradient: 'bg-gradient-to-r from-blue-500 to-blue-600',
+  countBadge: 'bg-blue-50 text-blue-700 ring-1 ring-blue-200',
+  actionBtn:
+    'bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white shadow-sm',
+}
+
+/** คอลัมน์ "ไม่ต้องออกแบบ" — ข้ามขั้นตอนออกแบบ ไปคอนเฟิร์ม/ผลิตได้โดยตรง */
+const NO_DESIGN_COLUMN: ConfirmColumn = {
+  key: 'noDesign',
+  title: 'ไม่ต้องออกแบบ',
+  status: 'ไม่ต้องออกแบบ',
+  actionLabel: 'เปลี่ยนสถานะ',
+  actionTargetStatus: 'คอนเฟิร์มแล้ว',
+  headerGradient: 'bg-gradient-to-r from-orange-500 to-orange-600',
+  countBadge: 'bg-orange-50 text-orange-800 ring-1 ring-orange-200',
+  actionBtn:
+    'bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white shadow-sm',
+}
+
+/** คอลัมน์ "ส่งผลิต" (สถานะภายในยังเป็น "เสร็จสิ้น") — ไม่มีปุ่มเปลี่ยนสถานะ */
+const COMPLETED_COLUMN: ConfirmColumn = {
+  key: 'completed',
+  title: 'ส่งผลิต',
+  status: 'เสร็จสิ้น',
+  headerGradient: 'bg-gradient-to-r from-teal-500 to-cyan-600',
+  countBadge: 'bg-teal-50 text-teal-700 ring-1 ring-teal-200',
+}
+
+/** สอดคล้อง RPC get_unread_chat_count / list_unread_order_chat_summaries (sales-tr, production) */
+const CONFIRM_PIPELINE_STATUSES_ORDER_UNREAD: OrderStatus[] = [
+  'ตรวจสอบแล้ว',
+  'ไม่ต้องออกแบบ',
+  'รอออกแบบ',
+  'ออกแบบแล้ว',
+  'รอคอนเฟิร์ม',
+  'คอนเฟิร์มแล้ว',
+]
+
+function orderBillingPhone(o: Order): string {
+  const b = o.billing_details
+  const p = (b?.mobile_phone || b?.tax_customer_phone || '').trim()
+  return p || '—'
+}
+
+function hasNoDesignAttachmentAlert(order: Order): boolean {
+  const items = ((order as any).or_order_items || []) as Array<{ file_attachment?: string | null }>
+  return items.some((item) => Boolean(item.file_attachment?.trim()))
+}
+
+function normalizeChatLink(value: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (/\s/.test(trimmed)) return null
+  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+  try {
+    const url = new URL(candidate)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    if (url.username || url.password) return null
+    const hostname = url.hostname.toLowerCase()
+    const isLocalhost = hostname === 'localhost'
+    const isIpv4 = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(hostname)
+      && hostname.split('.').every((part) => Number(part) <= 255)
+    const isDomain = hostname.includes('.')
+      && hostname.split('.').every((part) => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(part))
+      && hostname.split('.').at(-1)!.length >= 2
+    if (!isLocalhost && !isIpv4 && !isDomain) return null
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+
+function OrderCreatedDateTime({ value }: { value: string }) {
+  const formatted = formatDateTime(value)
+  const [datePart, timePart] = formatted.split(' เวลา ')
+
+  return (
+    <div className="min-w-[9rem] leading-snug">
+      <div className="whitespace-nowrap">{datePart}</div>
+      {timePart && <div className="mt-1 whitespace-nowrap text-sm text-gray-500">เวลา {timePart}</div>}
+    </div>
+  )
+}
+
+function OrderAttachmentLinks({ order }: { order: Order }) {
+  const items = ((order as any).or_order_items || []) as Array<{
+    file_attachment?: string | null
+    attachment_name?: string | null
+  }>
+  const files = items
+    .filter((item) => Boolean(item.file_attachment?.trim()))
+    .map((item, index) => ({
+      url: item.file_attachment!.trim(),
+      label: item.attachment_name?.trim() || `ไฟล์ ${index + 1}`,
+    }))
+
+  if (files.length === 0) return <span className="text-gray-400">—</span>
+
+  return (
+    <div className="flex min-w-[7rem] items-start gap-1.5">
+      {order.status === 'ไม่ต้องออกแบบ' && (
+        <span
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-yellow-100 text-yellow-600"
+          title="ไม่ต้องออกแบบ แต่มีลิงก์ไฟล์แนบ"
+          aria-label="แจ้งเตือน: ไม่ต้องออกแบบ แต่มีลิงก์ไฟล์แนบ"
+        >
+          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86l-8.82 15.28A1 1 0 002.34 20h19.32a1 1 0 00.87-1.5L13.71 3.86a1 1 0 00-1.74 0z" />
+          </svg>
+        </span>
+      )}
+      <div className="flex flex-col items-start gap-1.5">
+        {files.map((file, index) => (
+          <a
+            key={`${file.url}-${index}`}
+            href={file.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={`เปิดไฟล์แนบ: ${file.label}`}
+            className="inline-flex max-w-[10rem] items-center gap-1.5 rounded-lg bg-cyan-50 px-2.5 py-1.5 text-xs font-medium text-cyan-700 transition-colors hover:bg-cyan-100 hover:text-cyan-800"
+          >
+            <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+            </svg>
+            <span className="truncate">{file.label}</span>
+          </a>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+const STATUS_OPTIONS: Array<{ label: string; value: OrderStatus }> = [
+  { label: 'Order ใหม่', value: 'ตรวจสอบแล้ว' },
+  { label: 'รอออกแบบ', value: 'รอออกแบบ' },
+  { label: 'ไม่ต้องออกแบบ', value: 'ไม่ต้องออกแบบ' },
+  { label: 'ออกแบบแล้ว', value: 'ออกแบบแล้ว' },
+  { label: 'รอคอนเฟิร์มแบบ', value: 'รอคอนเฟิร์ม' },
+  { label: 'คอนเฟิร์มแล้ว', value: 'คอนเฟิร์มแล้ว' },
+  { label: 'ส่งผลิต', value: 'เสร็จสิ้น' },
+]
+
+const PRODUCTION_ALLOWED_CONFIRM_STATUSES: OrderStatus[] = [
+  'ตรวจสอบแล้ว',
+  'รอออกแบบ',
+  'ออกแบบแล้ว',
+  'ไม่ต้องออกแบบ',
+  'คอนเฟิร์มแล้ว',
+  'เสร็จสิ้น',
+]
+
+/* ─────────────────────── Column Icon ─────────────────────── */
+
+function ColumnIcon({ columnKey }: { columnKey: ConfirmColumnKey }) {
+  const cls = 'w-5 h-5 shrink-0'
+  switch (columnKey) {
+    case 'new':
+      return (
+        <svg className={cls} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+      )
+    case 'noDesign':
+      return (
+        <svg className={cls} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+      )
+    case 'design':
+      return (
+        <svg className={cls} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
+        </svg>
+      )
+    case 'designed':
+      return (
+        <svg className={cls} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+        </svg>
+      )
+    case 'waiting':
+      return (
+        <svg className={cls} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+      )
+    case 'confirmed':
+      return (
+        <svg className={cls} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+      )
+    case 'completed':
+      return (
+        <svg className={cls} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+        </svg>
+      )
+  }
+}
+
+/* ─────────────────────── Component ─────────────────────── */
+
+interface OrderConfirmBoardProps {
+  onCountChange?: (count: number) => void
+}
+
+export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardProps) {
+  const { user } = useAuthContext()
+  const isProduction = user?.role === 'production'
+  const canProductionChangeStatus = (status: OrderStatus) => PRODUCTION_ALLOWED_CONFIRM_STATUSES.includes(status)
+  const [ordersByKey, setOrdersByKey] = useState<Record<ConfirmColumnKey, Order[]>>({
+    new: [],
+    noDesign: [],
+    design: [],
+    designed: [],
+    waiting: [],
+    confirmed: [],
+    completed: [],
+  })
+  const [loading, setLoading] = useState(true)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [detailOrder, setDetailOrder] = useState<Order | null>(null)
+  const [statusModal, setStatusModal] = useState<{
+    order: Order
+    targetStatus: OrderStatus
+    label: string
+  } | null>(null)
+  const [noteText, setNoteText] = useState('')
+  const [updating, setUpdating] = useState(false)
+  const [chatOrder, setChatOrder] = useState<Order | null>(null)
+  const [chatLogs, setChatLogs] = useState<OrderChatLog[]>([])
+  const [chatLoading, setChatLoading] = useState(false)
+  const [chatMessage, setChatMessage] = useState('')
+  const [chatLink, setChatLink] = useState('')
+  const [chatSending, setChatSending] = useState(false)
+  const [linkEditor, setLinkEditor] = useState<{ logId: string; value: string } | null>(null)
+  const [linkSaving, setLinkSaving] = useState(false)
+  const [linkContextMenu, setLinkContextMenu] = useState<{ logId: string; url: string; x: number; y: number } | null>(null)
+  const [deleteLinkTarget, setDeleteLinkTarget] = useState<string | null>(null)
+  const [linkDeleting, setLinkDeleting] = useState(false)
+  const chatEndRef = useRef<HTMLDivElement | null>(null)
+  const [fromDate, setFromDate] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+  })
+  const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [viewMode, setViewMode] = useState<ViewMode>('default')
+  const [sendOnEnter, setSendOnEnter] = useState(false)
+  const [unreadByOrder, setUnreadByOrder] = useState<Record<string, number>>({})
+  const [deliveryByOrder, setDeliveryByOrder] = useState<Record<string, ChatDeliveryStatus>>({})
+  const [draggedOrderId, setDraggedOrderId] = useState<string | null>(null)
+  const [dragOverColumn, setDragOverColumn] = useState<ConfirmColumnKey | null>(null)
+  const [dragUpdatingOrderId, setDragUpdatingOrderId] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!linkContextMenu) return
+    const closeMenu = () => setLinkContextMenu(null)
+    window.addEventListener('click', closeMenu)
+    window.addEventListener('scroll', closeMenu, true)
+    return () => {
+      window.removeEventListener('click', closeMenu)
+      window.removeEventListener('scroll', closeMenu, true)
+    }
+  }, [linkContextMenu])
+
+  useEffect(() => {
+    if (!user?.id) {
+      setSendOnEnter(false)
+      return
+    }
+    setSendOnEnter(getChatEnterToSendPref(user.id, 'order-confirm'))
+  }, [user?.id])
+  const [selectedNoDesignIds, setSelectedNoDesignIds] = useState<Set<string>>(new Set())
+  const [selectedCompletedIds, setSelectedCompletedIds] = useState<Set<string>>(new Set())
+  const [selectedNewIds, setSelectedNewIds] = useState<Set<string>>(new Set())
+  const [bulkNewTargetStatus, setBulkNewTargetStatus] = useState<OrderStatus>('รอออกแบบ')
+  const [bulkUpdatingNew, setBulkUpdatingNew] = useState(false)
+  const [bulkNoDesignTargetStatus, setBulkNoDesignTargetStatus] = useState<OrderStatus>('คอนเฟิร์มแล้ว')
+  const [bulkUpdatingNoDesign, setBulkUpdatingNoDesign] = useState(false)
+  const [copyingNoDesign, setCopyingNoDesign] = useState(false)
+  const [bulkCompletedTargetStatus, setBulkCompletedTargetStatus] = useState<OrderStatus>('คอนเฟิร์มแล้ว')
+  const [bulkUpdatingCompleted, setBulkUpdatingCompleted] = useState(false)
+  const [confirmTableSearch, setConfirmTableSearch] = useState('')
+  const [noDesignAlertOnly, setNoDesignAlertOnly] = useState(false)
+  const [exportingNoDesign, setExportingNoDesign] = useState(false)
+  const [exportingCompleted, setExportingCompleted] = useState(false)
+  const [copyingAllNew, setCopyingAllNew] = useState(false)
+  const [copyFeedbackModal, setCopyFeedbackModal] = useState<{ open: boolean; title: string; message: string }>({
+    open: false,
+    title: '',
+    message: '',
+  })
+  const ordersByKeyRef = useRef(ordersByKey)
+  ordersByKeyRef.current = ordersByKey
+
+  const [salesTrTeamAdminValues, setSalesTrTeamAdminValues] = useState<string[]>([])
+  const [salesTrTeamScopeReady, setSalesTrTeamScopeReady] = useState(false)
+  const salesTrTeamSetRef = useRef<Set<string>>(new Set())
+  const realtimeReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hasLoadedBoardRef = useRef(false)
+  const loadAllRef = useRef<(options?: { silent?: boolean }) => Promise<void>>(async () => {})
+
+  useEffect(() => {
+    salesTrTeamSetRef.current = new Set(
+      salesTrTeamAdminValues.map((s) => s.trim()).filter(Boolean),
+    )
+  }, [salesTrTeamAdminValues])
+
+  useEffect(() => {
+    if (!user?.role) {
+      setSalesTrTeamAdminValues([])
+      setSalesTrTeamScopeReady(true)
+      return
+    }
+    if (!isSalesTrTeamRole(user.role)) {
+      setSalesTrTeamAdminValues([])
+      setSalesTrTeamScopeReady(true)
+      return
+    }
+    setSalesTrTeamScopeReady(false)
+    let cancelled = false
+    ;(async () => {
+      try {
+        const vals = await fetchSalesTrTeamAdminValues(supabase)
+        if (!cancelled) {
+          setSalesTrTeamAdminValues(vals)
+          setSalesTrTeamScopeReady(true)
+        }
+      } catch (e) {
+        console.error('OrderConfirmBoard sales-tr team:', e)
+        if (!cancelled) {
+          setSalesTrTeamAdminValues([])
+          setSalesTrTeamScopeReady(true)
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [user?.role])
+
+  const isTableConfirmView = viewMode === 'noDesign' || viewMode === 'completed'
+
+  const filteredTableOrders = useMemo(() => {
+    const raw =
+      viewMode === 'noDesign' ? ordersByKey.noDesign : viewMode === 'completed' ? ordersByKey.completed : []
+    const alertFiltered = viewMode === 'noDesign' && noDesignAlertOnly
+      ? raw.filter(hasNoDesignAttachmentAlert)
+      : raw
+    const q = confirmTableSearch.trim().toLowerCase()
+    if (!q) return alertFiltered
+    return alertFiltered.filter((o) => {
+      const bill = (o.bill_no || '').toLowerCase()
+      const cn = (o.customer_name || '').toLowerCase()
+      const rn = (o.recipient_name || '').toLowerCase()
+      const expressReceipt = (o.express_receipt_number || '').toLowerCase()
+      return bill.includes(q) || cn.includes(q) || rn.includes(q) || expressReceipt.includes(q)
+    })
+  }, [viewMode, ordersByKey.noDesign, ordersByKey.completed, confirmTableSearch, noDesignAlertOnly])
+
+  useEffect(() => {
+    setSelectedNoDesignIds(new Set())
+    setSelectedCompletedIds(new Set())
+    setSelectedNewIds(new Set())
+  }, [fromDate, toDate, refreshKey, viewMode])
+
+  /* ── Data Loading ── */
+
+  useEffect(() => {
+    if (!user?.role) return
+    if (!salesTrTeamScopeReady) return
+    loadAll()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey, fromDate, toDate, salesTrTeamScopeReady, salesTrTeamAdminValues])
+
+  // Realtime subscription: reload board when or_orders changes
+  useEffect(() => {
+    const channel = supabase
+      .channel('confirm-board-orders')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
+        if (realtimeReloadTimerRef.current) clearTimeout(realtimeReloadTimerRef.current)
+        realtimeReloadTimerRef.current = setTimeout(() => {
+          realtimeReloadTimerRef.current = null
+          void loadAllRef.current({ silent: true })
+        }, 300)
+      })
+      .subscribe()
+    return () => {
+      if (realtimeReloadTimerRef.current) clearTimeout(realtimeReloadTimerRef.current)
+      realtimeReloadTimerRef.current = null
+      supabase.removeChannel(channel)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromDate, toDate])
+
+  // Realtime subscription for order chat logs → update unread counts
+  useEffect(() => {
+    const channel = supabase
+      .channel('confirm-board-chat')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'or_order_chat_logs' }, (payload) => {
+        void (async () => {
+          const row = payload.new as OrderChatLog
+          if (user && row.sender_id === user.id) return
+          // ถ้า chat เปิดอยู่สำหรับ order นี้ → เพิ่ม message เข้า log ทันที + mark read
+          if (chatOrder && chatOrder.id === row.order_id) {
+            setChatLogs((prev) => (prev.some((m) => m.id === row.id) ? prev : [...prev, row]))
+            if (user) {
+              await supabase.from('or_order_chat_reads').upsert({
+                order_id: row.order_id,
+                user_id: user.id,
+                last_read_at: new Date().toISOString(),
+              })
+            }
+            return
+          }
+          if (user && isSalesPumpOwnerScopedRole(user.role)) {
+            const { data: { session } } = await supabase.auth.getSession()
+            const jwtLo = session?.user?.email?.trim().toLowerCase() || ''
+            const all = Object.values(ordersByKeyRef.current).flat()
+            let ord = all.find((o) => o.id === row.order_id)
+            let adminUser = ord?.admin_user
+            if (!ord) {
+              const { data: o } = await supabase.from('or_orders').select('admin_user').eq('id', row.order_id).maybeSingle()
+              adminUser = o?.admin_user ?? undefined
+            }
+            if (!salesPumpAdminMatchesUser(adminUser, user, jwtLo)) {
+              const { data: prior } = await supabase
+                .from('or_order_chat_logs')
+                .select('id')
+                .eq('order_id', row.order_id)
+                .eq('sender_id', user.id)
+                .eq('is_hidden', false)
+                .limit(1)
+                .maybeSingle()
+              if (!prior) return
+            }
+          }
+          if (user && isSalesTrTeamRole(user.role)) {
+            const all = Object.values(ordersByKeyRef.current).flat()
+            let ord = all.find((o) => o.id === row.order_id)
+            let adminUser = ord?.admin_user
+            let channelCode = ord?.channel_code
+            let orderStatus = ord?.status as OrderStatus | undefined
+            let requiresDesign = ord?.requires_confirm_design
+            if (!ord) {
+              const { data: o } = await supabase
+                .from('or_orders')
+                .select('admin_user, channel_code, status, requires_confirm_design')
+                .eq('id', row.order_id)
+                .maybeSingle()
+              adminUser = o?.admin_user ?? undefined
+              channelCode = o?.channel_code ?? undefined
+              orderStatus = o?.status as OrderStatus | undefined
+              requiresDesign = o?.requires_confirm_design
+            }
+            const teamOk = salesTrTeamSetRef.current.has((adminUser || '').trim())
+            const inConfirmPipeline =
+              !!orderStatus &&
+              CONFIRM_PIPELINE_STATUSES_ORDER_UNREAD.includes(orderStatus) &&
+              orderQualifiesForConfirmBoard(channelCode, requiresDesign)
+            if (!teamOk || !inConfirmPipeline) return
+          }
+          setUnreadByOrder((prev) => ({ ...prev, [row.order_id]: (prev[row.order_id] || 0) + 1 }))
+        })()
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'or_order_chat_logs' }, (payload) => {
+        const row = payload.new as OrderChatLog
+        setChatLogs((prev) => prev.map((log) => (log.id === row.id ? { ...log, ...row } : log)))
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_chat_reads' }, (payload) => {
+        void (async () => {
+          const read = payload.new as { order_id?: string; user_id?: string; last_read_at?: string }
+          if (!user || !read.order_id || !read.user_id || read.user_id === user.id || !read.last_read_at) return
+          const { data: latestOwn } = await supabase
+            .from('or_order_chat_logs')
+            .select('created_at')
+            .eq('order_id', read.order_id)
+            .eq('sender_id', user.id)
+            .eq('is_hidden', false)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle()
+          if (latestOwn && new Date(read.last_read_at).getTime() >= new Date(latestOwn.created_at).getTime()) {
+            setDeliveryByOrder((prev) => ({ ...prev, [read.order_id as string]: 'read' }))
+          }
+        })()
+      })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [chatOrder, user])
+
+  // Load unread counts เมื่อ orders เปลี่ยน
+  useEffect(() => {
+    if (!user) return
+    void (async () => {
+      const allOrders = Object.values(ordersByKey).flat()
+      let scopedIds = allOrders.map((o) => o.id).filter(Boolean)
+      if (isSalesPumpOwnerScopedRole(user.role)) {
+        const { data: { session } } = await supabase.auth.getSession()
+        const jwtLo = session?.user?.email?.trim().toLowerCase() || ''
+        const ownedIds = allOrders
+          .filter((o) => salesPumpAdminMatchesUser(o.admin_user, user, jwtLo))
+          .map((o) => o.id)
+          .filter(Boolean)
+        const { data: participated } = await supabase
+          .from('or_order_chat_logs')
+          .select('order_id')
+          .eq('sender_id', user.id)
+          .eq('is_hidden', false)
+        const fromChats = [...new Set((participated || []).map((r: { order_id: string }) => r.order_id).filter(Boolean))]
+        scopedIds = [...new Set([...ownedIds, ...fromChats])]
+      }
+      if (scopedIds.length === 0) {
+        setUnreadByOrder({})
+        return
+      }
+      loadOrderUnreadCounts(scopedIds)
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ordersByKey, user])
+
+  async function loadOrderUnreadCounts(orderIds: string[]) {
+    if (!user || orderIds.length === 0) {
+      setUnreadByOrder({})
+      return
+    }
+    try {
+      const orderIdSet = new Set(orderIds)
+      const [{ data: unreadRows, error: unreadError }, { data: reads }, { data: ownMessages }] = await Promise.all([
+        supabase.rpc('list_unread_order_chat_summaries', {
+          p_user_id: user.id,
+          p_role: (user.role || '').trim(),
+          p_username: (user.username || user.email || '').trim(),
+        }),
+        supabase.from('or_order_chat_reads').select('order_id, user_id, last_read_at').in('order_id', orderIds),
+        supabase
+          .from('or_order_chat_logs')
+          .select('order_id, created_at, sender_id')
+          .eq('sender_id', user.id)
+          .eq('is_hidden', false)
+          .in('order_id', orderIds),
+      ])
+      if (unreadError) throw unreadError
+      const counts: Record<string, number> = {}
+      ;(unreadRows || []).forEach((row: { order_id: string; unread_count: number }) => {
+        if (orderIdSet.has(row.order_id)) counts[row.order_id] = Number(row.unread_count || 0)
+      })
+      setUnreadByOrder(counts)
+      setDeliveryByOrder(deriveChatDeliveryStatuses(user.id, ownMessages || [], reads || []))
+    } catch (error) {
+      console.error('Error loading order unread counts:', error)
+    }
+  }
+
+  async function loadAll(options?: { silent?: boolean }) {
+    const showBlockingLoader = !options?.silent && !hasLoadedBoardRef.current
+    if (showBlockingLoader) setLoading(true)
+    try {
+      const groupedOrders = await loadConfirmOrders()
+      const newOrders = groupedOrders.new
+      const noDesignOrders = groupedOrders.noDesign
+      const designOrders = groupedOrders.design
+      const designedOrders = groupedOrders.designed
+      const waitingOrders = groupedOrders.waiting
+      const confirmedOrders = groupedOrders.confirmed
+      const completedOrders = groupedOrders.completed
+
+      setOrdersByKey({
+        new: newOrders,
+        noDesign: noDesignOrders,
+        design: designOrders,
+        designed: designedOrders,
+        waiting: waitingOrders,
+        confirmed: confirmedOrders,
+        completed: completedOrders,
+      })
+      const { startIso: tabDayStart, endIso: tabDayEnd } = getBangkokCalendarDayUtcBoundsISO()
+      const t0 = new Date(tabDayStart).getTime()
+      const t1 = new Date(tabDayEnd).getTime()
+      const inBangkokToday = (o: Order) => {
+        const t = new Date(o.created_at).getTime()
+        return t >= t0 && t <= t1
+      }
+      onCountChange?.(
+        newOrders.filter(inBangkokToday).length +
+          noDesignOrders.filter(inBangkokToday).length +
+          designOrders.filter(inBangkokToday).length +
+          designedOrders.filter(inBangkokToday).length +
+          waitingOrders.filter(inBangkokToday).length +
+          confirmedOrders.filter(inBangkokToday).length
+      )
+    } catch (error) {
+      console.error('Error loading confirm orders:', error)
+    } finally {
+      hasLoadedBoardRef.current = true
+      if (showBlockingLoader) setLoading(false)
+    }
+  }
+
+  loadAllRef.current = loadAll
+
+  async function loadConfirmOrders(): Promise<Record<ConfirmColumnKey, Order[]>> {
+    const statuses: OrderStatus[] = [
+      'ตรวจสอบแล้ว',
+      'ไม่ต้องออกแบบ',
+      'รอออกแบบ',
+      'ออกแบบแล้ว',
+      'รอคอนเฟิร์ม',
+      'คอนเฟิร์มแล้ว',
+      'เสร็จสิ้น',
+    ]
+    let query = supabase
+      .from('or_orders')
+      .select('*, or_order_items(*)')
+      .in('status', statuses)
+      .or('channel_code.eq.PUMP,requires_confirm_design.eq.true')
+      .order('created_at', { ascending: true })
+
+    if (fromDate) query = query.gte('created_at', `${fromDate}T00:00:00.000Z`)
+    if (toDate) query = query.lte('created_at', `${toDate}T23:59:59.999Z`)
+    if (isSalesTrTeamRole(user?.role)) {
+      query = salesTrTeamAdminValues.length === 0
+        ? query.eq('admin_user', '__no_sales_tr_team__')
+        : query.in('admin_user', salesTrTeamAdminValues)
+    }
+
+    query = query.order('id', { ascending: true })
+    const data = await fetchAllSupabasePages<Order>((from, to) => query.range(from, to))
+
+    const grouped: Record<ConfirmColumnKey, Order[]> = {
+      new: [], noDesign: [], design: [], designed: [], waiting: [], confirmed: [], completed: [],
+    }
+    const statusToKey: Partial<Record<OrderStatus, ConfirmColumnKey>> = {
+      'ตรวจสอบแล้ว': 'new',
+      'ไม่ต้องออกแบบ': 'noDesign',
+      'รอออกแบบ': 'design',
+      'ออกแบบแล้ว': 'designed',
+      'รอคอนเฟิร์ม': 'waiting',
+      'คอนเฟิร์มแล้ว': 'confirmed',
+      'เสร็จสิ้น': 'completed',
+    }
+    for (const order of data) {
+      const key = statusToKey[order.status]
+      if (key) grouped[key].push(order)
+    }
+    return grouped
+  }
+
+  /* ── Event Handlers ── */
+
+  function openStatusModal(order: Order, targetStatus: OrderStatus, label: string) {
+    setNoteText(order.confirm_note || '')
+    setStatusModal({ order, targetStatus, label })
+  }
+
+  async function moveOrderToNoDesign(order: Order) {
+    if (isProduction && !canProductionChangeStatus(order.status as OrderStatus)) {
+      alert('สิทธิ์ production ไม่สามารถดำเนินการกับสถานะนี้ได้')
+      return
+    }
+    try {
+      const { error } = await supabase
+        .from('or_orders')
+        .update({ status: 'ไม่ต้องออกแบบ' })
+        .eq('id', order.id)
+      if (error) throw error
+      setRefreshKey((k) => k + 1)
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error('moveOrderToNoDesign:', error)
+      alert('เกิดข้อผิดพลาด: ' + msg)
+    }
+  }
+
+  function toggleNewSelect(id: string) {
+    setSelectedNewIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  async function handleBulkChangeStatus(
+    orders: Order[],
+    targetStatus: OrderStatus,
+    setUpdating: (b: boolean) => void,
+    clearSelection: () => void,
+  ) {
+    if (orders.length === 0) {
+      alert('กรุณาเลือกรายการที่ต้องการเปลี่ยนสถานะ')
+      return
+    }
+    if (isProduction) {
+      const targetOk = canProductionChangeStatus(targetStatus)
+      const currentOk = orders.every((o) => canProductionChangeStatus(o.status as OrderStatus))
+      if (!targetOk || !currentOk) {
+        alert('สิทธิ์ production เปลี่ยนสถานะได้เฉพาะ Order ใหม่, รอออกแบบ, ออกแบบแล้ว, ไม่ต้องออกแบบ, คอนเฟิร์มแล้ว')
+        return
+      }
+    }
+    setUpdating(true)
+    try {
+      const { error } = await supabase
+        .from('or_orders')
+        .update({ status: targetStatus })
+        .in('id', orders.map((o) => o.id))
+      if (error) throw error
+      clearSelection()
+      setRefreshKey((k) => k + 1)
+    } catch (error: any) {
+      console.error('Bulk change status:', error)
+      alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  /** คัดลอกข้อมูลใบงาน (TSV) ของ "ทุกบิล" ในกลุ่มไม่ต้องออกแบบ ลง clipboard */
+  async function handleCopyNoDesignProduction() {
+    const orders = ordersByKey.noDesign
+    if (orders.length === 0) {
+      setCopyFeedbackModal({
+        open: true,
+        title: 'ไม่พบข้อมูล',
+        message: 'ไม่มีรายการในกลุ่ม "ไม่ต้องออกแบบ" สำหรับคัดลอก',
+      })
+      return
+    }
+    setCopyingNoDesign(true)
+    try {
+      const rows = await buildProductionExportRows(orders as any, (o: any) => o.work_order_name ?? '')
+      if (rows.length === 0) {
+        setCopyFeedbackModal({ open: true, title: 'ไม่พบข้อมูล', message: 'ไม่พบรายการสินค้า' })
+        return
+      }
+      await navigator.clipboard.writeText(productionRowsToTsv(rows))
+      setCopyFeedbackModal({
+        open: true,
+        title: 'คัดลอกสำเร็จ',
+        message: `คัดลอกข้อมูลใบงานเรียบร้อย ${rows.length} แถว จาก ${orders.length} บิล\n(ไม่รวมหัวตาราง)`,
+      })
+    } catch (err: any) {
+      console.error('Error copying no-design orders data:', err)
+      setCopyFeedbackModal({
+        open: true,
+        title: 'คัดลอกไม่สำเร็จ',
+        message: 'คัดลอกไม่สำเร็จ: ' + (err?.message ?? err),
+      })
+    } finally {
+      setCopyingNoDesign(false)
+    }
+  }
+
+  function toggleNoDesignSelect(id: string) {
+    setSelectedNoDesignIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleCompletedSelect(id: string) {
+    setSelectedCompletedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  async function handleExportSelectedNoDesign() {
+    const list = ordersByKey.noDesign.filter((o) => selectedNoDesignIds.has(o.id))
+    if (list.length === 0) {
+      alert('กรุณาเลือกบิลที่ต้องการ Export')
+      return
+    }
+    setExportingNoDesign(true)
+    try {
+      const { headers, dataRows } = await buildProductionLikeExportMulti(supabase, list)
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows])
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, 'ProductionData')
+      const stamp = new Date().toISOString().slice(0, 10)
+      XLSX.writeFile(wb, `Confirm_ไม่ต้องออกแบบ_${stamp}.xlsx`)
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error('Export no-design:', error)
+      alert('Export ไม่สำเร็จ: ' + msg)
+    } finally {
+      setExportingNoDesign(false)
+    }
+  }
+
+  async function handleExportCompletedLines() {
+    const list = ordersByKey.completed.filter((o) => selectedCompletedIds.has(o.id))
+    if (list.length === 0) {
+      alert('กรุณาเลือกบิลที่ต้องการ Export')
+      return
+    }
+    setExportingCompleted(true)
+    try {
+      const { headers, dataRows } = await buildBillLineItemsExportMulti(supabase, list)
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows])
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, 'รายการบิล')
+      const stamp = new Date().toISOString().slice(0, 10)
+      XLSX.writeFile(wb, `Confirm_ส่งผลิต_รายการสินค้า_${stamp}.xlsx`)
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error('Export completed:', error)
+      alert('Export ไม่สำเร็จ: ' + msg)
+    } finally {
+      setExportingCompleted(false)
+    }
+  }
+
+  async function handleCopyAllNewOrders() {
+    if (copyingAllNew) return
+    if (ordersByKey.new.length === 0) {
+      setCopyFeedbackModal({
+        open: true,
+        title: 'ไม่พบข้อมูล',
+        message: 'ไม่มีบิลในแท็บงานใหม่สำหรับคัดลอก',
+      })
+      return
+    }
+    setCopyingAllNew(true)
+    try {
+      const { dataRows } = await buildProductionLikeExportMulti(supabase, ordersByKey.new)
+      const clipboardText = dataRows
+        .map((row) => row.map((value) => String(value ?? '').replace(/\r?\n/g, ' ').replace(/\t/g, ' ')).join('\t'))
+        .join('\n')
+      await navigator.clipboard.writeText(clipboardText)
+      setCopyFeedbackModal({
+        open: true,
+        title: 'คัดลอกสำเร็จ',
+        message: `คัดลอกข้อมูลเรียบร้อย ${dataRows.length} แถว จาก ${ordersByKey.new.length} บิล (ไม่รวมหัวตาราง)`,
+      })
+    } catch (error: any) {
+      console.error('Error copying new orders data:', error)
+      setCopyFeedbackModal({
+        open: true,
+        title: 'คัดลอกไม่สำเร็จ',
+        message: 'คัดลอกไม่สำเร็จ: ' + (error?.message || error),
+      })
+    } finally {
+      setCopyingAllNew(false)
+    }
+  }
+
+  const openChat = useCallback(
+    async (order: Order) => {
+      setChatOrder(order)
+      setChatMessage('')
+      setChatLink('')
+      setChatLogs([])
+      setChatLoading(true)
+      try {
+        if (user) {
+          await supabase.from('or_order_chat_reads').upsert({
+            order_id: order.id,
+            user_id: user.id,
+            last_read_at: new Date().toISOString(),
+          })
+          setUnreadByOrder((prev) => ({ ...prev, [order.id]: 0 }))
+          window.dispatchEvent(new Event('order-chat-read'))
+        }
+        const { data, error } = await supabase
+          .from('or_order_chat_logs')
+          .select('*')
+          .eq('order_id', order.id)
+          .eq('is_hidden', false)
+          .order('created_at', { ascending: true })
+        if (error) throw error
+        setChatLogs((data || []) as OrderChatLog[])
+      } catch (error) {
+        console.error('Error loading chat logs:', error)
+      } finally {
+        setChatLoading(false)
+      }
+    },
+    [user]
+  )
+
+  useLayoutEffect(() => {
+    if (!chatOrder || chatLoading || chatLogs.length === 0) return
+    chatEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
+  }, [chatOrder?.id, chatLoading, chatLogs])
+
+  useEffect(() => {
+    const onOpenChatFromNav = (e: Event) => {
+      const orderId = (e as CustomEvent<{ orderId?: string }>).detail?.orderId
+      if (!orderId || !user) return
+      const all = Object.values(ordersByKey).flat()
+      const found = all.find((o) => o.id === orderId)
+      if (found) {
+        void openChat(found)
+        return
+      }
+      void (async () => {
+        const { data, error } = await supabase.from('or_orders').select('*').eq('id', orderId).maybeSingle()
+        if (!error && data) void openChat(data as Order)
+      })()
+    }
+    window.addEventListener('open-confirm-order-chat', onOpenChatFromNav)
+    return () => window.removeEventListener('open-confirm-order-chat', onOpenChatFromNav)
+  }, [ordersByKey, user, openChat])
+
+  async function handleSendChat() {
+    if (!chatOrder || !user) return
+    const message = chatMessage.trim()
+    if (!message) return
+    const linkUrl = chatLink.trim() ? normalizeChatLink(chatLink) : null
+    if (chatLink.trim() && !linkUrl) {
+      alert('กรุณากรอกลิงก์ http:// หรือ https:// ที่ถูกต้อง')
+      return
+    }
+    setChatSending(true)
+    try {
+      const payload = {
+        order_id: chatOrder.id,
+        bill_no: chatOrder.bill_no,
+        sender_id: user.id,
+        sender_name: user.username || user.email || 'ผู้ใช้',
+        message,
+        link_url: linkUrl,
+      }
+      const { data, error } = await supabase
+        .from('or_order_chat_logs')
+        .insert(payload)
+        .select('*')
+        .single()
+      if (error) throw error
+      if (data) setChatLogs((prev) => [...prev, data as OrderChatLog])
+      setDeliveryByOrder((prev) => ({ ...prev, [chatOrder.id]: 'sent' }))
+      setChatMessage('')
+      setChatLink('')
+      await supabase.from('or_order_chat_reads').upsert({
+        order_id: chatOrder.id,
+        user_id: user.id,
+        last_read_at: new Date().toISOString(),
+      })
+    } catch (error: any) {
+      console.error('Error sending chat:', error)
+      alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
+    } finally {
+      setChatSending(false)
+    }
+  }
+
+  async function handleHideChat(chatId: string) {
+    try {
+      const { error } = await supabase
+        .from('or_order_chat_logs')
+        .update({ is_hidden: true })
+        .eq('id', chatId)
+      if (error) throw error
+      // ลบออกจาก state ทันที
+      setChatLogs((prev) => prev.filter((log) => log.id !== chatId))
+    } catch (error: any) {
+      console.error('Error hiding chat:', error)
+      alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
+    }
+  }
+
+  async function handleSaveChatLink() {
+    if (!linkEditor) return
+    const linkUrl = normalizeChatLink(linkEditor.value)
+    if (!linkUrl) {
+      alert('กรุณากรอกลิงก์ http:// หรือ https:// ที่ถูกต้อง')
+      return
+    }
+    setLinkSaving(true)
+    try {
+      const { data, error } = await supabase
+        .from('or_order_chat_logs')
+        .update({ link_url: linkUrl })
+        .eq('id', linkEditor.logId)
+        .select('*')
+        .single()
+      if (error) throw error
+      if (data) {
+        setChatLogs((prev) => prev.map((log) => (log.id === data.id ? data as OrderChatLog : log)))
+      }
+      setLinkEditor(null)
+    } catch (error: any) {
+      console.error('Error saving chat link:', error)
+      alert('บันทึกลิงก์ไม่สำเร็จ: ' + (error?.message || error))
+    } finally {
+      setLinkSaving(false)
+    }
+  }
+
+  async function handleDeleteChatLink() {
+    if (!deleteLinkTarget) return
+    setLinkDeleting(true)
+    try {
+      const { data, error } = await supabase
+        .from('or_order_chat_logs')
+        .update({ link_url: null })
+        .eq('id', deleteLinkTarget)
+        .select('*')
+        .single()
+      if (error) throw error
+      if (data) {
+        setChatLogs((prev) => prev.map((log) => (log.id === data.id ? data as OrderChatLog : log)))
+      }
+      setDeleteLinkTarget(null)
+    } catch (error: any) {
+      console.error('Error deleting chat link:', error)
+      alert('ลบลิงก์ไม่สำเร็จ: ' + (error?.message || error))
+    } finally {
+      setLinkDeleting(false)
+    }
+  }
+
+  function chatDeliveryStatus(orderId: string) {
+    const status = deliveryByOrder[orderId]
+    if (!status) return null
+    return (
+      <span
+        className={`inline-flex items-center whitespace-nowrap text-[10px] font-semibold ${status === 'read' ? 'text-blue-600' : 'text-gray-500'}`}
+        title={status === 'read' ? 'ผู้รับเปิดอ่านแชทแล้ว' : 'ส่งข้อความเข้าระบบแล้ว แต่ยังไม่มีผู้รับเปิดอ่าน'}
+      >
+        {status === 'read' ? '✓✓ อ่านแล้ว' : '✓ ส่งแล้ว'}
+      </span>
+    )
+  }
+
+  async function handleStatusUpdate() {
+    if (!statusModal) return
+    if (isProduction) {
+      const currentStatus = statusModal.order.status as OrderStatus
+      const nextStatus = statusModal.targetStatus
+      if (!canProductionChangeStatus(currentStatus) || !canProductionChangeStatus(nextStatus)) {
+        alert('สิทธิ์ production เปลี่ยนสถานะได้เฉพาะ Order ใหม่, รอออกแบบ, ออกแบบแล้ว, ไม่ต้องออกแบบ, คอนเฟิร์มแล้ว')
+        return
+      }
+    }
+    setUpdating(true)
+    try {
+      const { error } = await supabase
+        .from('or_orders')
+        .update({
+          status: statusModal.targetStatus,
+          confirm_note: noteText.trim() || null,
+        })
+        .eq('id', statusModal.order.id)
+
+      if (error) throw error
+      setStatusModal(null)
+      setNoteText('')
+      setRefreshKey((k) => k + 1)
+    } catch (error: any) {
+      console.error('Error updating confirm status:', error)
+      alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  /** Drag & drop is intentionally limited to the four design workflow columns. */
+  async function moveOrderByDrag(orderId: string, targetColumn: ConfirmColumn) {
+    const sourceColumn = DEFAULT_COLUMNS.find((column) =>
+      ordersByKeyRef.current[column.key].some((order) => order.id === orderId),
+    )
+    if (!sourceColumn || sourceColumn.key === targetColumn.key || dragUpdatingOrderId) return
+
+    const order = ordersByKeyRef.current[sourceColumn.key].find((item) => item.id === orderId)
+    if (!order) return
+    if (isProduction && (
+      !canProductionChangeStatus(order.status as OrderStatus)
+      || !canProductionChangeStatus(targetColumn.status)
+    )) {
+      alert('สิทธิ์ production ไม่สามารถเปลี่ยนเป็นสถานะนี้ได้')
+      return
+    }
+
+    const snapshot = ordersByKeyRef.current
+    const movedOrder = { ...order, status: targetColumn.status }
+    setDragUpdatingOrderId(orderId)
+    setOrdersByKey((prev) => ({
+      ...prev,
+      [sourceColumn.key]: prev[sourceColumn.key].filter((item) => item.id !== orderId),
+      [targetColumn.key]: [...prev[targetColumn.key], movedOrder],
+    }))
+
+    try {
+      const { error } = await supabase
+        .from('or_orders')
+        .update({ status: targetColumn.status })
+        .eq('id', orderId)
+      if (error) throw error
+    } catch (error: unknown) {
+      setOrdersByKey(snapshot)
+      const message = error instanceof Error ? error.message : String(error)
+      console.error('Error updating status by drag and drop:', error)
+      alert(`เปลี่ยนสถานะไม่สำเร็จ รายการถูกย้ายกลับตำแหน่งเดิม\n${message}`)
+    } finally {
+      setDraggedOrderId(null)
+      setDragOverColumn(null)
+      setDragUpdatingOrderId(null)
+    }
+  }
+
+  /* ── Derived ── */
+
+  let visibleColumns: ConfirmColumn[]
+  let gridCols: string
+  if (viewMode === 'new') {
+    visibleColumns = [NEW_COLUMN]
+    gridCols = 'lg:grid-cols-1 w-full max-w-none'
+  } else if (viewMode === 'noDesign') {
+    visibleColumns = [NO_DESIGN_COLUMN]
+    gridCols = 'lg:grid-cols-1 w-full max-w-none'
+  } else if (viewMode === 'completed') {
+    visibleColumns = [COMPLETED_COLUMN]
+    gridCols = 'lg:grid-cols-1 w-full max-w-none'
+  } else {
+    visibleColumns = DEFAULT_COLUMNS
+    gridCols = 'lg:grid-cols-4'
+  }
+
+  /* ── Loading ── */
+
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center py-16">
+        <div className="animate-spin rounded-full h-10 w-10 border-4 border-blue-200 border-t-blue-500" />
+      </div>
+    )
+  }
+
+  const tableColumn = isTableConfirmView
+    ? (viewMode === 'noDesign' ? NO_DESIGN_COLUMN : COMPLETED_COLUMN)
+    : null
+
+  /* ── Render ── */
+
+  return (
+    <div className="space-y-4 w-full min-w-0 max-w-full">
+      {/* ── Filter bar + แท็บ (แถวเดียวกันเมื่อมุมมองตาราง) ── */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 sm:p-4 flex flex-wrap items-center gap-3 w-full min-w-0">
+        {isTableConfirmView ? (
+          <>
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3 flex-1 min-w-0 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 shadow-sm">
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-sm font-medium text-gray-600 whitespace-nowrap">จากวันที่</span>
+                <input
+                  type="date"
+                  value={fromDate}
+                  onChange={(e) => setFromDate(e.target.value)}
+                  className="h-10 box-border px-2 sm:px-3 border border-gray-300 rounded-lg bg-white text-sm min-w-0"
+                />
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-sm font-medium text-gray-600 whitespace-nowrap">ถึงวันที่</span>
+                <input
+                  type="date"
+                  value={toDate}
+                  onChange={(e) => setToDate(e.target.value)}
+                  className="h-10 box-border px-2 sm:px-3 border border-gray-300 rounded-lg bg-white text-sm min-w-0"
+                />
+              </div>
+              <div className="flex items-center gap-2 min-w-[8rem] flex-1 max-w-xs">
+                <span className="text-sm font-medium text-gray-600 whitespace-nowrap shrink-0">ค้นหาชื่อ</span>
+                <input
+                  type="text"
+                  value={confirmTableSearch}
+                  onChange={(e) => setConfirmTableSearch(e.target.value)}
+                  placeholder="พิมพ์บางส่วนของชื่อ"
+                  className="h-10 box-border w-full px-2 sm:px-3 border border-gray-300 rounded-lg bg-white text-sm"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmTableSearch('')
+                  setNoDesignAlertOnly(false)
+                  const now = new Date()
+                  setFromDate(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`)
+                  setToDate(new Date().toISOString().split('T')[0])
+                }}
+                className="shrink-0 inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 bg-gray-100 px-3 text-sm font-medium text-gray-700 hover:bg-gray-200"
+              >
+                ล้างตัวกรอง
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 shrink-0 ml-auto">
+              {/* งานใหม่ */}
+              <button
+                type="button"
+                onClick={() => setViewMode((v) => (v === 'new' ? 'default' : 'new'))}
+                className={`inline-flex h-10 box-border items-center justify-center gap-2 px-3 sm:px-4 rounded-xl font-semibold text-sm transition-all ${
+                  'bg-white text-blue-600 hover:bg-blue-50 border-2 border-blue-300 shadow-sm'
+                }`}
+              >
+                <ColumnIcon columnKey="new" />
+                งานใหม่
+                <span
+                  className={`inline-flex min-h-6 min-w-6 items-center justify-center rounded-full px-2 text-xs font-bold ${
+                    'bg-blue-100 text-blue-600'
+                  }`}
+                >
+                  {ordersByKey.new.length}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode((v) => (v === 'noDesign' ? 'default' : 'noDesign'))}
+                className={`inline-flex h-10 box-border items-center justify-center gap-2 px-3 sm:px-4 rounded-xl font-semibold text-sm transition-all ${
+                  viewMode === 'noDesign'
+                    ? 'border-2 border-transparent bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-md'
+                    : 'border-2 border-orange-300 bg-white text-orange-600 shadow-sm hover:bg-orange-50'
+                }`}
+              >
+                <ColumnIcon columnKey="noDesign" />
+                ไม่ต้องออกแบบ
+                <span
+                  className={`inline-flex min-h-6 min-w-6 items-center justify-center rounded-full px-2 text-xs font-bold ${
+                    viewMode === 'noDesign' ? 'bg-white/20 text-white' : 'bg-orange-100 text-orange-600'
+                  }`}
+                >
+                  {ordersByKey.noDesign.length}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode((v) => (v === 'completed' ? 'default' : 'completed'))}
+                className={`inline-flex h-10 box-border items-center justify-center gap-2 px-3 sm:px-4 rounded-xl font-semibold text-sm transition-all ${
+                  viewMode === 'completed'
+                    ? 'border-2 border-transparent bg-gradient-to-r from-teal-500 to-cyan-600 text-white shadow-md'
+                    : 'border-2 border-teal-300 bg-white text-teal-600 shadow-sm hover:bg-teal-50'
+                }`}
+              >
+                <ColumnIcon columnKey="completed" />
+                ส่งผลิต
+                <span
+                  className={`inline-flex min-h-6 min-w-6 items-center justify-center rounded-full px-2 text-xs font-bold ${
+                    'bg-teal-100 text-teal-600'
+                  }`}
+                >
+                  {ordersByKey.completed.length}
+                </span>
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <svg className="w-5 h-5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium text-gray-600">จากวันที่</label>
+              <input
+                type="date"
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                className="h-10 box-border px-3 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none transition-all"
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium text-gray-600">ถึงวันที่</label>
+              <input
+                type="date"
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                className="h-10 box-border px-3 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none transition-all"
+              />
+            </div>
+
+            {viewMode === 'new' && (
+              <button
+                type="button"
+                onClick={() => void handleCopyAllNewOrders()}
+                disabled={copyingAllNew || ordersByKey.new.length === 0}
+                className="inline-flex h-10 box-border items-center justify-center gap-2 px-4 rounded-xl font-semibold text-sm bg-white text-blue-700 hover:bg-blue-50 border-2 border-blue-300 shadow-sm disabled:opacity-50"
+              >
+                {copyingAllNew ? 'กำลังคัดลอก...' : 'คัดลอก'}
+              </button>
+            )}
+
+            <div className="flex-1" />
+
+            <button
+              type="button"
+              onClick={() => setViewMode((v) => (v === 'new' ? 'default' : 'new'))}
+              className={`inline-flex h-10 box-border items-center justify-center gap-2 px-4 rounded-xl font-semibold text-sm transition-all ${
+                viewMode === 'new'
+                  ? 'border-2 border-transparent bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-md'
+                  : 'border-2 border-blue-300 bg-white text-blue-600 shadow-sm hover:bg-blue-50'
+              }`}
+            >
+              <ColumnIcon columnKey="new" />
+              งานใหม่
+              <span
+                className={`inline-flex min-h-6 min-w-6 items-center justify-center rounded-full px-2 text-xs font-bold ${
+                  viewMode === 'new' ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-600'
+                }`}
+              >
+                {ordersByKey.new.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setViewMode((v) => (v === 'noDesign' ? 'default' : 'noDesign'))}
+              className="inline-flex h-10 box-border items-center justify-center gap-2 border-2 border-orange-300 bg-white px-4 rounded-xl font-semibold text-sm text-orange-600 shadow-sm transition-all hover:bg-orange-50"
+            >
+              <ColumnIcon columnKey="noDesign" />
+              ไม่ต้องออกแบบ
+              <span className="inline-flex min-h-6 min-w-6 items-center justify-center rounded-full bg-orange-100 px-2 text-xs font-bold text-orange-600">
+                {ordersByKey.noDesign.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setViewMode((v) => (v === 'completed' ? 'default' : 'completed'))}
+              className="inline-flex h-10 box-border items-center justify-center gap-2 border-2 border-teal-300 bg-white px-4 rounded-xl font-semibold text-sm text-teal-600 shadow-sm transition-all hover:bg-teal-50"
+            >
+              <ColumnIcon columnKey="completed" />
+              ส่งผลิต
+              <span className="inline-flex min-h-6 min-w-6 items-center justify-center rounded-full bg-teal-100 px-2 text-xs font-bold text-teal-600">
+                {ordersByKey.completed.length}
+              </span>
+            </button>
+          </>
+        )}
+      </div>
+
+      {/* ── Columns Grid ── */}
+      <div className={`grid grid-cols-1 gap-4 min-h-0 w-full min-w-0 ${gridCols}`}>
+        {viewMode === 'new' ? (
+          <section className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden w-full min-w-0">
+            <div className="p-4 space-y-4 w-full min-w-0">
+              {ordersByKey.new.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSelectedNewIds((prev) =>
+                        prev.size === ordersByKey.new.length
+                          ? new Set()
+                          : new Set(ordersByKey.new.map((o) => o.id))
+                      )
+                    }
+                    className="rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                  >
+                    {selectedNewIds.size === ordersByKey.new.length ? 'ยกเลิกเลือกทั้งหมด' : 'เลือกทั้งหมด'}
+                  </button>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-600 whitespace-nowrap">เปลี่ยนเป็น</span>
+                    <select
+                      value={bulkNewTargetStatus}
+                      onChange={(e) => setBulkNewTargetStatus(e.target.value as OrderStatus)}
+                      className="h-10 rounded-xl border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                    >
+                      {(isProduction ? STATUS_OPTIONS.filter((opt) => canProductionChangeStatus(opt.value)) : STATUS_OPTIONS)
+                        .filter((opt) => opt.value !== 'ตรวจสอบแล้ว')
+                        .map((opt) => (
+                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void handleBulkChangeStatus(
+                        ordersByKey.new.filter((o) => selectedNewIds.has(o.id)),
+                        bulkNewTargetStatus,
+                        setBulkUpdatingNew,
+                        () => setSelectedNewIds(new Set()),
+                      )
+                    }
+                    disabled={bulkUpdatingNew || selectedNewIds.size === 0}
+                    className="rounded-xl bg-gradient-to-r from-blue-500 to-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:from-blue-600 hover:to-blue-700 disabled:opacity-40"
+                  >
+                    {bulkUpdatingNew ? 'กำลังเปลี่ยน...' : `เปลี่ยนสถานะแบบกลุ่ม (${selectedNewIds.size})`}
+                  </button>
+                </div>
+              )}
+              <div className="overflow-x-auto rounded-xl border border-gray-200">
+              {ordersByKey.new.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-gray-400 bg-white">
+                  <svg className="w-10 h-10 mb-2 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                  </svg>
+                  <p className="text-base text-gray-500">ไม่พบรายการ</p>
+                </div>
+              ) : (
+                <table className="min-w-full text-base">
+                  <thead className="bg-blue-600 text-white sticky top-0">
+                    <tr>
+                      <th className="p-4 text-left font-semibold w-12"> </th>
+                      <th className="p-4 text-left font-semibold whitespace-nowrap">วันที่</th>
+                      <th className="p-4 text-left font-semibold whitespace-nowrap">เลขบิล</th>
+                      <th className="p-4 text-left font-semibold">ชื่อลูกค้า</th>
+                      <th className="p-4 text-left font-semibold">ชื่อผู้รับ</th>
+                      <th className="p-4 text-left font-semibold min-w-[22rem]">ที่อยู่</th>
+                      <th className="p-4 text-left font-semibold whitespace-nowrap">เบอร์โทร</th>
+                      <th className="p-4 text-left font-semibold whitespace-nowrap">ไฟล์แนบ</th>
+                      <th className="p-4 text-left font-semibold whitespace-nowrap">การทำงาน</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-sm">
+                    {ordersByKey.new.map((order, idx) => (
+                      <tr
+                        key={order.id}
+                        className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${
+                          idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'
+                        }`}
+                      >
+                        <td className="p-4 align-top">
+                          <input
+                            type="checkbox"
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-4 h-4"
+                            checked={selectedNewIds.has(order.id)}
+                            onChange={() => toggleNewSelect(order.id)}
+                          />
+                        </td>
+                        <td className="p-4 text-gray-700 align-top">
+                          <OrderCreatedDateTime value={order.created_at} />
+                        </td>
+                        <td className="p-4 align-top whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() => setDetailOrder(order)}
+                            className="font-semibold text-blue-600 hover:text-blue-800 hover:underline text-left"
+                          >
+                            {order.bill_no}
+                            <ExpressReceiptNumberInline value={order.express_receipt_number} />
+                          </button>
+                          <UrgencyBadge order={order} className="ml-1.5" />
+                        </td>
+                        <td className="p-4 text-gray-900 align-top max-w-[12rem] break-words">
+                          {order.customer_name}
+                        </td>
+                        <td className="p-4 text-gray-800 align-top max-w-[10rem] break-words">
+                          {order.recipient_name || '—'}
+                        </td>
+                        <td className="p-4 text-gray-700 text-sm align-top min-w-[22rem] max-w-[30rem] break-words">
+                          {(order.customer_address || '').slice(0, 200)}
+                          {(order.customer_address || '').length > 200 ? '…' : ''}
+                        </td>
+                        <td className="p-4 text-gray-800 whitespace-nowrap text-sm align-top">
+                          {orderBillingPhone(order)}
+                        </td>
+                        <td className="p-4 align-top">
+                          <OrderAttachmentLinks order={order} />
+                        </td>
+                        <td className="p-4 align-top">
+                          <div className="flex flex-wrap gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setDetailOrder(order)}
+                              className="inline-flex items-center justify-center p-2 bg-white border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+                              title="รายละเอียด"
+                              aria-label="รายละเอียด"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                            </button>
+                            {NEW_COLUMN.actionTargetStatus && NEW_COLUMN.actionLabel && !isProduction && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  openStatusModal(
+                                    order,
+                                    NEW_COLUMN.actionTargetStatus as OrderStatus,
+                                    NEW_COLUMN.actionLabel as string
+                                  )
+                                }
+                                className={`inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold text-white ${NEW_COLUMN.actionBtn}`}
+                              >
+                                สถานะ
+                              </button>
+                            )}
+                            {isProduction && canProductionChangeStatus(order.status as OrderStatus) && (
+                              <button
+                                type="button"
+                                onClick={() => openStatusModal(order, order.status as OrderStatus, 'เปลี่ยนสถานะ')}
+                                className="inline-flex items-center px-2.5 py-1.5 bg-gradient-to-r from-violet-500 to-indigo-600 text-white rounded-lg text-xs font-semibold"
+                              >
+                                สถานะ
+                              </button>
+                            )}
+                            {(!isProduction || canProductionChangeStatus(order.status as OrderStatus)) && (
+                              <button
+                                type="button"
+                                onClick={() => moveOrderToNoDesign(order)}
+                                className="inline-flex items-center px-2.5 py-1.5 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 border border-orange-600 rounded-lg text-xs font-semibold text-white shadow-sm"
+                              >
+                                ไม่ต้องออกแบบ
+                              </button>
+                            )}
+                            <div className="inline-flex items-center gap-0.5">
+                              <button
+                                type="button"
+                                onClick={() => openChat(order)}
+                                className="inline-flex items-center justify-center p-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+                                title="Chat"
+                                aria-label="Chat"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+                              </button>
+                              {chatDeliveryStatus(order.id)}
+                              {(unreadByOrder[order.id] || 0) > 0 && (
+                                <span className="min-w-[1rem] h-4 px-1 flex items-center justify-center rounded-full text-[9px] font-bold bg-red-500 text-white">
+                                  {unreadByOrder[order.id]}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              </div>
+            </div>
+          </section>
+        ) : isTableConfirmView && tableColumn ? (
+          <section className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden flex flex-col min-h-0 w-full min-w-0">
+            <div className="p-4 space-y-4 w-full min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                {(() => {
+                  const selectedIds = viewMode === 'noDesign' ? selectedNoDesignIds : selectedCompletedIds
+                  const setSelectedIds = viewMode === 'noDesign' ? setSelectedNoDesignIds : setSelectedCompletedIds
+                  const allSelected =
+                    filteredTableOrders.length > 0 && filteredTableOrders.every((o) => selectedIds.has(o.id))
+                  return (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedIds(allSelected ? new Set() : new Set(filteredTableOrders.map((o) => o.id)))
+                      }
+                      disabled={filteredTableOrders.length === 0}
+                      className="rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                    >
+                      {allSelected ? 'ยกเลิกเลือกทั้งหมด' : 'เลือกทั้งหมด'}
+                    </button>
+                  )
+                })()}
+                <button
+                  type="button"
+                  onClick={viewMode === 'noDesign' ? handleExportSelectedNoDesign : handleExportCompletedLines}
+                  disabled={
+                    viewMode === 'noDesign'
+                      ? exportingNoDesign || selectedNoDesignIds.size === 0
+                      : exportingCompleted || selectedCompletedIds.size === 0
+                  }
+                  className={
+                    viewMode === 'noDesign'
+                      ? 'rounded-xl bg-orange-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-orange-700 disabled:opacity-40'
+                      : 'rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-40'
+                  }
+                >
+                  {viewMode === 'noDesign'
+                    ? exportingNoDesign
+                      ? 'กำลังสร้างไฟล์...'
+                      : 'Export Excel'
+                    : exportingCompleted
+                      ? 'กำลังสร้างไฟล์...'
+                      : 'Export Excel'}
+                </button>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-gray-600 whitespace-nowrap">เปลี่ยนเป็น</span>
+                  <select
+                    value={viewMode === 'noDesign' ? bulkNoDesignTargetStatus : bulkCompletedTargetStatus}
+                    onChange={(e) =>
+                      viewMode === 'noDesign'
+                        ? setBulkNoDesignTargetStatus(e.target.value as OrderStatus)
+                        : setBulkCompletedTargetStatus(e.target.value as OrderStatus)
+                    }
+                    className="h-10 rounded-xl border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                  >
+                    {(isProduction ? STATUS_OPTIONS.filter((opt) => canProductionChangeStatus(opt.value)) : STATUS_OPTIONS)
+                      .filter((opt) => opt.value !== tableColumn.status)
+                      .map((opt) => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    viewMode === 'noDesign'
+                      ? void handleBulkChangeStatus(
+                          ordersByKey.noDesign.filter((o) => selectedNoDesignIds.has(o.id)),
+                          bulkNoDesignTargetStatus,
+                          setBulkUpdatingNoDesign,
+                          () => setSelectedNoDesignIds(new Set()),
+                        )
+                      : void handleBulkChangeStatus(
+                          ordersByKey.completed.filter((o) => selectedCompletedIds.has(o.id)),
+                          bulkCompletedTargetStatus,
+                          setBulkUpdatingCompleted,
+                          () => setSelectedCompletedIds(new Set()),
+                        )
+                  }
+                  disabled={
+                    viewMode === 'noDesign'
+                      ? bulkUpdatingNoDesign || selectedNoDesignIds.size === 0
+                      : bulkUpdatingCompleted || selectedCompletedIds.size === 0
+                  }
+                  className="rounded-xl bg-gradient-to-r from-blue-500 to-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:from-blue-600 hover:to-blue-700 disabled:opacity-40"
+                >
+                  {(viewMode === 'noDesign' ? bulkUpdatingNoDesign : bulkUpdatingCompleted)
+                    ? 'กำลังเปลี่ยน...'
+                    : `เปลี่ยนสถานะแบบกลุ่ม (${viewMode === 'noDesign' ? selectedNoDesignIds.size : selectedCompletedIds.size})`}
+                </button>
+                {viewMode === 'noDesign' && (
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyNoDesignProduction()}
+                    disabled={copyingNoDesign || ordersByKey.noDesign.length === 0}
+                    className="rounded-xl border border-orange-300 bg-orange-50 px-4 py-2.5 text-sm font-semibold text-orange-700 shadow-sm hover:bg-orange-100 disabled:opacity-40"
+                  >
+                    {copyingNoDesign ? 'กำลังคัดลอก...' : 'คัดลอกข้อมูลใบงาน'}
+                  </button>
+                )}
+                {viewMode === 'noDesign' && (
+                  <button
+                    type="button"
+                    onClick={() => setNoDesignAlertOnly((current) => !current)}
+                    aria-pressed={noDesignAlertOnly}
+                    className={`ml-auto inline-flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-semibold shadow-sm transition-colors ${
+                      noDesignAlertOnly
+                        ? 'border-yellow-500 bg-yellow-400 text-yellow-950 hover:bg-yellow-500'
+                        : 'border-yellow-300 bg-yellow-50 text-yellow-700 hover:bg-yellow-100'
+                    }`}
+                  >
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86l-8.82 15.28A1 1 0 002.34 20h19.32a1 1 0 00.87-1.5L13.71 3.86a1 1 0 00-1.74 0z" />
+                    </svg>
+                    มีลิงค์ ({ordersByKey.noDesign.filter(hasNoDesignAttachmentAlert).length})
+                  </button>
+                )}
+              </div>
+
+              <div className="overflow-x-auto rounded-xl border border-gray-200">
+                {filteredTableOrders.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-16 text-gray-400 bg-white">
+                    <svg className="w-10 h-10 mb-2 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                    </svg>
+                    <p className="text-base text-gray-500">ไม่พบรายการ</p>
+                  </div>
+                ) : (
+                  <table className="min-w-full text-base">
+                    <thead className="bg-blue-600 text-white sticky top-0">
+                      <tr>
+                        <th className="p-4 text-left font-semibold w-12"> </th>
+                        <th className="p-4 text-left font-semibold whitespace-nowrap">วันที่</th>
+                        <th className="p-4 text-left font-semibold whitespace-nowrap">เลขบิล</th>
+                        <th className="p-4 text-left font-semibold">ชื่อลูกค้า</th>
+                        <th className="p-4 text-left font-semibold">ชื่อผู้รับ</th>
+                        <th className="p-4 text-left font-semibold min-w-[22rem]">ที่อยู่</th>
+                        <th className="p-4 text-left font-semibold whitespace-nowrap">เบอร์โทร</th>
+                        <th className="p-4 text-left font-semibold whitespace-nowrap">ไฟล์แนบ</th>
+                        <th className="p-4 text-left font-semibold whitespace-nowrap">การทำงาน</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-sm">
+                      {filteredTableOrders.map((order, idx) => (
+                        <tr
+                          key={order.id}
+                          className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${
+                            idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'
+                          }`}
+                        >
+                          <td className="p-4 align-top">
+                            <input
+                              type="checkbox"
+                              className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-4 h-4"
+                              checked={
+                                viewMode === 'noDesign'
+                                  ? selectedNoDesignIds.has(order.id)
+                                  : selectedCompletedIds.has(order.id)
+                              }
+                              onChange={() =>
+                                viewMode === 'noDesign'
+                                  ? toggleNoDesignSelect(order.id)
+                                  : toggleCompletedSelect(order.id)
+                              }
+                            />
+                          </td>
+                          <td className="p-4 text-gray-700 align-top">
+                            <OrderCreatedDateTime value={order.created_at} />
+                          </td>
+                          <td className="p-4 font-semibold text-blue-600 whitespace-nowrap align-top">
+                            {order.bill_no}
+                            <ExpressReceiptNumberInline value={order.express_receipt_number} />
+                            <UrgencyBadge order={order} className="ml-1.5" />
+                          </td>
+                          <td className="p-4 text-gray-900 align-top max-w-[12rem] break-words">
+                            {order.customer_name}
+                          </td>
+                          <td className="p-4 text-gray-800 align-top max-w-[10rem] break-words">
+                            {order.recipient_name || '—'}
+                          </td>
+                          <td className="p-4 text-gray-700 text-sm align-top min-w-[22rem] max-w-[30rem] break-words">
+                            {(order.customer_address || '').slice(0, 200)}
+                            {(order.customer_address || '').length > 200 ? '…' : ''}
+                          </td>
+                          <td className="p-4 text-gray-800 whitespace-nowrap text-sm align-top">
+                            {orderBillingPhone(order)}
+                          </td>
+                          <td className="p-4 align-top">
+                            <OrderAttachmentLinks order={order} />
+                          </td>
+                          <td className="p-4 align-top">
+                            <div className="flex flex-wrap gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setDetailOrder(order)}
+                                className="inline-flex items-center justify-center p-2 bg-white border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+                                title="รายละเอียด"
+                                aria-label="รายละเอียด"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                              </button>
+                              {viewMode === 'noDesign' &&
+                                tableColumn.actionTargetStatus &&
+                                tableColumn.actionLabel &&
+                                !isProduction && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      openStatusModal(
+                                        order,
+                                        tableColumn.actionTargetStatus as OrderStatus,
+                                        tableColumn.actionLabel as string
+                                      )
+                                    }
+                                    className={`inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold text-white ${tableColumn.actionBtn}`}
+                                  >
+                                    สถานะ
+                                  </button>
+                                )}
+                              {viewMode === 'noDesign' &&
+                                isProduction &&
+                                canProductionChangeStatus(order.status as OrderStatus) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openStatusModal(order, order.status as OrderStatus, 'เปลี่ยนสถานะ')}
+                                    className="inline-flex items-center px-2.5 py-1.5 bg-gradient-to-r from-violet-500 to-indigo-600 text-white rounded-lg text-xs font-semibold"
+                                  >
+                                    สถานะ
+                                  </button>
+                                )}
+                              <div className="inline-flex items-center gap-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => openChat(order)}
+                                  className="inline-flex items-center justify-center p-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+                                  title="Chat"
+                                  aria-label="Chat"
+                                >
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+                                </button>
+                                {chatDeliveryStatus(order.id)}
+                                {(unreadByOrder[order.id] || 0) > 0 && (
+                                  <span className="min-w-[1rem] h-4 px-1 flex items-center justify-center rounded-full text-[9px] font-bold bg-red-500 text-white">
+                                    {unreadByOrder[order.id]}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          </section>
+        ) : (
+        visibleColumns.map((column) => {
+          const orders = ordersByKey[column.key] || []
+          return (
+            <div
+              key={column.key}
+              onDragOver={(event) => {
+                if (!draggedOrderId) return
+                event.preventDefault()
+                event.dataTransfer.dropEffect = 'move'
+                setDragOverColumn(column.key)
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  setDragOverColumn((current) => current === column.key ? null : current)
+                }
+              }}
+              onDrop={(event) => {
+                event.preventDefault()
+                const orderId = event.dataTransfer.getData('text/plain') || draggedOrderId
+                setDragOverColumn(null)
+                if (orderId) void moveOrderByDrag(orderId, column)
+              }}
+              className={`bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col min-h-0 w-full min-w-0 transition-all ${
+                dragOverColumn === column.key
+                  ? 'border-blue-500 ring-2 ring-blue-200 shadow-md'
+                  : 'border-gray-200'
+              }`}
+            >
+              {/* Column Header */}
+              <div className={`p-4 ${column.headerGradient} text-white shrink-0`}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <ColumnIcon columnKey={column.key} />
+                    <h2 className="text-base font-bold truncate">{column.title}</h2>
+                  </div>
+                  <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${column.countBadge}`}>
+                    {orders.length}
+                  </span>
+                </div>
+              </div>
+
+              {/* Column Body */}
+              <div className="flex-1 overflow-y-auto min-h-0 p-2 space-y-2 bg-gray-50/50">
+                {orders.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-10 text-gray-400">
+                    <svg className="w-10 h-10 mb-2 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                    </svg>
+                    <p className="text-sm">ไม่พบรายการ</p>
+                  </div>
+                ) : (
+                  orders.map((order) => (
+                    <div
+                      key={order.id}
+                      draggable={dragUpdatingOrderId === null}
+                      onDragStart={(event) => {
+                        setDraggedOrderId(order.id)
+                        event.dataTransfer.effectAllowed = 'move'
+                        event.dataTransfer.setData('text/plain', order.id)
+                      }}
+                      onDragEnd={() => {
+                        setDraggedOrderId(null)
+                        setDragOverColumn(null)
+                      }}
+                      title="ลากการ์ดไปยังคอลัมน์อื่นเพื่อเปลี่ยนสถานะ"
+                      className={`bg-white rounded-lg p-3 border hover:border-gray-300 hover:shadow-sm transition-all select-none ${
+                        draggedOrderId === order.id
+                          ? 'border-blue-300 opacity-50 cursor-grabbing'
+                          : dragUpdatingOrderId === order.id
+                            ? 'border-blue-200 opacity-70 cursor-wait'
+                            : 'border-gray-100 cursor-grab active:cursor-grabbing'
+                      }`}
+                    >
+                      {/* Order Info */}
+                      <div className="flex items-start justify-between gap-2 mb-1">
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold text-blue-600 text-base leading-6 truncate">
+                            {order.bill_no}
+                            <ExpressReceiptNumberInline value={order.express_receipt_number} />
+                            <UrgencyBadge order={order} className="ml-1.5" />
+                          </div>
+                          <div className="mt-1 min-h-7 text-sm leading-7 text-gray-500 truncate">{order.customer_name}</div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="font-bold text-emerald-600 text-sm">
+                            ฿{Number(order.total_amount || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </div>
+                          <div className="text-xs text-gray-400">{formatDateTime(order.created_at)}</div>
+                        </div>
+                      </div>
+
+                      {/* Note */}
+                      {order.confirm_note && (
+                        <div className="mt-1.5 text-xs text-gray-600 bg-amber-50 border border-amber-100 rounded-md px-2 py-1.5">
+                          <span className="font-medium text-amber-700">หมายเหตุ:</span> {order.confirm_note}
+                        </div>
+                      )}
+
+                      {/* Action Buttons */}
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setDetailOrder(order)}
+                          className="inline-flex items-center justify-center p-2 bg-white border border-gray-200 rounded-md text-gray-600 hover:bg-gray-50 hover:border-gray-300 transition-colors"
+                          title="รายละเอียด"
+                          aria-label="รายละเอียด"
+                        >
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                          </svg>
+                        </button>
+
+                        {column.actionTargetStatus && column.actionLabel && !isProduction && (
+                          <button
+                            type="button"
+                            onClick={() => openStatusModal(order, column.actionTargetStatus as OrderStatus, column.actionLabel as string)}
+                            className={`inline-flex items-center gap-0.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all ${column.actionBtn}`}
+                          >
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                            </svg>
+                            สถานะ
+                          </button>
+                        )}
+
+                        {isProduction && canProductionChangeStatus(order.status as OrderStatus) && (
+                          <button
+                            type="button"
+                            onClick={() => openStatusModal(order, order.status as OrderStatus, 'เปลี่ยนสถานะ')}
+                            className="inline-flex items-center gap-0.5 px-2.5 py-1.5 bg-gradient-to-r from-violet-500 to-indigo-600 hover:from-violet-600 hover:to-indigo-700 text-white rounded-md text-xs font-medium shadow-sm transition-all"
+                          >
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                            </svg>
+                            สถานะ
+                          </button>
+                        )}
+
+                        {column.key === 'new' && (!isProduction || canProductionChangeStatus(order.status as OrderStatus)) && (
+                          <button
+                            type="button"
+                            onClick={() => moveOrderToNoDesign(order)}
+                            className="inline-flex items-center gap-0.5 px-2.5 py-1.5 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 border border-orange-600 rounded-md text-xs font-semibold text-white shadow-sm transition-colors"
+                          >
+                            ไม่ต้องออกแบบ
+                          </button>
+                        )}
+
+                        {column.key === 'confirmed' && !isProduction && (
+                          <button
+                            type="button"
+                            onClick={() => openStatusModal(order, 'เสร็จสิ้น', 'ส่งผลิต')}
+                            className="inline-flex items-center gap-0.5 px-2.5 py-1.5 bg-gradient-to-r from-teal-500 to-cyan-600 hover:from-teal-600 hover:to-cyan-700 text-white rounded-md text-xs font-medium shadow-sm transition-all"
+                          >
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                            </svg>
+                            ส่งผลิต
+                          </button>
+                        )}
+
+                        {['design', 'designed', 'waiting', 'confirmed'].includes(column.key) && (() => {
+                          const orderItems = ((order as any).or_order_items || []) as Array<{ file_attachment?: string | null; attachment_name?: string | null }>
+                          const files = orderItems
+                            .filter((item) => !!item.file_attachment?.trim())
+                            .map((item, index) => ({
+                              link: item.file_attachment!.trim(),
+                              label: item.attachment_name?.trim() || `ไฟล์ ${index + 1}`,
+                            }))
+                          if (files.length === 0) return null
+                          return files.map(({ link, label }, fi) => (
+                            <button
+                              key={fi}
+                              type="button"
+                              onClick={() => window.open(link, '_blank')}
+                              className="inline-flex items-center gap-0.5 px-2.5 py-1.5 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white rounded-md text-xs font-medium shadow-sm transition-all"
+                            >
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                              </svg>
+                              {label}
+                            </button>
+                          ))
+                        })()}
+
+                        {column.key !== 'new' && (
+                          <div className="inline-flex items-center gap-0.5">
+                            <button
+                              type="button"
+                              onClick={() => openChat(order)}
+                              className="inline-flex items-center justify-center p-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white rounded-md shadow-sm transition-all"
+                              title="Chat"
+                              aria-label="Chat"
+                            >
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                              </svg>
+                            </button>
+                            {chatDeliveryStatus(order.id)}
+                            {(unreadByOrder[order.id] || 0) > 0 && (
+                              <span className="min-w-[1rem] h-4 px-1 flex items-center justify-center rounded-full text-[9px] font-bold bg-red-500 text-white animate-pulse">
+                                {unreadByOrder[order.id]}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )
+        })
+        )}
+      </div>
+
+      {/* ── Status Update Modal ── */}
+      <Modal
+        open={!!statusModal}
+        onClose={() => { if (!updating) setStatusModal(null) }}
+        contentClassName="max-w-lg w-full"
+      >
+        {statusModal && (
+          <div className="p-6 space-y-5">
+            <div>
+              <h3 className="text-lg font-bold text-gray-900">อัปเดตสถานะ</h3>
+              <p className="text-sm text-gray-500 mt-1">
+                {statusModal.label}: <span className="font-semibold text-blue-600">{statusModal.order.bill_no}</span>
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">สถานะ</label>
+              <select
+                value={statusModal.targetStatus}
+                onChange={(e) => setStatusModal((prev) => prev ? { ...prev, targetStatus: e.target.value as OrderStatus } : prev)}
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-200 focus:border-blue-400 text-sm outline-none transition-all"
+              >
+                {(isProduction ? STATUS_OPTIONS.filter((opt) => canProductionChangeStatus(opt.value)) : STATUS_OPTIONS).map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">หมายเหตุ</label>
+              <textarea
+                value={noteText}
+                onChange={(e) => setNoteText(e.target.value)}
+                rows={4}
+                placeholder="กรอกหมายเหตุเพิ่มเติม..."
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-200 focus:border-blue-400 text-sm outline-none transition-all resize-none"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={() => setStatusModal(null)} disabled={updating} className="px-4 py-2.5 border border-gray-300 rounded-xl text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition-colors">
+                ยกเลิก
+              </button>
+              <button type="button" onClick={handleStatusUpdate} disabled={updating} className="px-5 py-2.5 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-xl text-sm font-semibold disabled:opacity-50 shadow-sm transition-all">
+                {updating ? 'กำลังบันทึก...' : 'บันทึก'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── Detail Modal ── */}
+      <Modal open={!!detailOrder} onClose={() => setDetailOrder(null)} contentClassName="max-w-[96vw] w-full">
+        {detailOrder && <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} />}
+      </Modal>
+
+      {/* ── Chat Modal ── */}
+      <Modal
+        open={!!chatOrder}
+        onClose={() => { if (!chatSending) setChatOrder(null) }}
+        contentClassName="max-w-2xl w-full"
+      >
+        {chatOrder && (
+          <div className="flex flex-col max-h-[80vh]">
+            <div className="p-4 border-b bg-emerald-600 flex items-center justify-between rounded-t-xl">
+              <div>
+                <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+                  <FiMessageCircle className="w-5 h-5" /> Chat
+                </h3>
+                <p className="text-sm text-emerald-100">บิล {chatOrder.bill_no}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setChatOrder(null)}
+                title="ปิดหน้าต่าง"
+                aria-label="ปิดหน้าต่าง"
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-600 text-white shadow-sm transition-colors hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-300 focus:ring-offset-2 focus:ring-offset-emerald-600"
+              >
+                <FiX className="h-5 w-5" aria-hidden="true" />
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3 bg-gradient-to-b from-slate-100 to-slate-50">
+              {chatLoading ? (
+                <div className="flex justify-center items-center py-8">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500" />
+                </div>
+              ) : chatLogs.length === 0 ? (
+                <div className="flex flex-col items-center py-8 text-gray-400">
+                  <svg className="w-10 h-10 mb-2 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                  </svg>
+                  <p className="text-sm">ยังไม่มีข้อความ</p>
+                </div>
+              ) : (
+                <>
+                  {chatLogs.map((log) => {
+                    const isMe = log.sender_id === user?.id
+                    return (
+                      <div key={log.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} group`}>
+                        <div className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm border ${
+                          isMe
+                            ? 'bg-emerald-500/95 text-white border-emerald-400 rounded-br-sm'
+                            : 'bg-blue-50 text-gray-900 border-blue-200 rounded-bl-sm'
+                        }`}>
+                          <div className={`flex items-center gap-2 mb-1 ${isMe ? 'flex-row-reverse' : ''}`}>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                              isMe ? 'bg-emerald-600/60 text-emerald-100' : 'bg-blue-100 text-blue-700'
+                            }`}>
+                              {isMe ? 'ผู้ส่ง' : 'ผู้รับ'}
+                            </span>
+                            <span className={`text-xs font-bold ${isMe ? 'text-emerald-100' : 'text-blue-700'}`}>
+                              {log.sender_name}
+                            </span>
+                            <span className={`text-xs ${isMe ? 'text-emerald-200' : 'text-gray-500'}`}>
+                              {formatDateTime(log.created_at)}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleHideChat(log.id)}
+                              title="ซ่อนข้อความนี้"
+                              className={`opacity-0 group-hover:opacity-100 p-0.5 rounded transition-all ${
+                                isMe ? 'text-emerald-100 hover:text-red-200' : 'text-gray-400 hover:text-red-500'
+                              }`}
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          </div>
+                          <div className="flex items-end gap-2">
+                            <div className="min-w-0 flex-1 text-sm whitespace-pre-wrap leading-relaxed">{log.message}</div>
+                            {log.link_url ? (
+                              <a
+                                href={log.link_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title="เปิดลิงก์ในแท็บใหม่ (คลิกขวาเพื่อแก้ไข)"
+                                aria-label="เปิดลิงก์"
+                                onContextMenu={(e) => {
+                                  e.preventDefault()
+                                  setLinkContextMenu({ logId: log.id, url: log.link_url!, x: e.clientX, y: e.clientY })
+                                }}
+                                className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors ${
+                                  isMe ? 'bg-white/20 text-white hover:bg-white/30' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                                }`}
+                              >
+                                <FiLink className="h-4 w-4" aria-hidden="true" />
+                              </a>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setLinkEditor({ logId: log.id, value: '' })}
+                                title="เพิ่มลิงก์"
+                                aria-label="เพิ่มลิงก์"
+                                className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors ${
+                                  isMe ? 'bg-white/15 text-white hover:bg-white/30' : 'bg-gray-100 text-gray-500 hover:bg-blue-100 hover:text-blue-700'
+                                }`}
+                              >
+                                <FiPlus className="h-4 w-4" aria-hidden="true" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                  <div ref={chatEndRef} className="h-px w-full shrink-0" aria-hidden />
+                </>
+              )}
+            </div>
+            <div className="p-4 border-t bg-white space-y-3">
+              <textarea
+                value={chatMessage}
+                onChange={(e) => setChatMessage(e.target.value)}
+                onKeyDown={(e) => {
+                  // ข้ามระหว่าง IME composition (พิมพ์ภาษาไทย)
+                  if (e.nativeEvent.isComposing || e.keyCode === 229) return
+
+                  if (e.key === 'Enter') {
+                    if (sendOnEnter && !e.shiftKey) {
+                      e.preventDefault()
+                      if (chatMessage.trim() && !chatSending) handleSendChat()
+                    } else {
+                      // แทรก \n เอง เพื่อแก้ปัญหา Thai IME บน Windows
+                      e.preventDefault()
+                      const ta = e.target as HTMLTextAreaElement
+                      const start = ta.selectionStart
+                      const end = ta.selectionEnd
+                      const newVal = chatMessage.substring(0, start) + '\n' + chatMessage.substring(end)
+                      setChatMessage(newVal)
+                      requestAnimationFrame(() => {
+                        ta.selectionStart = ta.selectionEnd = start + 1
+                      })
+                    }
+                  }
+                }}
+                rows={3}
+                placeholder={sendOnEnter ? 'พิมพ์ข้อความ... (Enter ส่ง, Shift+Enter ขึ้นบรรทัดใหม่)' : 'พิมพ์ข้อความ...'}
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-200 focus:border-blue-400 text-sm outline-none transition-all"
+              />
+              <div>
+                <label htmlFor="order-chat-link" className="mb-1 block text-xs font-semibold text-gray-600">ลิงก์</label>
+                <div className="relative">
+                  <FiLink className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" aria-hidden="true" />
+                  <input
+                    id="order-chat-link"
+                    type="url"
+                    inputMode="url"
+                    value={chatLink}
+                    onChange={(e) => setChatLink(e.target.value)}
+                    placeholder="https://example.com (ไม่บังคับ)"
+                    aria-invalid={chatLink.trim() !== '' && !normalizeChatLink(chatLink)}
+                    className={`w-full rounded-xl border py-2.5 pl-9 pr-3 text-sm outline-none transition-all focus:ring-2 ${
+                      chatLink.trim() !== '' && !normalizeChatLink(chatLink)
+                        ? 'border-red-400 focus:border-red-500 focus:ring-red-100'
+                        : 'border-gray-300 focus:border-blue-400 focus:ring-blue-200'
+                    }`}
+                  />
+                </div>
+                {chatLink.trim() !== '' && !normalizeChatLink(chatLink) && (
+                  <p className="mt-1 text-xs text-red-600">รูปแบบลิงก์ไม่ถูกต้อง เช่น https://example.com</p>
+                )}
+              </div>
+              <div className="flex items-center justify-between">
+                <label className="inline-flex items-center gap-2 cursor-pointer select-none group">
+                  <input
+                    type="checkbox"
+                    checked={sendOnEnter}
+                    onChange={(e) => {
+                      const checked = e.target.checked
+                      setSendOnEnter(checked)
+                      if (user?.id) setChatEnterToSendPref(user.id, 'order-confirm', checked)
+                    }}
+                    className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  <span className="text-xs text-gray-500 group-hover:text-gray-700 transition-colors">Enter เพื่อส่งข้อความ</span>
+                  {sendOnEnter && (
+                    <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">Shift+Enter ขึ้นบรรทัดใหม่</span>
+                  )}
+                </label>
+                <button
+                  type="button"
+                  onClick={handleSendChat}
+                  disabled={chatSending || chatMessage.trim() === '' || (chatLink.trim() !== '' && !normalizeChatLink(chatLink))}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 font-semibold transition-colors"
+                >
+                  <FiMessageCircle className="w-4 h-4" />
+                  {chatSending ? 'กำลังส่ง...' : 'ส่งข้อความ'}
+                </button>
+              </div>
+            </div>
+
+            {linkContextMenu && (
+              <div
+                role="menu"
+                onClick={(e) => e.stopPropagation()}
+                className="fixed z-[100] min-w-40 rounded-lg border border-gray-200 bg-white p-1 shadow-xl"
+                style={{ left: Math.min(linkContextMenu.x, window.innerWidth - 180), top: Math.min(linkContextMenu.y, window.innerHeight - 100) }}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setLinkEditor({ logId: linkContextMenu.logId, value: linkContextMenu.url })
+                    setLinkContextMenu(null)
+                  }}
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700"
+                >
+                  <FiEdit3 className="h-4 w-4" aria-hidden="true" />
+                  แก้ไขลิงก์
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setDeleteLinkTarget(linkContextMenu.logId)
+                    setLinkContextMenu(null)
+                  }}
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50 hover:text-red-700"
+                >
+                  <FiTrash2 className="h-4 w-4" aria-hidden="true" />
+                  ลบลิงก์
+                </button>
+              </div>
+            )}
+
+            {linkEditor && (
+              <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/30 p-4" onMouseDown={() => { if (!linkSaving) setLinkEditor(null) }}>
+                <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl" onMouseDown={(e) => e.stopPropagation()}>
+                  <div className="mb-4 flex items-center justify-between">
+                    <h4 className="flex items-center gap-2 font-bold text-gray-900"><FiLink className="h-5 w-5 text-blue-600" /> เพิ่มหรือแก้ไขลิงก์</h4>
+                    <button type="button" onClick={() => setLinkEditor(null)} disabled={linkSaving} className="rounded-full p-1.5 text-gray-500 hover:bg-gray-100" aria-label="ปิด"><FiX /></button>
+                  </div>
+                  <label htmlFor="chat-link-editor" className="mb-1 block text-sm font-medium text-gray-700">ลิงก์</label>
+                  <input
+                    id="chat-link-editor"
+                    type="url"
+                    inputMode="url"
+                    autoFocus
+                    value={linkEditor.value}
+                    onChange={(e) => setLinkEditor((current) => current ? { ...current, value: e.target.value } : current)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !linkSaving) void handleSaveChatLink() }}
+                    placeholder="https://example.com"
+                    aria-invalid={linkEditor.value.trim() !== '' && !normalizeChatLink(linkEditor.value)}
+                    className={`w-full rounded-xl border px-3 py-2.5 text-sm outline-none focus:ring-2 ${
+                      linkEditor.value.trim() !== '' && !normalizeChatLink(linkEditor.value)
+                        ? 'border-red-400 focus:border-red-500 focus:ring-red-100'
+                        : 'border-gray-300 focus:border-blue-400 focus:ring-blue-200'
+                    }`}
+                  />
+                  {linkEditor.value.trim() !== '' && !normalizeChatLink(linkEditor.value) && (
+                    <p className="mt-1 text-xs text-red-600">กรุณากรอก URL ที่ถูกต้อง เช่น https://example.com</p>
+                  )}
+                  <div className="mt-4 flex justify-end gap-2">
+                    <button type="button" onClick={() => setLinkEditor(null)} disabled={linkSaving} className="rounded-lg border px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">ยกเลิก</button>
+                    <button type="button" onClick={() => void handleSaveChatLink()} disabled={linkSaving || !linkEditor.value.trim() || !normalizeChatLink(linkEditor.value)} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50">{linkSaving ? 'กำลังบันทึก...' : 'บันทึกลิงก์'}</button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={!!deleteLinkTarget}
+        onClose={() => { if (!linkDeleting) setDeleteLinkTarget(null) }}
+        contentClassName="max-w-sm w-full"
+      >
+        <div className="p-6">
+          <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-full bg-red-100 text-red-600">
+            <FiTrash2 className="h-5 w-5" aria-hidden="true" />
+          </div>
+          <h4 className="text-lg font-bold text-gray-900">ลบลิงก์</h4>
+          <p className="mt-2 text-sm text-gray-600">ยืนยันลบลิงก์ออกจากข้อความนี้หรือไม่?</p>
+          <div className="mt-6 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setDeleteLinkTarget(null)}
+              disabled={linkDeleting}
+              className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            >
+              ยกเลิก
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleDeleteChatLink()}
+              disabled={linkDeleting}
+              className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+            >
+              <FiTrash2 className="h-4 w-4" aria-hidden="true" />
+              {linkDeleting ? 'กำลังลบ...' : 'ลบลิงก์'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={copyFeedbackModal.open}
+        onClose={() => setCopyFeedbackModal({ open: false, title: '', message: '' })}
+        contentClassName="max-w-sm"
+      >
+        <div className="p-6 text-center">
+          <h4 className="text-base font-bold text-gray-800 mb-2">{copyFeedbackModal.title}</h4>
+          <p className="text-sm text-gray-600 mb-4 whitespace-pre-line">{copyFeedbackModal.message}</p>
+          <button
+            type="button"
+            onClick={() => setCopyFeedbackModal({ open: false, title: '', message: '' })}
+            className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
+          >
+            ตกลง
+          </button>
+        </div>
+      </Modal>
+    </div>
+  )
+}

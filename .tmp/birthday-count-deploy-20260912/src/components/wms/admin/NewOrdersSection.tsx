@@ -1,0 +1,340 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { supabase } from '../../../lib/supabase'
+import Modal from '../../ui/Modal'
+import { useWmsModal } from '../useWmsModal'
+import {
+  fetchWmsNonPickerCategories,
+  fetchSubWarehouseProductIds,
+  fetchWorkOrderNamesWithWmsAssigned,
+  isWmsPickableProduct,
+} from '../wmsUtils'
+import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../../../lib/orderFlowFilter'
+import { WoUrgencyChips, type DueBillInfo } from '../../common/UrgencyBadge'
+
+function dedupeWorkOrdersByName<T extends { work_order_name: string }>(rows: T[]): T[] {
+  const seen = new Set<string>()
+  const out: T[] = []
+  for (const r of rows) {
+    const n = r.work_order_name
+    if (!n || seen.has(n)) continue
+    seen.add(n)
+    out.push(r)
+  }
+  return out
+}
+
+// Category matching — same groups as Plan Dashboard "เบิก" + SUBLIMATION + อะไหล่ (rubber_code)
+export default function NewOrdersSection() {
+  const [workOrders, setWorkOrders] = useState<
+    Array<{ id: string; work_order_name: string; order_count: number; created_at: string; plan_wo_modified?: boolean }>
+  >([])
+  const [pickers, setPickers] = useState<Array<{ id: string; username: string | null }>>([])
+  const [selectedWorkOrder, setSelectedWorkOrder] = useState<string | null>(null)
+  const [selectedPickerId, setSelectedPickerId] = useState('')
+  /** แสดงหน้ากำลังโหลดเฉพาะครั้งแรก; Realtime refresh ต้องคงรายการเดิมไว้เพื่อไม่ให้หน้ากระพริบ */
+  const [initialLoading, setInitialLoading] = useState(true)
+  const [assigning, setAssigning] = useState(false)
+  /** จำนวนบิลที่ยังไม่ยกเลิก/จัดส่งแล้ว — สอดคล้องกับ Plan จัดการใบงาน */
+  const [activeBillCountByWo, setActiveBillCountByWo] = useState<Record<string, number>>({})
+  /** กำหนดส่งของบิลในใบงาน (บิลจากเมนู Marketplace) — ใช้แสดงป้าย ส่งด่วน/ล่าช้า */
+  const [dueBillsByWo, setDueBillsByWo] = useState<Record<string, DueBillInfo[]>>({})
+  const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const loadRequestRef = useRef(0)
+  const { showMessage, MessageModal } = useWmsModal({ showCancelButton: false })
+
+  const ensurePlanDeptStart = async (workOrderId: string) => {
+    if (!workOrderId) return
+    const now = new Date().toISOString()
+    const { error } = await supabase.rpc('merge_plan_tracks_by_work_order_id', {
+      p_work_order_id: workOrderId,
+      p_dept: 'เบิก',
+      p_patch: { 'หยิบของ': { start_if_null: now } },
+    })
+    if (error) console.error('ensurePlanDeptStart error:', error.message)
+  }
+
+  useEffect(() => {
+    void Promise.all([loadWorkOrders(), loadPickers()])
+    const scheduleReload = () => {
+      if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
+      reloadTimerRef.current = setTimeout(() => {
+        void loadWorkOrders()
+        window.dispatchEvent(new Event('wms-data-changed'))
+      }, 300)
+    }
+    const woChannel = supabase
+      .channel('wms-new-workorders')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, () => {
+        scheduleReload()
+      })
+      .subscribe()
+    const ordersChannel = supabase
+      .channel('wms-new-workorders-orders')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
+        scheduleReload()
+      })
+      .subscribe()
+    const wmsChannel = supabase
+      .channel('wms-new-workorders-wms')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'wms_orders' }, () => {
+        scheduleReload()
+      })
+      .subscribe()
+    return () => {
+      if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
+      supabase.removeChannel(woChannel)
+      supabase.removeChannel(ordersChannel)
+      supabase.removeChannel(wmsChannel)
+    }
+  }, [])
+
+  const loadWorkOrders = async () => {
+    const requestId = ++loadRequestRef.current
+    try {
+      const [{ data }, assignedNames, nonPickerCategories, subWarehouseProductIds] = await Promise.all([
+        supabase
+          .from('or_work_orders')
+          .select('id, work_order_name, order_count, created_at, plan_wo_modified')
+          .eq('status', 'กำลังผลิต')
+          .order('created_at', { ascending: false }),
+        fetchWorkOrderNamesWithWmsAssigned(),
+        fetchWmsNonPickerCategories(),
+        fetchSubWarehouseProductIds(),
+      ])
+
+      if (!data || data.length === 0) {
+        if (requestId !== loadRequestRef.current) return
+        setWorkOrders([])
+        setActiveBillCountByWo({})
+        return
+      }
+
+      const deduped = dedupeWorkOrdersByName(data)
+      const unassigned = deduped.filter((wo) => !assignedNames.has(wo.work_order_name))
+
+      let finalList: Array<{
+        id: string
+        work_order_name: string
+        order_count: number
+        created_at: string
+        plan_wo_modified?: boolean
+      }> = []
+
+      // กรองเฉพาะใบงานที่มีสินค้าในหมวดหมู่ที่ต้องหยิบ (STAMP/LASER/SUBLIMATION/CALENDAR/ETC/INK)
+      if (unassigned.length > 0) {
+        const unassignedIds = unassigned.map((wo) => wo.id)
+        const { data: orders } = await supabase
+          .from('or_orders')
+          .select('work_order_id, or_order_items(product_id, is_free)')
+          .in('work_order_id', unassignedIds as string[])
+
+        const allItems = (orders || []).flatMap((o: any) =>
+          (o.or_order_items || []).map((i: any) => ({
+            product_id: i.product_id,
+            work_order_id: o.work_order_id,
+            is_free: i.is_free,
+          }))
+        )
+        const productIds = [...new Set(allItems.map((i: any) => i.product_id).filter(Boolean))]
+
+        let productCategoryMap: Record<string, string> = {}
+        if (productIds.length > 0) {
+          const { data: products } = await supabase
+            .from('pr_products')
+            .select('id, product_category')
+            .in('id', productIds)
+          productCategoryMap = (products || []).reduce((acc: Record<string, string>, p: any) => {
+            acc[p.id] = String(p.product_category || '')
+            return acc
+          }, {})
+        }
+
+        const woQualifiesForAssign = new Set<string>()
+        allItems.forEach((item: any) => {
+          if (!item.product_id) return
+          if (
+            isWmsPickableProduct(item.product_id, productCategoryMap[item.product_id], nonPickerCategories, subWarehouseProductIds)
+            && item.work_order_id
+          ) {
+            woQualifiesForAssign.add(String(item.work_order_id))
+          }
+        })
+
+        finalList = unassigned.filter((wo) => woQualifiesForAssign.has(wo.id))
+      }
+
+      const counts: Record<string, number> = {}
+      const dueMap: Record<string, DueBillInfo[]> = {}
+      if (finalList.length > 0) {
+        const { data: cntRows } = await supabase
+          .from('or_orders')
+          .select('work_order_id, ship_due_at, overdue_at, urgency_label, urgency_color, shipped_time')
+          .in('work_order_id', finalList.map((w) => w.id))
+          .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
+          .neq('status', 'จัดส่งแล้ว')
+        for (const r of cntRows || []) {
+          const row = r as { work_order_id: string; ship_due_at?: string | null; overdue_at?: string | null; shipped_time?: string | null }
+          const wid = String(row.work_order_id)
+          counts[wid] = (counts[wid] || 0) + 1
+          if (row.ship_due_at) {
+            if (!dueMap[wid]) dueMap[wid] = []
+            dueMap[wid].push({ ship_due_at: row.ship_due_at, overdue_at: row.overdue_at ?? null, shipped_time: row.shipped_time ?? null })
+          }
+        }
+      }
+      if (requestId !== loadRequestRef.current) return
+      setActiveBillCountByWo(counts)
+      setDueBillsByWo(dueMap)
+      setWorkOrders(finalList)
+    } finally {
+      if (requestId === loadRequestRef.current) setInitialLoading(false)
+    }
+  }
+
+  const loadPickers = async () => {
+    const { data } = await supabase.from('us_users').select('id, username').eq('role', 'picker').order('username')
+    setPickers((data || []) as Array<{ id: string; username: string | null }>)
+  }
+
+  const pickerOptions = useMemo(() => pickers, [pickers])
+
+  const openAssignPicker = (workOrderId: string) => {
+    setSelectedWorkOrder(workOrderId)
+    setSelectedPickerId('')
+  }
+
+  const closeAssignPicker = () => {
+    setSelectedWorkOrder(null)
+    setSelectedPickerId('')
+  }
+
+  const handleAssignPicker = async () => {
+    if (!selectedWorkOrder) return
+    if (!selectedPickerId) {
+      showMessage({ message: 'กรุณาเลือก User Picker' })
+      return
+    }
+    setAssigning(true)
+    try {
+      const { count } = await supabase
+        .from('wms_orders')
+        .select('id', { count: 'exact', head: true })
+        .eq('work_order_id', selectedWorkOrder)
+        .or('fulfillment_mode.eq.warehouse_pick,fulfillment_mode.is.null')
+        .neq('status', 'cancelled')
+      if ((count || 0) > 0) {
+        showMessage({ message: 'ใบงานนี้ถูกสร้างในระบบ WMS แล้ว' })
+        return
+      }
+
+      const { data: rpcResult, error: rpcError } = await supabase.rpc('rpc_assign_wms_for_work_order_v2', {
+        p_work_order_id: selectedWorkOrder,
+        p_picker_id: selectedPickerId,
+      })
+      if (rpcError) throw rpcError
+
+      const result = rpcResult as {
+        success?: boolean
+        error?: string
+        warehouse_pick_main?: number
+        warehouse_pick_spare?: number
+        system_complete?: number
+      }
+      if (!result || !result.success) {
+        showMessage({ message: result?.error || 'มอบหมาย WMS ไม่สำเร็จ' })
+        return
+      }
+
+      await ensurePlanDeptStart(selectedWorkOrder)
+      const woName = workOrders.find((w) => w.id === selectedWorkOrder)?.work_order_name || selectedWorkOrder
+      showMessage({ message: `มอบหมายใบงาน ${woName} ให้ Picker เรียบร้อยแล้ว` })
+      closeAssignPicker()
+      loadWorkOrders()
+      window.dispatchEvent(new Event('wms-data-changed'))
+    } catch (error: any) {
+      showMessage({ message: 'เกิดข้อผิดพลาด: ' + error.message })
+    } finally {
+      setAssigning(false)
+    }
+  }
+
+  if (initialLoading) {
+    return <div className="text-center text-slate-400 py-10">กำลังโหลด...</div>
+  }
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <h2 className="text-xl font-black mb-4 pl-2">ใบงานใหม่</h2>
+      <p className="text-sm text-slate-600 mb-3 pl-2">
+        แสดง<strong>เฉพาะ</strong>ใบงานที่ยัง<strong>ไม่ได้มอบหมาย Picker</strong> และมีสินค้าที่ต้องหยิบคลัง — ใบงานที่มอบหมายแล้วหรือปิดงานแล้วดูที่เมนู{' '}
+        <strong>รายการใบงาน</strong> หรือหน้ามือถือของ Picker
+      </p>
+      {workOrders.length === 0 ? (
+        <div className="text-center text-slate-500 italic py-10 border border-dashed border-slate-200 rounded-lg">
+          ไม่มีใบงานใหม่ที่รอมอบหมาย Picker
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 overflow-y-auto pb-4">
+          {workOrders.map((wo) => (
+            <button
+              key={wo.id}
+              className="p-4 border rounded-lg text-left transition-colors bg-gray-100 border-gray-200 hover:bg-gray-200"
+              onClick={() => openAssignPicker(wo.id)}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-lg font-semibold flex flex-wrap items-center gap-2">
+                    <span>📦 {wo.work_order_name}</span>
+                    {wo.plan_wo_modified && (
+                      <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
+                        ถูกแก้ไข
+                      </span>
+                    )}
+                    <WoUrgencyChips bills={dueBillsByWo[wo.id]} />
+                  </div>
+                  <div className="text-sm text-gray-600">{activeBillCountByWo[wo.id] ?? wo.order_count} บิล</div>
+                </div>
+                <span className="text-blue-600 font-medium shrink-0">เลือก Picker</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <Modal open={!!selectedWorkOrder} onClose={closeAssignPicker} closeOnBackdropClick={true} contentClassName="max-w-md">
+        <div className="p-6">
+          <h3 className="text-lg font-bold text-slate-800 mb-2">เลือก User Picker</h3>
+          <p className="text-sm text-slate-600 mb-4">
+            ใบงาน: {workOrders.find((w) => w.id === selectedWorkOrder)?.work_order_name || selectedWorkOrder}
+          </p>
+          <select
+            value={selectedPickerId}
+            onChange={(e) => setSelectedPickerId(e.target.value)}
+            className="w-full border rounded-lg px-3 py-2 mb-4"
+          >
+            <option value="">-- เลือก User Picker --</option>
+            {pickerOptions.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.username || p.id}
+              </option>
+            ))}
+          </select>
+          {pickerOptions.length === 0 && (
+            <div className="text-xs text-red-500 mb-4">ยังไม่มีผู้ใช้ Role picker กรุณาตั้งค่าในเมนู ตั้งค่า → จัดการสิทธิ์ผู้ใช้</div>
+          )}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={handleAssignPicker}
+              disabled={assigning || pickerOptions.length === 0}
+              className="px-4 py-2 rounded-lg bg-blue-600 text-white disabled:opacity-50"
+            >
+              {assigning ? 'กำลังบันทึก...' : 'ยืนยัน'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+      {MessageModal}
+    </div>
+  )
+}

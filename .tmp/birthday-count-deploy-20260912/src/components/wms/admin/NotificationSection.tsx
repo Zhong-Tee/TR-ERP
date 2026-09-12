@@ -1,0 +1,448 @@
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { supabase } from '../../../lib/supabase'
+import { useAuthContext } from '../../../contexts/AuthContext'
+import { isRoleInAllowedList } from '../../../config/accessPolicy'
+import Modal from '../../ui/Modal'
+import { enrichWmsNotificationsWithOrderDetails } from '../../../lib/wmsNotificationEnrichment'
+import { fetchAllSupabasePages } from '../../../lib/supabasePagination'
+
+const PAGE_SIZE = 50
+
+export default function NotificationSection() {
+  const { user } = useAuthContext()
+  const canManageStock = isRoleInAllowedList(user?.role, ['superadmin', 'admin', 'store'])
+  const [currentTab, setCurrentTab] = useState('unread')
+  const [notifications, setNotifications] = useState<any[]>([])
+  const [stockModalOrderId, setStockModalOrderId] = useState<string | null>(null)
+  const [stockModalCancelledOrders, setStockModalCancelledOrders] = useState<{ id: string; bill_no: string; customer_name: string }[]>([])
+  const [selectedCancelledOrderId, setSelectedCancelledOrderId] = useState<string | null>(null)
+  const [cancelledLines, setCancelledLines] = useState<any[]>([])
+  const [cancelledLoading, setCancelledLoading] = useState(false)
+  const [stockActionLoading, setStockActionLoading] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [page, setPage] = useState(1)
+  const [totalCount, setTotalCount] = useState(0)
+  const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const loadRequestRef = useRef(0)
+
+  useEffect(() => {
+    void loadNotifications()
+    const scheduleReload = () => {
+      if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
+      reloadTimerRef.current = setTimeout(() => {
+        void loadNotifications()
+        window.dispatchEvent(new Event('wms-data-changed'))
+      }, 300)
+    }
+
+    const channel = supabase
+      .channel('wms-notifications-updates')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_notifications' }, () => {
+        scheduleReload()
+      })
+      .subscribe()
+
+    return () => {
+      if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
+      supabase.removeChannel(channel)
+    }
+  }, [currentTab, page])
+
+  const normalizeOrderKey = (value: unknown) =>
+    String(value || '')
+      .normalize('NFKC')
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .replace(/[\u2010-\u2015]/g, '-')
+      .replace(/\s+/g, '')
+      .trim()
+      .toUpperCase()
+
+  /** แถวยกเลิกบิลหลายแถวอาจมี order_id ต่างกันเล็กน้อย — เทียบแบบ normalize แล้วคืน id ที่ยัง status=unread */
+  const getUnreadCancelNotificationIdsForGroup = async (orderIdRaw: string | null | undefined): Promise<string[]> => {
+    const targetNorm = normalizeOrderKey(orderIdRaw)
+    if (!targetNorm) return []
+    const { data, error } = await supabase
+      .from('wms_notifications')
+      .select('id, order_id')
+      .eq('type', 'ยกเลิกบิล')
+      .eq('status', 'unread')
+    if (error) throw error
+    return (data || [])
+      .filter((r) => normalizeOrderKey((r as { order_id?: string }).order_id) === targetNorm)
+      .map((r) => (r as { id: string }).id)
+  }
+
+  const getCancelledOrderProductCodes = useCallback(async (orderId: string): Promise<string[]> => {
+    const { data: items } = await supabase
+      .from('or_order_items')
+      .select('product_id')
+      .eq('order_id', orderId)
+      .not('cancellation_stock_action', 'is', null)
+    const productIds = [...new Set((items || []).map((i: any) => i.product_id).filter(Boolean))]
+    if (productIds.length === 0) return []
+
+    const { data: products } = await supabase
+      .from('pr_products')
+      .select('id, product_code')
+      .in('id', productIds)
+    return [...new Set((products || []).map((p: any) => String(p.product_code || '').trim()).filter(Boolean))]
+  }, [])
+
+  const loadCancelledLines = useCallback(async (workOrderId: string, orderId?: string) => {
+    setCancelledLoading(true)
+    setStockModalOrderId(workOrderId)
+    try {
+      const { data: cancelledItemRows } = await supabase
+        .from('or_order_items')
+        .select('order_id')
+        .not('cancellation_stock_action', 'is', null)
+      const cancellationOrderIds = [...new Set((cancelledItemRows || []).map((r: any) => r.order_id).filter(Boolean))]
+      let cancelledOrderQuery = supabase
+        .from('or_orders')
+        .select('id, bill_no, customer_name')
+        .eq('work_order_name', workOrderId)
+        .order('created_at', { ascending: false })
+      if (cancellationOrderIds.length > 0) cancelledOrderQuery = cancelledOrderQuery.in('id', cancellationOrderIds)
+      else cancelledOrderQuery = cancelledOrderQuery.eq('status', 'ยกเลิก')
+      const { data: cancelledOrders } = await cancelledOrderQuery
+      const orders = (cancelledOrders || []) as { id: string; bill_no: string; customer_name: string }[]
+      setStockModalCancelledOrders(orders)
+
+      const targetOrderId = orderId || orders[0]?.id || null
+      setSelectedCancelledOrderId(targetOrderId)
+      const targetCodes = targetOrderId ? await getCancelledOrderProductCodes(targetOrderId) : []
+
+      const targetNorm = normalizeOrderKey(workOrderId)
+      let rows: any[] = []
+
+      const { data: exactData } = await supabase
+        .from('wms_orders')
+        .select('id, order_id, source_order_id, product_code, product_name, location, qty, status, stock_action')
+        .eq('order_id', workOrderId)
+        .eq('status', 'cancelled')
+
+      rows = exactData || []
+
+      // Fallback: ดึง cancelled ทั้งหมดแล้วเทียบ key แบบ normalize
+      if (rows.length === 0) {
+        const fallback = await fetchAllSupabasePages<any>((from, to) => supabase
+          .from('wms_orders')
+          .select('id, order_id, source_order_id, product_code, product_name, location, qty, status, stock_action')
+          .eq('status', 'cancelled')
+          .order('id', { ascending: true })
+          .range(from, to))
+        rows = fallback.filter((r: any) => normalizeOrderKey(r.order_id) === targetNorm)
+      }
+
+      // ถ้าไม่มี targetOrderId (เช่น ยกเลิกบางรายการที่บิลหลักยังไม่สถานะยกเลิก)
+      // ให้แสดง cancelled rows ทั้งใบงาน เพื่อให้ WMS เลือกคืนสต๊อก/ของเสียต่อได้
+      const codeSet = new Set(targetCodes.map((c) => c.toUpperCase()))
+      const filteredRows =
+        targetOrderId
+          ? rows.filter((r: any) =>
+              r.source_order_id
+                ? r.source_order_id === targetOrderId
+                : codeSet.has(String(r.product_code || '').trim().toUpperCase())
+            )
+          : codeSet.size > 0
+            ? rows.filter((r: any) => codeSet.has(String(r.product_code || '').trim().toUpperCase()))
+          : rows
+      setCancelledLines(filteredRows)
+    } catch (e) {
+      console.error('loadCancelledLines error:', e)
+      setCancelledLines([])
+    } finally {
+      setCancelledLoading(false)
+    }
+  }, [getCancelledOrderProductCodes])
+
+  /** ส่ง tabOverride เมื่อเพิ่ง setCurrentTab แล้ว state ยังไม่ทัน sync (เช่น หลังกดแก้ไขแล้ว) */
+  const loadNotifications = async (tabOverride?: string) => {
+    const requestId = ++loadRequestRef.current
+    setLoading(true)
+    const tab = tabOverride ?? currentTab
+    const { data, error, count } = await supabase
+      .from('wms_notifications')
+      .select('id, order_id, picker_id, type, status, is_read, created_at, us_users!picker_id(username)', { count: 'exact' })
+      .eq('status', tab)
+      .order('created_at', { ascending: false })
+      .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1)
+
+    if (requestId !== loadRequestRef.current) return
+    if (error) {
+      console.error('loadNotifications:', error.message)
+      setLoading(false)
+      return
+    }
+    if (!data) { setLoading(false); return }
+
+    const notificationsWithDetails = await enrichWmsNotificationsWithOrderDetails(supabase, data)
+    if (requestId === loadRequestRef.current) {
+      setTotalCount(count || 0)
+      setNotifications(notificationsWithDetails)
+      setLoading(false)
+    }
+  }
+
+  /** ยกเลิกบิลสร้างหลายแถวต่อใบงาน — อัปเดตทุกแถวในกลุ่ม (order_id แบบ normalize) */
+  const markNotifRead = async (n: { id: string; type?: string; order_id?: string }) => {
+    try {
+      if (n.type === 'ยกเลิกบิล' && String(n.order_id || '').trim()) {
+        let ids = await getUnreadCancelNotificationIdsForGroup(n.order_id)
+        if (ids.length === 0) ids = [n.id]
+        const { error } = await supabase.from('wms_notifications').update({ is_read: true }).in('id', ids)
+        if (error) throw error
+      } else {
+        const { error } = await supabase.from('wms_notifications').update({ is_read: true }).eq('id', n.id)
+        if (error) throw error
+      }
+      await loadNotifications()
+      window.dispatchEvent(new Event('wms-data-changed'))
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      alert('อัปเดตไม่สำเร็จ: ' + msg)
+    }
+  }
+
+  const markNotifFixed = async (n: { id: string; type?: string; order_id?: string }) => {
+    try {
+      if (n.type === 'ยกเลิกบิล' && String(n.order_id || '').trim()) {
+        let ids = await getUnreadCancelNotificationIdsForGroup(n.order_id)
+        if (ids.length === 0) ids = [n.id]
+        const { error } = await supabase
+          .from('wms_notifications')
+          .update({ status: 'fixed', is_read: true })
+          .in('id', ids)
+        if (error) throw error
+      } else {
+        const { error } = await supabase
+          .from('wms_notifications')
+          .update({ status: 'fixed', is_read: true })
+          .eq('id', n.id)
+        if (error) throw error
+      }
+      setCurrentTab('fixed')
+      await loadNotifications('fixed')
+      window.dispatchEvent(new Event('wms-data-changed'))
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      alert('อัปเดตไม่สำเร็จ: ' + msg)
+    }
+  }
+
+  const handleStockAction = async (wmsOrderId: string, action: 'recall' | 'waste') => {
+    if (!canManageStock) return
+    setStockActionLoading(wmsOrderId)
+    try {
+      if (action === 'recall') {
+        const { error } = await supabase.rpc('fn_reverse_wms_stock', { p_wms_order_id: wmsOrderId })
+        if (error) throw error
+      } else {
+        const { error } = await supabase.rpc('rpc_record_cancellation_waste', {
+          p_wms_order_id: wmsOrderId,
+          p_user_id: user?.id,
+        })
+        if (error) throw error
+      }
+      if (stockModalOrderId) await loadCancelledLines(stockModalOrderId)
+      await loadNotifications()
+      window.dispatchEvent(new Event('wms-data-changed'))
+    } catch (e: any) {
+      alert('ดำเนินการไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setStockActionLoading(null)
+    }
+  }
+
+  const fontSizeClass = 'text-[18.66px]'
+
+  return (
+    <section>
+      <div className="flex gap-2 mb-6 bg-gray-200 p-1 rounded-xl w-fit">
+        <button
+          onClick={() => { setPage(1); setCurrentTab('unread') }}
+          className={`px-6 py-2 rounded-lg font-bold transition text-sm ${currentTab === 'unread' ? 'tab-active' : ''}`}
+        >
+          รายการใหม่
+        </button>
+        <button
+          onClick={() => { setPage(1); setCurrentTab('fixed') }}
+          className={`px-6 py-2 rounded-lg font-bold transition text-sm ${currentTab === 'fixed' ? 'tab-active' : ''}`}
+        >
+          แก้ไขแล้ว
+        </button>
+      </div>
+      <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
+        <table className="w-full text-left text-sm text-slate-700">
+          <thead className="border-b border-slate-200 bg-slate-50 text-sm font-semibold text-slate-700">
+            <tr>
+              <th className="p-4 text-center">ลำดับ</th>
+              <th className="p-4">วัน-เวลา</th>
+              <th className="p-4">พนักงาน</th>
+              <th className="p-4">หัวข้อปัญหา</th>
+              <th className="p-4">สินค้า</th>
+              <th className="p-4">จุดจัดเก็บ</th>
+              <th className="p-4 text-center">จัดการ</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y text-gray-600">
+            {loading ? (
+              <tr><td colSpan={7} className="p-12 text-center text-gray-400"><i className="fas fa-spinner fa-spin text-2xl" /> <span className="ml-2">กำลังโหลดรายการ...</span></td></tr>
+            ) : notifications.length === 0 ? (
+              <tr><td colSpan={7} className="p-12 text-center text-gray-400">ไม่มีรายการ</td></tr>
+            ) : notifications.map((n, idx) => (
+              <tr key={n.id} className={`border-b ${!n.is_read ? 'bg-blue-50' : ''}`}>
+                <td className={`p-4 text-center ${fontSizeClass}`}>{idx + 1}</td>
+                <td className={`p-4 ${fontSizeClass}`}>{new Date(n.created_at).toLocaleString('th-TH')}</td>
+                <td className={`p-4 font-bold text-blue-600 ${fontSizeClass}`}>{n.us_users?.username || '-'}</td>
+                <td className={`p-4 text-red-600 font-bold ${fontSizeClass}`}>{n.type}</td>
+                <td className={`p-4 ${fontSizeClass}`}>{n.product_name}</td>
+                <td className={`p-4 font-bold text-red-600 ${fontSizeClass}`}>{n.location}</td>
+                <td className="p-4 text-center">
+                  <div className="flex items-center justify-center gap-1">
+                    {n.type === 'ยกเลิกบิล' && (
+                      <button
+                        onClick={() => {
+                          const firstOrderId = n.cancelled_orders?.[0]?.id
+                          loadCancelledLines(n.order_id, firstOrderId)
+                        }}
+                        className="bg-amber-500 text-white px-4 py-2 rounded-lg text-xs font-black hover:bg-amber-600"
+                        title={n.pendingCancelled > 0 ? `รอดำเนินการ ${n.pendingCancelled} รายการ` : 'เปิดรายการปรับสต๊อค'}
+                      >
+                        ปรับสต๊อค
+                      </button>
+                    )}
+                    {!n.is_read && (
+                      <button
+                        onClick={() => markNotifRead(n)}
+                        className="bg-slate-200 px-4 py-2 rounded-lg text-xs font-black hover:bg-slate-300"
+                      >
+                        อ่านแล้ว
+                      </button>
+                    )}
+                    {currentTab === 'unread' ? (
+                      <button
+                        onClick={() => markNotifFixed(n)}
+                        className="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-black ml-1 hover:bg-green-700"
+                      >
+                        แก้ไขแล้ว
+                      </button>
+                    ) : (
+                      <span className={`text-green-500 font-bold ${fontSizeClass}`}>✔ Fixed</span>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="flex items-center justify-between border-t px-4 py-3 text-sm">
+          <span className="text-gray-500">แสดง {notifications.length} จาก {totalCount} รายการ</span>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}
+              className="rounded-lg border px-3 py-1.5 font-bold disabled:opacity-40">ก่อนหน้า</button>
+            <span className="font-semibold">หน้า {page} / {Math.max(1, Math.ceil(totalCount / PAGE_SIZE))}</span>
+            <button type="button" onClick={() => setPage((p) => Math.min(Math.max(1, Math.ceil(totalCount / PAGE_SIZE)), p + 1))}
+              disabled={page >= Math.max(1, Math.ceil(totalCount / PAGE_SIZE))}
+              className="rounded-lg border px-3 py-1.5 font-bold disabled:opacity-40">ถัดไป</button>
+          </div>
+        </div>
+      </div>
+      <Modal
+        open={!!stockModalOrderId}
+        onClose={() => { setStockModalOrderId(null); setStockModalCancelledOrders([]); setSelectedCancelledOrderId(null); setCancelledLines([]) }}
+        contentClassName="max-w-4xl max-h-[85vh] overflow-y-auto"
+      >
+        {stockModalOrderId && (
+          <div className="p-6 space-y-4">
+            <h3 className="text-lg font-bold text-gray-800">
+              ปรับสต๊อคบิลยกเลิก — ใบงาน {stockModalOrderId}
+            </h3>
+            {stockModalCancelledOrders.length > 0 && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <p className="text-sm font-semibold text-red-800 mb-2">บิลที่ยกเลิก:</p>
+                <div className="flex flex-wrap gap-2">
+                  {stockModalCancelledOrders.map((o) => (
+                    <button
+                      key={o.id}
+                      onClick={() => loadCancelledLines(stockModalOrderId, o.id)}
+                      className={`px-2 py-1 border rounded-lg text-sm transition ${
+                        selectedCancelledOrderId === o.id
+                          ? 'bg-red-100 border-red-300'
+                          : 'bg-white border-red-200 hover:bg-red-50'
+                      }`}
+                    >
+                      <span className="font-mono font-bold text-red-700">{o.bill_no || '-'}</span>
+                      <span className="text-gray-500 ml-1">({o.customer_name || '-'})</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {cancelledLoading ? (
+              <div className="text-center py-8 text-gray-500">กำลังโหลดรายการ...</div>
+            ) : cancelledLines.length === 0 ? (
+              <div className="text-center py-10 text-gray-500">ไม่มีรายการ WMS ที่รอดำเนินการ</div>
+            ) : (
+              <div className="border border-gray-200 rounded-lg overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-700">
+                    <tr>
+                      <th className="px-3 py-2 text-left">รหัสสินค้า</th>
+                      <th className="px-3 py-2 text-left">ชื่อสินค้า</th>
+                      <th className="px-3 py-2 text-left">จำนวน</th>
+                      <th className="px-3 py-2 text-left">สถานะ</th>
+                      <th className="px-3 py-2 text-center">จัดการ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {cancelledLines.map((line) => (
+                      <tr key={line.id}>
+                        <td className="px-3 py-2 font-mono">{line.product_code || '-'}</td>
+                        <td className="px-3 py-2">{line.product_name || '-'}</td>
+                        <td className="px-3 py-2">{line.qty}</td>
+                        <td className="px-3 py-2">
+                          {line.stock_action === 'recalled' ? (
+                            <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700">เรียกคืนแล้ว</span>
+                          ) : line.stock_action === 'waste' ? (
+                            <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-orange-100 text-orange-700">ของเสีย</span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-700">รอดำเนินการ</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-center">
+                          {!line.stock_action && canManageStock ? (
+                            <div className="flex gap-2 justify-center">
+                              <button
+                                onClick={() => handleStockAction(line.id, 'recall')}
+                                disabled={stockActionLoading === line.id}
+                                className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 disabled:opacity-50"
+                              >
+                                {stockActionLoading === line.id ? '...' : 'คืนสต๊อค'}
+                              </button>
+                              <button
+                                onClick={() => handleStockAction(line.id, 'waste')}
+                                disabled={stockActionLoading === line.id}
+                                className="px-3 py-1.5 bg-orange-600 text-white rounded-lg text-xs font-bold hover:bg-orange-700 disabled:opacity-50"
+                              >
+                                {stockActionLoading === line.id ? '...' : 'ตีเป็นของเสีย'}
+                              </button>
+                            </div>
+                          ) : !line.stock_action ? (
+                            <span className="text-xs text-gray-400">รอผู้มีสิทธิ์</span>
+                          ) : (
+                            <span className="text-xs text-gray-400">ดำเนินการแล้ว</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+    </section>
+  )
+}

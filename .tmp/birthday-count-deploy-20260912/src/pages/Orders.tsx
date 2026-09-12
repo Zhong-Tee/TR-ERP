@@ -1,0 +1,1016 @@
+import { useState, useEffect, useRef } from 'react'
+import { useMenuAccess } from '../contexts/MenuAccessContext'
+import { useAuthContext } from '../contexts/AuthContext'
+import OrderList from '../components/order/OrderList'
+import OrderForm from '../components/order/OrderForm'
+import OrderConfirmBoard from '../components/order/OrderConfirmBoard'
+import IssueBoard from '../components/order/IssueBoard'
+import ClaimReqOrdersTab from '../components/order/ClaimReqOrdersTab'
+import RefundReturnList from '../components/order/RefundReturnList'
+import { Order, OrderStatus } from '../types'
+import { supabase } from '../lib/supabase'
+import { fetchAllSupabasePages } from '../lib/supabasePagination'
+import {
+  canSeeOfficeChannel,
+  isSalesPumpOwnerScopedRole,
+  isSalesTrTeamRole,
+  resolveSalesPumpOwnerAdminName,
+} from '../config/accessPolicy'
+import { fetchSalesTrTeamAdminValues, fetchSalesTrTeamRows, flattenSalesTrAdminIdentifiers } from '../lib/salesTrTeam'
+import { fetchLatestRejectedOverpayOrderIds, fetchLatestRejectedManualSlipOrderIds } from '../lib/rejectedOverpayRefunds'
+import { getBangkokCalendarDayUtcBoundsISO } from '../lib/utils'
+
+type Tab =
+  | 'all'
+  | 'create'
+  | 'claim-req'
+  | 'waiting'
+  | 'complete'
+  | 'verified'
+  | 'refund-return'
+  | 'confirm'
+  | 'issue'
+  | 'data-error'
+  | 'shipped'
+  | 'cancelled'
+
+type FailureArchiveFilter = 'active' | 'archived' | 'all'
+
+const ALL_TABS: Tab[] = ['all', 'create', 'claim-req', 'waiting', 'data-error', 'complete', 'verified', 'refund-return', 'confirm', 'shipped', 'cancelled', 'issue']
+
+/** แท็บที่ sales-tr มี dropdown + ปุ่มเฉพาะฉัน กรอง admin_user */
+const SALES_TR_FILTER_TABS: Tab[] = ['all', 'waiting', 'data-error', 'complete', 'verified', 'shipped', 'issue', 'claim-req']
+const ALL_STATUS_FILTER_OPTIONS = [
+  'รอลงข้อมูล',
+  'รอตรวจคำสั่งซื้อ',
+  'ลงข้อมูลผิด',
+  'ตรวจสอบไม่ผ่าน',
+  'ตรวจสอบไม่สำเร็จ',
+  'ตรวจสอบแล้ว',
+  'รอออกแบบ',
+  'ไม่ต้องออกแบบ',
+  'ออกแบบแล้ว',
+  'รอคอนเฟิร์ม',
+  'คอนเฟิร์มแล้ว',
+  'ใบสั่งงาน',
+  'ย้ายจากใบงาน',
+  'ใบงานกำลังผลิต',
+  'จัดส่งแล้ว',
+  'ยกเลิก',
+] as const
+
+function getDefaultStatusFilterForTab(tab: Tab): OrderStatus | '' {
+  if (tab === 'waiting') return 'รอลงข้อมูล'
+  if (tab === 'data-error') return 'ลงข้อมูลผิด'
+  if (tab === 'verified') return 'ตรวจสอบแล้ว'
+  if (tab === 'shipped') return 'จัดส่งแล้ว'
+  if (tab === 'cancelled') return 'ยกเลิก'
+  return ''
+}
+
+export default function Orders() {
+  const { hasAccess, menuAccessLoading } = useMenuAccess()
+  const { user } = useAuthContext()
+  const [activeTab, setActiveTab] = useState<Tab>('create')
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
+  const [createFormKey, setCreateFormKey] = useState(0)
+  const [searchTerm, setSearchTerm] = useState('')
+  const [channelFilter, setChannelFilter] = useState('')
+  const [adminUserFilter, setAdminUserFilter] = useState('')
+  const [tabStatusFilter, setTabStatusFilter] = useState<OrderStatus | ''>('จัดส่งแล้ว')
+  const [waitingCount, setWaitingCount] = useState(0)
+  const [completeCount, setCompleteCount] = useState(0)
+  const [failureArchiveFilter, setFailureArchiveFilter] = useState<FailureArchiveFilter>('active')
+  const [verifiedCount, setVerifiedCount] = useState(0)
+  const [refundReturnCount, setRefundReturnCount] = useState(0)
+  const [dataErrorCount, setDataErrorCount] = useState(0)
+  const [cancelledCount, setCancelledCount] = useState(0)
+  
+  const [confirmCount, setConfirmCount] = useState(0)
+  const [shippedFilteredCount, setShippedFilteredCount] = useState(0)
+  const [issueCount, setIssueCount] = useState(0)
+  const [claimReqNeedShippingCount, setClaimReqNeedShippingCount] = useState(0)
+  const [allCount, setAllCount] = useState(0)
+  const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
+  const [adminUsers, setAdminUsers] = useState<string[]>([])
+  const [listRefreshKey, setListRefreshKey] = useState(0)
+  const realtimeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  /** นับบิล REQ ที่รอกรอกที่อยู่ ตั้งแต่เข้าหน้าออเดอร์ (ไม่ต้องเปิดแท็บบิลเคลมก่อน) + อัปเดตเรียลไทม์ */
+  useEffect(() => {
+    let cancelled = false
+    const loadClaimReqBadge = async () => {
+      try {
+        const { data: approved, error } = await supabase
+          .from('or_claim_requests')
+          .select('created_claim_order_id')
+          .eq('status', 'approved')
+          .not('created_claim_order_id', 'is', null)
+          .order('reviewed_at', { ascending: false })
+          .limit(200)
+        if (error) throw error
+        const ids = [
+          ...new Set((approved || []).map((r) => String(r.created_claim_order_id || '')).filter(Boolean)),
+        ]
+        if (ids.length === 0) {
+          if (!cancelled) setClaimReqNeedShippingCount(0)
+          return
+        }
+        const narrow =
+          user?.role === 'sales-tr'
+            ? narrowSalesTrAdminUserForTab()
+            : isSalesPumpOwnerScopedRole(user?.role)
+              ? resolveSalesPumpOwnerAdminName(user?.role, user?.username, user?.email) || undefined
+              : undefined
+        let q = supabase
+          .from('or_orders')
+          .select('id')
+          .in('id', ids)
+          .is('claim_shipping_confirmed_at', null)
+        if (narrow?.trim()) q = q.eq('admin_user', narrow.trim())
+        const { data: rows, error: e2 } = await q
+        if (e2) throw e2
+        if (!cancelled) setClaimReqNeedShippingCount((rows || []).length)
+      } catch (e) {
+        console.warn('Orders: claim REQ badge', e)
+      }
+    }
+    void loadClaimReqBadge()
+    const channel = supabase
+      .channel('orders-claim-req-badge')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_claim_requests' }, () => {
+        void loadClaimReqBadge()
+      })
+      .subscribe()
+    const onRefresh = () => void loadClaimReqBadge()
+    window.addEventListener('sidebar-refresh-counts', onRefresh)
+    return () => {
+      cancelled = true
+      supabase.removeChannel(channel)
+      window.removeEventListener('sidebar-refresh-counts', onRefresh)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.role, user?.username, user?.email, listRefreshKey])
+  const [shippedDateFrom, setShippedDateFrom] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+  })
+  const [shippedDateTo, setShippedDateTo] = useState(() => new Date().toISOString().split('T')[0])
+  const [allDateFrom, setAllDateFrom] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+  })
+  const [allDateTo, setAllDateTo] = useState(() => new Date().toISOString().split('T')[0])
+  const [allStatusFilter, setAllStatusFilter] = useState<OrderStatus | ''>('')
+  const [salesTrAdminValues, setSalesTrAdminValues] = useState<string[]>([])
+  const [salesTrTeamRows, setSalesTrTeamRows] = useState<{ username?: string | null; email?: string | null }[]>([])
+  /** กรองตามสมาชิกทีม ('' = ทั้งทีม) — ใช้ร่วมหลายแท็บ */
+  const [salesTrMemberFilter, setSalesTrMemberFilter] = useState('')
+  /** แสดงเฉพาะบิลที่ admin_user เป็นตัวเอง (username / email) */
+  const [salesTrOnlyMe, setSalesTrOnlyMe] = useState(false)
+
+  useEffect(() => {
+    if (menuAccessLoading) return
+    if (!hasAccess(`orders-${activeTab}`)) {
+      const first = ALL_TABS.find((t) => hasAccess(`orders-${t}`))
+      if (first) {
+        setActiveTab(first)
+        setTabStatusFilter(getDefaultStatusFilterForTab(first))
+      }
+    }
+  }, [menuAccessLoading])
+
+  useEffect(() => {
+    if (user?.role !== 'sales-tr') {
+      setSalesTrAdminValues([])
+      setSalesTrTeamRows([])
+      setSalesTrMemberFilter('')
+      setSalesTrOnlyMe(false)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const rows = await fetchSalesTrTeamRows(supabase)
+        if (cancelled) return
+        setSalesTrTeamRows(rows)
+        setSalesTrAdminValues(flattenSalesTrAdminIdentifiers(rows))
+      } catch (e) {
+        console.error('Error loading sales-tr team:', e)
+        if (!cancelled) {
+          setSalesTrTeamRows([])
+          setSalesTrAdminValues([])
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [user?.role])
+
+  function handleOrderClick(order: Order) {
+    setSelectedOrder(order)
+    setActiveTab('create')
+    setTabStatusFilter('')
+  }
+
+  /** คลิกที่รายการใน ตรวจสอบแล้ว/ยกเลิก → แสดงรายละเอียดเพื่อดู (read-only) โดยไม่สลับแท็บ */
+  function handleOrderClickViewOnly(order: Order) {
+    setSelectedOrder(order)
+  }
+
+  /** options.switchToTab: หลัง save แล้วให้สลับไปแท็บนั้น (เช่น ปฏิเสธโอนเกิน → ตรวจสอบไม่ผ่าน)
+   *  options.stayOnCreate: หลัง save แล้วให้อยู่หน้า สร้าง/แก้ไข และ reset form ว่าง เพื่อเปิดบิลต่อได้ทันที */
+  function handleSave(options?: { switchToTab?: 'complete'; stayOnCreate?: boolean }) {
+    setSelectedOrder(null)
+    if (options?.stayOnCreate) {
+      setActiveTab('create')
+      setCreateFormKey(k => k + 1)
+    } else {
+      const nextTab = options?.switchToTab === 'complete' ? 'complete' : 'waiting'
+      setActiveTab(nextTab)
+      setTabStatusFilter(getDefaultStatusFilterForTab(nextTab))
+    }
+    // Refresh counts immediately
+    refreshCounts()
+  }
+
+  async function refreshCounts() {
+    let salesTrScope: string[] | null = null
+    if (isSalesTrTeamRole(user?.role)) {
+      try {
+        salesTrScope = await fetchSalesTrTeamAdminValues(supabase)
+      } catch (e) {
+        console.error('refreshCounts sales-tr team:', e)
+        salesTrScope = []
+      }
+    }
+
+    function applyOwnerFilter(query: any) {
+      if (isSalesPumpOwnerScopedRole(user?.role)) {
+        const name = resolveSalesPumpOwnerAdminName(user?.role, user?.username, user?.email)
+        return name ? query.eq('admin_user', name) : query
+      }
+      if (isSalesTrTeamRole(user?.role)) {
+        if (!salesTrScope || salesTrScope.length === 0) {
+          return query.eq('admin_user', '__no_sales_tr_team__')
+        }
+        return query.in('admin_user', salesTrScope)
+      }
+      return query
+    }
+
+    try {
+      // Load waiting count (ไม่รวมบิลเคลม/REQ — บิลเคลมจัดการที่แท็บบิลเคลม)
+      const { count: waitingCount } = await applyOwnerFilter(
+        supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'รอลงข้อมูล').is('claim_type', null)
+      )
+      
+      // Load complete count (รวม ตรวจสอบไม่ผ่าน และ ตรวจสอบไม่สำเร็จ)
+      const { count: completeStatusCount } = await applyOwnerFilter(
+        supabase.from('or_orders').select('id', { count: 'exact', head: true })
+          .in('status', ['ตรวจสอบไม่ผ่าน', 'ตรวจสอบไม่สำเร็จ'])
+          .is('failed_queue_archived_at', null)
+      )
+
+      // นับเพิ่ม: บิลที่รายการโอนคืน/ตรวจสลิปมือ ล่าสุดถูกปฏิเสธ (แสดงรวมในแท็บตรวจสอบไม่ผ่าน โดยไม่เปลี่ยนสถานะบิล)
+      let rejectedExtraCount = 0
+      try {
+        const [rejectedRefundIds, rejectedManualSlipIds] = await Promise.all([
+          fetchLatestRejectedOverpayOrderIds(supabase),
+          fetchLatestRejectedManualSlipOrderIds(supabase),
+        ])
+        const rejectedIds = [...new Set([...rejectedRefundIds, ...rejectedManualSlipIds])]
+        if (rejectedIds.length > 0) {
+          const { count } = await applyOwnerFilter(
+            supabase.from('or_orders').select('id', { count: 'exact', head: true })
+              .in('id', rejectedIds)
+              .not('status', 'in', '("ตรวจสอบไม่ผ่าน","ตรวจสอบไม่สำเร็จ","ยกเลิก")')
+              .is('failed_queue_archived_at', null)
+          )
+          rejectedExtraCount = count ?? 0
+        }
+      } catch (e) {
+        console.error('Error counting rejected overpay/manual-slip orders:', e)
+      }
+      const completeCount = (completeStatusCount ?? 0) + rejectedExtraCount
+
+      // Load verified count (OFFICE: เฉพาะ superadmin/admin เห็น)
+      let verifiedQuery = supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ตรวจสอบแล้ว')
+      if (!canSeeOfficeChannel(user?.role)) {
+        verifiedQuery = verifiedQuery.neq('channel_code', 'OFFICE')
+      }
+      const { count: verifiedCount } = await applyOwnerFilter(verifiedQuery)
+
+      // Load data error count
+      const { count: dataErrorCount } = await applyOwnerFilter(
+        supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ลงข้อมูลผิด')
+      )
+
+      // Load cancelled count
+      const { count: cancelledCount } = await applyOwnerFilter(
+        supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ยกเลิก')
+      )
+
+      // Load confirm count: PUMP ทุกบิลในสถานะคิว + ช่องอื่นที่ติ๊กออกแบบ (requires_confirm_design)
+      const confirmStatusList = [
+        'ตรวจสอบแล้ว',
+        'รอออกแบบ',
+        'ไม่ต้องออกแบบ',
+        'ออกแบบแล้ว',
+        'รอคอนเฟิร์ม',
+        'คอนเฟิร์มแล้ว',
+      ] as const
+      const { startIso: confirmDayStart, endIso: confirmDayEnd } = getBangkokCalendarDayUtcBoundsISO()
+      const { count: confirmPump } = await applyOwnerFilter(
+        supabase.from('or_orders').select('id', { count: 'exact', head: true })
+          .eq('channel_code', 'PUMP')
+          .in('status', [...confirmStatusList])
+          .gte('created_at', confirmDayStart)
+          .lte('created_at', confirmDayEnd),
+      )
+      const { count: confirmOtherChannels } = await applyOwnerFilter(
+        supabase.from('or_orders').select('id', { count: 'exact', head: true })
+          .eq('requires_confirm_design', true)
+          .neq('channel_code', 'PUMP')
+          .in('status', [...confirmStatusList])
+          .gte('created_at', confirmDayStart)
+          .lte('created_at', confirmDayEnd),
+      )
+      const confirmCountTotal = (confirmPump ?? 0) + (confirmOtherChannels ?? 0)
+
+      // Load issue count (On) — sales-tr นับเฉพาะบิลที่ admin_user เป็นของทีม sales-tr
+      let issueCount = 0
+      if (isSalesTrTeamRole(user?.role)) {
+        const vals = salesTrScope || []
+        if (vals.length > 0) {
+          const ir = await supabase
+            .from('or_issues')
+            .select('id, or_orders!inner(admin_user)', { count: 'exact', head: true })
+            .eq('status', 'On')
+            .in('or_orders.admin_user', vals)
+          if (!ir.error) issueCount = ir.count ?? 0
+          else {
+            console.warn('Issue count join query failed, fallback:', ir.error)
+            const { count: ic } = await supabase
+              .from('or_issues')
+              .select('id', { count: 'exact', head: true })
+              .eq('status', 'On')
+            issueCount = ic ?? 0
+          }
+        }
+      } else {
+        const { count: ic } = await supabase
+          .from('or_issues')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'On')
+        issueCount = ic ?? 0
+      }
+
+      // Load refund-return count (โอนคืนที่อนุมัติแล้ว + มีสลิป แต่ยังไม่ส่งสลิป, scope เดียวกับแท็บโอนคืน)
+      let refundReturnCount = 0
+      try {
+        let rq = supabase
+          .from('ac_refunds')
+          .select('id, refund_slip_paths, or_orders!inner(admin_user)')
+          .eq('status', 'approved')
+          .is('refund_slip_sent_at', null)
+        if (isSalesPumpOwnerScopedRole(user?.role)) {
+          const name = resolveSalesPumpOwnerAdminName(user?.role, user?.username, user?.email)
+          rq = name ? rq.eq('or_orders.admin_user', name) : rq.eq('or_orders.admin_user', '__no_owner__')
+        } else if (isSalesTrTeamRole(user?.role)) {
+          const vals = salesTrScope || []
+          rq = vals.length > 0 ? rq.in('or_orders.admin_user', vals) : rq.eq('or_orders.admin_user', '__no_sales_tr_team__')
+        }
+        const { data: rrData, error: rrErr } = await rq
+        if (!rrErr && rrData) {
+          refundReturnCount = (rrData as any[]).filter((r) => (r.refund_slip_paths?.length || 0) > 0).length
+        }
+      } catch (e) {
+        console.error('Error counting refund returns:', e)
+      }
+
+      setWaitingCount(waitingCount || 0)
+      setCompleteCount(completeCount || 0)
+      setVerifiedCount(verifiedCount || 0)
+      setRefundReturnCount(refundReturnCount)
+      setDataErrorCount(dataErrorCount || 0)
+      setCancelledCount(cancelledCount || 0)
+      setConfirmCount(confirmCountTotal ?? 0)
+      setIssueCount(issueCount || 0)
+      // แจ้ง Sidebar ให้อัปเดตตัวเลขเมนูทันที
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+    } catch (error) {
+      console.error('Error refreshing counts:', error)
+    }
+  }
+
+  function handleCancel() {
+    setSelectedOrder(null)
+  }
+
+  async function handleMoveToWaiting(order: Order) {
+    try {
+      const { data: latestOrder, error: latestErr } = await supabase
+        .from('or_orders')
+        .select('id, status')
+        .eq('id', order.id)
+        .single()
+      if (latestErr) throw latestErr
+
+      const latestStatus = String((latestOrder as any)?.status || order.status || '')
+      if (latestStatus === 'ยกเลิก') {
+        const { count: approvedCancelCount, error: amendErr } = await supabase
+          .from('or_order_amendments')
+          .select('id', { count: 'exact', head: true })
+          .eq('order_id', order.id)
+          .in('status', ['approved', 'executed'])
+        if (amendErr) throw amendErr
+        if ((approvedCancelCount || 0) > 0) {
+          alert('บิลนี้อนุมัติยกเลิกแล้ว ไม่สามารถย้ายกลับไป "รอลงข้อมูล" ได้')
+          return
+        }
+      }
+
+      const { error } = await supabase
+        .from('or_orders')
+        .update({ status: 'รอลงข้อมูล' })
+        .eq('id', order.id)
+      if (error) throw error
+      refreshCounts()
+      setListRefreshKey((k) => k + 1)
+    } catch (err: any) {
+      console.error('Error moving order to waiting:', err)
+      alert('เกิดข้อผิดพลาด: ' + (err?.message || err))
+    }
+  }
+
+  /** ลบบิล (รอลงข้อมูล): ลบรูปใน bucket slip-images/slip{bill_no} แล้วลบ or_orders (cascade ลบ items, reviews, slips, refunds) */
+  async function handleDeleteOrder(order: Order) {
+    try {
+      const billNo = order.bill_no
+      if (billNo) {
+        const folderName = `slip${billNo}`
+        const { data: files, error: listError } = await supabase.storage
+          .from('slip-images')
+          .list(folderName, { limit: 200 })
+        if (!listError && files && files.length > 0) {
+          const filePaths = files
+            .filter((f) => f.name && !f.name.endsWith('/'))
+            .map((f) => `${folderName}/${f.name}`)
+          if (filePaths.length > 0) {
+            const { error: removeError } = await supabase.storage
+              .from('slip-images')
+              .remove(filePaths)
+            if (removeError) console.warn('ลบรูปสลิปไม่ครบ:', removeError)
+          }
+        }
+      }
+      const { error: deleteError } = await supabase
+        .from('or_orders')
+        .delete()
+        .eq('id', order.id)
+      if (deleteError) throw deleteError
+      if (selectedOrder?.id === order.id) setSelectedOrder(null)
+      refreshCounts()
+      setListRefreshKey((k) => k + 1)
+    } catch (err: any) {
+      console.error('Error deleting order:', err)
+      alert('เกิดข้อผิดพลาดในการลบบิล: ' + (err?.message || err))
+      throw err
+    }
+  }
+
+  // โหลด channels และรายชื่อผู้ลงข้อมูลจากตาราง
+  useEffect(() => {
+    async function loadChannels() {
+      try {
+        const { data, error } = await supabase
+          .from('channels')
+          .select('channel_code, channel_name')
+          .order('channel_code', { ascending: true })
+
+        if (error) throw error
+        setChannels(data || [])
+      } catch (error) {
+        console.error('Error loading channels:', error)
+      }
+    }
+
+    async function loadAdminUsers() {
+      try {
+        const data = await fetchAllSupabasePages<{ id: string; admin_user: string | null }>((from, to) => supabase
+          .from('or_orders')
+          .select('id, admin_user')
+          .not('admin_user', 'is', null)
+          .order('admin_user', { ascending: true })
+          .order('id', { ascending: true })
+          .range(from, to))
+        const uniqueUsers = Array.from(new Set(data
+          .map((row: { admin_user?: string | null }) => row.admin_user?.trim())
+          .filter((name): name is string => !!name)))
+        setAdminUsers(uniqueUsers)
+      } catch (error) {
+        console.error('Error loading admin users:', error)
+      }
+    }
+
+    loadChannels()
+    loadAdminUsers()
+  }, [])
+
+  // โหลดตัวเลขทุกแท็บทันทีเมื่อเปิดหน้า (แบบขนาน) + realtime เมื่อ or_orders / ac_refunds เปลี่ยน
+  useEffect(() => {
+    async function loadCounts() {
+      try {
+        await refreshCounts()
+      } catch (error) {
+        console.error('Error loading counts:', error)
+      }
+    }
+
+    function scheduleRealtimeRefresh() {
+      if (realtimeRefreshTimerRef.current) clearTimeout(realtimeRefreshTimerRef.current)
+      realtimeRefreshTimerRef.current = setTimeout(() => {
+        realtimeRefreshTimerRef.current = null
+        void loadCounts()
+        setListRefreshKey((k) => k + 1)
+      }, 300)
+    }
+
+    loadCounts()
+
+    const channel = supabase
+      .channel('orders-count-updates')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, scheduleRealtimeRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_issues' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_claim_requests' }, () => loadCounts())
+      .subscribe()
+
+    return () => {
+      if (realtimeRefreshTimerRef.current) clearTimeout(realtimeRefreshTimerRef.current)
+      realtimeRefreshTimerRef.current = null
+      supabase.removeChannel(channel)
+    }
+  }, [searchTerm, channelFilter])
+
+  // ฟัง event จาก TopBar เพื่อเปลี่ยนไปแท็บ Issue
+  useEffect(() => {
+    const onNavigateToIssue = () => {
+      setActiveTab('issue')
+      setSelectedOrder(null)
+    }
+    window.addEventListener('navigate-to-issue', onNavigateToIssue)
+    return () => window.removeEventListener('navigate-to-issue', onNavigateToIssue)
+  }, [])
+
+  // จากแท็บบันทึกร่าง(เคลม) → ไปหน้า สร้าง/แก้ไข แล้วเปิด modal เคลมพร้อมข้อมูลร่าง
+  useEffect(() => {
+    const onOpenClaimDraft = (e: Event) => {
+      const draft = (e as CustomEvent<{ draft?: unknown }>).detail?.draft
+      if (!draft) return
+      setSelectedOrder(null)
+      setActiveTab('create')
+      window.setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('load-claim-draft', { detail: { draft } }))
+      }, 200)
+    }
+    window.addEventListener('open-claim-draft', onOpenClaimDraft)
+    return () => window.removeEventListener('open-claim-draft', onOpenClaimDraft)
+  }, [])
+
+  // จาก IssueBoard (ข้อความยังไม่อ่าน) → ไป Confirm แล้วเปิดแชทบิล
+  useEffect(() => {
+    const onNavigateToOrderChat = (e: Event) => {
+      const orderId = (e as CustomEvent<{ orderId?: string }>).detail?.orderId
+      if (!orderId) return
+      setActiveTab('confirm')
+      setSelectedOrder(null)
+      window.setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('open-confirm-order-chat', { detail: { orderId } }))
+      }, 120)
+    }
+    window.addEventListener('navigate-to-order-chat', onNavigateToOrderChat)
+    return () => window.removeEventListener('navigate-to-order-chat', onNavigateToOrderChat)
+  }, [])
+
+  function narrowSalesTrAdminUserForTab(): string | undefined {
+    if (user?.role !== 'sales-tr' || !SALES_TR_FILTER_TABS.includes(activeTab)) return undefined
+    if (salesTrOnlyMe) {
+      const self = user.username?.trim() || user.email?.trim()
+      return self || undefined
+    }
+    if (salesTrMemberFilter.trim()) return salesTrMemberFilter.trim()
+    return undefined
+  }
+
+  const salesTrOrderListProps =
+    user?.role === 'sales-tr'
+      ? {
+          salesTrTeamAdminValues: salesTrAdminValues,
+          narrowSalesTrAdminUser: narrowSalesTrAdminUserForTab(),
+        }
+      : {}
+
+  const suppressSalesTrListCountSync =
+    user?.role === 'sales-tr' &&
+    SALES_TR_FILTER_TABS.includes(activeTab) &&
+    (salesTrOnlyMe || !!salesTrMemberFilter.trim())
+
+  return (
+    <div
+      className="w-full"
+    >
+      {/* หัวเมนูย่อย — sticky ภายใน scroll container ไม่ทะลุ */}
+      <div
+        className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6"
+      >
+        {/* Navigation Tabs */}
+        <div className="w-full overflow-x-auto px-2 scrollbar-thin sm:px-4 md:px-6 lg:px-8">
+          <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
+            {[
+              { id: 'all', label: 'ทั้งหมด' },
+              { id: 'create', label: 'สร้าง/แก้ไข' },
+              { id: 'claim-req', label: 'บิลเคลม' },
+              { id: 'waiting', label: `รอลงข้อมูล (${waitingCount})` },
+              { id: 'data-error', label: `ลงข้อมูลผิด (${dataErrorCount})` },
+              { id: 'complete', label: 'ตรวจสอบไม่ผ่าน', count: completeCount, countColor: 'text-red-600' },
+              { id: 'verified', label: 'ตรวจสอบแล้ว', count: verifiedCount, countColor: 'text-green-600' },
+              { id: 'refund-return', label: 'โอนคืน', count: refundReturnCount, countColor: 'text-emerald-600' },
+              { id: 'confirm', label: 'Confirm', count: confirmCount, countColor: 'text-blue-600' },
+              { id: 'shipped', label: 'จัดส่งแล้ว' },
+              { id: 'cancelled', label: `ยกเลิก (${cancelledCount})`, labelColor: 'text-orange-600' },
+              { id: 'issue', label: 'Issue', count: issueCount, countColor: 'text-blue-600' },
+            ].filter((tab) => hasAccess(`orders-${tab.id}`)).map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => {
+                  const nextTab = tab.id as Tab
+                  setActiveTab(nextTab)
+                  setSelectedOrder(null)
+                  setTabStatusFilter(getDefaultStatusFilterForTab(nextTab))
+                }}
+                className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap flex-shrink-0 transition-colors ${
+                  activeTab === tab.id
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-blue-600'
+                }`}
+              >
+                {tab.id === 'claim-req' ? (
+                  <>
+                    {tab.label}
+                    {claimReqNeedShippingCount > 0 && (
+                      <span className="font-semibold text-amber-600"> ({claimReqNeedShippingCount})</span>
+                    )}
+                  </>
+                ) : 'count' in tab && tab.count !== undefined && tab.count > 0 && 'countColor' in tab ? (
+                  <>
+                    {tab.label}{' '}
+                    <span className={`font-semibold ${tab.countColor}`}>({tab.count})</span>
+                  </>
+                ) : (
+                  tab.label
+                )}
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        {/* Search and Filter - แสดงเมื่อไม่ใช่แท็บสร้าง/แก้ไข */}
+        {activeTab !== 'create' && activeTab !== 'confirm' && activeTab !== 'claim-req' && activeTab !== 'refund-return' && (
+          <div className="w-full px-4 sm:px-6 lg:px-8 py-3 bg-surface-100 border-t border-surface-200">
+            <div className="flex flex-wrap gap-3">
+              <div className="relative flex-1 min-w-[200px]">
+                <input
+                  type="search"
+                  aria-label="ค้นหาออเดอร์"
+                  placeholder="ค้นหาเลขบิล เลขคำสั่งซื้อ ลูกค้า ชื่อสินค้า หรือเลขพัสดุ..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full px-4 py-2.5 pr-11 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-300 bg-surface-50 text-base [&::-webkit-search-cancel-button]:hidden"
+                />
+                {searchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchTerm('')}
+                    aria-label="ล้างคำค้นหา"
+                    title="ล้างคำค้นหา"
+                    className="absolute right-3 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full text-surface-500 transition-colors hover:bg-surface-200 hover:text-surface-800 focus:outline-none focus:ring-2 focus:ring-primary-300"
+                  >
+                    <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4" fill="none">
+                      <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+              <select
+                value={channelFilter}
+                onChange={(e) => setChannelFilter(e.target.value)}
+                className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+              >
+                <option value="">ทั้งหมด</option>
+                {channels.map((ch) => (
+                  <option key={ch.channel_code} value={ch.channel_code}>
+                    {ch.channel_name || ch.channel_code}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={adminUserFilter}
+                onChange={(e) => setAdminUserFilter(e.target.value)}
+                className="min-w-[180px] px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+                aria-label="กรองชื่อผู้สร้างบิล"
+              >
+                <option value="">ผู้สร้างบิลทั้งหมด</option>
+                {adminUsers.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+              {activeTab !== 'all' && activeTab !== 'issue' && (
+                <select
+                  value={tabStatusFilter}
+                  onChange={(e) => setTabStatusFilter((e.target.value || '') as OrderStatus | '')}
+                  className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+                >
+                  <option value="">สถานะตามแท็บ</option>
+                  {ALL_STATUS_FILTER_OPTIONS.map((status) => (
+                    <option key={status} value={status}>
+                      {status}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {activeTab === 'complete' && (
+                <select
+                  value={failureArchiveFilter}
+                  onChange={(e) => setFailureArchiveFilter(e.target.value as FailureArchiveFilter)}
+                  className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+                  aria-label="กรองรายการที่เก็บเข้าประวัติ"
+                >
+                  <option value="active">กำลังดำเนินการ</option>
+                  <option value="archived">เก็บเข้าประวัติแล้ว</option>
+                  <option value="all">ทั้งหมด</option>
+                </select>
+              )}
+              {activeTab === 'all' && (
+                <>
+                  <select
+                    value={allStatusFilter}
+                    onChange={(e) => setAllStatusFilter((e.target.value || '') as OrderStatus | '')}
+                    className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+                  >
+                    <option value="">ทุกสถานะ</option>
+                    {ALL_STATUS_FILTER_OPTIONS.map((status) => (
+                      <option key={status} value={status}>
+                        {status}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="date"
+                    value={allDateFrom}
+                    onChange={(e) => setAllDateFrom(e.target.value)}
+                    className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+                  />
+                  <input
+                    type="date"
+                    value={allDateTo}
+                    onChange={(e) => setAllDateTo(e.target.value)}
+                    className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+                  />
+                </>
+              )}
+              {activeTab === 'shipped' && (
+                <>
+                  <input
+                    type="date"
+                    value={shippedDateFrom}
+                    onChange={(e) => setShippedDateFrom(e.target.value)}
+                    className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+                  />
+                  <input
+                    type="date"
+                    value={shippedDateTo}
+                    onChange={(e) => setShippedDateTo(e.target.value)}
+                    className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+                  />
+                  <div className="text-sm font-semibold text-surface-700 flex items-center px-3 py-2 rounded-xl bg-white border border-surface-200">
+                    จำนวนบิลหลังกรอง: {shippedFilteredCount.toLocaleString()} รายการ
+                  </div>
+                </>
+              )}
+              {SALES_TR_FILTER_TABS.includes(activeTab) && user?.role === 'sales-tr' && (
+                <>
+                  <select
+                    value={salesTrMemberFilter}
+                    disabled={salesTrOnlyMe}
+                    onChange={(e) => {
+                      setSalesTrMemberFilter(e.target.value)
+                      setSalesTrOnlyMe(false)
+                    }}
+                    className="min-w-[200px] px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base disabled:opacity-50 disabled:cursor-not-allowed"
+                    aria-label="กรองตามผู้ลงข้อมูล sales-tr"
+                  >
+                    <option value="">ทีม sales-tr ทั้งหมด</option>
+                    {salesTrTeamRows.map((row, idx) => {
+                      const label = row.username?.trim() || row.email?.trim() || `user-${idx}`
+                      const value = row.username?.trim() || row.email?.trim() || ''
+                      if (!value) return null
+                      return (
+                        <option key={`${value}-${idx}`} value={value}>
+                          {label}
+                        </option>
+                      )
+                    })}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSalesTrOnlyMe((v) => {
+                        const next = !v
+                        if (next) setSalesTrMemberFilter('')
+                        return next
+                      })
+                    }}
+                    className={`shrink-0 px-4 py-2.5 rounded-xl border text-base font-medium transition-colors ${
+                      salesTrOnlyMe
+                        ? 'border-emerald-500 bg-emerald-50 text-emerald-800 ring-2 ring-emerald-200'
+                        : 'border-surface-300 bg-surface-50 text-gray-700 hover:bg-surface-100'
+                    }`}
+                  >
+                    เฉพาะฉัน
+                  </button>
+                </>
+              )}
+              {activeTab === 'all' && (
+                <div className="ml-auto text-sm font-semibold text-surface-700 flex items-center px-3 py-2 rounded-xl bg-white border border-surface-200">
+                  จำนวนบิลหลังกรอง: {allCount.toLocaleString()} รายการ
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ส่วนเนื้อหาทุกเมนู — อยู่ใต้ sticky เมนูย่อยปกติ */}
+      <main
+        className="w-full pb-6 min-h-0 pt-4"
+        aria-label="เนื้อหาออเดอร์"
+      >
+        {selectedOrder ? (
+          <OrderForm
+            order={selectedOrder}
+            onSave={handleSave}
+            onCancel={handleCancel}
+            onOpenOrder={(o) => { setSelectedOrder(o); setActiveTab('create') }}
+            readOnly={activeTab !== 'create'}
+            viewOnly={activeTab === 'verified' || activeTab === 'cancelled' || activeTab === 'shipped'}
+          />
+        ) : activeTab === 'all' ? (
+          <OrderList
+            status={allStatusFilter ? allStatusFilter : undefined}
+            searchTerm={searchTerm}
+            channelFilter={channelFilter}
+            adminUserFilter={adminUserFilter}
+            onOrderClick={handleOrderClickViewOnly}
+            onCountChange={setAllCount}
+            dateFrom={allDateFrom}
+            dateTo={allDateTo}
+            refreshTrigger={listRefreshKey}
+            useDetailViewOnClick={true}
+            hideActionButtons={true}
+            detailReadOnly={true}
+            loadOrderRelations={false}
+            {...salesTrOrderListProps}
+          />
+        ) : activeTab === 'waiting' ? (
+          <OrderList
+            status={tabStatusFilter || 'รอลงข้อมูล'}
+            searchTerm={searchTerm}
+            channelFilter={channelFilter}
+            adminUserFilter={adminUserFilter}
+            onOrderClick={handleOrderClick}
+            showBillingStatus={true}
+            onCountChange={suppressSalesTrListCountSync ? undefined : setWaitingCount}
+            showDeleteButton={true}
+            onDelete={handleDeleteOrder}
+            excludeClaimBills={true}
+            refreshTrigger={listRefreshKey}
+            {...salesTrOrderListProps}
+          />
+        ) : activeTab === 'complete' ? (
+          <OrderList
+            status={tabStatusFilter || ['ตรวจสอบไม่ผ่าน', 'ตรวจสอบไม่สำเร็จ']}
+            includeRejectedOverpayRefundOrders={!tabStatusFilter}
+            searchTerm={searchTerm}
+            channelFilter={channelFilter}
+            adminUserFilter={adminUserFilter}
+            onOrderClick={handleOrderClick}
+            showBillingStatus={true}
+            showMoveToWaitingButton={true}
+            onMoveToWaiting={handleMoveToWaiting}
+            enableFailureArchive={true}
+            failureArchiveFilter={failureArchiveFilter}
+            onFailureArchiveChange={refreshCounts}
+            refreshTrigger={listRefreshKey}
+            useDetailViewOnClick={true}
+            {...salesTrOrderListProps}
+          />
+        ) : activeTab === 'verified' ? (
+          <OrderList
+            status={tabStatusFilter || 'ตรวจสอบแล้ว'}
+            searchTerm={searchTerm}
+            channelFilter={channelFilter}
+            adminUserFilter={adminUserFilter}
+            onOrderClick={handleOrderClickViewOnly}
+            verifiedOnly={!tabStatusFilter}
+            onCountChange={suppressSalesTrListCountSync ? undefined : setVerifiedCount}
+            showMoveToWaitingButton={true}
+            onMoveToWaiting={handleMoveToWaiting}
+            refreshTrigger={listRefreshKey}
+            useDetailViewOnClick={true}
+            {...salesTrOrderListProps}
+          />
+        ) : activeTab === 'refund-return' ? (
+          <RefundReturnList />
+        ) : activeTab === 'confirm' ? (
+          <OrderConfirmBoard onCountChange={setConfirmCount} />
+        ) : activeTab === 'issue' ? (
+          <IssueBoard
+            scope="orders"
+            onOpenCountChange={suppressSalesTrListCountSync ? undefined : setIssueCount}
+            salesTrNarrowAdminUser={
+              user?.role === 'sales-tr' ? narrowSalesTrAdminUserForTab() : undefined
+            }
+          />
+        ) : activeTab === 'claim-req' ? (
+          <ClaimReqOrdersTab
+            userRole={user?.role}
+            narrowAdminUser={
+              user?.role === 'sales-tr'
+                ? narrowSalesTrAdminUserForTab()
+                : isSalesPumpOwnerScopedRole(user?.role)
+                  ? resolveSalesPumpOwnerAdminName(user?.role, user?.username, user?.email) || undefined
+                  : undefined
+            }
+            refreshTrigger={listRefreshKey}
+            onCountsChange={(_pendingApproval, needShipping) => {
+              setClaimReqNeedShippingCount(needShipping)
+            }}
+          />
+        ) : activeTab === 'data-error' ? (
+          <OrderList
+            status={tabStatusFilter || 'ลงข้อมูลผิด'}
+            searchTerm={searchTerm}
+            channelFilter={channelFilter}
+            adminUserFilter={adminUserFilter}
+            onOrderClick={handleOrderClick}
+            showBillingStatus={true}
+            onCountChange={suppressSalesTrListCountSync ? undefined : setDataErrorCount}
+            {...salesTrOrderListProps}
+          />
+        ) : activeTab === 'shipped' ? (
+          <OrderList
+            status={tabStatusFilter || 'จัดส่งแล้ว'}
+            searchTerm={searchTerm}
+            channelFilter={channelFilter}
+            adminUserFilter={adminUserFilter}
+            onOrderClick={handleOrderClickViewOnly}
+            dateFrom={shippedDateFrom}
+            dateTo={shippedDateTo}
+            onCountChange={setShippedFilteredCount}
+            refreshTrigger={listRefreshKey}
+            useDetailViewOnClick={true}
+            detailReadOnly={true}
+            loadOrderRelations={false}
+            enableTrackingExport={true}
+            {...salesTrOrderListProps}
+          />
+        ) : activeTab === 'cancelled' ? (
+          <OrderList
+            status={tabStatusFilter || 'ยกเลิก'}
+            searchTerm={searchTerm}
+            channelFilter={channelFilter}
+            adminUserFilter={adminUserFilter}
+            onOrderClick={handleOrderClickViewOnly}
+            onCountChange={setCancelledCount}
+            showMoveToWaitingButton={true}
+            onMoveToWaiting={handleMoveToWaiting}
+            refreshTrigger={listRefreshKey}
+            {...salesTrOrderListProps}
+          />
+        ) : (
+          <OrderForm
+            key={createFormKey}
+            onSave={handleSave}
+            onCancel={handleCancel}
+            onOpenOrder={(o) => { setSelectedOrder(o); setActiveTab('create') }}
+          />
+        )}
+      </main>
+    </div>
+  )
+}

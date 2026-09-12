@@ -1,0 +1,431 @@
+import { useState, useEffect } from 'react'
+import { useAuthContext } from '../../../contexts/AuthContext'
+import { supabase } from '../../../lib/supabase'
+import BarcodeScanner from './BarcodeScanner'
+import MobileProductPicker from './MobileProductPicker'
+import { getProductImageUrl } from '../wmsUtils'
+import { useWmsModal } from '../useWmsModal'
+import type { ProductType } from '../../../types'
+
+interface BorrowItem {
+  product_code: string
+  product_name: string
+  storage_location?: string
+  qty: number
+  topic: string
+  item_note?: string
+}
+
+export default function ProductionBorrow() {
+  const { user } = useAuthContext()
+  const [activeTab, setActiveTab] = useState<'create' | 'list'>('create')
+  const [searchTerm, setSearchTerm] = useState('')
+  const [allProducts, setAllProducts] = useState<any[]>([])
+  const [selectedItems, setSelectedItems] = useState<BorrowItem[]>([])
+  const [borrowNo, setBorrowNo] = useState('')
+  const [dueDate, setDueDate] = useState('')
+  const [requisitionTopics, setRequisitionTopics] = useState<any[]>([])
+  const [loadingAllProducts, setLoadingAllProducts] = useState(false)
+  const [showScanner, setShowScanner] = useState(false)
+  const [productTypeFilter, setProductTypeFilter] = useState<ProductType>('FG')
+  const [submitting, setSubmitting] = useState(false)
+  const [borrowList, setBorrowList] = useState<any[]>([])
+  const [loadingList, setLoadingList] = useState(false)
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
+
+  useEffect(() => {
+    generateBorrowNo()
+    loadAllProducts()
+    loadTopics()
+    setDefaultDueDate()
+  }, [])
+
+  useEffect(() => {
+    loadAllProducts()
+    setSearchTerm('')
+  }, [productTypeFilter])
+
+  useEffect(() => {
+    if (activeTab === 'list') loadBorrowList()
+  }, [activeTab])
+
+  const setDefaultDueDate = () => {
+    const d = new Date()
+    d.setDate(d.getDate() + 7)
+    setDueDate(d.toISOString().slice(0, 10))
+  }
+
+  const generateBorrowNo = async () => {
+    const date = new Date()
+    const dateStr = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`
+    const { count } = await supabase
+      .from('wms_borrow_requisitions')
+      .select('*', { count: 'exact', head: true })
+      .like('borrow_no', `BOR-${dateStr}-%`)
+    const seq = ((count || 0) + 1).toString().padStart(3, '0')
+    setBorrowNo(`BOR-${dateStr}-${seq}`)
+  }
+
+  const loadTopics = async () => {
+    try {
+      const { data } = await supabase.from('wms_borrow_topics').select('*').order('topic_name')
+      setRequisitionTopics(data || [])
+    } catch {}
+  }
+
+  const loadAllProducts = async () => {
+    setLoadingAllProducts(true)
+    try {
+      const { data, error } = await supabase
+        .from('pr_products')
+        .select('product_code, product_name, storage_location')
+        .eq('is_active', true)
+        .eq('product_type', productTypeFilter)
+        .order('product_name')
+      if (error) throw error
+      setAllProducts(data || [])
+    } catch (e: any) {
+      showMessage({ message: `โหลดสินค้าไม่สำเร็จ: ${e.message}` })
+    } finally {
+      setLoadingAllProducts(false)
+    }
+  }
+
+  const loadBorrowList = async () => {
+    setLoadingList(true)
+    try {
+      const { data, error } = await supabase
+        .from('wms_borrow_requisitions')
+        .select('*')
+        .eq('created_by', user?.id || '')
+        .order('created_at', { ascending: false })
+        .limit(50)
+      if (error) throw error
+      setBorrowList(data || [])
+    } catch (e: any) {
+      console.error('Load borrow list error:', e)
+    } finally {
+      setLoadingList(false)
+    }
+  }
+
+  const handleBarcodeScan = (barcode: string) => {
+    setShowScanner(false)
+    setSearchTerm(barcode)
+  }
+
+  const addItem = (product: any) => {
+    const existing = selectedItems.find((i) => i.product_code === product.product_code)
+    if (existing) {
+      setSelectedItems(selectedItems.map((i) => i.product_code === product.product_code ? { ...i, qty: i.qty + 1 } : i))
+    } else {
+      setSelectedItems([...selectedItems, { ...product, qty: 1, topic: '', item_note: '' }])
+    }
+  }
+
+  const updateItemTopic = (code: string, topic: string) => {
+    setSelectedItems(selectedItems.map((i) => i.product_code === code ? { ...i, topic } : i))
+  }
+
+  const updateItemNote = (code: string, item_note: string) => {
+    setSelectedItems(selectedItems.map((i) => i.product_code === code ? { ...i, item_note } : i))
+  }
+
+  const removeItem = (code: string) => setSelectedItems(selectedItems.filter((i) => i.product_code !== code))
+
+  const updateQty = (code: string, qty: number) => {
+    if (qty < 1) { removeItem(code); return }
+    setSelectedItems(selectedItems.map((i) => i.product_code === code ? { ...i, qty } : i))
+  }
+
+  const submitBorrow = async () => {
+    if (selectedItems.length === 0) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้า' }); return }
+    if (selectedItems.some((i) => !i.topic)) { showMessage({ message: 'กรุณาเลือกหัวข้อยืมให้ครบทุกรายการ' }); return }
+    if (!dueDate) { showMessage({ message: 'กรุณากำหนดวันคืน' }); return }
+
+    const ok = await showConfirm({
+      title: 'ยืนยันการยืมของ',
+      message: `ยืนยันสร้างใบยืม ${borrowNo}?\nจำนวนรายการ: ${selectedItems.length}\nกำหนดคืน: ${dueDate}`,
+    })
+    if (!ok) return
+
+    setSubmitting(true)
+    try {
+      const { error: borErr } = await supabase
+        .from('wms_borrow_requisitions')
+        .insert({
+          borrow_no: borrowNo,
+          topic: null,
+          status: 'pending',
+          due_date: dueDate,
+          created_by: user?.id,
+          note: null,
+        })
+        .select()
+        .single()
+      if (borErr) throw borErr
+
+      const { data: borData } = await supabase
+        .from('wms_borrow_requisitions')
+        .select('id')
+        .eq('borrow_no', borrowNo)
+        .single()
+      if (!borData) throw new Error('ไม่พบใบยืมที่สร้าง')
+
+      const productCodes = selectedItems.map((i) => i.product_code)
+      const { data: prods } = await supabase
+        .from('pr_products')
+        .select('id, product_code')
+        .in('product_code', productCodes)
+      const codeToId = (prods || []).reduce<Record<string, string>>((acc, p) => { acc[p.product_code] = p.id; return acc }, {})
+
+      const items = selectedItems
+        .filter((i) => codeToId[i.product_code])
+        .map((i) => ({
+          borrow_requisition_id: borData.id,
+          product_id: codeToId[i.product_code],
+          qty: i.qty,
+          topic: i.topic || null,
+          item_note: i.item_note?.trim() || null,
+        }))
+      if (items.length > 0) {
+        const { error: itemErr } = await supabase.from('wms_borrow_requisition_items').insert(items)
+        if (itemErr) throw itemErr
+      }
+
+      showMessage({ message: `สร้างใบยืม ${borrowNo} สำเร็จ` })
+      setSelectedItems([])
+      setDefaultDueDate()
+      generateBorrowNo()
+    } catch (e: any) {
+      showMessage({ message: `สร้างใบยืมไม่สำเร็จ: ${e.message}` })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const statusBadge = (status: string) => {
+    const map: Record<string, string> = {
+      pending: 'bg-amber-500',
+      approved: 'bg-blue-500',
+      partial_returned: 'bg-cyan-500',
+      returned: 'bg-green-500',
+      overdue: 'bg-red-500',
+      written_off: 'bg-gray-500',
+      rejected: 'bg-red-700',
+    }
+    const labels: Record<string, string> = {
+      pending: 'รออนุมัติ',
+      approved: 'อนุมัติแล้ว',
+      partial_returned: 'คืนบางส่วน',
+      returned: 'คืนแล้ว',
+      overdue: 'เลยกำหนด',
+      written_off: 'ตัดเป็นของเสีย',
+      rejected: 'ไม่อนุมัติ',
+    }
+    return (
+      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold text-white ${map[status] || 'bg-gray-500'}`}>
+        {labels[status] || status}
+      </span>
+    )
+  }
+
+  const isOverdue = (due: string, status: string) => {
+    if (['returned', 'written_off', 'rejected'].includes(status)) return false
+    return new Date(due) < new Date(new Date().toISOString().slice(0, 10))
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex border-b border-gray-200 px-3 pt-2">
+        <button
+          type="button"
+          onClick={() => setActiveTab('create')}
+          className={`px-4 py-2 text-sm font-bold rounded-t-lg ${
+            activeTab === 'create' ? 'bg-white text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'
+          }`}
+        >
+          สร้างใบยืม
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('list')}
+          className={`px-4 py-2 text-sm font-bold rounded-t-lg ${
+            activeTab === 'list' ? 'bg-white text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'
+          }`}
+        >
+          รายการใบยืม
+        </button>
+      </div>
+
+      {activeTab === 'create' ? (
+        <div className="flex-1 overflow-y-auto p-3 space-y-3">
+          <div className="rounded-xl bg-white border border-gray-200 shadow-sm p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-gray-500">เลขที่ใบยืม</span>
+              <span className="text-sm font-bold text-blue-600">{borrowNo}</span>
+            </div>
+          </div>
+
+          {/* Due date */}
+          <div className="rounded-xl bg-white border border-gray-200 shadow-sm p-3 space-y-2">
+            <label className="block text-xs text-gray-500">
+              วันกำหนดคืน <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="date"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+              className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-gray-900 ${
+                dueDate ? 'border-gray-300' : 'border-red-500/60'
+              }`}
+            />
+            <div className="flex gap-2">
+              {[7, 14, 30].map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => {
+                    const dt = new Date()
+                    dt.setDate(dt.getDate() + d)
+                    setDueDate(dt.toISOString().slice(0, 10))
+                  }}
+                  className="flex-1 py-1 rounded-lg bg-gray-200 text-xs text-gray-600 hover:bg-gray-300 font-bold"
+                >
+                  {d} วัน
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Product type filter */}
+          <div className="flex gap-2">
+            {(['FG', 'RM', 'PP'] as ProductType[]).map((pt) => (
+              <button
+                key={pt}
+                type="button"
+                onClick={() => setProductTypeFilter(pt)}
+                className={`flex-1 py-1.5 rounded-lg text-xs font-bold ${
+                  productTypeFilter === pt ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'
+                }`}
+              >
+                {pt === 'FG' ? 'สินค้าสำเร็จรูป' : pt === 'RM' ? 'วัตถุดิบ' : 'สินค้าแปรรูป'}
+              </button>
+            ))}
+          </div>
+
+          <MobileProductPicker
+            products={allProducts}
+            query={searchTerm}
+            onQueryChange={setSearchTerm}
+            onSelect={addItem}
+            onOpenScanner={() => setShowScanner(true)}
+            loading={loadingAllProducts}
+            selectedCodes={selectedItems.map((item) => item.product_code)}
+          />
+
+          {/* Selected items */}
+          {selectedItems.length > 0 && (
+            <div className="rounded-xl bg-white border border-gray-200 shadow-sm p-3 space-y-2">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm font-bold text-gray-900">รายการยืม ({selectedItems.length})</span>
+              </div>
+              {selectedItems.map((item) => (
+                <div key={item.product_code} className="bg-gray-100 rounded-lg p-2 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <img
+                      src={getProductImageUrl(item.product_code)}
+                      alt=""
+                      className="w-10 h-10 rounded-lg object-cover bg-gray-200"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-bold text-gray-900 truncate">{item.product_code}</div>
+                      <div className="text-[10px] text-gray-500 truncate">{item.product_name}</div>
+                    </div>
+                    <button type="button" onClick={() => removeItem(item.product_code)} className="text-red-500 hover:text-red-600">
+                      <i className="fas fa-trash text-sm" />
+                    </button>
+                  </div>
+                  <select
+                    value={item.topic || ''}
+                    onChange={(e) => updateItemTopic(item.product_code, e.target.value)}
+                    className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-gray-900 ${
+                      item.topic ? 'border-gray-300' : 'border-red-500/50'
+                    }`}
+                  >
+                    <option value="">-- หัวข้อยืม * --</option>
+                    {requisitionTopics.map((t) => (
+                      <option key={t.id} value={t.topic_name}>{t.topic_name}</option>
+                    ))}
+                  </select>
+                  <textarea
+                    value={item.item_note || ''}
+                    onChange={(e) => updateItemNote(item.product_code, e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400"
+                    rows={2}
+                    placeholder="หมายเหตุรายการ (ไม่บังคับกรอก)"
+                  />
+                  <div className="flex items-center gap-1">
+                    <button type="button" onClick={() => updateQty(item.product_code, item.qty - 1)} className="w-7 h-7 rounded bg-gray-200 text-gray-900 font-bold text-sm">-</button>
+                    <input
+                      type="number"
+                      value={item.qty}
+                      onChange={(e) => updateQty(item.product_code, Number(e.target.value) || 0)}
+                      className="w-12 text-center rounded border border-gray-300 bg-white text-gray-900 text-sm py-1"
+                      min={1}
+                    />
+                    <button type="button" onClick={() => updateQty(item.product_code, item.qty + 1)} className="w-7 h-7 rounded bg-gray-200 text-gray-900 font-bold text-sm">+</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Submit */}
+          <button
+            type="button"
+            onClick={submitBorrow}
+            disabled={submitting || selectedItems.length === 0 || selectedItems.some((i) => !i.topic) || !dueDate}
+            className="w-full py-3 rounded-xl bg-blue-600 text-white font-bold text-base hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50"
+          >
+            {submitting ? 'กำลังบันทึก...' : `ยืนยันยืมของ (${selectedItems.length} รายการ)`}
+          </button>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          {loadingList ? (
+            <div className="flex justify-center py-10">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+            </div>
+          ) : borrowList.length === 0 ? (
+            <p className="text-center text-gray-500 py-10">ยังไม่มีรายการยืม</p>
+          ) : (
+            borrowList.map((r) => (
+              <div key={r.id} className={`rounded-xl bg-white border shadow-sm p-3 ${isOverdue(r.due_date, r.status) ? 'border-red-500/60' : 'border-gray-200'}`}>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-bold text-gray-900">{r.borrow_no}</span>
+                  <div className="flex items-center gap-1.5">
+                    {isOverdue(r.due_date, r.status) && (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold text-white bg-red-500 animate-pulse">เลยกำหนด</span>
+                    )}
+                    {statusBadge(r.status)}
+                  </div>
+                </div>
+                <div className="text-[10px] text-gray-500 mt-1 flex flex-wrap gap-x-3">
+                  <span>กำหนดคืน: {new Date(r.due_date).toLocaleDateString('th-TH')}</span>
+                  <span>{new Date(r.created_at).toLocaleString('th-TH')}</span>
+                </div>
+                {r.note && <div className="text-xs text-gray-500 mt-1">{r.note}</div>}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {showScanner && <BarcodeScanner onScan={handleBarcodeScan} onClose={() => setShowScanner(false)} />}
+      {MessageModal}
+      {ConfirmModal}
+    </div>
+  )
+}

@@ -1,0 +1,975 @@
+﻿import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { supabase } from '../lib/supabase'
+import { Order } from '../types'
+import { useAuthContext } from '../contexts/AuthContext'
+import Modal from '../components/ui/Modal'
+
+type ChannelRow = { channel_code: string; channel_name: string; default_carrier?: string | null; is_self_pickup?: boolean }
+type MessageModal = { open: boolean; title: string; message: string }
+type ConfirmModal = { open: boolean; title: string; message: string; onConfirm: () => void; tone?: 'danger' | 'success' }
+type TransportTab = 'verification' | 'self-pickup' | 'delivery-check'
+
+const PARCEL_TYPES = ['กล่อง', 'ซองกระดาษ', 'ซองบับเบิล', 'ถุงพัสดุ'] as const
+type ParcelType = (typeof PARCEL_TYPES)[number]
+
+/** ตัดช่องว่าง/อักขระซ่อน (เว้นวรรค, ขึ้นบรรทัดใหม่, zero-width) แล้วแปลงพิมพ์ใหญ่ — ใช้เทียบเลขพัสดุให้ทนต่อข้อมูลที่มีช่องว่างติดมา */
+function normalizeTracking(value: string | null | undefined): string {
+  return String(value ?? '')
+    .replace(/[\s\u200B-\u200D\uFEFF]/g, '')
+    .toUpperCase()
+}
+
+function normalizeParcelType(value: string | null | undefined): ParcelType {
+  const v = String(value || '').trim()
+  if (v === 'ซองกระดาษ' || v === 'ซอง') return 'ซองกระดาษ'
+  if (v === 'ซองบับเบิล' || v === 'บับเบิล') return 'ซองบับเบิล'
+  if (v === 'ถุงพัสดุ' || v === 'ถุง') return 'ถุงพัสดุ'
+  return 'กล่อง'
+}
+
+function formatTime(iso?: string | null) {
+  if (!iso) return '-'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return '-'
+  return d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+function formatDateTime(iso?: string | null) {
+  if (!iso) return '-'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return '-'
+  return d.toLocaleString('th-TH', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+}
+
+function todayISO() {
+  return localDateISO(new Date())
+}
+
+function localDateISO(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function monthStartISO() {
+  const today = new Date()
+  return localDateISO(new Date(today.getFullYear(), today.getMonth(), 1))
+}
+
+function isInDateRange(iso: string | null | undefined, from: string, to: string) {
+  if (!iso) return false
+  const date = new Date(iso)
+  if (isNaN(date.getTime())) return false
+  const key = localDateISO(date)
+  return key >= from && key <= to
+}
+
+export default function TransportVerification() {
+  const { user } = useAuthContext()
+  const [activeTab, setActiveTab] = useState<TransportTab>('verification')
+  const [dateFilter, setDateFilter] = useState(todayISO())
+  const [pickupDateFrom, setPickupDateFrom] = useState(monthStartISO())
+  const [pickupDateTo, setPickupDateTo] = useState(todayISO())
+  const [channels, setChannels] = useState<ChannelRow[]>([])
+  const [orders, setOrders] = useState<Order[]>([])
+  const [activeCarrier, setActiveCarrier] = useState<string | null>(null)
+  const [activeParcelType, setActiveParcelType] = useState<(typeof PARCEL_TYPES)[number]>('กล่อง')
+  const [scanValue, setScanValue] = useState('')
+  const [statusMsg, setStatusMsg] = useState<{ text: string; type: 'success' | 'error' | '' }>({ text: '', type: '' })
+  const [loading, setLoading] = useState(false)
+  const [exportingPng, setExportingPng] = useState(false)
+  const [lastExportSize, setLastExportSize] = useState<{ width: number; height: number } | null>(null)
+  const [pickupActionId, setPickupActionId] = useState<string | null>(null)
+  const [messageModal, setMessageModal] = useState<MessageModal>({ open: false, title: '', message: '' })
+  const [confirmModal, setConfirmModal] = useState<ConfirmModal>({ open: false, title: '', message: '', onConfirm: () => {} })
+
+  const scanInputRef = useRef<HTMLInputElement>(null)
+  const summaryRef = useRef<HTMLDivElement>(null)
+  const successSoundRef = useRef<HTMLAudioElement | null>(null)
+  const errorSoundRef = useRef<HTMLAudioElement | null>(null)
+
+  useEffect(() => {
+    successSoundRef.current = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg')
+    errorSoundRef.current = new Audio('https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg')
+  }, [])
+
+  useEffect(() => {
+    loadChannels().catch(() => null)
+  }, [])
+
+  useEffect(() => {
+    loadOrders().catch(() => null)
+  }, [dateFilter, pickupDateFrom, pickupDateTo])
+
+  useEffect(() => {
+    if (activeCarrier) {
+      setTimeout(() => scanInputRef.current?.focus(), 100)
+    }
+  }, [activeCarrier])
+
+  async function loadChannels() {
+    const { data, error } = await supabase
+      .from('channels')
+      .select('channel_code, channel_name, default_carrier, is_self_pickup')
+    if (error) {
+      console.error('loadChannels:', error)
+      setChannels([])
+      return
+    }
+    setChannels((data || []) as ChannelRow[])
+  }
+
+  function getCarrierName(channelCode: string) {
+    const channel = channels.find((c) => c.channel_code === channelCode)
+    return (channel?.default_carrier || 'OTHER').toUpperCase()
+  }
+
+  function isSelfPickupOrder(order: Order) {
+    if (order.fulfillment_method) return order.fulfillment_method === 'self_pickup'
+    return channels.some(
+      (channel) => channel.channel_code === order.channel_code && channel.is_self_pickup === true
+    )
+  }
+
+  async function loadOrders() {
+    setLoading(true)
+    try {
+      const start = new Date(`${dateFilter}T00:00:00`).toISOString()
+      const end = new Date(`${dateFilter}T23:59:59.999`).toISOString()
+      const pickupStart = new Date(`${pickupDateFrom}T00:00:00`).toISOString()
+      const pickupEnd = new Date(`${pickupDateTo}T23:59:59.999`).toISOString()
+      const baseSelect = 'id,bill_no,tracking_number,customer_name,channel_code,status,shipped_time,shipped_by,scheduled_pickup_at,fulfillment_method,claim_type,claim_details,transport_meta'
+      const shippedRes = await supabase
+        .from('or_orders')
+        .select(baseSelect)
+        .gte('shipped_time', start)
+        .lte('shipped_time', end)
+      let verifiedData: Order[] = []
+      const verifiedRes = await supabase
+        .from('or_orders')
+        .select(baseSelect)
+        .filter('transport_meta->>verified_at', 'gte', start)
+        .filter('transport_meta->>verified_at', 'lte', end)
+      if (verifiedRes.error) {
+        console.warn('transport_meta filter error:', verifiedRes.error)
+        setMessageModal({
+          open: true,
+          title: 'แจ้งเตือน',
+          message: 'ไม่สามารถโหลดรายการที่ทวนสอบในวันได้ครบถ้วน (ฟิลด์ transport_meta)',
+        })
+      } else {
+        verifiedData = (verifiedRes.data || []) as Order[]
+      }
+      const pickupScheduledRes = await supabase
+        .from('or_orders')
+        .select(baseSelect)
+        .gte('scheduled_pickup_at', pickupStart)
+        .lte('scheduled_pickup_at', pickupEnd)
+      const pickupPackedRes = await supabase
+        .from('or_orders')
+        .select(baseSelect)
+        .gte('shipped_time', pickupStart)
+        .lte('shipped_time', pickupEnd)
+      const pickupReceivedRes = await supabase
+        .from('or_orders')
+        .select(baseSelect)
+        .filter('transport_meta->>customer_received_at', 'gte', pickupStart)
+        .filter('transport_meta->>customer_received_at', 'lte', pickupEnd)
+      const merged = new Map<string, Order>()
+      ;((shippedRes.data || []) as Order[]).forEach((o) => merged.set(o.id, o))
+      verifiedData.forEach((o) => merged.set(o.id, o))
+      ;((pickupScheduledRes.data || []) as Order[]).forEach((o) => merged.set(o.id, o))
+      ;((pickupPackedRes.data || []) as Order[]).forEach((o) => merged.set(o.id, o))
+      ;((pickupReceivedRes.data || []) as Order[]).forEach((o) => merged.set(o.id, o))
+      setOrders(Array.from(merged.values()))
+    } catch (err: any) {
+      console.error('loadOrders:', err)
+      setMessageModal({ open: true, title: 'เกิดข้อผิดพลาด', message: err?.message || String(err) })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const carriersList = useMemo(() => {
+    const list = Array.from(
+      new Set(
+        channels
+          .filter((c) => !c.is_self_pickup)
+          .map((c) => (c.default_carrier || 'OTHER').toUpperCase())
+          .filter((carrier) => carrier !== 'SELF' && carrier !== 'SEFL')
+      )
+    ).sort()
+    return list
+  }, [channels])
+
+  const relevantOrders = useMemo(() => {
+    return orders.filter((o) => {
+      if (isSelfPickupOrder(o)) return false
+      return isInDateRange(o.shipped_time, dateFilter, dateFilter)
+        || isInDateRange(o.transport_meta?.verified_at, dateFilter, dateFilter)
+    })
+  }, [orders, dateFilter, channels])
+
+  const pickupOrders = useMemo(() => {
+    return orders
+      .filter((order) => isSelfPickupOrder(order))
+      .filter((order) => {
+        return isInDateRange(order.scheduled_pickup_at, pickupDateFrom, pickupDateTo)
+          || isInDateRange(order.shipped_time, pickupDateFrom, pickupDateTo)
+          || isInDateRange(order.transport_meta?.customer_received_at, pickupDateFrom, pickupDateTo)
+      })
+      .sort((a, b) => {
+        const aTime = a.scheduled_pickup_at || a.shipped_time || a.created_at
+        const bTime = b.scheduled_pickup_at || b.shipped_time || b.created_at
+        return new Date(aTime).getTime() - new Date(bTime).getTime()
+      })
+  }, [orders, pickupDateFrom, pickupDateTo, channels])
+
+  const summaryData = useMemo(() => {
+    const nested: Record<string, Record<string, Record<string, number>>> = {}
+    relevantOrders.forEach((o) => {
+      const isRangeVerified = o.transport_meta?.verified && isInDateRange(o.transport_meta?.verified_at, dateFilter, dateFilter)
+      if (!isRangeVerified) return
+      const carrier = getCarrierName(o.channel_code)
+      const ch = (o.channel_code || 'N/A').toUpperCase()
+      const pType = normalizeParcelType(o.transport_meta?.parcel_type)
+      if (!nested[carrier]) nested[carrier] = {}
+      if (!nested[carrier][ch]) {
+        nested[carrier][ch] = { กล่อง: 0, ซองกระดาษ: 0, ซองบับเบิล: 0, ถุงพัสดุ: 0, total: 0 }
+      }
+      nested[carrier][ch][pType] = (nested[carrier][ch][pType] || 0) + 1
+      nested[carrier][ch].total = (nested[carrier][ch].total || 0) + 1
+    })
+    return nested
+  }, [relevantOrders, dateFilter, channels])
+
+  const stats = useMemo(() => {
+    let gTotal = 0
+    let gVer = 0
+    let cTotal = 0
+    let cVer = 0
+    relevantOrders.forEach((o) => {
+      if (o.status === 'จัดส่งแล้ว') gTotal += 1
+      const isV = o.transport_meta?.verified && isInDateRange(o.transport_meta?.verified_at, dateFilter, dateFilter)
+      if (isV) gVer += 1
+      if (activeCarrier && getCarrierName(o.channel_code) === activeCarrier) {
+        if (o.status === 'จัดส่งแล้ว') cTotal += 1
+        if (isV) cVer += 1
+      }
+    })
+    return { gTotal, gVer, cTotal, cVer }
+  }, [relevantOrders, dateFilter, activeCarrier, channels])
+
+  const displayOrders = useMemo(() => {
+    if (!activeCarrier) return []
+    return relevantOrders.filter(
+      (o) => getCarrierName(o.channel_code) === activeCarrier && o.status === 'จัดส่งแล้ว'
+    )
+  }, [relevantOrders, activeCarrier, channels])
+
+  function playSound(type: 'success' | 'error') {
+    const sound = type === 'success' ? successSoundRef.current : errorSoundRef.current
+    if (!sound) return
+    sound.currentTime = 0
+    sound.play().catch(() => null)
+  }
+
+  async function handleScan() {
+    const trackingNo = normalizeTracking(scanValue)
+    setScanValue('')
+    if (!trackingNo) return
+    if (!activeCarrier) {
+      setStatusMsg({ text: 'ต้องเลือกขนส่งก่อน', type: 'error' })
+      return
+    }
+    try {
+      const orderIndex = orders.findIndex(
+        (o) => normalizeTracking(o.tracking_number) === trackingNo
+      )
+      const order = orders[orderIndex]
+      if (!order) throw new Error('ไม่พบเลขพัสดุ!')
+      if (order.status !== 'จัดส่งแล้ว') throw new Error('บิลยังแพ็คไม่เสร็จ')
+      const carrier = getCarrierName(order.channel_code)
+      if (carrier !== activeCarrier) throw new Error(`ผิด! ของเจ้า ${carrier}`)
+      if (order.transport_meta?.verified) throw new Error('สแกนซ้ำ')
+
+      const now = new Date().toISOString()
+      const transport_meta = {
+        verified: true,
+        verified_at: now,
+        verified_by: user?.username || user?.email || 'unknown',
+        carrier,
+        parcel_type: activeParcelType,
+      }
+      const { error } = await supabase.from('or_orders').update({ transport_meta }).eq('id', order.id)
+      if (error) throw new Error('ไม่สามารถบันทึกลง Database ได้: ' + error.message)
+
+      setOrders((prev) =>
+        prev.map((o) => (o.id === order.id ? { ...o, transport_meta } : o))
+      )
+      setStatusMsg({ text: `✅ ${order.bill_no} ผ่าน [${activeParcelType}]`, type: 'success' })
+      playSound('success')
+    } catch (err: any) {
+      setStatusMsg({ text: err?.message || String(err), type: 'error' })
+      playSound('error')
+    } finally {
+      scanInputRef.current?.focus()
+    }
+  }
+
+  async function renderSummaryCanvas(): Promise<HTMLCanvasElement> {
+    if (!summaryRef.current) throw new Error('ไม่พบข้อมูลสรุปสำหรับสร้างภาพ')
+    let captureNode: HTMLElement | null = null
+    try {
+      const html2canvas = (await import('html2canvas')).default
+      captureNode = summaryRef.current.cloneNode(true) as HTMLElement
+      captureNode.style.position = 'fixed'
+      captureNode.style.left = '-10000px'
+      captureNode.style.top = '0'
+      captureNode.style.width = '850px'
+      captureNode.style.maxWidth = '850px'
+      captureNode.style.boxSizing = 'border-box'
+      captureNode.style.zIndex = '-1'
+      document.body.appendChild(captureNode)
+      const canvas = await html2canvas(captureNode, { scale: 2, backgroundColor: '#ffffff' })
+      setLastExportSize({ width: canvas.width, height: canvas.height })
+      return canvas
+    } finally {
+      captureNode?.remove()
+    }
+  }
+
+  function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (blob) resolve(blob)
+        else reject(new Error('ไม่สามารถแปลงข้อมูลเป็นภาพ PNG ได้'))
+      }, 'image/png')
+    })
+  }
+
+  async function exportSummaryPng() {
+    setExportingPng(true)
+    try {
+      const canvas = await renderSummaryCanvas()
+      const link = document.createElement('a')
+      link.download = `สรุปยอดขนส่ง_${dateFilter}.png`
+      link.href = canvas.toDataURL('image/png')
+      link.click()
+    } catch (err: any) {
+      setMessageModal({ open: true, title: 'สร้างภาพไม่ได้', message: err?.message || String(err) })
+    } finally {
+      setExportingPng(false)
+    }
+  }
+
+  async function copySummaryPng() {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+      setMessageModal({
+        open: true,
+        title: 'คัดลอกรูปไม่ได้',
+        message: 'เบราว์เซอร์นี้ไม่รองรับการคัดลอกรูปภาพ กรุณาเปิดผ่าน Chrome หรือ Edge บน HTTPS',
+      })
+      return
+    }
+
+    setExportingPng(true)
+    try {
+      // ส่ง Promise<Blob> เข้า ClipboardItem ทันที เพื่อรักษาสิทธิ์จากการคลิก
+      // และใช้ canvas ชุดเดียวกับปุ่มบันทึก จึงได้ขนาดภาพเท่ากันทุกประการ
+      const pngBlob = renderSummaryCanvas().then(canvasToPngBlob)
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })])
+      setMessageModal({ open: true, title: 'คัดลอกรูปแล้ว', message: 'คัดลอกรูปสรุปไปยังคลิปบอร์ดเรียบร้อยแล้ว' })
+    } catch (err: any) {
+      setMessageModal({
+        open: true,
+        title: 'คัดลอกรูปไม่ได้',
+        message: err?.message || 'กรุณาอนุญาตการเข้าถึงคลิปบอร์ด แล้วลองใหม่อีกครั้ง',
+      })
+    } finally {
+      setExportingPng(false)
+    }
+  }
+
+  function exportCsv() {
+    if (!activeCarrier) {
+      setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเลือกขนส่งก่อนดาวน์โหลด' })
+      return
+    }
+    const rows = [['เวลาสแกน', 'เลขบิล', 'เลขพัสดุ', 'ประเภทพัสดุ', 'ชื่อลูกค้า', 'สถานะ']]
+    displayOrders.forEach((o) => {
+      const isV = o.transport_meta?.verified && isInDateRange(o.transport_meta?.verified_at, dateFilter, dateFilter)
+      rows.push([
+        isV ? formatTime(o.transport_meta?.verified_at) : '-',
+        o.bill_no,
+        o.tracking_number || '',
+        o.transport_meta?.parcel_type || '-',
+        o.customer_name || '',
+        isV ? 'ตรวจแล้ว' : 'รอตรวจ',
+      ])
+    })
+    const csvContent = '\uFEFF' + rows.map((r) => r.map((v) => `"${v}"`).join(',')).join('\n')
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `ขนส่ง_${activeCarrier}_${dateFilter}.csv`
+    link.click()
+  }
+
+  function handleUndo(orderId: string) {
+    setConfirmModal({
+      open: true,
+      title: 'ยกเลิกการทวนสอบ',
+      message: 'ยกเลิกการทวนสอบบิลนี้?',
+      onConfirm: async () => {
+        setConfirmModal((prev) => ({ ...prev, open: false }))
+        const { error } = await supabase.from('or_orders').update({ transport_meta: null }).eq('id', orderId)
+        if (error) {
+          setMessageModal({ open: true, title: 'เกิดข้อผิดพลาด', message: error.message })
+          return
+        }
+        await loadOrders()
+      },
+    })
+  }
+
+  function handleCustomerReceived(order: Order) {
+    if (order.transport_meta?.customer_received) return
+    setConfirmModal({
+      open: true,
+      title: 'ยืนยันลูกค้ารับสินค้า',
+      message: `ยืนยันว่าลูกค้ารับสินค้าในบิล ${order.bill_no} แล้ว?`,
+      tone: 'success',
+      onConfirm: async () => {
+        setConfirmModal((prev) => ({ ...prev, open: false }))
+        setPickupActionId(order.id)
+        try {
+          const transportMeta = {
+            ...(order.transport_meta || {}),
+            customer_received: true,
+            customer_received_at: new Date().toISOString(),
+            customer_received_by: user?.username || user?.email || 'unknown',
+          }
+          const { error } = await supabase
+            .from('or_orders')
+            .update({ transport_meta: transportMeta })
+            .eq('id', order.id)
+          if (error) throw error
+          setOrders((previous) => previous.map((item) => (
+            item.id === order.id ? { ...item, transport_meta: transportMeta } : item
+          )))
+        } catch (error: any) {
+          setMessageModal({
+            open: true,
+            title: 'บันทึกไม่สำเร็จ',
+            message: error?.message || String(error),
+          })
+        } finally {
+          setPickupActionId(null)
+        }
+      },
+    })
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white border-b border-gray-200 -mx-6 px-6">
+        <nav className="flex gap-1 overflow-x-auto" aria-label="เมนูย่อยทวนสอบขนส่ง">
+          {([
+            ['verification', 'ทวนสอบขนส่ง'],
+            ['self-pickup', 'ลูกค้ารับสินค้าเอง'],
+            ['delivery-check', 'ตรวจสอบการส่ง'],
+          ] as const).map(([tab, label]) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setActiveTab(tab)}
+              className={`whitespace-nowrap border-b-2 px-5 py-3 text-sm font-semibold transition-colors ${
+                activeTab === tab
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
+              }`}
+            >
+              {label}
+              {tab === 'self-pickup' && pickupOrders.length > 0 && (
+                <span className="ml-2 rounded-full bg-violet-100 px-2 py-0.5 text-xs text-violet-700">
+                  {pickupOrders.length}
+                </span>
+              )}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {activeTab !== 'delivery-check' && (
+      <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
+        <div className="flex items-center justify-end py-3">
+          {activeTab === 'verification' ? (
+          <div className="flex items-center gap-2">
+            <span className="text-gray-500 font-semibold">วันที่:</span>
+            <input
+              type="date"
+              value={dateFilter}
+              onChange={(e) => setDateFilter(e.target.value)}
+              className="border border-gray-300 rounded-xl px-4 py-2 text-blue-600 font-semibold text-base focus:ring-2 focus:ring-blue-400 focus:border-blue-400 focus:outline-none"
+            />
+          </div>
+          ) : (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span className="text-gray-500 font-semibold">ช่วงวันที่:</span>
+            <input
+              type="date"
+              value={pickupDateFrom}
+              max={pickupDateTo}
+              onChange={(e) => {
+                const value = e.target.value
+                setPickupDateFrom(value)
+                if (value > pickupDateTo) setPickupDateTo(value)
+              }}
+              className="border border-gray-300 rounded-xl px-4 py-2 text-blue-600 font-semibold text-base focus:ring-2 focus:ring-blue-400 focus:border-blue-400 focus:outline-none"
+            />
+            <span className="text-gray-400">ถึง</span>
+            <input
+              type="date"
+              value={pickupDateTo}
+              min={pickupDateFrom}
+              max={todayISO()}
+              onChange={(e) => {
+                const value = e.target.value
+                setPickupDateTo(value)
+                if (value < pickupDateFrom) setPickupDateFrom(value)
+              }}
+              className="border border-gray-300 rounded-xl px-4 py-2 text-blue-600 font-semibold text-base focus:ring-2 focus:ring-blue-400 focus:border-blue-400 focus:outline-none"
+            />
+          </div>
+          )}
+        </div>
+      </div>
+      )}
+
+      {activeTab === 'verification' && (
+      <>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+        <div className="bg-white rounded-xl border border-gray-200 p-4 text-center">
+          <div className="flex flex-wrap justify-center gap-2 mb-3">
+            {PARCEL_TYPES.map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setActiveParcelType(p)}
+                className={`px-4 py-2 rounded-xl text-sm font-semibold border ${
+                  activeParcelType === p ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                {p === 'กล่อง' ? '📦' : p === 'ซองกระดาษ' ? '📄' : p === 'ซองบับเบิล' ? '🫧' : '🛍️'} {p === 'ซองกระดาษ' ? 'ซอง' : p === 'ซองบับเบิล' ? 'บับเบิล' : p}
+              </button>
+            ))}
+          </div>
+          <div className="mb-3">
+            <span className={`inline-flex items-center px-4 py-1.5 rounded-full text-sm font-bold ${
+              activeCarrier ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-red-50 text-red-600 border border-red-200'
+            }`}>
+              {activeCarrier ? `ตรวจขนส่ง: ${activeCarrier}` : '⚠️ ต้องเลือกขนส่งก่อน!'}
+            </span>
+          </div>
+          <input
+            ref={scanInputRef}
+            type="text"
+            value={scanValue}
+            onChange={(e) => setScanValue(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleScan()}
+            onFocus={(e) => e.target.placeholder = ''}
+            onBlur={(e) => e.target.placeholder = 'ยิงบาร์โค้ดเลขพัสดุ...'}
+            disabled={!activeCarrier}
+            placeholder="ยิงบาร์โค้ดเลขพัสดุ..."
+            className="w-full text-center text-2xl font-semibold border-2 border-blue-500 rounded-xl px-3 py-4 disabled:bg-gray-100 disabled:border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-400"
+          />
+          <p className={`mt-2 font-bold min-h-[20px] text-sm ${statusMsg.type === 'success' ? 'text-green-600' : statusMsg.type === 'error' ? 'text-red-600' : ''}`}>
+            {statusMsg.text}
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-white border border-gray-200 rounded-xl p-4 text-center">
+              <div className="text-xs font-semibold text-gray-500">รวมทั้งหมด</div>
+              <div className="text-3xl font-black text-gray-900">{stats.gVer} / {stats.gTotal}</div>
+            </div>
+            <div className="bg-white border border-gray-200 rounded-xl p-4 text-center">
+              <div className="text-xs font-semibold text-gray-500">{activeCarrier || 'เลือกขนส่ง'}</div>
+              <div className="text-3xl font-black text-blue-600">{activeCarrier ? `${stats.cVer} / ${stats.cTotal}` : '-'}</div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={exportCsv}
+            disabled={!activeCarrier}
+            className="w-full px-4 py-4 rounded-xl font-bold text-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
+          >
+            📥 ดาวน์โหลดไฟล์สรุป (CSV)
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl border border-gray-200 p-3 flex flex-wrap gap-2">
+        {carriersList.map((carrier) => {
+          const cCount = relevantOrders.filter(
+            (o) => getCarrierName(o.channel_code) === carrier && o.status === 'จัดส่งแล้ว'
+          ).length
+          return (
+            <button
+              key={carrier}
+              type="button"
+              onClick={() => setActiveCarrier(carrier)}
+              className={`px-4 py-2 rounded-xl text-sm font-semibold border ${
+                activeCarrier === carrier ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              {carrier} ({cCount})
+            </button>
+          )
+        })}
+      </div>
+
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-blue-600 text-white">
+              <th className="p-3 text-left font-semibold w-[10%] rounded-tl-xl">เวลา</th>
+              <th className="p-3 text-left font-semibold w-[15%]">เลขบิล</th>
+              <th className="p-3 text-left font-semibold w-[20%]">เลขพัสดุ</th>
+              <th className="p-3 text-left font-semibold w-[15%]">ประเภท</th>
+              <th className="p-3 text-left font-semibold">ลูกค้า</th>
+              <th className="p-3 text-center font-semibold w-[15%] rounded-tr-xl">สถานะ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr>
+                <td colSpan={6} className="text-center py-10 text-gray-400">
+                  กำลังโหลดข้อมูล...
+                </td>
+              </tr>
+            ) : displayOrders.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="text-center py-10 text-gray-400">
+                  กรุณาเลือกขนส่ง
+                </td>
+              </tr>
+            ) : (
+              displayOrders.map((o) => {
+                const isV = o.transport_meta?.verified && isInDateRange(o.transport_meta?.verified_at, dateFilter, dateFilter)
+                return (
+                  <tr key={o.id} className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${isV ? 'bg-green-50' : ''}`}>
+                    <td className="p-3 text-gray-500">{isV ? formatTime(o.transport_meta?.verified_at) : '-'}</td>
+                    <td className="p-3 font-semibold">{o.bill_no}</td>
+                    <td className="p-3 font-mono">{o.tracking_number}</td>
+                    <td className="p-3">{o.transport_meta?.parcel_type || '-'}</td>
+                    <td className="p-3">{o.customer_name}</td>
+                    <td className="p-3 text-center">
+                      <span className={`px-2 py-1 rounded-full text-xs font-bold ${isV ? 'bg-green-100 text-green-700 border border-green-500' : 'bg-red-100 text-red-600 border border-red-200'}`}>
+                        {isV ? '✓ ตรวจแล้ว' : '🔴 รอตรวจ'}
+                      </span>
+                      {isV && (
+                        <button
+                          type="button"
+                          onClick={() => handleUndo(o.id)}
+                          className="ml-2 text-xs text-blue-600 underline"
+                        >
+                          ยกเลิก
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div ref={summaryRef} className="w-full bg-white rounded-xl border border-gray-200 p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold">📊 สรุปยอดตามช่องทาง (เฉพาะที่สแกนแล้ว)</h3>
+          <div data-html2canvas-ignore="true" className="flex items-center gap-3">
+            <span className="text-xs font-medium text-gray-500">
+              {lastExportSize
+                ? `ขนาดภาพล่าสุด ${lastExportSize.width.toLocaleString()} × ${lastExportSize.height.toLocaleString()} px`
+                : 'ขนาดภาพกว้างประมาณ 1,700 px'}
+            </span>
+            <button
+              type="button"
+              onClick={copySummaryPng}
+              disabled={exportingPng}
+              className="inline-flex h-9 items-center justify-center gap-1 px-4 py-0 rounded-xl text-sm font-semibold leading-none bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+            >
+              <span className="inline-flex items-center leading-none">📋</span>
+              <span className="inline-flex items-center leading-none">คัดลอกรูป</span>
+            </button>
+            <button
+              type="button"
+              onClick={exportSummaryPng}
+              disabled={exportingPng}
+              className="inline-flex h-9 items-center justify-center gap-1 px-4 py-0 rounded-xl text-sm font-semibold leading-none bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              <span className="inline-flex items-center leading-none">📸</span>
+              <span className="inline-flex items-center leading-none">บันทึกเป็นภาพ (PNG)</span>
+            </button>
+          </div>
+        </div>
+        <table className="w-full text-sm [&_th]:align-middle [&_td]:align-middle [&_th]:leading-tight [&_td]:leading-tight">
+          <thead>
+            <tr className="bg-blue-600 text-white">
+              <th className="p-3 text-left font-semibold rounded-tl-xl">ช่องทาง</th>
+              <th className="p-3 text-center font-semibold">📦 กล่อง</th>
+              <th className="p-3 text-center font-semibold">📄 ซอง</th>
+              <th className="p-3 text-center font-semibold">🫧 บับเบิล</th>
+              <th className="p-3 text-center font-semibold">🛍️ ถุง</th>
+              <th className="p-3 text-center font-bold rounded-tr-xl">รวม</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.keys(summaryData).length === 0 ? (
+              <tr>
+                <td colSpan={6} className="text-center py-8 text-gray-400">
+                  กรุณาเลือกขนส่งเพื่อดูสรุป
+                </td>
+              </tr>
+            ) : (
+              (() => {
+                const carriers = Object.keys(summaryData).sort()
+                const grand = { กล่อง: 0, ซองกระดาษ: 0, ซองบับเบิล: 0, ถุงพัสดุ: 0, total: 0 }
+                return (
+                  <>
+                    {carriers.map((carrier) => {
+                      const channelsByCarrier = summaryData[carrier]
+                      const channelKeys = Object.keys(channelsByCarrier).sort()
+                      const subtotal = { กล่อง: 0, ซองกระดาษ: 0, ซองบับเบิล: 0, ถุงพัสดุ: 0, total: 0 }
+                      channelKeys.forEach((ch) => {
+                        const s = channelsByCarrier[ch]
+                        subtotal.กล่อง += s.กล่อง || 0
+                        subtotal.ซองกระดาษ += s['ซองกระดาษ'] || 0
+                        subtotal.ซองบับเบิล += s['ซองบับเบิล'] || 0
+                        subtotal.ถุงพัสดุ += s['ถุงพัสดุ'] || 0
+                        subtotal.total += s.total || 0
+                      })
+
+                      grand.กล่อง += subtotal.กล่อง
+                      grand.ซองกระดาษ += subtotal['ซองกระดาษ']
+                      grand.ซองบับเบิล += subtotal['ซองบับเบิล']
+                      grand.ถุงพัสดุ += subtotal['ถุงพัสดุ']
+                      grand.total += subtotal.total
+
+                      return (
+                        <Fragment key={carrier}>
+                          <tr className="bg-gray-50">
+                            <td colSpan={6} className="p-2 font-semibold text-blue-600">
+                              🚚 ขนส่ง: {carrier}
+                            </td>
+                          </tr>
+                          {channelKeys.map((ch) => {
+                            const s = channelsByCarrier[ch]
+                            return (
+                              <tr key={`${carrier}-${ch}`}>
+                                <td className="p-2 text-left pl-6 text-gray-600">└ {ch}</td>
+                                <td className="p-2 text-center">{s.กล่อง || 0}</td>
+                                <td className="p-2 text-center">{s['ซองกระดาษ'] || 0}</td>
+                                <td className="p-2 text-center">{s['ซองบับเบิล'] || 0}</td>
+                                <td className="p-2 text-center">{s['ถุงพัสดุ'] || 0}</td>
+                                <td className="p-2 text-center font-semibold">{s.total || 0}</td>
+                              </tr>
+                            )
+                          })}
+                          <tr className="bg-blue-50 font-semibold">
+                            <td className="p-2 text-right align-middle">รวมยอด {carrier}</td>
+                            <td className="p-2 text-center">{subtotal.กล่อง}</td>
+                            <td className="p-2 text-center">{subtotal['ซองกระดาษ']}</td>
+                            <td className="p-2 text-center">{subtotal['ซองบับเบิล']}</td>
+                            <td className="p-2 text-center">{subtotal['ถุงพัสดุ']}</td>
+                            <td className="p-2 text-center text-blue-600">{subtotal.total}</td>
+                          </tr>
+                        </Fragment>
+                      )
+                    })}
+                    <tr className="bg-gray-900 text-white font-bold">
+                      <td className="h-9 p-2 text-left align-middle">
+                        <div className="flex h-full items-center">ยอดรวมทุกขนส่งสุทธิ</div>
+                      </td>
+                      <td className="h-9 p-2 text-center align-middle">
+                        <div className="flex h-full items-center justify-center">{grand.กล่อง}</div>
+                      </td>
+                      <td className="h-9 p-2 text-center align-middle">
+                        <div className="flex h-full items-center justify-center">{grand['ซองกระดาษ']}</div>
+                      </td>
+                      <td className="h-9 p-2 text-center align-middle">
+                        <div className="flex h-full items-center justify-center">{grand['ซองบับเบิล']}</div>
+                      </td>
+                      <td className="h-9 p-2 text-center align-middle">
+                        <div className="flex h-full items-center justify-center">{grand['ถุงพัสดุ']}</div>
+                      </td>
+                      <td className="h-9 p-2 text-center align-middle bg-blue-600">
+                        <div className="flex h-full items-center justify-center">{grand.total}</div>
+                      </td>
+                    </tr>
+                  </>
+                )
+              })()
+            )}
+          </tbody>
+        </table>
+      </div>
+      </>
+      )}
+
+      {activeTab === 'self-pickup' && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
+              <div className="text-sm font-semibold text-violet-700">รายการรับเองทั้งหมด</div>
+              <div className="mt-1 text-3xl font-black text-violet-800">{pickupOrders.length}</div>
+            </div>
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <div className="text-sm font-semibold text-amber-700">รอลูกค้ารับ</div>
+              <div className="mt-1 text-3xl font-black text-amber-700">
+                {pickupOrders.filter((order) => !order.transport_meta?.customer_received).length}
+              </div>
+            </div>
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+              <div className="text-sm font-semibold text-emerald-700">ลูกค้ารับแล้ว</div>
+              <div className="mt-1 text-3xl font-black text-emerald-700">
+                {pickupOrders.filter((order) => order.transport_meta?.customer_received).length}
+              </div>
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[980px] text-sm">
+                <thead>
+                  <tr className="bg-violet-600 text-white">
+                    <th className="p-3 text-left font-semibold">เลขบิล</th>
+                    <th className="p-3 text-left font-semibold">ช่องทาง</th>
+                    <th className="p-3 text-left font-semibold">ลูกค้า</th>
+                    <th className="p-3 text-left font-semibold">เวลานัดรับ</th>
+                    <th className="p-3 text-left font-semibold">แพ็คเสร็จ</th>
+                    <th className="p-3 text-left font-semibold">เวลารับจริง</th>
+                    <th className="p-3 text-center font-semibold">สถานะ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr><td colSpan={7} className="py-12 text-center text-gray-400">กำลังโหลดข้อมูล...</td></tr>
+                  ) : pickupOrders.length === 0 ? (
+                    <tr><td colSpan={7} className="py-12 text-center text-gray-400">ไม่พบรายการลูกค้ารับสินค้าเองในวันที่เลือก</td></tr>
+                  ) : pickupOrders.map((order) => {
+                    const received = order.transport_meta?.customer_received === true
+                    const ready = order.status === 'จัดส่งแล้ว'
+                    return (
+                      <tr key={order.id} className={`border-b border-gray-100 ${received ? 'bg-emerald-50/60' : 'hover:bg-violet-50/50'}`}>
+                        <td className="p-3 font-bold text-blue-700">{order.bill_no}</td>
+                        <td className="p-3">{order.channel_code}</td>
+                        <td className="p-3">{order.customer_name || '-'}</td>
+                        <td className="p-3 whitespace-nowrap">{formatDateTime(order.scheduled_pickup_at)}</td>
+                        <td className="p-3 whitespace-nowrap">{formatDateTime(order.shipped_time)}</td>
+                        <td className="p-3 whitespace-nowrap">
+                          {formatDateTime(order.transport_meta?.customer_received_at)}
+                          {received && order.transport_meta?.customer_received_by && (
+                            <div className="mt-0.5 text-xs text-gray-500">โดย {order.transport_meta.customer_received_by}</div>
+                          )}
+                        </td>
+                        <td className="p-3 text-center">
+                          {received ? (
+                            <span className="inline-flex rounded-full border border-emerald-300 bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-700">
+                              ✓ ลูกค้ารับแล้ว
+                            </span>
+                          ) : ready ? (
+                            <button
+                              type="button"
+                              onClick={() => handleCustomerReceived(order)}
+                              disabled={pickupActionId === order.id}
+                              className="rounded-lg bg-emerald-600 px-4 py-2 font-bold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {pickupActionId === order.id ? 'กำลังบันทึก...' : 'ลูกค้ารับแล้ว'}
+                            </button>
+                          ) : (
+                            <span className="inline-flex rounded-full bg-amber-100 px-3 py-1.5 text-xs font-bold text-amber-700">
+                              รอแพ็คสินค้า
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'delivery-check' && (
+        <div className="flex min-h-[360px] flex-col items-center justify-center rounded-xl border border-dashed border-gray-300 bg-white p-10 text-center">
+          <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-2xl">🚚</div>
+          <h2 className="text-xl font-bold text-gray-800">ตรวจสอบการส่ง</h2>
+          <p className="mt-2 text-gray-500">เมนูนี้อยู่ระหว่างรอพัฒนา</p>
+        </div>
+      )}
+
+      <Modal
+        open={messageModal.open}
+        onClose={() => setMessageModal((prev) => ({ ...prev, open: false }))}
+        contentClassName="max-w-md"
+      >
+        <div className="p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">{messageModal.title}</h3>
+          <p className="text-sm text-gray-700 whitespace-pre-line">{messageModal.message}</p>
+          <div className="mt-4 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setMessageModal((prev) => ({ ...prev, open: false }))}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            >
+              ตกลง
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={confirmModal.open}
+        onClose={() => setConfirmModal((prev) => ({ ...prev, open: false }))}
+        contentClassName="max-w-md"
+      >
+        <div className="p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">{confirmModal.title}</h3>
+          <p className="text-sm text-gray-700 whitespace-pre-line">{confirmModal.message}</p>
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirmModal((prev) => ({ ...prev, open: false }))}
+              className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100"
+            >
+              ยกเลิก
+            </button>
+            <button
+              type="button"
+              onClick={confirmModal.onConfirm}
+              className={`px-4 py-2 text-white rounded-lg ${
+                confirmModal.tone === 'success'
+                  ? 'bg-emerald-600 hover:bg-emerald-700'
+                  : 'bg-red-600 hover:bg-red-700'
+              }`}
+            >
+              ยืนยัน
+            </button>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  )
+}
