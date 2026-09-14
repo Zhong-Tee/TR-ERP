@@ -21,6 +21,7 @@ import { useAuthContext } from '../../../contexts/AuthContext'
 import Modal from '../../ui/Modal'
 import AttachmentViewer from './AttachmentViewer'
 import type { HREmployee, HRNotification, HRLeaveRequest, HROTRequest, HRWFHRequest } from '../../../types'
+import { wfhRequestTypeLabel } from '../../../lib/wfhRequestType'
 
 const BUCKET_MEDICAL = 'hr-medical-certs'
 
@@ -155,6 +156,7 @@ function requestDetailRows(target: ApprovalTarget): { label: string; value: stri
     })
   } else {
     const req = target.req
+    rows.push({ label: 'ประเภท WFH', value: wfhRequestTypeLabel(req.wfh_type) })
     rows.push({ label: 'วันที่', value: `${req.start_date} – ${req.end_date}` })
     if (req.start_time && req.end_time) {
       rows.push({ label: 'ช่วงเวลา', value: `${req.start_time.slice(0, 5)} – ${req.end_time.slice(0, 5)} น.` })
@@ -782,11 +784,12 @@ export default function EmployeeDashboard() {
                 </>
               ) : (
                 <>
+                  <p>ประเภท WFH: {wfhRequestTypeLabel(approvalTarget.req.wfh_type)}</p>
                   <p>วันที่: {approvalTarget.req.start_date} – {approvalTarget.req.end_date}</p>
                   {approvalTarget.req.start_time && approvalTarget.req.end_time && (
                     <p>ช่วงเวลา: {approvalTarget.req.start_time.slice(0, 5)} – {approvalTarget.req.end_time.slice(0, 5)} น.</p>
                   )}
-                  <p>เหตุผล: {approvalTarget.req.reason}</p>
+                  {approvalTarget.req.reason && <p>เหตุผล: {approvalTarget.req.reason}</p>}
                 </>
               )}
             </div>

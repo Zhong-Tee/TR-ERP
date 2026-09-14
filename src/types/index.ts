@@ -1392,11 +1392,15 @@ export interface HRPortalVisibleTimeEntry {
   entry_time: string
 }
 
+export type HRWFHRequestType = 'afternoon_shift' | 'sunday_work' | 'other'
+
 export interface HRWFHRequest {
   id: string
   employee_id: string
   start_date: string
   end_date: string
+  /** ประเภทคำขอ WFH — คำขอเก่าจะถูกจัดเป็น other */
+  wfh_type?: HRWFHRequestType
   /** ช่วงเวลาทำงานที่ขอ WFH (HH:mm:ss) — null = ใช้ตารางเวลามาตรฐาน (คำขอเก่าก่อน migration 334) */
   start_time?: string | null
   end_time?: string | null

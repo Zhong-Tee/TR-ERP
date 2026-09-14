@@ -18,6 +18,21 @@ import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import UrgencyBadge from '../common/UrgencyBadge'
 import { deriveChatDeliveryStatuses, type ChatDeliveryStatus } from '../../lib/chatDeliveryReceipt'
 
+const CONFIRM_CHAT_BUBBLE_TONES = [
+  {
+    bubble: 'bg-blue-50 text-gray-900 border-blue-200',
+    badge: 'bg-blue-100 text-blue-700',
+    name: 'text-blue-700',
+    action: 'bg-blue-100 text-blue-700 hover:bg-blue-200',
+  },
+  {
+    bubble: 'bg-amber-50 text-gray-900 border-amber-200',
+    badge: 'bg-amber-100 text-amber-800',
+    name: 'text-amber-800',
+    action: 'bg-amber-100 text-amber-800 hover:bg-amber-200',
+  },
+] as const
+
 /** ใช้ให้สอดคล้อง RPC unread: username / email ใน us_users + อีเมล JWT (ถ้ามี) — ไม่สนตัวพิมพ์ */
 function salesPumpAdminMatchesUser(
   adminUser: string | null | undefined,
@@ -2198,34 +2213,29 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 </div>
               ) : (
                 <>
-                  {chatLogs.map((log) => {
+                  {chatLogs.map((log, index) => {
                     const isMe = log.sender_id === user?.id
+                    const bubbleTone = CONFIRM_CHAT_BUBBLE_TONES[index % CONFIRM_CHAT_BUBBLE_TONES.length]
                     return (
                       <div key={log.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} group`}>
-                        <div className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm border ${
-                          isMe
-                            ? 'bg-emerald-500/95 text-white border-emerald-400 rounded-br-sm'
-                            : 'bg-blue-50 text-gray-900 border-blue-200 rounded-bl-sm'
+                        <div className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm border ${bubbleTone.bubble} ${
+                          isMe ? 'rounded-br-sm' : 'rounded-bl-sm'
                         }`}>
                           <div className={`flex items-center gap-2 mb-1 ${isMe ? 'flex-row-reverse' : ''}`}>
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
-                              isMe ? 'bg-emerald-600/60 text-emerald-100' : 'bg-blue-100 text-blue-700'
-                            }`}>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${bubbleTone.badge}`}>
                               {isMe ? 'ผู้ส่ง' : 'ผู้รับ'}
                             </span>
-                            <span className={`text-xs font-bold ${isMe ? 'text-emerald-100' : 'text-blue-700'}`}>
+                            <span className={`text-xs font-bold ${bubbleTone.name}`}>
                               {log.sender_name}
                             </span>
-                            <span className={`text-xs ${isMe ? 'text-emerald-200' : 'text-gray-500'}`}>
+                            <span className="text-xs text-gray-500">
                               {formatDateTime(log.created_at)}
                             </span>
                             <button
                               type="button"
                               onClick={() => handleHideChat(log.id)}
                               title="ซ่อนข้อความนี้"
-                              className={`opacity-0 group-hover:opacity-100 p-0.5 rounded transition-all ${
-                                isMe ? 'text-emerald-100 hover:text-red-200' : 'text-gray-400 hover:text-red-500'
-                              }`}
+                              className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-gray-400 hover:text-red-500 transition-all"
                             >
                               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -2245,9 +2255,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                                   e.preventDefault()
                                   setLinkContextMenu({ logId: log.id, url: log.link_url!, x: e.clientX, y: e.clientY })
                                 }}
-                                className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors ${
-                                  isMe ? 'bg-white/20 text-white hover:bg-white/30' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
-                                }`}
+                                className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors ${bubbleTone.action}`}
                               >
                                 <FiLink className="h-4 w-4" aria-hidden="true" />
                               </a>
@@ -2257,9 +2265,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                                 onClick={() => setLinkEditor({ logId: log.id, value: '' })}
                                 title="เพิ่มลิงก์"
                                 aria-label="เพิ่มลิงก์"
-                                className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors ${
-                                  isMe ? 'bg-white/15 text-white hover:bg-white/30' : 'bg-gray-100 text-gray-500 hover:bg-blue-100 hover:text-blue-700'
-                                }`}
+                                className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors ${bubbleTone.action}`}
                               >
                                 <FiPlus className="h-4 w-4" aria-hidden="true" />
                               </button>

@@ -1532,7 +1532,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         fetchAllSupabasePagesResult((from, to) => supabase.from('cp_cartoon_patterns').select('*').eq('is_active', true).order('id').range(from, to)),
         supabase.from('channels').select('channel_code, channel_name'),
         supabase.from('ink_types').select('id, ink_name').order('ink_name'),
-        supabase.from('fonts').select('font_code, font_name').eq('is_active', true),
+        supabase.from('fonts').select('font_code, font_name').eq('is_active', true).order('font_code', { ascending: true }),
         supabase.from('pr_category_field_settings').select('*'),
         supabase.from('promotion').select('*').eq('is_active', true),
         supabase.from('pr_product_field_overrides').select('*'),

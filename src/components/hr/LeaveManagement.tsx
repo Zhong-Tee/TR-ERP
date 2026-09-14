@@ -17,10 +17,11 @@ import {
   updateWFHRequest,
   fetchAllOpeningLeaveBalances,
 } from '../../lib/hrApi'
-import type { HRCompanyHoliday, HREmployee, HREmployeeWorkCalendar, HRLeaveRequest, HROTRequest, HRWFHRequest } from '../../types'
+import type { HRCompanyHoliday, HREmployee, HREmployeeWorkCalendar, HRLeaveRequest, HROTRequest, HRWFHRequest, HRWFHRequestType } from '../../types'
 import Modal from '../ui/Modal'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { supabase } from '../../lib/supabase'
+import { WFH_REQUEST_TYPE_OPTIONS, wfhRequestTypeLabel } from '../../lib/wfhRequestType'
 
 type StatusFilter = 'all' | 'pending' | 'approved' | 'rejected'
 const WORK_MINUTES_PER_DAY = 8 * 60
@@ -217,6 +218,7 @@ export default function LeaveManagement() {
   const [otRequests, setOtRequests] = useState<HROTRequest[]>([])
   const [wfhRequests, setWfhRequests] = useState<HRWFHRequest[]>([])
   const [wfhStatusFilter, setWfhStatusFilter] = useState<StatusFilter>('all')
+  const [wfhTypeFilter, setWfhTypeFilter] = useState<HRWFHRequestType | 'all'>('all')
   const [otStatusFilter, setOtStatusFilter] = useState<StatusFilter>('all')
   const [otRejectingId, setOtRejectingId] = useState<string | null>(null)
   const [balanceView, setBalanceView] = useState<{ name: string; rows: LeaveBalanceRow[] } | null>(null)
@@ -362,6 +364,7 @@ export default function LeaveManagement() {
   })
   const filteredWfhRequests = wfhRequests.filter((r) => {
     if (wfhStatusFilter !== 'all' && r.status !== wfhStatusFilter) return false
+    if (wfhTypeFilter !== 'all' && (r.wfh_type ?? 'other') !== wfhTypeFilter) return false
     if (searchName.trim() && !employeeDisplayName(r as unknown as HRLeaveRequest).toLowerCase().includes(searchName.trim().toLowerCase())) return false
     return true
   })
@@ -699,6 +702,10 @@ export default function LeaveManagement() {
             <div className="flex items-center gap-3 flex-wrap">
               <select value={wfhStatusFilter} onChange={(e) => setWfhStatusFilter(e.target.value as StatusFilter)} className="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm text-surface-800">
                 <option value="all">ทุกสถานะ</option><option value="pending">รออนุมัติ</option><option value="approved">อนุมัติ</option><option value="rejected">ไม่อนุมัติ</option>
+              </select>
+              <select value={wfhTypeFilter} onChange={(e) => setWfhTypeFilter(e.target.value as HRWFHRequestType | 'all')} className="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm text-surface-800">
+                <option value="all">ทุกประเภท WFH</option>
+                {WFH_REQUEST_TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
               <div className="relative"><FiSearch className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-surface-400" /><input type="text" placeholder="ค้นหาชื่อพนักงาน..." value={searchName} onChange={(e) => setSearchName(e.target.value)} className="pl-9 pr-4 py-2 rounded-lg border border-surface-300 bg-white text-sm w-56" /></div>
             </div>
@@ -1146,6 +1153,7 @@ export default function LeaveManagement() {
             <table className="w-full text-left">
               <thead><tr className="bg-surface-50 border-b border-surface-200">
                 <th className="px-6 py-3 text-sm font-semibold text-surface-700">พนักงาน</th>
+                <th className="px-6 py-3 text-sm font-semibold text-surface-700 whitespace-nowrap">ประเภท WFH</th>
                 <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่เริ่ม–สิ้นสุด</th>
                 <th className="px-6 py-3 text-sm font-semibold text-surface-700">ช่วงเวลา</th>
                 <th className="px-6 py-3 text-sm font-semibold text-surface-700">เหตุผล</th>
@@ -1154,9 +1162,10 @@ export default function LeaveManagement() {
                 {canApproveOT && <th className="px-6 py-3 text-sm font-semibold text-surface-700">ดำเนินการ</th>}
               </tr></thead>
               <tbody>
-                {filteredWfhRequests.length === 0 ? <tr><td colSpan={canApproveOT ? 7 : 6} className="px-6 py-12 text-center text-surface-500 text-sm">ไม่มีคำขอ WFH</td></tr> : filteredWfhRequests.map((req) => (
+                {filteredWfhRequests.length === 0 ? <tr><td colSpan={canApproveOT ? 8 : 7} className="px-6 py-12 text-center text-surface-500 text-sm">ไม่มีคำขอ WFH</td></tr> : filteredWfhRequests.map((req) => (
                   <tr key={req.id} className="border-b border-surface-100 hover:bg-emerald-50/50 transition-colors">
                     <td className="px-6 py-3 text-sm text-surface-800">{employeeName(req.employee)}</td>
+                    <td className="px-6 py-3 text-sm font-medium text-surface-700 whitespace-nowrap">{wfhRequestTypeLabel(req.wfh_type)}</td>
                     <td className="px-6 py-3 text-sm text-surface-700">{req.start_date} – {req.end_date}</td>
                     <td className="px-6 py-3 text-sm text-surface-700">{req.start_time && req.end_time ? `${req.start_time.slice(0, 5)} – ${req.end_time.slice(0, 5)} น.` : 'ตามตารางงาน'}</td>
                     <td className="px-6 py-3 text-sm text-surface-700 max-w-[260px]" title={req.reason}><div className="truncate">{req.reason || '-'}</div>{req.reject_reason && <div className="text-xs text-red-500 truncate">เหตุผลไม่อนุมัติ: {req.reject_reason}</div>}</td>

@@ -78,6 +78,7 @@ function parseImportNumber(value: unknown): number | null {
 export default function WarehouseAdjust() {
   const { user } = useAuthContext()
   const canSeeCost = ['superadmin', 'account'].includes(user?.role || '')
+  const canApproveAdjustment = ['superadmin', 'admin', 'manager', 'account'].includes(user?.role || '')
   const [adjustments, setAdjustments] = useState<InventoryAdjustment[]>([])
   const [products, setProducts] = useState<Product[]>([])
   const [balances, setBalances] = useState<Record<string, StockBalance>>({})
@@ -554,6 +555,10 @@ export default function WarehouseAdjust() {
   }
 
   async function openApproveAdjustment(adjustment: InventoryAdjustment) {
+    if (!canApproveAdjustment) {
+      showNotify('warning', 'ไม่มีสิทธิ์อนุมัติ', 'กรุณาให้ผู้มีสิทธิ์ตรวจสอบและอนุมัติใบปรับสต๊อก')
+      return
+    }
     if ((itemCountMap[adjustment.id] || 0) === 0) {
       showNotify('warning', 'ไม่สามารถอนุมัติได้', 'ใบปรับสต๊อกนี้ไม่มีรายการสินค้า กรุณายกเลิกใบนี้แล้วสร้างใหม่')
       return
@@ -818,14 +823,16 @@ export default function WarehouseAdjust() {
                             >
                               ยกเลิก
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => void openApproveAdjustment(adjustment)}
-                              disabled={updating === adjustment.id}
-                              className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-semibold disabled:opacity-50"
-                            >
-                              {updating === adjustment.id ? 'กำลังอนุมัติ...' : 'อนุมัติ'}
-                            </button>
+                            {canApproveAdjustment && (
+                              <button
+                                type="button"
+                                onClick={() => void openApproveAdjustment(adjustment)}
+                                disabled={updating === adjustment.id}
+                                className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-semibold disabled:opacity-50"
+                              >
+                                {updating === adjustment.id ? 'กำลังอนุมัติ...' : 'อนุมัติ'}
+                              </button>
+                            )}
                           </>
                         )}
                       </div>

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { FiHome, FiCalendar, FiCheckCircle, FiXCircle, FiClock } from 'react-icons/fi'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { createWFHRequest, fetchEmployeeByUserId, fetchWFHRequests, fetchWorkSchedules } from '../../../lib/hrApi'
-import type { HREmployee, HRWFHRequest, HRWorkSchedule } from '../../../types'
+import { WFH_REQUEST_TYPE_OPTIONS, wfhRequestTypeLabel, wfhRequestTypeNeedsReason } from '../../../lib/wfhRequestType'
+import type { HREmployee, HRWFHRequest, HRWFHRequestType, HRWorkSchedule } from '../../../types'
 
 function todayStr() {
   const d = new Date()
@@ -27,6 +28,7 @@ export default function EmployeeWFH() {
   const [employee, setEmployee] = useState<HREmployee | null>(null)
   const [requests, setRequests] = useState<HRWFHRequest[]>([])
   const [form, setForm] = useState({
+    wfh_type: '' as HRWFHRequestType | '',
     start_date: todayStr(),
     end_date: todayStr(),
     start_time: '',
@@ -72,7 +74,15 @@ export default function EmployeeWFH() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!employee || !form.reason.trim()) return
+    if (!employee) return
+    if (!form.wfh_type) {
+      setMessage({ type: 'error', text: 'กรุณาเลือกประเภท WFH' })
+      return
+    }
+    if (wfhRequestTypeNeedsReason(form.wfh_type) && !form.reason.trim()) {
+      setMessage({ type: 'error', text: 'กรุณาระบุเหตุผลที่ขอ WFH' })
+      return
+    }
     if (form.end_date < form.start_date) {
       setMessage({ type: 'error', text: 'วันที่สิ้นสุดต้องไม่น้อยกว่าวันที่เริ่มต้น' })
       return
@@ -86,20 +96,21 @@ export default function EmployeeWFH() {
       return
     }
     const range = `${form.start_time} – ${form.end_time} น.`
-    if (!window.confirm(`ยืนยันส่งคำขอ WFH วันที่ ${form.start_date} ถึง ${form.end_date} เวลา ${range} ใช่หรือไม่?`)) return
+    if (!window.confirm(`ยืนยันส่งคำขอ WFH ประเภท “${wfhRequestTypeLabel(form.wfh_type)}” วันที่ ${form.start_date} ถึง ${form.end_date} เวลา ${range} ใช่หรือไม่?`)) return
     setSubmitting(true)
     try {
       await createWFHRequest({
         employee_id: employee.id,
+        wfh_type: form.wfh_type,
         start_date: form.start_date,
         end_date: form.end_date,
         start_time: form.start_time,
         end_time: form.end_time,
-        reason: form.reason.trim(),
+        reason: wfhRequestTypeNeedsReason(form.wfh_type) ? form.reason.trim() : '',
         status: 'pending',
       })
       setMessage({ type: 'success', text: 'ส่งคำขอ WFH แล้ว กรุณารอการอนุมัติ' })
-      setForm((current) => ({ ...current, reason: '' }))
+      setForm((current) => ({ ...current, wfh_type: '', reason: '' }))
       await load()
     } catch (e) {
       setMessage({ type: 'error', text: e instanceof Error ? e.message : 'ส่งคำขอไม่สำเร็จ' })
@@ -120,6 +131,18 @@ export default function EmployeeWFH() {
         <p className="mt-1 text-xs text-gray-500">ต้องได้รับอนุมัติก่อน จึงจะลงเวลานอกพิกัดสำนักงานได้</p>
         {message && <div className={`mt-3 rounded-xl px-3 py-2 text-sm ${message.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>{message.text}</div>}
         <form onSubmit={submit} className="mt-4 space-y-3">
+          <label className="block text-xs text-gray-600">
+            ประเภท WFH
+            <select
+              value={form.wfh_type}
+              onChange={(e) => setForm((f) => ({ ...f, wfh_type: e.target.value as HRWFHRequestType | '', reason: e.target.value === 'other' ? f.reason : '' }))}
+              className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm"
+              required
+            >
+              <option value="">เลือกประเภท WFH</option>
+              {WFH_REQUEST_TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
           <div className="grid grid-cols-2 gap-2">
             <label className="text-xs text-gray-600">วันที่เริ่มต้น<input type="date" min={todayStr()} value={form.start_date} onChange={(e) => setForm((f) => ({ ...f, start_date: e.target.value, end_date: e.target.value > f.end_date ? e.target.value : f.end_date }))} className="mt-1 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" required /></label>
             <label className="text-xs text-gray-600">วันที่สิ้นสุด<input type="date" min={form.start_date} value={form.end_date} onChange={(e) => setForm((f) => ({ ...f, end_date: e.target.value }))} className="mt-1 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" required /></label>
@@ -129,7 +152,9 @@ export default function EmployeeWFH() {
             <label className="text-xs text-gray-600">เวลาเลิกงาน<input type="time" value={form.end_time} onChange={(e) => setForm((f) => ({ ...f, end_time: e.target.value }))} className="mt-1 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" required /></label>
           </div>
           <p className="text-[11px] text-gray-500">ช่วงเวลานี้จะถูกใช้เป็นเวลาเข้า-ออกงานของวันที่ WFH หลังได้รับอนุมัติ</p>
-          <label className="block text-xs text-gray-600">เหตุผล<textarea value={form.reason} onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))} rows={3} className="mt-1 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" placeholder="ระบุเหตุผลที่ขอ WFH" required /></label>
+          {form.wfh_type === 'other' && (
+            <label className="block text-xs text-gray-600">เหตุผล<textarea value={form.reason} onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))} rows={3} className="mt-1 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" placeholder="ระบุเหตุผลที่ขอ WFH" required /></label>
+          )}
           <button type="submit" disabled={submitting} className="w-full rounded-xl bg-emerald-600 py-3 text-sm font-semibold text-white disabled:opacity-50">{submitting ? 'กำลังส่ง…' : 'ส่งคำขอ WFH'}</button>
         </form>
       </section>
@@ -141,7 +166,7 @@ export default function EmployeeWFH() {
             <ul className="divide-y divide-gray-100">{requests.map((request) => {
               const view = statusView(request.status)
               const StatusIcon = view.Icon
-              return <li key={request.id} className="p-4"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-medium text-gray-800">{request.start_date} – {request.end_date}</p>{request.start_time && request.end_time && <p className="mt-0.5 text-xs text-gray-600">เวลา {toTimeInput(request.start_time)} – {toTimeInput(request.end_time)} น.</p>}<p className="mt-1 text-xs text-gray-500">{request.reason}</p>{request.reject_reason && <p className="mt-1 text-xs text-red-600">เหตุผล: {request.reject_reason}</p>}</div><span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-xs font-medium ${view.cls}`}><StatusIcon className="h-3.5 w-3.5" />{view.label}</span></div></li>
+              return <li key={request.id} className="p-4"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-medium text-gray-800">{request.start_date} – {request.end_date}</p><p className="mt-0.5 text-xs font-medium text-emerald-700">{wfhRequestTypeLabel(request.wfh_type)}</p>{request.start_time && request.end_time && <p className="mt-0.5 text-xs text-gray-600">เวลา {toTimeInput(request.start_time)} – {toTimeInput(request.end_time)} น.</p>}{request.reason && <p className="mt-1 text-xs text-gray-500">{request.reason}</p>}{request.reject_reason && <p className="mt-1 text-xs text-red-600">เหตุผล: {request.reject_reason}</p>}</div><span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-xs font-medium ${view.cls}`}><StatusIcon className="h-3.5 w-3.5" />{view.label}</span></div></li>
             })}</ul>
           )}
         </div>
