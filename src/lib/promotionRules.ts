@@ -215,9 +215,13 @@ export function evaluatePromotion(
       if (subtotal < threshold) {
         messages.push(`ยอดสินค้าไม่ถึง ${money(threshold).toLocaleString('th-TH')} บาท (ปัจจุบัน ${subtotal.toLocaleString('th-TH')} บาท)`)
       } else {
-        applicationCount = 1
         const value = Math.max(0, Number(config.discount_value) || 0)
-        expectedDiscount = promotion.rule_type === 'spend_percent' ? subtotal * (value / 100) : value
+        if (value > 0 || promotion.free_shipping === true) {
+          applicationCount = 1
+          expectedDiscount = promotion.rule_type === 'spend_percent' ? subtotal * (value / 100) : value
+        } else {
+          messages.push('ยังไม่ได้กำหนดส่วนลดหรือสิทธิ์ฟรีค่าส่ง')
+        }
       }
     } else if (promotion.rule_type === 'quantity_fixed') {
       if (!conditionGroups.length) messages.push('ยังไม่ได้กำหนดกลุ่มสินค้าฝั่งซื้อ')
@@ -225,11 +229,11 @@ export function evaluatePromotion(
       if (conditionGroups.length && !allocation.passed) messages.push(...allocation.missing)
       else {
         const discountValue = Math.max(0, Number(config.discount_value) || 0)
-        if (conditionGroups.length && discountValue > 0) {
+        if (conditionGroups.length && (discountValue > 0 || promotion.free_shipping === true)) {
           applicationCount = 1
           expectedDiscount = discountValue
         } else if (discountValue <= 0) {
-          messages.push('ยังไม่ได้กำหนดส่วนลด')
+          messages.push('ยังไม่ได้กำหนดส่วนลดหรือสิทธิ์ฟรีค่าส่ง')
         }
       }
     } else if (promotion.rule_type === 'bundle_fixed_price') {

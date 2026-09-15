@@ -20,6 +20,13 @@ import { isAdminOrSuperadmin, normalizeRole } from '../../config/accessPolicy'
 import { generateBillNo } from '../../lib/billNo'
 import { findWyProduct } from '../../lib/wyProductMatcher'
 import { calculateChargeableItemsTotal } from '../../lib/orderItemPricing'
+import {
+  findTubeGiftProduct,
+  getTubeEligibleQuantity,
+  isTubeAutoGiftItem,
+  reconcileTubeGiftItems,
+  TUBE_GIFT_PRODUCT_CODE,
+} from '../../lib/orderAutoGifts'
 import { buildIlikeOr } from '../../lib/searchFilter'
 import { isSelfPickupBill, isSelfPickupChannel } from '../../lib/channelBehavior'
 import { getMissingCustomerShippingFields } from '../../lib/orderCustomerValidation'
@@ -677,6 +684,16 @@ const PLASTIC_INK_BONUS_MAP: Record<string, { product_name: string }> = {
   'พลาสติกเขียว': { product_name: 'หมึกแฟลชพลาสติก 5 ml. (เขียว)' },
   'พลาสติกแดง': { product_name: 'หมึกแฟลชพลาสติก 5 ml. (แดง)' },
   'พลาสติกน้ำเงิน': { product_name: 'หมึกแฟลชพลาสติก 5 ml. (น้ำเงิน)' },
+}
+
+const PLASTIC_INK_BONUS_NAMES = new Set(
+  Object.values(PLASTIC_INK_BONUS_MAP).map((bonus) => bonus.product_name),
+)
+
+function isPlasticInkAutoGiftItem(item: Partial<OrderItem>, products: Product[]): boolean {
+  if (!item.is_free) return false
+  const product = products.find((candidate) => String(candidate.id) === String(item.product_id || ''))
+  return PLASTIC_INK_BONUS_NAMES.has(String(product?.product_name || item.product_name || '').trim())
 }
 
 const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
@@ -1737,6 +1754,15 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     if (changed) setItems(nextItems)
   }, [items, defaultFontName, categoryFieldSettings, productFieldOverrides, products, nameLinesOnlyMode]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ของแถม TUBE เป็นหนึ่งบรรทัดต่อบิล และจำนวนเท่ากับยอดรวมสินค้า TUBE ที่ไม่ใช่ของแถม
+  useEffect(() => {
+    if (readOnly || viewOnly || nameLinesOnlyMode || products.length === 0) return
+    const nextItems = reconcileTubeGiftItems(items, products)
+    if (nextItems === items) return
+    setItems(nextItems)
+    rebuildSearchTerms(nextItems)
+  }, [items, products, readOnly, viewOnly, nameLinesOnlyMode])
+
   // คำนวณราคารวมจากรายการสินค้า
   function calculateItemsTotal() {
     return calculateChargeableItemsTotal(items, isCondoSubRow)
@@ -2125,6 +2151,23 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       console.error('User not found')
       setLoading(false)
       return
+    }
+
+    const tubeQuantity = getTubeEligibleQuantity(itemsToSave, products)
+    if (tubeQuantity > 0 && !findTubeGiftProduct(products)) {
+      setMessageModal({
+        open: true,
+        title: 'ไม่พบสินค้าของแถม TUBE',
+        message: `ไม่สามารถบันทึกบิลได้ เนื่องจากไม่พบรหัสสินค้า ${TUBE_GIFT_PRODUCT_CODE} หรือสินค้าถูกปิดใช้งาน กรุณาตรวจสอบข้อมูลสินค้า`,
+      })
+      return
+    }
+
+    const reconciledItems = reconcileTubeGiftItems(itemsToSave, products)
+    if (reconciledItems !== itemsToSave) {
+      itemsToSave = reconciledItems
+      setItems(reconciledItems)
+      rebuildSearchTerms(reconciledItems)
     }
 
     // ทุกเส้นทางที่บันทึกเป็น "ข้อมูลครบ" ต้องมีรายละเอียดจัดส่งครบ
@@ -4464,7 +4507,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   }
 
   function addItem() {
-    const lastItem = items.length > 0 ? items[items.length - 1] : null
+    let insertAt = items.length
+    while (insertAt > 0 && isSystemAutoGiftItem(items[insertAt - 1])) insertAt -= 1
+    const lastItem = items.slice(0, insertAt).reverse().find((item) => !isSystemAutoGiftItem(item)) || null
     // Copy ชื่อสินค้า + product_id + ราคา/หน่วย จากแถวล่าสุด เพื่อกรอกบิลซ้ำได้เร็วขึ้น
     const newItem: Partial<OrderItem> =
       lastItem?.product_name || lastItem?.product_id
@@ -4476,9 +4521,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             unit_price: lastItem?.unit_price ?? 0,
           }
         : { product_type: 'ชั้น1', quantity: 1 }
-    setItems([...items, newItem])
-
-    setProductSearchTerm({ ...productSearchTerm, [items.length]: lastItem?.product_name ?? '' })
+    const nextItems = [...items]
+    nextItems.splice(insertAt, 0, newItem)
+    setItems(nextItems)
+    rebuildSearchTerms(nextItems)
   }
 
   function getCondoLayerCount(name?: string | null): number {
@@ -4860,6 +4906,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     if (!item.product_id) return null
     const product = products.find((p) => p.id === item.product_id)
     return product?.product_category?.trim() || null
+  }
+
+  function isSystemAutoGiftItem(item: Partial<OrderItem>): boolean {
+    return isTubeAutoGiftItem(item, products) || isPlasticInkAutoGiftItem(item, products)
   }
 
   function getPatternByName(name: string) {
@@ -5525,6 +5575,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             <tbody>
               {items.map((item, index) => {
                 const productCategory = getProductCategoryForItem(item)
+                const isSystemAutoGift = isSystemAutoGiftItem(item)
                 const patternInputValue =
                   patternSearchTerm[index] !== undefined ? patternSearchTerm[index] : (item.cartoon_pattern || '')
                 const lineLimit = getLineCountForPattern(item.cartoon_pattern)
@@ -5541,8 +5592,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         type="checkbox"
                         checked={!!(item as { is_free?: boolean }).is_free}
                         onChange={(e) => updateItem(index, 'is_free', e.target.checked)}
-                        disabled={formDisabled}
-                        title="สินค้าของแถม (ฟรี)"
+                        disabled={formDisabled || isSystemAutoGift}
+                        title={isSystemAutoGift ? 'ของแถมอัตโนมัติจากระบบ' : 'สินค้าของแถม (ฟรี)'}
                         className="w-4 h-4 rounded border-gray-300 accent-green-500"
                       />
                     </div>
@@ -5558,7 +5609,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         type="text"
                         list={`product-list-${index}`}
                         value={productSearchTerm[index] !== undefined ? productSearchTerm[index] : (item.product_name || '')}
-                        disabled={formDisabled || isCondoSubRow(item)}
+                        disabled={formDisabled || isCondoSubRow(item) || isSystemAutoGift}
+                        title={isSystemAutoGift ? 'รายการนี้เพิ่มอัตโนมัติจากระบบ' : undefined}
                         onChange={(e) => {
                           const searchTerm = e.target.value
                           setProductSearchTerm({ ...productSearchTerm, [index]: searchTerm })
@@ -6059,8 +6111,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       }}
                       onWheel={(e) => (e.target as HTMLInputElement).blur()}
                       min="1"
-                      disabled={formDisabled || isCondoSubRow(item) || !isFieldEnabled(index, 'quantity')}
-                      title={isCondoSubRow(item) ? 'แถวรายละเอียดชั้น ไม่นับจำนวนสินค้าเพิ่ม' : undefined}
+                      disabled={formDisabled || isCondoSubRow(item) || isSystemAutoGift || !isFieldEnabled(index, 'quantity')}
+                      title={isSystemAutoGift ? 'จำนวนของแถมควบคุมอัตโนมัติโดยระบบ' : (isCondoSubRow(item) ? 'แถวรายละเอียดชั้น ไม่นับจำนวนสินค้าเพิ่ม' : undefined)}
                       className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'quantity')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['quantity'] ?? reviewErrorFields?.quantity) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
@@ -6175,7 +6227,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     })()}
                   </td>
                   <td className="border p-1.5 align-middle">
-                    {!formDisabled && (
+                    {!formDisabled && !isSystemAutoGift && (
                     <button
                       type="button"
                       onClick={() => removeItem(index)}
@@ -6184,6 +6236,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     >
                       ×
                     </button>
+                    )}
+                    {!formDisabled && isSystemAutoGift && (
+                      <span className="text-[10px] font-medium text-green-700" title="จัดการอัตโนมัติโดยระบบ">
+                        อัตโนมัติ
+                      </span>
                     )}
                   </td>
                 </tr>

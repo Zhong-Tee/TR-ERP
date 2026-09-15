@@ -85,6 +85,60 @@ describe('promotion rules', () => {
     expect(passed.expected_discount).toBe(120)
   })
 
+  it('ซื้อครบ X บาท ส่วนลด 0 ผ่านได้เมื่อสิทธิ์คือฟรีค่าส่ง', () => {
+    const promo: PromotionDefinition = {
+      ...base,
+      rule_type: 'spend_fixed',
+      free_shipping: true,
+      rule_config: { threshold_amount: 200, discount_value: 0 },
+    }
+    const result = evaluatePromotion(promo, [
+      { product_id: 'a', product_category: 'แก้ว', quantity: 1, unit_price: 200, is_free: false },
+    ], { channel_code: 'FBTR' })
+    expect(result.passed).toBe(true)
+    expect(result.application_count).toBe(1)
+    expect(result.expected_discount).toBe(0)
+  })
+
+  it('ซื้อ X สินค้า ส่วนลด 0 ผ่านได้เมื่อสิทธิ์คือฟรีค่าส่ง', () => {
+    const promo: PromotionDefinition = {
+      ...base,
+      rule_type: 'quantity_fixed',
+      free_shipping: true,
+      rule_config: {
+        discount_value: 0,
+        condition_groups: [{ id: 'แก้ว 1 ใบ', quantity: 1, options: [{ selector_type: 'category', category: 'แก้ว' }] }],
+      },
+    }
+    const result = evaluatePromotion(promo, [
+      { product_id: 'a', product_category: 'แก้ว', quantity: 1, unit_price: 100, is_free: false },
+    ], { channel_code: 'FBTR' })
+    expect(result.passed).toBe(true)
+    expect(result.application_count).toBe(1)
+    expect(result.expected_discount).toBe(0)
+  })
+
+  it('ส่วนลด 0 ไม่ผ่านเมื่อไม่มีสิทธิ์ฟรีค่าส่ง', () => {
+    const spendPromo: PromotionDefinition = {
+      ...base,
+      rule_type: 'spend_fixed',
+      free_shipping: false,
+      rule_config: { threshold_amount: 200, discount_value: 0 },
+    }
+    const quantityPromo: PromotionDefinition = {
+      ...base,
+      rule_type: 'quantity_fixed',
+      free_shipping: false,
+      rule_config: {
+        discount_value: 0,
+        condition_groups: [{ id: 'แก้ว 1 ใบ', quantity: 1, options: [{ selector_type: 'category', category: 'แก้ว' }] }],
+      },
+    }
+    const items = [{ product_id: 'a', product_category: 'แก้ว', quantity: 1, unit_price: 200, is_free: false }]
+    expect(evaluatePromotion(spendPromo, items, { channel_code: 'FBTR' }).passed).toBe(false)
+    expect(evaluatePromotion(quantityPromo, items, { channel_code: 'FBTR' }).passed).toBe(false)
+  })
+
   it('เลือกสินค้าราคาสูงสุดโดยยังจัดสรรครบทุกกลุ่มที่เงื่อนไขซ้อนกัน', () => {
     const promo: PromotionDefinition = {
       ...base,
