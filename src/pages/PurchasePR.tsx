@@ -750,7 +750,7 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
                   const st = linkedPO
                     ? { label: `สร้าง PO แล้ว: ${linkedPO.po_no}`, color: 'bg-blue-100 text-blue-800' }
                     : pr.status === 'approved'
-                      ? { label: 'รอสร้าง PO', color: 'bg-amber-100 text-amber-800' }
+                      ? { label: 'รอสร้าง PO', color: 'bg-green-100 text-green-800' }
                       : STATUS_MAP[pr.status] || { label: pr.status, color: 'bg-gray-100 text-gray-700' }
                   const isUrgent = pr.pr_type === 'urgent'
                   const items = ((pr as any).inv_pr_items || []) as Array<{
