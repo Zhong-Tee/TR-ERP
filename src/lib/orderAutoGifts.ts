@@ -19,6 +19,18 @@ type AutoGiftProduct = {
   product_category?: string | null
 }
 
+type MarketplaceAutoGiftItem = {
+  product_id?: string | null
+  product_name_raw?: string | null
+  sku_ref?: string | null
+  qty?: number | null
+  unit_price?: number | null
+  line_total?: number | null
+  is_free?: boolean
+  product_type?: string | null
+  notes?: string | null
+}
+
 function normalize(value: string | null | undefined): string {
   return String(value || '').trim().toUpperCase()
 }
@@ -128,4 +140,83 @@ export function reconcileTubeGiftItems<T extends AutoGiftItem>(
         parent_item_id: null,
       }
     })
+}
+
+export function isMarketplaceTubeAutoGiftItem(
+  item: MarketplaceAutoGiftItem,
+  products: AutoGiftProduct[],
+): boolean {
+  if (!item.is_free) return false
+  const product = products.find((candidate) => String(candidate.id) === String(item.product_id || ''))
+  if (normalize(product?.product_code) === TUBE_GIFT_PRODUCT_CODE) return true
+  return String(item.product_name_raw || '').trim() === TUBE_GIFT_PRODUCT_NAME
+}
+
+export function getMarketplaceTubeEligibleQuantity(
+  items: MarketplaceAutoGiftItem[],
+  products: AutoGiftProduct[],
+): number {
+  const productById = new Map(products.map((product) => [String(product.id), product]))
+  return items.reduce((total, item) => {
+    if (item.is_free) return total
+    const product = productById.get(String(item.product_id || ''))
+    if (normalize(product?.product_category) !== 'TUBE') return total
+    const quantity = Number(item.qty || 0)
+    return Number.isFinite(quantity) && quantity > 0 ? total + quantity : total
+  }, 0)
+}
+
+/** ทำให้ร่าง Marketplace มีของแถม TUBE หนึ่งบรรทัดต่อออเดอร์ */
+export function reconcileMarketplaceTubeGiftItems<T extends MarketplaceAutoGiftItem>(
+  items: T[],
+  products: AutoGiftProduct[],
+  createGift: (product: AutoGiftProduct, quantity: number) => T,
+): T[] {
+  const requiredQuantity = getMarketplaceTubeEligibleQuantity(items, products)
+  const giftProduct = findTubeGiftProduct(products)
+  const giftIndexes = items.reduce<number[]>((indexes, item, index) => {
+    if (isMarketplaceTubeAutoGiftItem(item, products)) indexes.push(index)
+    return indexes
+  }, [])
+
+  if (requiredQuantity <= 0) {
+    if (giftIndexes.length === 0) return items
+    const indexesToRemove = new Set(giftIndexes)
+    return items.filter((_, index) => !indexesToRemove.has(index))
+  }
+  if (!giftProduct) return items
+
+  const firstGiftIndex = giftIndexes[0]
+  if (firstGiftIndex == null) return [...items, createGift(giftProduct, requiredQuantity)]
+
+  const existingGift = items[firstGiftIndex]
+  const expectedName = giftProduct.product_name || TUBE_GIFT_PRODUCT_NAME
+  const giftIsCorrect =
+    giftIndexes.length === 1 &&
+    String(existingGift.product_id || '') === String(giftProduct.id) &&
+    String(existingGift.product_name_raw || '') === expectedName &&
+    String(existingGift.sku_ref || '') === String(giftProduct.product_code || TUBE_GIFT_PRODUCT_CODE) &&
+    Number(existingGift.qty || 0) === requiredQuantity &&
+    Number(existingGift.unit_price || 0) === 0 &&
+    Number(existingGift.line_total || 0) === 0 &&
+    existingGift.is_free === true
+  if (giftIsCorrect) return items
+
+  const duplicateIndexes = new Set(giftIndexes.slice(1))
+  return items
+    .filter((_, index) => !duplicateIndexes.has(index))
+    .map((item, index) => index === firstGiftIndex
+      ? {
+          ...item,
+          product_id: giftProduct.id,
+          product_name_raw: expectedName,
+          sku_ref: giftProduct.product_code || TUBE_GIFT_PRODUCT_CODE,
+          qty: requiredQuantity,
+          unit_price: 0,
+          line_total: 0,
+          is_free: true,
+          product_type: item.product_type || 'ชั้น1',
+          notes: item.notes || 'สินค้าแถมอัตโนมัติจาก TUBE',
+        }
+      : item)
 }

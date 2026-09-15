@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   TUBE_GIFT_PRODUCT_CODE,
   getTubeEligibleQuantity,
+  getMarketplaceTubeEligibleQuantity,
+  isMarketplaceTubeAutoGiftItem,
   isTubeAutoGiftItem,
+  reconcileMarketplaceTubeGiftItems,
   reconcileTubeGiftItems,
 } from './orderAutoGifts'
 
@@ -81,5 +84,68 @@ describe('TUBE automatic gift', () => {
     )
 
     expect(result).toEqual([{ product_id: 'tube-a', quantity: 1 }])
+  })
+})
+
+describe('Marketplace TUBE automatic gift', () => {
+  type TestMarketplaceItem = {
+    id: string
+    product_id: string | null
+    product_name_raw?: string | null
+    sku_ref?: string | null
+    qty: number | null
+    unit_price?: number | null
+    line_total?: number | null
+    is_free: boolean
+    ink_color?: string | null
+    product_type?: string | null
+    notes?: string | null
+  }
+
+  const createGift = (product: { id: string; product_code?: string | null; product_name?: string | null }, quantity: number): TestMarketplaceItem => ({
+    id: 'marketplace-gift',
+    product_id: product.id,
+    product_name_raw: product.product_name || '',
+    sku_ref: product.product_code || null,
+    qty: quantity,
+    unit_price: 0,
+    line_total: 0,
+    is_free: true,
+    product_type: 'ชั้น1',
+    notes: 'สินค้าแถมอัตโนมัติจาก TUBE',
+  })
+
+  it('adds one rope row from TUBE products without requiring an ink color', () => {
+    const source: TestMarketplaceItem[] = [
+      { id: 'a', product_id: 'tube-a', qty: 2, is_free: false, ink_color: null },
+      { id: 'b', product_id: 'tube-b', qty: 3, is_free: false, ink_color: null },
+    ]
+    const result = reconcileMarketplaceTubeGiftItems<TestMarketplaceItem>(source, products, createGift)
+
+    expect(getMarketplaceTubeEligibleQuantity(source, products)).toBe(5)
+    expect(result).toHaveLength(3)
+    expect(result.filter((item) => isMarketplaceTubeAutoGiftItem(item, products))).toEqual([
+      expect.objectContaining({ product_id: 'gift', qty: 5, unit_price: 0, is_free: true }),
+    ])
+  })
+
+  it('updates and consolidates Marketplace gift rows', () => {
+    const result = reconcileMarketplaceTubeGiftItems<TestMarketplaceItem>([
+      { id: 'a', product_id: 'tube-a', qty: 4, is_free: false },
+      { id: 'g1', product_id: 'gift', product_name_raw: 'เชือกคละสี 10 เส้น', sku_ref: TUBE_GIFT_PRODUCT_CODE, qty: 1, unit_price: 0, line_total: 0, is_free: true },
+      { id: 'g2', product_id: 'gift', product_name_raw: 'เชือกคละสี 10 เส้น', sku_ref: TUBE_GIFT_PRODUCT_CODE, qty: 2, unit_price: 0, line_total: 0, is_free: true },
+    ], products, createGift)
+
+    expect(result).toHaveLength(2)
+    expect(result[1]).toEqual(expect.objectContaining({ id: 'g1', qty: 4 }))
+  })
+
+  it('removes the Marketplace gift when all TUBE products are removed', () => {
+    const result = reconcileMarketplaceTubeGiftItems<TestMarketplaceItem>([
+      { id: 'normal', product_id: 'normal', qty: 1, is_free: false },
+      { id: 'gift-row', product_id: 'gift', product_name_raw: 'เชือกคละสี 10 เส้น', qty: 1, is_free: true },
+    ], products, createGift)
+
+    expect(result).toEqual([{ id: 'normal', product_id: 'normal', qty: 1, is_free: false }])
   })
 })

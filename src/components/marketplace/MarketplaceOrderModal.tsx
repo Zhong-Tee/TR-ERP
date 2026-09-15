@@ -9,6 +9,13 @@ import UrgencyBadge from '../common/UrgencyBadge'
 import type { User } from '../../types'
 import type { MpOrder, MpOrderItem, MpSalesUser } from '../../types/marketplace'
 import { fetchAllSupabasePagesResult } from '../../lib/supabasePagination'
+import {
+  findTubeGiftProduct,
+  getMarketplaceTubeEligibleQuantity,
+  isMarketplaceTubeAutoGiftItem,
+  reconcileMarketplaceTubeGiftItems,
+  TUBE_GIFT_PRODUCT_CODE,
+} from '../../lib/orderAutoGifts'
 
 interface ProductOption {
   id: string
@@ -130,6 +137,62 @@ export default function MarketplaceOrderModal({
     products.forEach((p) => m.set(p.id, p))
     return m
   }, [products])
+
+  function createMarketplaceTubeGift(product: ProductOption, quantity: number): MpOrderItem {
+    return {
+      id: crypto.randomUUID(),
+      mp_order_id: mpOrder.id,
+      line_index: items.length,
+      product_name_raw: product.product_name,
+      sku_ref: product.product_code,
+      variation: null,
+      qty: quantity,
+      unit_price: 0,
+      line_total: 0,
+      raw_snapshot: null,
+      product_id: product.id,
+      product_type: 'ชั้น1',
+      ink_color: null,
+      cartoon_pattern: null,
+      line_pattern: null,
+      font: null,
+      line_1: null,
+      line_2: null,
+      line_3: null,
+      no_name_line: false,
+      is_free: true,
+      notes: 'สินค้าแถมอัตโนมัติจาก TUBE',
+      created_at: new Date().toISOString(),
+    }
+  }
+
+  function synchronizeMarketplaceTubeGifts(sourceItems: MpOrderItem[]): MpOrderItem[] {
+    return reconcileMarketplaceTubeGiftItems(
+      sourceItems,
+      products,
+      (product, quantity) => createMarketplaceTubeGift(product as ProductOption, quantity),
+    )
+  }
+
+  function prepareMarketplaceTubeGifts(sourceItems: MpOrderItem[]): MpOrderItem[] | null {
+    const tubeQuantity = getMarketplaceTubeEligibleQuantity(sourceItems, products)
+    if (tubeQuantity > 0 && !findTubeGiftProduct(products)) {
+      showMessage({
+        title: 'ไม่พบสินค้าของแถม TUBE',
+        message: `ไม่สามารถบันทึกได้ เนื่องจากไม่พบรหัสสินค้า ${TUBE_GIFT_PRODUCT_CODE} หรือสินค้าถูกปิดใช้งาน กรุณาตรวจสอบข้อมูลสินค้า`,
+      })
+      return null
+    }
+    const nextItems = synchronizeMarketplaceTubeGifts(sourceItems)
+    if (nextItems !== sourceItems) setItems(nextItems)
+    return nextItems
+  }
+
+  useEffect(() => {
+    if (readOnly || products.length === 0) return
+    const nextItems = synchronizeMarketplaceTubeGifts(items)
+    if (nextItems !== items) setItems(nextItems)
+  }, [items, products, readOnly]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     let cancelled = false
@@ -425,10 +488,10 @@ export default function MarketplaceOrderModal({
     )
   }
 
-  async function saveDrafts(): Promise<boolean> {
+  async function saveDrafts(sourceItems: MpOrderItem[] = items): Promise<boolean> {
     try {
       // 1) ลบแถวที่หายไป (เช่น ถูกรวมกลับ) ที่เคยมีอยู่ใน DB
-      const currentIds = new Set(items.map((it) => it.id))
+      const currentIds = new Set(sourceItems.map((it) => it.id))
       const toDelete = [...persistedIds].filter((id) => !currentIds.has(id))
       if (toDelete.length > 0) {
         const { error } = await supabase.from('mp_order_items').delete().in('id', toDelete)
@@ -436,8 +499,8 @@ export default function MarketplaceOrderModal({
       }
 
       // 2) ย้าย line_index ของแถวเดิมไปช่วงชั่วคราว กัน UNIQUE(mp_order_id, line_index) ชนตอน renumber
-      for (let i = 0; i < items.length; i++) {
-        const it = items[i]
+      for (let i = 0; i < sourceItems.length; i++) {
+        const it = sourceItems[i]
         if (persistedIds.has(it.id)) {
           const { error } = await supabase
             .from('mp_order_items')
@@ -448,8 +511,8 @@ export default function MarketplaceOrderModal({
       }
 
       // 3) update แถวเดิม / insert แถวที่แยกใหม่ ด้วย line_index สุดท้ายตามลำดับในตาราง
-      for (let i = 0; i < items.length; i++) {
-        const it = items[i]
+      for (let i = 0; i < sourceItems.length; i++) {
+        const it = sourceItems[i]
         const draft = {
           line_index: i,
           product_id: it.product_id,
@@ -496,7 +559,7 @@ export default function MarketplaceOrderModal({
       if (trackErr) throw trackErr
 
       // แถวที่ insert ไปแล้วถือเป็นแถวใน DB — กัน re-save แล้ว insert ซ้ำ
-      setPersistedIds(new Set(items.map((it) => it.id)))
+      setPersistedIds(new Set(sourceItems.map((it) => it.id)))
       return true
     } catch (err) {
       showMessage({ title: 'บันทึกร่างไม่สำเร็จ', message: (err as Error).message })
@@ -506,7 +569,12 @@ export default function MarketplaceOrderModal({
 
   async function handleSaveDraft() {
     setSaving(true)
-    const ok = await saveDrafts()
+    const synchronizedItems = prepareMarketplaceTubeGifts(items)
+    if (!synchronizedItems) {
+      setSaving(false)
+      return
+    }
+    const ok = await saveDrafts(synchronizedItems)
     if (ok) {
       // ทำเครื่องหมายว่างานนี้มีการบันทึกร่างแล้ว → แสดงป้าย "บันทึกร่าง" ในลิสต์
       const { error } = await supabase
@@ -527,7 +595,9 @@ export default function MarketplaceOrderModal({
   async function handleFollowUp() {
     setSaving(true)
     try {
-      const ok = await saveDrafts()
+      const synchronizedItems = prepareMarketplaceTubeGifts(items)
+      if (!synchronizedItems) return
+      const ok = await saveDrafts(synchronizedItems)
       if (!ok) return
       const { error } = await supabase
         .from('mp_orders')
@@ -574,10 +644,10 @@ export default function MarketplaceOrderModal({
     }
   }
 
-  function validateForBilling(): string | null {
-    if (items.length === 0) return 'ไม่มีรายการสินค้า'
+  function validateForBilling(sourceItems: MpOrderItem[] = items): string | null {
+    if (sourceItems.length === 0) return 'ไม่มีรายการสินค้า'
     const problems: string[] = []
-    items.forEach((it, idx) => {
+    sourceItems.forEach((it, idx) => {
       const label = `รายการที่ ${idx + 1} (${it.product_name_raw || it.sku_ref || '-'})`
       if (!it.product_id) {
         problems.push(`${label}: ยังไม่ได้เลือกสินค้าในระบบ`)
@@ -624,7 +694,10 @@ export default function MarketplaceOrderModal({
       return
     }
 
-    const problem = validateForBilling()
+    const synchronizedItems = prepareMarketplaceTubeGifts(items)
+    if (!synchronizedItems) return
+
+    const problem = validateForBilling(synchronizedItems)
     if (problem) {
       showMessage({ title: 'ข้อมูลยังไม่ครบ', message: problem })
       return
@@ -635,7 +708,7 @@ export default function MarketplaceOrderModal({
       // ตรวจสต๊อก
       const nameById = new Map<string, string>()
       productById.forEach((p, id) => nameById.set(id, p.product_name))
-      const stockErrors = await validateStockForItems(items, nameById)
+      const stockErrors = await validateStockForItems(synchronizedItems, nameById)
       if (stockErrors.length > 0) {
         showMessage({
           title: 'สต๊อกไม่เพียงพอ',
@@ -645,12 +718,12 @@ export default function MarketplaceOrderModal({
       }
 
       const ok = await showConfirm({
-        message: `ยืนยันเปิดบิลออเดอร์ ${mpOrder.marketplace_order_no} ?\nช่องทาง ${mpOrder.channel_code} · ${items.length} รายการ`,
+        message: `ยืนยันเปิดบิลออเดอร์ ${mpOrder.marketplace_order_no} ?\nช่องทาง ${mpOrder.channel_code} · ${synchronizedItems.length} รายการ`,
         confirmText: 'เปิดบิล',
       })
       if (!ok) return
 
-      const saved = await saveDrafts()
+      const saved = await saveDrafts(synchronizedItems)
       if (!saved) return
 
       const billingDetails = showTaxInvoice
@@ -660,7 +733,7 @@ export default function MarketplaceOrderModal({
             tax_customer_name: taxInvoiceData.company_name.trim() || null,
             tax_customer_address: taxInvoiceData.address.trim() || null,
             tax_id: taxInvoiceData.tax_id.trim() || null,
-            tax_items: items
+            tax_items: synchronizedItems
               .filter((it) => it.product_id && !it.is_free)
               .map((it) => ({
                 product_name: productById.get(it.product_id!)?.product_name || it.product_name_raw || '',
@@ -672,7 +745,7 @@ export default function MarketplaceOrderModal({
 
       const result = await openBillFromMpOrder({
         mpOrder,
-        items,
+        items: synchronizedItems,
         user,
         productById: new Map([...productById].map(([id, p]) => [id, { id: p.id, product_name: p.product_name }])),
         paymentMethod: 'โอน',
@@ -931,14 +1004,15 @@ export default function MarketplaceOrderModal({
                   </thead>
                   <tbody>
                     {items.map((it, idx) => {
-                      const dis = (key: string) => readOnly || !fieldEnabled(it, key)
+                      const isTubeAutoGift = isMarketplaceTubeAutoGiftItem(it, products)
+                      const dis = (key: string) => readOnly || isTubeAutoGift || !fieldEnabled(it, key)
                       const cls = (disabled: boolean, extra = '') =>
                         `w-full px-1.5 py-1 border rounded text-xs min-w-0 ${
                           disabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''
                         } ${extra}`
                       return (
                         <Fragment key={it.id}>
-                        <tr className="align-middle">
+                        <tr className={`align-middle ${isTubeAutoGift ? 'bg-green-50' : ''}`}>
                           <td className="border p-1.5 text-center text-gray-500">{idx + 1}</td>
                           <td className="border p-1.5">
                             <input
@@ -948,7 +1022,8 @@ export default function MarketplaceOrderModal({
                                 ?? (it.product_id ? productById.get(it.product_id)?.product_name : undefined)
                                 ?? it.product_name_raw
                                 ?? ''}
-                              disabled={readOnly}
+                              disabled={readOnly || isTubeAutoGift}
+                              title={isTubeAutoGift ? 'ของแถมอัตโนมัติจากสินค้า TUBE' : undefined}
                               onChange={(e) => {
                                 const v = e.target.value
                                 setProductSearch((prev) => ({ ...prev, [it.id]: v }))
@@ -970,7 +1045,7 @@ export default function MarketplaceOrderModal({
                                 }
                               }}
                               placeholder="ค้นหาหรือเลือกสินค้า..."
-                              className={cls(readOnly, it.product_id ? '' : 'border-red-300 bg-red-50/40')}
+                              className={cls(readOnly || isTubeAutoGift, it.product_id ? '' : 'border-red-300 bg-red-50/40')}
                               autoComplete="off"
                             />
                             <datalist id={`mp-product-list-${it.id}`}>
@@ -990,6 +1065,9 @@ export default function MarketplaceOrderModal({
                                   </option>
                                 ))}
                             </datalist>
+                            {isTubeAutoGift && (
+                              <div className="mt-0.5 text-[10px] font-medium text-green-700">ของแถมอัตโนมัติ 1:1 จาก TUBE</div>
+                            )}
                           </td>
                           <td className="border p-1.5">
                             <select
@@ -1108,7 +1186,7 @@ export default function MarketplaceOrderModal({
                           </td>
                         </tr>
                         {/* ปุ่มแยก/รวม — คลุมสองคอลัมน์ จำนวน + ราคา/หน่วย */}
-                        {!readOnly && ((Number(it.qty) > 1 && splitFor !== it.id) || isSplitMember(it)) && (
+                        {!readOnly && !isTubeAutoGift && ((Number(it.qty) > 1 && splitFor !== it.id) || isSplitMember(it)) && (
                           <tr>
                             <td colSpan={10} className="border p-0" />
                             <td colSpan={2} className="border px-1 py-1 text-center">
