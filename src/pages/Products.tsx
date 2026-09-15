@@ -15,6 +15,8 @@ const SEARCH_DEBOUNCE_MS = 400
 const PAGE_SIZE = 50
 /** PostgREST / payload size safety for bulk insert */
 const DB_CHUNK_SIZE = 500
+/** Keep PostgREST `.in(...)` URLs small enough for every proxy in front of Supabase. */
+const PRODUCT_ID_QUERY_CHUNK_SIZE = 100
 
 const BUCKET_PRODUCT_IMAGES = 'product-images'
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
@@ -401,6 +403,7 @@ export default function Products() {
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [uploadPreview, setUploadPreview] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
+  const [exportingProducts, setExportingProducts] = useState(false)
   const [importProgress, setImportProgress] = useState<ImportProgressState>(emptyImportProgress)
   const [uploadingImages, setUploadingImages] = useState(false)
   const [uploadImageResult, setUploadImageResult] = useState<UploadImageResultState>({
@@ -838,6 +841,8 @@ export default function Products() {
   }
 
   async function downloadProductsExcel() {
+    if (exportingProducts) return
+    setExportingProducts(true)
     try {
       // ดึงสินค้าทั้งหมดแบบแบ่งหน้า — กัน PostgREST จำกัด 1000 แถวต่อ query
       const PAGE = 1000
@@ -856,23 +861,35 @@ export default function Products() {
         if (!part || part.length < PAGE) break
       }
       const productIds = data.map((p) => p.id)
-      const channelPriceHeaders = getChannelPriceHeaders(channels)
+      // Fetch channels again at export time so a failed/slow initial page load cannot
+      // silently produce a file with missing price columns.
+      const { data: exportChannels, error: channelsError } = await supabase
+        .from('channels')
+        .select('channel_code, channel_name')
+        .order('channel_code', { ascending: true })
+      if (channelsError) throw channelsError
+
+      const channelPriceHeaders = getChannelPriceHeaders((exportChannels || []) as ChannelOption[])
       const headers = [...PRODUCT_TEMPLATE_HEADERS, ...channelPriceHeaders]
       const priceMapByProductId: Record<string, Record<string, number>> = {}
-      if (productIds.length > 0) {
-        // ดึงราคาช่องทางทั้งหมดแบบแบ่งหน้า + เรียงลำดับ — กันแถวที่เพิ่งแก้ (insert ใหม่) หลุดเกิน 1000 แถวแรก
+      if (productIds.length > 0 && channelPriceHeaders.length > 0) {
+        // Split both product IDs and result pages. Sending every UUID in one `.in(...)`
+        // filter can exceed request-line limits and surface as an unhelpful HTTP 400.
         const priceRows: { product_id: string; channel_code: string; sale_price: number }[] = []
-        for (let from = 0; ; from += PAGE) {
-          const { data: part, error: priceErr } = await supabase
-            .from('pr_product_channel_prices')
-            .select('product_id, channel_code, sale_price')
-            .in('product_id', productIds)
-            .order('product_id', { ascending: true })
-            .order('channel_code', { ascending: true })
-            .range(from, from + PAGE - 1)
-          if (priceErr) throw priceErr
-          priceRows.push(...((part || []) as { product_id: string; channel_code: string; sale_price: number }[]))
-          if (!part || part.length < PAGE) break
+        for (let idFrom = 0; idFrom < productIds.length; idFrom += PRODUCT_ID_QUERY_CHUNK_SIZE) {
+          const productIdChunk = productIds.slice(idFrom, idFrom + PRODUCT_ID_QUERY_CHUNK_SIZE)
+          for (let from = 0; ; from += PAGE) {
+            const { data: part, error: priceErr } = await supabase
+              .from('pr_product_channel_prices')
+              .select('product_id, channel_code, sale_price')
+              .in('product_id', productIdChunk)
+              .order('product_id', { ascending: true })
+              .order('channel_code', { ascending: true })
+              .range(from, from + PAGE - 1)
+            if (priceErr) throw priceErr
+            priceRows.push(...((part || []) as { product_id: string; channel_code: string; sale_price: number }[]))
+            if (!part || part.length < PAGE) break
+          }
         }
         priceRows.forEach((row) => {
           if (!priceMapByProductId[row.product_id]) priceMapByProductId[row.product_id] = {}
@@ -889,9 +906,24 @@ export default function Products() {
       const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
       XLSX.utils.book_append_sheet(wb, ws, 'สินค้า')
       XLSX.writeFile(wb, 'ข้อมูลสินค้าทั้งหมด.xlsx')
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(e)
-      showNotify('error', 'ดาวน์โหลดไม่สำเร็จ', e?.message || String(e))
+      const supabaseError = (e && typeof e === 'object' ? e : {}) as {
+        message?: string
+        details?: string
+        hint?: string
+        code?: string
+      }
+      const errorParts = [
+        supabaseError.message,
+        supabaseError.details,
+        supabaseError.hint,
+        supabaseError.code ? `code: ${supabaseError.code}` : '',
+      ]
+        .filter((value, index, values) => value && values.indexOf(value) === index)
+      showNotify('error', 'ดาวน์โหลดไม่สำเร็จ', errorParts.join(' | ') || String(e))
+    } finally {
+      setExportingProducts(false)
     }
   }
 
@@ -1476,9 +1508,10 @@ export default function Products() {
           {canSeeCost && <button
             type="button"
             onClick={downloadProductsExcel}
-            className="px-3 py-2 rounded-xl bg-green-600 text-white hover:bg-green-700 text-sm font-semibold"
+            disabled={exportingProducts}
+            className="px-3 py-2 rounded-xl bg-green-600 text-white hover:bg-green-700 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
           >
-            ดาวน์โหลด (Excel)
+            {exportingProducts ? 'กำลังสร้าง Excel...' : 'ดาวน์โหลด (Excel)'}
           </button>}
           {canSeeCost && <button
             type="button"
