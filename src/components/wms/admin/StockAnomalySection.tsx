@@ -53,6 +53,7 @@ export default function StockAnomalySection() {
   const [rows, setRows] = useState<AnomalyRow[]>([])
   const [loading, setLoading] = useState(false)
   const [repairing, setRepairing] = useState<string | null>(null)
+  const [reconciling, setReconciling] = useState<string | null>(null)
   const [bulkRepairing, setBulkRepairing] = useState(false)
   const [bulkResult, setBulkResult] = useState<BulkRepairResult | null>(null)
   const [pickers, setPickers] = useState<Array<{ id: string; username: string | null }>>([])
@@ -61,6 +62,7 @@ export default function StockAnomalySection() {
   const [recovering, setRecovering] = useState(false)
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
   const canRepair = ['superadmin', 'admin', 'store'].includes(user?.role || '')
+  const canRepairExcessDeduction = user?.role === 'superadmin'
 
   useEffect(() => {
     if (!canRepair) return
@@ -108,6 +110,32 @@ export default function StockAnomalySection() {
     showMessage({ message: `ซ่อมสำเร็จ ${result.created_qty || 0} ${row.unit_name}${result.mode === 'warehouse_pick' ? ' — ส่งเข้าคิว Picker แล้ว' : ' — ตัดสต๊อคแล้ว'}` })
     window.dispatchEvent(new CustomEvent('wms-data-changed'))
     load()
+  }
+
+  const repairExcessDeduction = async (row: AnomalyRow) => {
+    const excessQty = Number(row.deducted_qty) - Number(row.correct_qty)
+    const ok = await showConfirm({
+      title: 'ยืนยันคืนยอดที่ตัดสต๊อกซ้ำ',
+      message: `รายการ ${row.product_code} บิล ${row.bill_no} ถูกตัดเกิน ${excessQty.toLocaleString('th-TH')} ${row.unit_name}\n\nระบบจะคืนยอดสต๊อกและ FIFO เฉพาะส่วนที่เกิน พร้อมบันทึกประวัติการแก้ไข`,
+      confirmText: 'ยืนยันคืนยอด',
+    })
+    if (!ok) return
+
+    setReconciling(row.order_item_id)
+    const { data, error } = await supabase.rpc('rpc_repair_wms_excess_deduction', {
+      p_order_item_id: row.order_item_id,
+      p_reason: `Repair from stock anomaly screen: ${row.bill_no} / ${row.product_code}`,
+    })
+    setReconciling(null)
+    if (error) {
+      showMessage({ message: `คืนยอดที่ตัดซ้ำไม่สำเร็จ: ${error.message}` })
+      return
+    }
+
+    const result = data as { repaired_qty?: number }
+    showMessage({ message: `คืนยอดสต๊อกสำเร็จ ${Number(result.repaired_qty || 0).toLocaleString('th-TH')} ${row.unit_name}` })
+    window.dispatchEvent(new CustomEvent('wms-data-changed'))
+    void load()
   }
 
   const repairAll = async () => {
@@ -193,11 +221,22 @@ export default function StockAnomalySection() {
                 <td className="p-3 text-center font-bold">{row.expected_qty}</td><td className="p-3 text-center">{row.wms_qty}</td><td className="p-3 text-center">{row.correct_qty}</td><td className="p-3 text-center">{row.deducted_qty}</td>
                 <td className="p-3"><span className="rounded-full bg-red-100 px-3 py-1 text-xs font-bold text-red-700">{anomalyLabel(row)}</span></td>
                 <td className="p-3 text-center">
-                  {row.repairable && canRepair ? (
+                  {row.anomaly_type === 'missing_wms' && row.repairable && canRepair ? (
                     <div className="flex flex-col gap-1.5">
                       <button onClick={() => repair(row)} disabled={repairing === row.order_item_id} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{repairing === row.order_item_id ? 'กำลังซ่อม...' : 'ซ่อมรายการ'}</button>
                       <button onClick={() => { setRecoveryTarget(row); setRecoveryPickerId('') }} className="rounded-lg bg-violet-600 px-3 py-2 text-xs font-bold text-white">มอบหมาย Picker</button>
                     </div>
+                  ) : row.anomaly_type === 'stock_movement_mismatch'
+                    && Number(row.deducted_qty) > Number(row.correct_qty)
+                    && row.repairable
+                    && canRepairExcessDeduction ? (
+                    <button
+                      onClick={() => repairExcessDeduction(row)}
+                      disabled={reconciling === row.order_item_id}
+                      className="rounded-lg bg-amber-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50"
+                    >
+                      {reconciling === row.order_item_id ? 'กำลังคืนยอด...' : 'คืนยอดที่ตัดซ้ำ'}
+                    </button>
                   ) : <span className="text-xs text-slate-500">ตรวจด้วยตนเอง</span>}
                 </td>
               </tr>)}

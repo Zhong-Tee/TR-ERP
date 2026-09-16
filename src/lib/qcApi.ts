@@ -787,14 +787,88 @@ export function clearSessionBackup(): void {
   } catch {}
 }
 
-/** Lightweight badge count; the full reject queue is loaded only when its tab opens. */
+type RejectOrderContext = {
+  matchedBillNoSet: Set<string>
+  activeBillNoSet: Set<string>
+  dueByBillNo: Record<string, { ship_due_at: string | null; overdue_at: string | null; shipped_time: string | null }>
+}
+
+const normalizeBillNo = (value: string | null | undefined) => String(value || '').trim()
+
+async function fetchRejectOrderContext(billNumbers: Array<string | null | undefined>): Promise<RejectOrderContext> {
+  const billNos = [...new Set(billNumbers.map(normalizeBillNo).filter(Boolean))]
+  if (billNos.length === 0) {
+    return { matchedBillNoSet: new Set(), activeBillNoSet: new Set(), dueByBillNo: {} }
+  }
+
+  const matchingOrders = await fetchQueryInBatches<{
+    id: string
+    bill_no: string | null
+    status: string | null
+    ship_due_at: string | null
+    overdue_at: string | null
+    shipped_time: string | null
+  }>(billNos, (batch, from, to) =>
+    supabase
+      .from('or_orders')
+      .select('id, bill_no, status, ship_due_at, overdue_at, shipped_time')
+      .in('bill_no', batch)
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
+
+  const matchedBillNoSet = new Set(matchingOrders.map((order) => normalizeBillNo(order.bill_no)).filter(Boolean))
+  const allowedOrders = matchingOrders.filter((order) => isOrderAllowedInFulfillmentFlow(order.status))
+  const allowedOrderIds = allowedOrders.map((order) => order.id)
+  const activeItemRows = allowedOrderIds.length === 0 ? [] : await fetchQueryInBatches<{ order_id: string }>(
+    allowedOrderIds,
+    (batch, from, to) => supabase
+      .from('or_order_items')
+      .select('order_id')
+      .in('order_id', batch)
+      .is('cancellation_stock_action', null)
+      .order('order_id', { ascending: true })
+      .range(from, to)
+  )
+  const orderIdsWithActiveItems = new Set(activeItemRows.map((row) => row.order_id))
+  const activeOrders = allowedOrders.filter((order) => orderIdsWithActiveItems.has(order.id))
+  const activeBillNoSet = new Set(activeOrders.map((order) => normalizeBillNo(order.bill_no)).filter(Boolean))
+  const dueByBillNo: RejectOrderContext['dueByBillNo'] = {}
+  activeOrders.forEach((order) => {
+    const billNo = normalizeBillNo(order.bill_no)
+    if (billNo && order.ship_due_at) {
+      dueByBillNo[billNo] = {
+        ship_due_at: order.ship_due_at,
+        overdue_at: order.overdue_at ?? null,
+        shipped_time: order.shipped_time ?? null,
+      }
+    }
+  })
+
+  return { matchedBillNoSet, activeBillNoSet, dueByBillNo }
+}
+
+function isRejectVisible(
+  billNo: string | null | undefined,
+  context: Pick<RejectOrderContext, 'matchedBillNoSet' | 'activeBillNoSet'>
+): boolean {
+  const normalized = normalizeBillNo(billNo)
+  return !normalized || !context.matchedBillNoSet.has(normalized) || context.activeBillNoSet.has(normalized)
+}
+
+/** Lightweight badge count using the same active-order rules as the reject queue. */
 export async function fetchRejectItemCount(): Promise<number> {
-  const { count, error } = await supabase
-    .from('qc_records')
-    .select('id', { count: 'exact', head: true })
-    .eq('is_rejected', true)
-  if (error) throw error
-  return count ?? 0
+  const rejectedRecords = await fetchAllQueryPages<{ id: string; bill_no: string | null }>((from, to) =>
+    supabase
+      .from('qc_records')
+      .select('id, bill_no')
+      .eq('is_rejected', true)
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
+  if (rejectedRecords.length === 0) return 0
+  const context = await fetchRejectOrderContext(rejectedRecords.map((record) => record.bill_no))
+  return rejectedRecords.filter((record) => isRejectVisible(record.bill_no, context)).length
 }
 
 /** Load rejected qc_records (is_rejected = true) for Reject Management. */
@@ -814,58 +888,16 @@ export async function fetchRejectItems() {
   // stores the source-line UID. Linking them by item_uid drops valid siblings from
   // the recheck list. bill_no is persisted on every QC record and is the stable
   // link back to the order containing those flattened units.
-  const billNos = [...new Set(rejectedRecords.map((r) => r.bill_no?.trim()).filter((v): v is string => Boolean(v)))]
-  if (billNos.length === 0) return rejectedRecords
-
-  const matchingOrders = await fetchQueryInBatches<{
-    id: string
-    bill_no: string | null
-    status: string | null
-    ship_due_at: string | null
-    overdue_at: string | null
-    shipped_time: string | null
-  }>(billNos, (batch, from, to) =>
-    supabase
-      .from('or_orders')
-      .select('id, bill_no, status, ship_due_at, overdue_at, shipped_time')
-      .in('bill_no', batch)
-      .order('id', { ascending: true })
-      .range(from, to)
-  )
-
-  const matchedBillNoSet = new Set(matchingOrders.map((order) => order.bill_no).filter(Boolean))
-  const allowedOrders = matchingOrders.filter((order) => isOrderAllowedInFulfillmentFlow(order.status))
-  const allowedOrderIds = allowedOrders.map((order) => order.id)
-  const activeItemRows = allowedOrderIds.length === 0 ? [] : await fetchQueryInBatches<{ order_id: string }>(
-    allowedOrderIds,
-    (batch, from, to) => supabase
-      .from('or_order_items')
-      .select('order_id')
-      .in('order_id', batch)
-      .is('cancellation_stock_action', null)
-      .order('order_id', { ascending: true })
-      .range(from, to)
-  )
-  const orderIdsWithActiveItems = new Set(activeItemRows.map((row) => row.order_id))
-  const activeOrders = allowedOrders.filter((order) => orderIdsWithActiveItems.has(order.id))
-  const activeBillNoSet = new Set(activeOrders.map((order) => order.bill_no).filter(Boolean))
-
-  // ป้าย ส่งด่วน/ล่าช้า: map กำหนดส่งตามเลขบิล (บิลจากเมนู Marketplace เท่านั้นที่มีค่า)
-  const dueByBillNo: Record<string, { ship_due_at: string | null; overdue_at: string | null; shipped_time: string | null }> = {}
-  ;(activeOrders || []).forEach((o: { bill_no?: string | null; ship_due_at?: string | null; overdue_at?: string | null; shipped_time?: string | null }) => {
-    if (o.bill_no && o.ship_due_at) {
-      dueByBillNo[o.bill_no] = { ship_due_at: o.ship_due_at, overdue_at: o.overdue_at ?? null, shipped_time: o.shipped_time ?? null }
-    }
-  })
+  const context = await fetchRejectOrderContext(rejectedRecords.map((record) => record.bill_no))
   return rejectedRecords
     // Keep legacy records whose bill can no longer be resolved. If the bill still
     // exists, show it only while at least one matching order item remains active.
-    .filter((r) => !r.bill_no || !matchedBillNoSet.has(r.bill_no) || activeBillNoSet.has(r.bill_no))
+    .filter((record) => isRejectVisible(record.bill_no, context))
     .map((r) => ({
       ...r,
-      ship_due_at: dueByBillNo[r.bill_no]?.ship_due_at ?? null,
-      overdue_at: dueByBillNo[r.bill_no]?.overdue_at ?? null,
-      shipped_time: dueByBillNo[r.bill_no]?.shipped_time ?? null,
+      ship_due_at: context.dueByBillNo[normalizeBillNo(r.bill_no)]?.ship_due_at ?? null,
+      overdue_at: context.dueByBillNo[normalizeBillNo(r.bill_no)]?.overdue_at ?? null,
+      shipped_time: context.dueByBillNo[normalizeBillNo(r.bill_no)]?.shipped_time ?? null,
     }))
 }
 
