@@ -10,6 +10,7 @@ import {
   fetchSettingsReasons,
   fetchInkTypes,
   fetchRejectItems,
+  fetchRejectItemCount,
   fetchReports,
   fetchSessionRecords,
   searchHistoryByUid,
@@ -169,6 +170,8 @@ export default function QC() {
   const barcodeInputRef = useRef<HTMLInputElement>(null)
   const workOrderReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const workOrderLoadRequestRef = useRef(0)
+  const workOrderLoadInFlightRef = useRef(false)
+  const workOrderReloadPendingRef = useRef(false)
   const hiddenCompletedWorkOrdersRef = useRef<Set<string>>(new Set())
   const qcStepRef = useRef<QCStep>('select')
   const rejectLoadRequestRef = useRef(0)
@@ -184,6 +187,7 @@ export default function QC() {
 
   // Reject
   const [rejectData, setRejectData] = useState<QCRecord[]>([])
+  const [rejectCount, setRejectCount] = useState(0)
   const [activeRejectTab, setActiveRejectTab] = useState<'queue' | 1 | 2 | 'escalated'>('queue')
   const [currentRejectItem, setCurrentRejectItem] = useState<QCRecord | null>(null)
   const [rejectSearchQuery, setRejectSearchQuery] = useState('')
@@ -401,6 +405,11 @@ export default function QC() {
   const [planStartTimes, setPlanStartTimes] = useState<Record<string, string | null>>({})
 
   const loadWorkOrders = useCallback(async () => {
+    if (workOrderLoadInFlightRef.current) {
+      workOrderReloadPendingRef.current = true
+      return
+    }
+    workOrderLoadInFlightRef.current = true
     const requestId = ++workOrderLoadRequestRef.current
     setWorkOrdersLoading(true)
     setWorkOrdersError('')
@@ -419,6 +428,11 @@ export default function QC() {
         (workOrder) => !hiddenCompletedWorkOrdersRef.current.has(workOrder.work_order_name)
       )
       setWorkOrdersWithProgress(list)
+      setPlanStartTimes(Object.fromEntries(
+        list
+          .filter((workOrder) => Boolean(workOrder.qc_started_at))
+          .map((workOrder) => [workOrder.work_order_name, workOrder.qc_started_at ?? null])
+      ))
       if (isProduction && list.length > 0) {
         const results = await Promise.all(list.map(async (workOrder) => {
           const { data, error } = await supabase.rpc('rpc_qc_skip_eligibility', { p_work_order_name: workOrder.work_order_name })
@@ -429,30 +443,28 @@ export default function QC() {
       } else if (!isProduction) {
         setSkipEligibilityByWo({})
       }
-      if (list.length > 0) {
-        const names = list.map((w) => w.work_order_name)
-        const { data: planJobs } = await supabase
-          .from('plan_jobs')
-          .select('name, tracks')
-          .in('name', names)
-        if (requestId !== workOrderLoadRequestRef.current) return
-        const map: Record<string, string | null> = {}
-        ;(planJobs || []).forEach((pj: any) => {
-          const start = pj.tracks?.QC?.['เริ่มQC']?.start ?? null
-          if (start) map[pj.name] = start
-        })
-        setPlanStartTimes(map)
-      }
     } catch (e) {
       if (requestId !== workOrderLoadRequestRef.current) return
       console.error('loadWorkOrders error:', e)
       setWorkOrdersError('โหลดรายการรอ QC ไม่สำเร็จ กรุณาลองใหม่')
     } finally {
+      workOrderLoadInFlightRef.current = false
       if (requestId === workOrderLoadRequestRef.current) setWorkOrdersLoading(false)
+      if (workOrderReloadPendingRef.current) {
+        workOrderReloadPendingRef.current = false
+        workOrderReloadTimerRef.current = setTimeout(() => {
+          workOrderReloadTimerRef.current = null
+          void loadWorkOrders()
+        }, 50)
+      }
     }
   }, [isProduction])
 
   const scheduleWorkOrdersReload = useCallback((delayMs = 300) => {
+    if (workOrderLoadInFlightRef.current) {
+      workOrderReloadPendingRef.current = true
+      return
+    }
     if (workOrderReloadTimerRef.current) clearTimeout(workOrderReloadTimerRef.current)
     workOrderReloadTimerRef.current = setTimeout(() => {
       workOrderReloadTimerRef.current = null
@@ -476,8 +488,19 @@ export default function QC() {
     // Realtime events can start overlapping requests. Only the newest response is
     // allowed to replace the list, otherwise an older one-item snapshot can hide
     // a second reject that was saved milliseconds later.
-    if (requestId === rejectLoadRequestRef.current) setRejectData(data)
+    if (requestId === rejectLoadRequestRef.current) {
+      setRejectData(data)
+      setRejectCount(data.length)
+    }
     return data
+  }, [])
+
+  const refreshRejectCount = useCallback(async () => {
+    try {
+      setRejectCount(await fetchRejectItemCount())
+    } catch (e) {
+      console.error(e)
+    }
   }, [])
 
   const loadRejectItems = useCallback(async () => {
@@ -607,9 +630,6 @@ export default function QC() {
 
   // จำนวนรายการรอ QC (จำนวน work orders ที่ยังเหลือ)
   const qcOperationCount = workOrdersWithProgress.length
-  // จำนวน reject items
-  const rejectCount = rejectData.length
-
   // ส่งจำนวนรวมไปให้ Sidebar แสดงเรียลไทม์
   useEffect(() => {
     const total = qcOperationCount + rejectCount
@@ -618,19 +638,24 @@ export default function QC() {
 
   useEffect(() => {
     loadWorkOrders()
-    loadRejectItems()
-    loadSettings()
+    refreshRejectCount()
     clearSessionBackup()
+  }, [loadWorkOrders, refreshRejectCount])
+
+  useEffect(() => {
+    if (currentView !== 'reject') return
+    setCurrentTime(new Date())
     const t = setInterval(() => setCurrentTime(new Date()), 1000)
     return () => clearInterval(t)
-  }, [loadWorkOrders, loadRejectItems, loadSettings])
+  }, [currentView])
 
   // Realtime: อัปเดตจำนวน QC Operation + Reject เมื่อข้อมูลเปลี่ยน
   useEffect(() => {
     const channel = supabase
       .channel('qc-page-realtime-counts')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_records' }, () => {
-        loadRejectItems()
+        if (currentView === 'reject') loadRejectItems()
+        else refreshRejectCount()
         if (qcStepRef.current === 'select') scheduleWorkOrdersReload()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_sessions' }, () => {
@@ -657,7 +682,7 @@ export default function QC() {
       }
       supabase.removeChannel(channel)
     }
-  }, [loadRejectItems, refreshActiveSessionItemUids, scheduleWorkOrdersReload])
+  }, [currentView, loadRejectItems, refreshRejectCount, refreshActiveSessionItemUids, scheduleWorkOrdersReload])
 
   useEffect(() => {
     if (currentView === 'reject') loadRejectItems()
@@ -673,10 +698,13 @@ export default function QC() {
     if (currentView === 'settings') loadSettings()
   }, [currentView, loadSettings])
 
-  // กรุ๊ปหมวดหมู่ใช้ในตัวกรองของ QC Operation — โหลดครั้งเดียวตอนเข้าหน้า
+  // โหลดข้อมูลประกอบเมื่อลงมือ QC แล้ว เพื่อไม่ให้แย่ง network กับคิวหน้าแรก
   useEffect(() => {
-    loadCategoryGroups()
-  }, [loadCategoryGroups])
+    if (qcState.step === 'working') {
+      loadSettings()
+      loadCategoryGroups()
+    }
+  }, [qcState.step, loadSettings, loadCategoryGroups])
 
   useEffect(() => {
     if (qcState.step === 'working' && qcData.items.length > 0) {

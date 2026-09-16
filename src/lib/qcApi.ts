@@ -31,7 +31,8 @@ export async function fetchWorkOrders(): Promise<WorkOrder[]> {
   return fetchAllQueryPages<WorkOrder>((from, to) =>
     supabase
       .from('or_work_orders')
-      .select('*')
+      .select('id, work_order_name, status, order_count, created_at, updated_at, plan_wo_modified')
+      .eq('status', 'กำลังผลิต')
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
       .range(from, to)
@@ -50,6 +51,7 @@ export interface WorkOrderWithProgress extends WorkOrder {
   pass_bills: number
   fail_bills: number
   remaining_bills: number
+  qc_started_at?: string | null
   /** กำหนดส่งของบิลในใบงาน (เฉพาะบิลที่มี ship_due_at จากเมนู Marketplace) — ใช้แสดงป้าย ส่งด่วน/ล่าช้า */
   due_bills: { ship_due_at: string | null; overdue_at: string | null; shipped_time: string | null }[]
 }
@@ -131,7 +133,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
 
   const woNames = woList.map((w) => w.work_order_name)
 
-  const orders = await fetchQueryInBatches<{
+  const ordersPromise = fetchQueryInBatches<{
     id: string
     work_order_name: string
     bill_no: string | null
@@ -147,6 +149,43 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
       .order('id', { ascending: true })
       .range(from, to)
   )
+
+  const woSessionFilenames = [...new Set(woNames.map((n) => `WO-${n}`))]
+  const sessionsPromise = fetchQueryInBatches<{
+    id: string
+    filename: string
+    end_time: string | null
+    created_at: string | null
+    start_time: string
+  }>(woSessionFilenames, (batch, from, to) =>
+    supabase
+      .from('qc_sessions')
+      .select('id, filename, end_time, created_at, start_time')
+      .in('filename', batch)
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
+
+  const planJobsPromise = fetchQueryInBatches<{
+    name: string
+    tracks: Record<string, unknown>
+    date: string
+    id: string
+  }>(woNames, (batch, from, to) =>
+    supabase
+      .from('plan_jobs')
+      .select('id, name, tracks, date')
+      .in('name', batch)
+      .order('date', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
+
+  const [orders, allSessions, planJobRows] = await Promise.all([
+    ordersPromise,
+    sessionsPromise,
+    planJobsPromise,
+  ])
   const dueBillsByWo: Record<string, { ship_due_at: string | null; overdue_at: string | null; shipped_time: string | null }[]> = {}
   woNames.forEach((n) => (dueBillsByWo[n] = []))
   ;(orders || []).forEach((o: { work_order_name: string; ship_due_at?: string | null; overdue_at?: string | null; shipped_time?: string | null }) => {
@@ -155,9 +194,15 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     }
   })
   const orderIdsByWo: Record<string, string[]> = {}
+  const ordersByWo: Record<string, typeof orders> = {}
+  const orderById = new Map(orders.map((order) => [order.id, order]))
   woNames.forEach((n) => (orderIdsByWo[n] = []))
   ;(orders || []).forEach((o) => {
-    if (orderIdsByWo[o.work_order_name]) orderIdsByWo[o.work_order_name].push(o.id)
+    if (orderIdsByWo[o.work_order_name]) {
+      orderIdsByWo[o.work_order_name].push(o.id)
+      if (!ordersByWo[o.work_order_name]) ordersByWo[o.work_order_name] = []
+      ordersByWo[o.work_order_name].push(o)
+    }
   })
 
   const allOrderIds = orders.map((o) => o.id)
@@ -215,9 +260,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
   const sourceUidByFlatUid: Record<string, string> = {}
   const stableKeyByFlatUid: Record<string, string> = {}
   woNames.forEach((name) => {
-    const oids = orderIdsByWo[name] || []
-    const ords = (orders || [])
-      .filter((o: { id: string; work_order_name?: string }) => o.work_order_name === name && oids.includes(o.id))
+    const ords = (ordersByWo[name] || [])
       .sort((a: { bill_no?: string | null; id: string }, b: { bill_no?: string | null; id: string }) => {
         const c = String(a.bill_no || '').localeCompare(String(b.bill_no || ''))
         if (c !== 0) return c
@@ -246,21 +289,6 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
   })
 
   // เฉพาะ session ของใบงานในรอบนี้ — กันพลาด default row limit ของ API ที่ตัดตารางใหญ่แล้วไม่ได้แถวล่าสุดของ WO
-  const woSessionFilenames = [...new Set(woNames.map((n) => `WO-${n}`))]
-  const allSessions = await fetchQueryInBatches<{
-    id: string
-    filename: string
-    end_time: string | null
-    created_at: string | null
-    start_time: string
-  }>(woSessionFilenames, (batch, from, to) =>
-    supabase
-      .from('qc_sessions')
-      .select('id, filename, end_time, created_at, start_time')
-      .in('filename', batch)
-      .order('id', { ascending: true })
-      .range(from, to)
-  )
   const sessionIdsByWo: Record<string, string[]> = {}
   woNames.forEach((n) => {
     sessionIdsByWo[n] = []
@@ -334,7 +362,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     let pass_bills = 0
     let fail_bills = 0
     orderIds.forEach((orderId) => {
-      const orderRow = (orders || []).find((o: { id: string }) => o.id === orderId) as { bill_no?: string | null; id: string } | undefined
+      const orderRow = orderById.get(orderId)
       if (!orderRow) return
       const bill = String(orderRow.bill_no || '').trim() || '—'
       const uids: string[] = []
@@ -365,20 +393,6 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
   })
 
   // ล่าสุดต่อชื่อใบงาน (วันที่ใหม่สุดก่อน) — ใช้เทียบว่า Plan ปิดขั้น QC แล้วหรือยัง
-  const planJobRows = await fetchQueryInBatches<{
-    name: string
-    tracks: Record<string, unknown>
-    date: string
-    id: string
-  }>(woNames, (batch, from, to) =>
-    supabase
-      .from('plan_jobs')
-      .select('id, name, tracks, date')
-      .in('name', batch)
-      .order('date', { ascending: false })
-      .order('id', { ascending: true })
-      .range(from, to)
-  )
   const latestPlanTracksByName: Record<string, Record<string, unknown> | undefined> = {}
   for (const row of planJobRows) {
     const n = (row as { name?: string }).name
@@ -391,8 +405,13 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     return !!qc?.['เสร็จแล้ว']?.end
   }
 
+  const resultWithPlan = result.map((row) => {
+    const qc = latestPlanTracksByName[row.work_order_name]?.QC as Record<string, { start?: string; end?: string }> | undefined
+    return { ...row, qc_started_at: qc?.['เริ่มQC']?.start ?? null }
+  })
+
   if (excludeCompleted) {
-    return result.filter((r) => {
+    return resultWithPlan.filter((r) => {
       const wo = r.work_order_name
       const sessionIds = sessionIdsByWo[wo] || []
       const planTracks = latestPlanTracksByName[wo]
@@ -406,7 +425,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
       return hasOpenSessionByWoName[wo] === true
     })
   }
-  return result
+  return resultWithPlan
 }
 
 /** Load order items for a work order and map to QCItem[] (for QC Operation session). */
@@ -766,6 +785,16 @@ export function clearSessionBackup(): void {
   try {
     localStorage.removeItem(QC_TEMP_SESSION)
   } catch {}
+}
+
+/** Lightweight badge count; the full reject queue is loaded only when its tab opens. */
+export async function fetchRejectItemCount(): Promise<number> {
+  const { count, error } = await supabase
+    .from('qc_records')
+    .select('id', { count: 'exact', head: true })
+    .eq('is_rejected', true)
+  if (error) throw error
+  return count ?? 0
 }
 
 /** Load rejected qc_records (is_rejected = true) for Reject Management. */
