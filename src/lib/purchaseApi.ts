@@ -860,7 +860,7 @@ export async function loadSellers() {
 export async function loadApprovedPRsWithoutPO(): Promise<InventoryPR[]> {
   const { data: allApproved, error: prErr } = await supabase
     .from('inv_pr')
-    .select('*, inv_pr_items(id, product_id, qty, unit, estimated_price, pr_products(product_code, product_name, unit_name))')
+    .select('*, inv_pr_items(id, product_id, qty, unit, estimated_price, pr_products(product_code, product_name, product_name_cn, unit_name))')
     .eq('status', 'approved')
     .order('created_at', { ascending: false })
   if (prErr) throw prErr

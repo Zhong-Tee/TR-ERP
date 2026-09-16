@@ -34,6 +34,9 @@ const STATUS_LABELS: Record<string, { label: string; color: string }> = {
 /** ผู้มีสิทธิ์สร้าง/แก้ไขประกาศ — ต้องตรงกับ hr_can_manage_announcements() ใน DB */
 const MANAGE_ROLES = ['superadmin', 'admin', 'account']
 
+// "สำนักงาน" is a shared-asset bucket, not an employee announcement department.
+const ANNOUNCEMENT_HIDDEN_DEPARTMENT_NAMES = new Set(['สำนักงาน'])
+
 type FormState = {
   id?: string
   category_id: string
@@ -170,6 +173,13 @@ export default function AnnouncementManagement() {
     }
     return list
   }, [announcements, filterStatus, filterCategory, search])
+
+  const announcementDepartments = useMemo(
+    () => departments.filter((department) =>
+      !ANNOUNCEMENT_HIDDEN_DEPARTMENT_NAMES.has(department.name.trim())
+    ),
+    [departments]
+  )
 
   /** รายชื่อในโมดัล "รับทราบ" หลังกรองสถานะ + ค้นหา */
   const ackDetailFiltered = useMemo(() => {
@@ -550,7 +560,7 @@ export default function AnnouncementManagement() {
             </div>
             {!form.target_all_departments && (
               <div className="flex flex-wrap gap-2 rounded-xl border border-surface-200 p-3">
-                {departments.map((d) => {
+                {announcementDepartments.map((d) => {
                   const checked = form.department_ids.includes(d.id)
                   return (
                     <label key={d.id} className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm cursor-pointer border ${checked ? 'bg-emerald-50 border-emerald-300' : 'bg-white border-surface-200'}`}>
@@ -569,7 +579,7 @@ export default function AnnouncementManagement() {
                     </label>
                   )
                 })}
-                {departments.length === 0 && <span className="text-sm text-gray-400">ยังไม่มีข้อมูลแผนก</span>}
+                {announcementDepartments.length === 0 && <span className="text-sm text-gray-400">ยังไม่มีข้อมูลแผนก</span>}
               </div>
             )}
           </div>

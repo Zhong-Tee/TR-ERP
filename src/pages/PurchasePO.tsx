@@ -58,6 +58,7 @@ export default function PurchasePO() {
   const { user } = useAuthContext()
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
   const canSeeFinancial = FINANCIAL_VISIBLE_ROLES.includes(user?.role || '')
+  const canSeeChineseProductName = user?.role === 'superadmin'
 
   // list
   const [pos, setPos] = useState<InventoryPO[]>([])
@@ -100,6 +101,8 @@ export default function PurchasePO() {
   const [userMap, setUserMap] = useState<Record<string, string>>({})
   const [updating, setUpdating] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
+  const [previewingCreatePNG, setPreviewingCreatePNG] = useState(false)
+  const [createPNGPreview, setCreatePNGPreview] = useState<string | null>(null)
   const exportRef = useRef<HTMLDivElement>(null)
   const createExportRef = useRef<HTMLDivElement>(null)
 
@@ -179,6 +182,26 @@ export default function PurchasePO() {
     }
   }, [selectedPR, showMessage])
 
+  const handlePreviewCreatePNG = useCallback(async () => {
+    if (!selectedPR || !createExportRef.current) return
+    setPreviewingCreatePNG(true)
+    try {
+      const canvas = await html2canvas(createExportRef.current, {
+        backgroundColor: '#ffffff',
+        scale: 2,
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+      })
+      setCreatePNGPreview(canvas.toDataURL('image/png'))
+    } catch (e) {
+      console.error('Preview failed:', e)
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'สร้างตัวอย่าง PNG ไม่สำเร็จ' })
+    } finally {
+      setPreviewingCreatePNG(false)
+    }
+  }, [selectedPR, showMessage])
+
   const [debouncedSearch, setDebouncedSearch] = useState(search)
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 400)
@@ -221,6 +244,7 @@ export default function PurchasePO() {
   }
 
   function openCreateFromPR(pr: InventoryPR) {
+    setCreatePNGPreview(null)
     setSelectedPR(pr)
     const items = (pr.inv_pr_items || []) as any[]
     setPriceEdits(items.map((i: any) => ({
@@ -887,7 +911,7 @@ export default function PurchasePO() {
       </div>
 
       {/* ── Create PO from PR Modal ── */}
-      <Modal open={createOpen} onClose={() => setCreateOpen(false)} closeOnBackdropClick={false} contentClassName="max-w-4xl">
+      <Modal open={createOpen} onClose={() => setCreateOpen(false)} closeOnBackdropClick={false} contentClassName="max-w-6xl">
         <div className="p-6 space-y-5">
           <h2 className="pr-12 text-xl font-bold text-gray-900">สร้างใบสั่งซื้อ (PO) จาก PR</h2>
 
@@ -929,12 +953,15 @@ export default function PurchasePO() {
 
               {/* items with price edit */}
               <div className="overflow-x-auto border rounded-lg">
-                <table className="w-full text-sm">
+                <table className={`w-full text-sm ${canSeeChineseProductName ? 'min-w-[1000px]' : ''}`}>
                   <thead>
                     <tr className="bg-gray-50 border-b">
                       <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-14">รูป</th>
                       <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-32">รหัสสินค้า</th>
                       <th className="px-3 py-2.5 text-left font-semibold text-gray-600">ชื่อสินค้า</th>
+                      {canSeeChineseProductName && (
+                        <th className="px-3 py-2.5 text-left font-semibold text-gray-600 min-w-52">ชื่อภาษาจีน</th>
+                      )}
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">จำนวน</th>
                       {canSeeFinancial && (
                         <>
@@ -966,6 +993,11 @@ export default function PurchasePO() {
                           <td className="px-3 py-2">
                             <div className="font-medium">{prod?.product_name || '-'}</div>
                           </td>
+                          {canSeeChineseProductName && (
+                            <td className="px-3 py-2">
+                              <div className="font-medium">{prod?.product_name_cn || '-'}</div>
+                            </td>
+                          )}
                           <td className="px-3 py-2 text-right">{Number(item.qty).toLocaleString()} {item.unit || ''}</td>
                           {canSeeFinancial && (
                             <>
@@ -992,7 +1024,7 @@ export default function PurchasePO() {
                   {canSeeFinancial && (
                     <tfoot>
                       <tr className="bg-gray-50 border-t">
-                        <td colSpan={5} className="px-3 py-2.5 text-right font-semibold text-gray-700">ยอดรวม</td>
+                        <td colSpan={canSeeChineseProductName ? 6 : 5} className="px-3 py-2.5 text-right font-semibold text-gray-700">ยอดรวม</td>
                         <td className="px-3 py-2.5 text-right font-bold text-emerald-700 text-base">
                           {totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท
                         </td>
@@ -1105,8 +1137,24 @@ export default function PurchasePO() {
                 </button>
                 <button
                   type="button"
+                  onClick={handlePreviewCreatePNG}
+                  disabled={previewingCreatePNG || exporting || saving || cancellingPR}
+                  className="px-5 py-2.5 border border-blue-300 bg-white text-blue-700 rounded-lg hover:bg-blue-50 text-sm font-medium disabled:opacity-50 flex items-center gap-2"
+                >
+                  {previewingCreatePNG ? (
+                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-600 border-t-transparent" />
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12s3.75-6.75 9.75-6.75S21.75 12 21.75 12 18 18.75 12 18.75 2.25 12 2.25 12Z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+                    </svg>
+                  )}
+                  พรีวิว PNG
+                </button>
+                <button
+                  type="button"
                   onClick={handleExportCreatePNG}
-                  disabled={exporting || saving || cancellingPR}
+                  disabled={exporting || previewingCreatePNG || saving || cancellingPR}
                   className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium disabled:opacity-50 flex items-center gap-2"
                 >
                   {exporting ? (
@@ -1124,6 +1172,26 @@ export default function PurchasePO() {
               </div>
             </>
           )}
+        </div>
+      </Modal>
+
+      <Modal
+        open={!!createPNGPreview}
+        onClose={() => setCreatePNGPreview(null)}
+        contentClassName="max-w-5xl"
+        stackClassName="z-[70]"
+      >
+        <div className="p-6 space-y-4">
+          <h2 className="pr-12 text-xl font-bold text-gray-900">พรีวิว PNG</h2>
+          <div className="max-h-[70vh] overflow-auto rounded-xl border border-gray-200 bg-gray-100 p-4">
+            {createPNGPreview && (
+              <img
+                src={createPNGPreview}
+                alt="พรีวิวใบสั่งซื้อ PNG"
+                className="mx-auto h-auto max-w-full bg-white shadow-sm"
+              />
+            )}
+          </div>
         </div>
       </Modal>
 
