@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order } from '../../types'
 import { formatDateTime } from '../../lib/utils'
-import { isSlipOrderStatusConsideredUsed } from '../../lib/manualSlipRules'
 import Modal from '../ui/Modal'
 import OrderDetailView from '../order/OrderDetailView'
 
@@ -211,42 +210,42 @@ export default function ManualSlipCheckSection() {
   async function handleCheckAllSlips(group: OrderGroup) {
     setCheckingOrderId(group.order_id)
     try {
-      const { data, error } = await supabase
-        .from('ac_verified_slips')
-        .select('id, order_id, verified_amount, easyslip_date, easyslip_response, or_orders!inner(bill_no, status)')
-        .or('is_deleted.is.null,is_deleted.eq.false')
+      const { data, error } = await supabase.rpc('manual_slip_find_duplicates', {
+        p_order_id: group.order_id,
+        p_entries: group.entries.map((entry, entryIndex) => ({
+          entry_index: entryIndex,
+          transfer_date: entry.transfer_date,
+          transfer_time: entry.transfer_time,
+          transfer_amount: Number(entry.transfer_amount),
+        })),
+      })
       if (error) throw error
 
+      const duplicateRows = (data || []) as Array<{
+        entry_index: number
+        duplicate_order_id: string
+        duplicate_bill_no: string | null
+        easyslip_date: string
+        verified_amount: number
+      }>
       const allResults: string[] = []
-      let totalFound = 0
+      const totalFound = duplicateRows.length
 
       for (let i = 0; i < group.entries.length; i++) {
         const entry = group.entries[i]
         const transferAmount = Number(entry.transfer_amount)
         const transferDate = entry.transfer_date
         const transferTime = entry.transfer_time
-
-        const matches = (data || []).filter((slip: any) => {
-          if (slip.order_id === group.order_id) return false
-          if (!isSlipOrderStatusConsideredUsed(slip.or_orders?.status)) return false
-          if (!slip.easyslip_date) return false
-          const d = new Date(slip.easyslip_date)
-          if (isNaN(d.getTime())) return false
-          const thaiDate = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' })
-          const thaiHours = d.toLocaleString('en-GB', { timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit', hour12: false })
-          const slipAmount = Number(slip.verified_amount) || 0
-          return thaiDate === transferDate && thaiHours === transferTime && Math.abs(slipAmount - transferAmount) <= 0.01
-        })
+        const matches = duplicateRows.filter((slip) => slip.entry_index === i)
 
         const label = `สลิปที่ ${i + 1} (${transferDate} ${transferTime} ฿${transferAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 })})`
         if (matches.length > 0) {
-          totalFound += matches.length
-          const details = matches.map((m: any) => {
-            const billNo = m.or_orders?.bill_no || '-'
-            const d = new Date(m.easyslip_date)
+          const details = matches.map((match) => {
+            const billNo = match.duplicate_bill_no || '-'
+            const d = new Date(match.easyslip_date)
             const thaiDate = d.toLocaleDateString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: '2-digit', year: 'numeric' })
             const thaiTime = d.toLocaleString('en-GB', { timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit', hour12: false })
-            const amount = Number(m.verified_amount).toLocaleString('th-TH', { minimumFractionDigits: 2 })
+            const amount = Number(match.verified_amount).toLocaleString('th-TH', { minimumFractionDigits: 2 })
             return `  บิล ${billNo} — ${thaiDate} ${thaiTime} ฿${amount}`
           }).join('\n')
           allResults.push(`⚠️ ${label}\n  → พบซ้ำ ${matches.length} รายการ:\n${details}`)
