@@ -225,6 +225,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     purchase: 0,
     hr: 0,
   })
+  const [machineryAlertCounts, setMachineryAlertCounts] = useState({ warning: 0, critical: 0 })
   /** นับ Issue สถานะ On (จาก TopBar broadcast — ไม่ query เพิ่ม) */
   const planIssueOnCount = useSyncExternalStore(
     subscribeIssueOnCount,
@@ -270,7 +271,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       const mpCountQuery = isAdminOrSuperadmin(user?.role)
         ? supabase.from('mp_orders').select('id', { count: 'exact', head: true }).eq('status', 'new')
         : supabase.from('mp_orders').select('id', { count: 'exact', head: true }).in('status', ['assigned', 'follow_up'])
-      const [rpcRes, ordersActionableRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planWorkQueueRes, machineryWorkingRes, hrLeavePendingRes, hrOtPendingRes, hrWfhPendingRes, mpCountRes] =
+      const [rpcRes, ordersActionableRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planWorkQueueRes, machineryWarningRes, machineryCriticalRes, hrLeavePendingRes, hrOtPendingRes, hrWfhPendingRes, mpCountRes] =
         await Promise.all([
         supabase.rpc('get_sidebar_counts', { p_username: adminName, p_role: user?.role ?? '' }),
         supabase.rpc('get_orders_sidebar_actionable_count', { p_username: adminName, p_role: user?.role ?? '' }),
@@ -286,7 +287,11 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         supabase
           .from('pr_machinery_machines')
           .select('id', { count: 'exact', head: true })
-          .eq('current_status', 'working'),
+          .eq('current_status', 'power_off'),
+        supabase
+          .from('pr_machinery_machines')
+          .select('id', { count: 'exact', head: true })
+          .in('current_status', ['broken', 'repairing']),
         supabase.from('hr_leave_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
         supabase.from('hr_ot_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
         supabase.from('hr_wfh_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
@@ -312,7 +317,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
           : Number(ordersActionableRes.data || 0),
         'admin-qc': c.admin_qc || 0,
         plan: planWorkQueueRes.count || 0,
-        machinery: machineryWorkingRes.count || 0,
+        machinery: (machineryWarningRes.count || 0) + (machineryCriticalRes.count || 0),
         account: accountTotal,
         wms: wmsResult.total,
         qc: qcTotal,
@@ -320,6 +325,10 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         warehouse: c.warehouse || 0,
         purchase: purchaseTotal,
         hr: (hrLeavePendingRes.count || 0) + (hrOtPendingRes.count || 0) + (hrWfhPendingRes.count || 0),
+      })
+      setMachineryAlertCounts({
+        warning: machineryWarningRes.count || 0,
+        critical: machineryCriticalRes.count || 0,
       })
 
       window.dispatchEvent(new CustomEvent('sidebar-purchase-badge', { detail: purchaseBadge }))
@@ -516,9 +525,11 @@ export default function Sidebar({ isOpen }: SidebarProps) {
             const withCount = MENU_KEYS_WITH_COUNT.includes(item.key as (typeof MENU_KEYS_WITH_COUNT)[number])
             const isPlan = item.key === 'plan'
             const isHr = item.key === 'hr'
+            const isMachinery = item.key === 'machinery'
             const planShowBadges = isPlan && (baseCount > 0 || planIssueOnCount > 0)
             const hrShowBadges = isHr && (baseCount > 0 || hrMyOpenTaskCount > 0)
-            const showDefaultBadge = withCount && displayCount > 0 && !isPlan && !isHr
+            const machineryShowBadges = isMachinery && (machineryAlertCounts.warning > 0 || machineryAlertCounts.critical > 0)
+            const showDefaultBadge = withCount && displayCount > 0 && !isPlan && !isHr && !isMachinery
             return (
               <li key={item.key}>
                 <Link
@@ -542,7 +553,20 @@ export default function Sidebar({ isOpen }: SidebarProps) {
                   {isOpen ? (
                     <span className="whitespace-nowrap flex items-center gap-1.5 text-base">
                       {item.label}
-                      {isPlan ? (
+                      {isMachinery ? (
+                        <>
+                          {machineryAlertCounts.warning > 0 && (
+                            <span className="min-w-[1.4rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold shadow-sm bg-amber-400 text-amber-950" title="ปิดเครื่อง">
+                              {machineryAlertCounts.warning > 99 ? '99+' : machineryAlertCounts.warning}
+                            </span>
+                          )}
+                          {machineryAlertCounts.critical > 0 && (
+                            <span className="min-w-[1.4rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold shadow-sm bg-red-500 text-white" title="เครื่องเสีย + กำลังซ่อม">
+                              {machineryAlertCounts.critical > 99 ? '99+' : machineryAlertCounts.critical}
+                            </span>
+                          )}
+                        </>
+                      ) : isPlan ? (
                         <>
                           {baseCount > 0 && (
                             <span className="min-w-[1.4rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold shadow-sm bg-amber-400 text-amber-950">
@@ -578,6 +602,19 @@ export default function Sidebar({ isOpen }: SidebarProps) {
                             {displayCount > 99 ? '99+' : displayCount}
                           </span>
                         )
+                      )}
+                    </span>
+                  ) : machineryShowBadges ? (
+                    <span className="absolute -top-1 -right-1 flex flex-row-reverse items-center gap-0.5 pointer-events-none">
+                      {machineryAlertCounts.critical > 0 && (
+                        <span className="min-w-[1.2rem] h-[1.2rem] px-1 flex items-center justify-center rounded-full text-[10px] font-bold shadow-sm bg-red-500 text-white">
+                          {machineryAlertCounts.critical > 99 ? '99+' : machineryAlertCounts.critical}
+                        </span>
+                      )}
+                      {machineryAlertCounts.warning > 0 && (
+                        <span className="min-w-[1.2rem] h-[1.2rem] px-1 flex items-center justify-center rounded-full text-[10px] font-bold shadow-sm bg-amber-400 text-amber-950">
+                          {machineryAlertCounts.warning > 99 ? '99+' : machineryAlertCounts.warning}
+                        </span>
                       )}
                     </span>
                   ) : planShowBadges ? (
