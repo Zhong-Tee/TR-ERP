@@ -309,7 +309,7 @@ export interface AddressParts {
  */
 export function splitAddressParts(raw: string | null | undefined, fallbackRecipientName?: string | null): AddressParts {
   const text = (raw ?? '').replace(/\r\n/g, '\n').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim()
-  const fallback = (fallbackRecipientName ?? '').trim()
+  const fallback = (fallbackRecipientName ?? '').replace(/\s+/g, ' ').trim()
   if (!text) return { recipientName: fallback, phone: '', address: '' }
 
   const { candidates, rest } = extractPhonesFromText(text)
@@ -320,6 +320,21 @@ export function splitAddressParts(raw: string | null | undefined, fallbackRecipi
     .replace(/\b(tel|โทร\.?|เบอร์(?:โทร)?\.?)\b[:\s]*/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+
+  // เมื่อมีชื่อผู้รับแยกอยู่แล้ว ให้เชื่อถือ field นั้น และอย่าเดาคำก่อน
+  // บ้านเลขที่ว่าเป็นชื่อ เพราะอาจเป็นชื่อหน่วยงาน/อาคารที่เป็นส่วนหนึ่งของที่อยู่
+  // เช่น "กองบังคับการตำรวจนครบาล 3 เลขที่ 190 ..."
+  if (fallback) {
+    let address = body
+    const prefixedRecipient = body.startsWith(`ส่ง ${fallback}`) ? `ส่ง ${fallback}` : fallback
+    if (address.startsWith(prefixedRecipient)) {
+      address = address
+        .slice(prefixedRecipient.length)
+        .replace(/^[\s,;:|/\-]+/, '')
+        .trim()
+    }
+    return { recipientName: fallback, phone, address }
+  }
 
   // ดึงชื่อผู้รับจากต้นข้อความ — คำก่อนเลขที่/หมู่/ต./อ./จ./บ้าน
   const tokens = body.split(/\s+/).filter(Boolean)

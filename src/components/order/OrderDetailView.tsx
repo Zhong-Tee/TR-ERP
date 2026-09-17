@@ -209,6 +209,8 @@ export default function OrderDetailView({
   const addressParts = splitAddressParts(order.customer_address, order.recipient_name)
   const displayRecipientName = order.recipient_name?.trim() || addressParts.recipientName || null
   const displayAddress = addressParts.address || order.customer_address || null
+  const hasConfirmedClaimShipping = Boolean(order.claim_shipping_confirmed_at)
+  const claimPhone = hasConfirmedClaimShipping ? (displayPhone || addressParts.phone) : null
 
   useEffect(() => {
     setFullOrder(null)
@@ -592,7 +594,7 @@ export default function OrderDetailView({
         {/* ── ข้อมูลลูกค้า ── */}
         <section>
           <h4 className="text-sm font-bold text-gray-800 border-b border-gray-200 pb-1.5 mb-2">ข้อมูลลูกค้า</h4>
-          <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
+          <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-8 [&_dt]:w-32 [&_dt]:whitespace-nowrap">
             <InfoRow label="เลขบิล" value={order.bill_no} />
             <InfoRow label="ช่องทาง" value={order.channel_code} />
             {order.converted_from_self_pickup_at && (
@@ -609,8 +611,17 @@ export default function OrderDetailView({
             )}
             <InfoRow label="สถานะ" value={order.status} />
             <InfoRow label="ชื่อลูกค้า" value={order.customer_name} />
-            <InfoRow label="ชื่อผู้รับ" value={displayRecipientName} />
-            {!isClaimOrder && <InfoRow label="เบอร์โทร" value={displayPhone || addressParts.phone} />}
+            {isClaimOrder ? (
+              <div>
+                <InfoRow label="ชื่อผู้รับ" value={displayRecipientName} />
+                <InfoRow label="เบอร์โทรตอนเคลม" value={claimPhone || '–'} />
+              </div>
+            ) : (
+              <>
+                <InfoRow label="ชื่อผู้รับ" value={displayRecipientName} />
+                <InfoRow label="เบอร์โทร" value={displayPhone || addressParts.phone} />
+              </>
+            )}
             <InfoRow label="เลขคำสั่งซื้อ" value={order.channel_order_no} />
             <InfoRow label="เลขพัสดุ" value={order.tracking_number} />
             <InfoRow label="เลขรับพัสดุด่วน" value={order.express_receipt_number} />
@@ -649,24 +660,17 @@ export default function OrderDetailView({
         {isClaimOrder && (
           <section>
             <h4 className="text-sm font-bold text-gray-800 border-b border-gray-200 pb-1.5 mb-2">ข้อมูลการเคลม</h4>
-            <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
+            <dl>
               <InfoRow
                 label="ประเภทการเคลม"
                 value={claimTypeLabel(claimTypeLabels, order.claim_type)}
                 labelClassName="w-40 whitespace-nowrap"
               />
               <InfoRow
-                label="เบอร์โทรตอนเคลม"
-                value={displayPhone || addressParts.phone || '–'}
+                label="คำอธิบายการเคลม"
+                value={order.claim_details || '–'}
                 labelClassName="w-40 whitespace-nowrap"
               />
-              <div className="md:col-span-2">
-                <InfoRow
-                  label="คำอธิบายการเคลม"
-                  value={order.claim_details || '–'}
-                  labelClassName="w-40 whitespace-nowrap"
-                />
-              </div>
             </dl>
           </section>
         )}
