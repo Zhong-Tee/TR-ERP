@@ -8,6 +8,7 @@ type ChannelRow = { channel_code: string; channel_name: string; default_carrier?
 type MessageModal = { open: boolean; title: string; message: string }
 type ConfirmModal = { open: boolean; title: string; message: string; onConfirm: () => void; tone?: 'danger' | 'success' }
 type TransportTab = 'verification' | 'self-pickup' | 'delivery-check'
+type PickupStatusFilter = 'all' | 'pending' | 'received'
 
 const PARCEL_TYPES = ['กล่อง', 'ซองกระดาษ', 'ซองบับเบิล', 'ถุงพัสดุ'] as const
 type ParcelType = (typeof PARCEL_TYPES)[number]
@@ -61,6 +62,11 @@ function monthStartISO() {
   return localDateISO(new Date(today.getFullYear(), today.getMonth(), 1))
 }
 
+function localDateTimeInputValue(date = new Date()) {
+  const localTime = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+  return localTime.toISOString().slice(0, 16)
+}
+
 function isInDateRange(iso: string | null | undefined, from: string, to: string) {
   if (!iso) return false
   const date = new Date(iso)
@@ -85,6 +91,12 @@ export default function TransportVerification() {
   const [exportingPng, setExportingPng] = useState(false)
   const [lastExportSize, setLastExportSize] = useState<{ width: number; height: number } | null>(null)
   const [pickupActionId, setPickupActionId] = useState<string | null>(null)
+  const [pickupStatusFilter, setPickupStatusFilter] = useState<PickupStatusFilter>('all')
+  const [pickupReceiptModal, setPickupReceiptModal] = useState<{
+    open: boolean
+    order: Order | null
+    receivedAt: string
+  }>({ open: false, order: null, receivedAt: '' })
   const [messageModal, setMessageModal] = useState<MessageModal>({ open: false, title: '', message: '' })
   const [confirmModal, setConfirmModal] = useState<ConfirmModal>({ open: false, title: '', message: '', onConfirm: () => {} })
 
@@ -229,6 +241,16 @@ export default function TransportVerification() {
         return new Date(aTime).getTime() - new Date(bTime).getTime()
       })
   }, [orders, pickupDateFrom, pickupDateTo, channels])
+
+  const filteredPickupOrders = useMemo(() => {
+    if (pickupStatusFilter === 'pending') {
+      return pickupOrders.filter((order) => !order.transport_meta?.customer_received)
+    }
+    if (pickupStatusFilter === 'received') {
+      return pickupOrders.filter((order) => order.transport_meta?.customer_received === true)
+    }
+    return pickupOrders
+  }, [pickupOrders, pickupStatusFilter])
 
   const summaryData = useMemo(() => {
     const nested: Record<string, Record<string, Record<string, number>>> = {}
@@ -440,21 +462,64 @@ export default function TransportVerification() {
 
   function handleCustomerReceived(order: Order) {
     if (order.transport_meta?.customer_received) return
+    setPickupReceiptModal({
+      open: true,
+      order,
+      receivedAt: localDateTimeInputValue(),
+    })
+  }
+
+  async function confirmCustomerReceived() {
+    const order = pickupReceiptModal.order
+    if (!order || !pickupReceiptModal.receivedAt) return
+    const receivedDate = new Date(pickupReceiptModal.receivedAt)
+    if (Number.isNaN(receivedDate.getTime())) {
+      setMessageModal({ open: true, title: 'เวลารับจริงไม่ถูกต้อง', message: 'กรุณาระบุวันที่และเวลารับจริงอีกครั้ง' })
+      return
+    }
+    setPickupReceiptModal({ open: false, order: null, receivedAt: '' })
+    setPickupActionId(order.id)
+    try {
+      const transportMeta = {
+        ...(order.transport_meta || {}),
+        customer_received: true,
+        customer_received_at: receivedDate.toISOString(),
+        customer_received_by: user?.username || user?.email || 'unknown',
+      }
+      const { error } = await supabase
+        .from('or_orders')
+        .update({ transport_meta: transportMeta })
+        .eq('id', order.id)
+      if (error) throw error
+      setOrders((previous) => previous.map((item) => (
+        item.id === order.id ? { ...item, transport_meta: transportMeta } : item
+      )))
+    } catch (error: any) {
+      setMessageModal({
+        open: true,
+        title: 'บันทึกไม่สำเร็จ',
+        message: error?.message || String(error),
+      })
+    } finally {
+      setPickupActionId(null)
+    }
+  }
+
+  function handleUndoCustomerReceived(order: Order) {
     setConfirmModal({
       open: true,
-      title: 'ยืนยันลูกค้ารับสินค้า',
-      message: `ยืนยันว่าลูกค้ารับสินค้าในบิล ${order.bill_no} แล้ว?`,
-      tone: 'success',
+      title: 'เปลี่ยนกลับเป็นรอลูกค้ารับ',
+      message: `ยืนยันเปลี่ยนบิล ${order.bill_no} กลับเป็นสถานะรอลูกค้ารับ?\nเวลารับจริงและชื่อผู้บันทึกเดิมจะถูกล้างออก`,
       onConfirm: async () => {
         setConfirmModal((prev) => ({ ...prev, open: false }))
         setPickupActionId(order.id)
         try {
           const transportMeta = {
             ...(order.transport_meta || {}),
-            customer_received: true,
-            customer_received_at: new Date().toISOString(),
-            customer_received_by: user?.username || user?.email || 'unknown',
+            customer_received: false,
           }
+          delete transportMeta.customer_received_at
+          delete transportMeta.customer_received_by
           const { error } = await supabase
             .from('or_orders')
             .update({ transport_meta: transportMeta })
@@ -829,22 +894,49 @@ export default function TransportVerification() {
       {activeTab === 'self-pickup' && (
         <div className="space-y-4">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
+            <button
+              type="button"
+              onClick={() => setPickupStatusFilter('all')}
+              aria-pressed={pickupStatusFilter === 'all'}
+              className={`rounded-xl border bg-violet-50 p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 ${
+                pickupStatusFilter === 'all'
+                  ? 'border-violet-500 ring-2 ring-violet-200 shadow-sm'
+                  : 'border-violet-200'
+              }`}
+            >
               <div className="text-sm font-semibold text-violet-700">รายการรับเองทั้งหมด</div>
               <div className="mt-1 text-3xl font-black text-violet-800">{pickupOrders.length}</div>
-            </div>
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+            </button>
+            <button
+              type="button"
+              onClick={() => setPickupStatusFilter('pending')}
+              aria-pressed={pickupStatusFilter === 'pending'}
+              className={`rounded-xl border bg-amber-50 p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 ${
+                pickupStatusFilter === 'pending'
+                  ? 'border-amber-500 ring-2 ring-amber-200 shadow-sm'
+                  : 'border-amber-200'
+              }`}
+            >
               <div className="text-sm font-semibold text-amber-700">รอลูกค้ารับ</div>
               <div className="mt-1 text-3xl font-black text-amber-700">
                 {pickupOrders.filter((order) => !order.transport_meta?.customer_received).length}
               </div>
-            </div>
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+            </button>
+            <button
+              type="button"
+              onClick={() => setPickupStatusFilter('received')}
+              aria-pressed={pickupStatusFilter === 'received'}
+              className={`rounded-xl border bg-emerald-50 p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 ${
+                pickupStatusFilter === 'received'
+                  ? 'border-emerald-500 ring-2 ring-emerald-200 shadow-sm'
+                  : 'border-emerald-200'
+              }`}
+            >
               <div className="text-sm font-semibold text-emerald-700">ลูกค้ารับแล้ว</div>
               <div className="mt-1 text-3xl font-black text-emerald-700">
                 {pickupOrders.filter((order) => order.transport_meta?.customer_received).length}
               </div>
-            </div>
+            </button>
           </div>
 
           <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
@@ -864,9 +956,17 @@ export default function TransportVerification() {
                 <tbody>
                   {loading ? (
                     <tr><td colSpan={7} className="py-12 text-center text-gray-400">กำลังโหลดข้อมูล...</td></tr>
-                  ) : pickupOrders.length === 0 ? (
-                    <tr><td colSpan={7} className="py-12 text-center text-gray-400">ไม่พบรายการลูกค้ารับสินค้าเองในวันที่เลือก</td></tr>
-                  ) : pickupOrders.map((order) => {
+                  ) : filteredPickupOrders.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-12 text-center text-gray-400">
+                        {pickupStatusFilter === 'pending'
+                          ? 'ไม่พบรายการที่รอลูกค้ารับในวันที่เลือก'
+                          : pickupStatusFilter === 'received'
+                            ? 'ไม่พบรายการที่ลูกค้ารับแล้วในวันที่เลือก'
+                            : 'ไม่พบรายการลูกค้ารับสินค้าเองในวันที่เลือก'}
+                      </td>
+                    </tr>
+                  ) : filteredPickupOrders.map((order) => {
                     const received = order.transport_meta?.customer_received === true
                     const ready = order.status === 'จัดส่งแล้ว'
                     return (
@@ -884,9 +984,15 @@ export default function TransportVerification() {
                         </td>
                         <td className="p-3 text-center">
                           {received ? (
-                            <span className="inline-flex rounded-full border border-emerald-300 bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-700">
+                            <button
+                              type="button"
+                              onClick={() => handleUndoCustomerReceived(order)}
+                              disabled={pickupActionId === order.id}
+                              title="กดเพื่อเปลี่ยนกลับเป็นรอลูกค้ารับ"
+                              className="inline-flex rounded-full border border-emerald-300 bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-700 transition-colors hover:border-red-300 hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
                               ✓ ลูกค้ารับแล้ว
-                            </span>
+                            </button>
                           ) : ready ? (
                             <button
                               type="button"
@@ -919,6 +1025,49 @@ export default function TransportVerification() {
           <p className="mt-2 text-gray-500">เมนูนี้อยู่ระหว่างรอพัฒนา</p>
         </div>
       )}
+
+      <Modal
+        open={pickupReceiptModal.open}
+        onClose={() => setPickupReceiptModal({ open: false, order: null, receivedAt: '' })}
+        contentClassName="max-w-md"
+      >
+        <div className="p-6">
+          <h3 className="mb-2 text-lg font-semibold text-gray-900">ยืนยันลูกค้ารับสินค้า</h3>
+          <p className="text-sm text-gray-700">
+            ยืนยันว่าลูกค้ารับสินค้าในบิล {pickupReceiptModal.order?.bill_no} แล้ว?
+          </p>
+          <label className="mt-4 block">
+            <span className="mb-1.5 block text-sm font-semibold text-gray-700">เวลารับจริง</span>
+            <input
+              type="datetime-local"
+              value={pickupReceiptModal.receivedAt}
+              onChange={(event) => setPickupReceiptModal((previous) => ({
+                ...previous,
+                receivedAt: event.target.value,
+              }))}
+              className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-gray-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+            />
+            <span className="mt-1 block text-xs text-gray-500">ค่าเริ่มต้นเป็นวันที่และเวลาปัจจุบันจากคอมพิวเตอร์</span>
+          </label>
+          <div className="mt-5 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setPickupReceiptModal({ open: false, order: null, receivedAt: '' })}
+              className="rounded-lg border border-gray-300 px-4 py-2 hover:bg-gray-100"
+            >
+              ยกเลิก
+            </button>
+            <button
+              type="button"
+              onClick={confirmCustomerReceived}
+              disabled={!pickupReceiptModal.receivedAt}
+              className="rounded-lg bg-emerald-600 px-4 py-2 text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              ยืนยัน
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal
         open={messageModal.open}

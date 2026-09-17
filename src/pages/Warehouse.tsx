@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { fetchAllSupabasePages } from '../lib/supabasePagination'
 import { getPublicUrl } from '../lib/qcApi'
@@ -14,6 +15,9 @@ type FifoStatus = {
   sellableLotCount: number
   sellableLotQty: number
 }
+
+type LocationSummary = { location_id: string; code: string; name: string | null; location_type: string; qty: number }
+type TransferHistory = { id: string; transfer_no: string; created_at: string; posted_at: string | null; from_code: string; to_code: string; qty: number; status: string; created_by_name: string }
 
 function getProductImageUrl(productCode: string | null | undefined, ext: string = '.jpg'): string {
   return getPublicUrl(BUCKET_PRODUCT_IMAGES, productCode, ext)
@@ -50,6 +54,7 @@ function calendarDaysFromFilterToToday(salesFromYmd: string, now: Date): number 
 }
 
 export default function Warehouse() {
+  const navigate = useNavigate()
   const { user } = useAuthContext()
   const canSeeCost = user?.role === 'superadmin'
 
@@ -76,6 +81,13 @@ export default function Warehouse() {
   const [salesMap, setSalesMap] = useState<Record<string, number>>({})
   const [salesLoading, setSalesLoading] = useState(false)
   const [specialTrackedDetailId, setSpecialTrackedDetailId] = useState<string | null>(null)
+  const [locationCountMap, setLocationCountMap] = useState<Record<string, number>>({})
+  const [locationProduct, setLocationProduct] = useState<Product | null>(null)
+  const [locationRows, setLocationRows] = useState<LocationSummary[]>([])
+  const [locationHistory, setLocationHistory] = useState<TransferHistory[]>([])
+  const [locationLoading, setLocationLoading] = useState(false)
+  const [exportingExcel, setExportingExcel] = useState(false)
+  const [excelError, setExcelError] = useState('')
 
   useEffect(() => {
     loadProducts()
@@ -85,11 +97,48 @@ export default function Warehouse() {
     loadSpecialTrackedSources()
     loadCategories()
     loadSellers()
+    loadLocationCounts()
   }, [])
+
+  async function loadLocationCounts() {
+    const { data, error } = await supabase.from('wh_location_stock').select('product_id, qty').gt('qty', 0)
+    if (error) {
+      console.error('Load warehouse location counts failed:', error)
+      return
+    }
+    const map: Record<string, number> = {}
+    ;(data || []).forEach((row: { product_id: string }) => { map[row.product_id] = (map[row.product_id] || 0) + 1 })
+    setLocationCountMap(map)
+  }
+
+  async function openLocationDrawer(product: Product) {
+    setLocationProduct(product)
+    setLocationLoading(true)
+    const [summaryRes, historyRes] = await Promise.all([
+      supabase.rpc('rpc_get_product_location_summary', { p_product_id: product.id }),
+      supabase.rpc('rpc_get_product_transfer_history', { p_product_id: product.id, p_limit: 5 }),
+    ])
+    if (summaryRes.error) console.error('Load product locations failed:', summaryRes.error)
+    if (historyRes.error) console.error('Load product transfer history failed:', historyRes.error)
+    setLocationRows((summaryRes.data || []).map((row: LocationSummary) => ({ ...row, qty: Number(row.qty || 0) })))
+    setLocationHistory((historyRes.data || []).map((row: TransferHistory) => ({ ...row, qty: Number(row.qty || 0) })))
+    setLocationLoading(false)
+  }
 
   useEffect(() => {
     loadSalesData()
   }, [salesFromDate])
+
+  useEffect(() => {
+    if (!locationProduct) return
+    const scrollContainer = document.querySelector<HTMLElement>('[data-app-scroll-container]')
+    if (!scrollContainer) return
+    const previousOverflow = scrollContainer.style.overflow
+    scrollContainer.style.overflow = 'hidden'
+    return () => {
+      scrollContainer.style.overflow = previousOverflow
+    }
+  }, [locationProduct])
 
   async function loadProducts() {
     setLoading(true)
@@ -422,16 +471,80 @@ export default function Warehouse() {
     }
   }, [specialTrackedDetailId, products, specialTrackedSources, balances])
 
-  const handleDownloadExcel = useCallback(() => {
-    const rows = filteredProducts.map((p) => {
-      const stockDisplay = getStockDisplay(p.id)
+  const handleDownloadExcel = useCallback(async () => {
+    setExportingExcel(true)
+    setExcelError('')
+    try {
+      const [freshBalances, freshLocationStock, locationResult, pendingResult, salesResult] = await Promise.all([
+        fetchAllSupabasePages<StockBalance>((from, to) => supabase
+          .from('inv_stock_balances')
+          .select('id, product_id, on_hand, reserved, safety_stock, created_at, updated_at')
+          .order('product_id')
+          .range(from, to)),
+        fetchAllSupabasePages<{ product_id: string; location_id: string; qty: number }>((from, to) => supabase
+          .from('wh_location_stock')
+          .select('product_id, location_id, qty')
+          .order('product_id')
+          .order('location_id')
+          .range(from, to)),
+        supabase.from('wh_storage_locations').select('id, code, name, location_type').order('sort_order').order('code'),
+        supabase.rpc('rpc_get_pending_po_by_product'),
+        salesFromDate ? supabase.rpc('calc_avg_daily_sales', { p_from_date: salesFromDate }) : Promise.resolve({ data: [], error: null }),
+      ])
+      if (locationResult.error) throw locationResult.error
+      if (pendingResult.error) throw pendingResult.error
+      if (salesResult.error) throw salesResult.error
+
+      const freshBalanceMap: Record<string, StockBalance> = {}
+      freshBalances.forEach((balance) => { freshBalanceMap[balance.product_id] = balance })
+      const freshPendingMap: Record<string, number> = {}
+      ;(pendingResult.data || []).forEach((row: { product_id: string; pending_qty: number | null }) => {
+        freshPendingMap[row.product_id] = Number(row.pending_qty || 0)
+      })
+      const freshSalesMap: Record<string, number> = {}
+      ;(salesResult.data || []).forEach((row: { product_id: string; total_sold: number | null }) => {
+        freshSalesMap[row.product_id] = Number(row.total_sold || 0)
+      })
+      const locations = new Map((locationResult.data || []).map((location: { id: string; code: string; name: string | null; location_type: string }) => [location.id, location]))
+      const locationStockByProduct = new Map<string, Array<{ location_id: string; qty: number }>>()
+      freshLocationStock.forEach((stock) => {
+        const productRows = locationStockByProduct.get(stock.product_id) || []
+        productRows.push({ location_id: stock.location_id, qty: Number(stock.qty || 0) })
+        locationStockByProduct.set(stock.product_id, productRows)
+      })
+
+      const getFreshStockDisplay = (productId: string) => {
+        const sourceIds = specialTrackedSources[productId]
+        if (sourceIds) {
+          const totals = sourceIds.reduce((result, sourceId) => {
+            const balance = freshBalanceMap[sourceId]
+            result.onHand += Number(balance?.on_hand || 0)
+            result.safetyStock += Number(balance?.safety_stock || 0)
+            return result
+          }, { onHand: 0, safetyStock: 0 })
+          return { ...totals, total: totals.onHand + totals.safetyStock }
+        }
+        const balance = freshBalanceMap[productId]
+        const onHand = Number(balance?.on_hand || 0)
+        const safetyStock = Number(balance?.safety_stock || 0)
+        return { onHand, safetyStock, total: onHand + safetyStock }
+      }
+
+      const daysInRange = salesFromDate ? calendarDaysFromFilterToToday(salesFromDate, new Date()) : 1
+      const rows = filteredProducts.map((p) => {
+      const stockDisplay = getFreshStockDisplay(p.id)
       const onHand = stockDisplay.onHand
       const safetyStock = stockDisplay.safetyStock
-      const pendingQty = Number(pendingPoMap[p.id] || 0)
-      const avg = calcAvgDailySales(p.id)
-      const days = calcDaysRemaining(p.id, onHand)
+      const pendingQty = Number(freshPendingMap[p.id] || 0)
+      const totalSold = Number(freshSalesMap[p.id] || 0)
+      const avg = totalSold > 0 ? Math.round((totalSold / daysInRange) * 100) / 100 : null
+      const days = avg && avg > 0 ? Math.round(onHand / avg) : null
       const specialTracked = isSpecialTracked(p.id)
       const unitName = p.unit_name?.trim() || 'ชิ้น'
+      const productLocationRows = locationStockByProduct.get(p.id) || []
+      const positiveLocationRows = productLocationRows.filter((location) => location.qty > 0)
+      const locationTotal = positiveLocationRows.reduce((sum, location) => sum + location.qty, 0)
+      const locationDifference = specialTracked ? null : locationTotal - stockDisplay.total
       const row: Record<string, unknown> = {
         'รหัสสินค้า': p.product_code,
         'ประเภท': specialTracked ? 'ST' : (p.product_type || 'FG'),
@@ -444,6 +557,10 @@ export default function Warehouse() {
         'รอรับเข้า': specialTracked ? 'ไม่มีค่า' : (pendingQty > 0 ? pendingQty : '-'),
         'Safety stock': specialTracked ? 'ไม่มีค่า' : (safetyStock ?? '-'),
         'รวมในคลัง': stockDisplay.total,
+        'จำนวนจุดจัดเก็บ': specialTracked ? '-' : positiveLocationRows.length,
+        'ยอดรวมตามจุดเก็บ': specialTracked ? '-' : locationTotal,
+        'ผลต่างจุดเก็บ': specialTracked ? '-' : locationDifference,
+        'สถานะจุดเก็บ': specialTracked ? 'สินค้า ST' : Math.abs(locationDifference || 0) < 0.0001 ? 'ตรง' : 'ไม่ตรง',
         'การใช้ (หน่วย/วัน)': !specialTracked && avg !== null ? avg : '-',
         'วันขายคงเหลือ': !specialTracked && days !== null ? days : '-',
       }
@@ -455,13 +572,49 @@ export default function Warehouse() {
           : '-'
       }
       return row
-    })
-    const ws = XLSX.utils.json_to_sheet(rows)
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'คลังสินค้า')
-    const today = new Date().toISOString().slice(0, 10)
-    XLSX.writeFile(wb, `คลังสินค้า_${today}.xlsx`)
-  }, [filteredProducts, pendingPoMap, salesMap, canSeeCost, getStockDisplay, isSpecialTracked]) // eslint-disable-line react-hooks/exhaustive-deps
+      })
+
+      const visibleProductIds = new Set(filteredProducts.filter((product) => !isSpecialTracked(product.id)).map((product) => product.id))
+      const productById = new Map(filteredProducts.map((product) => [product.id, product]))
+      const locationDetailRows: Record<string, unknown>[] = []
+      freshLocationStock
+        .filter((stock) => visibleProductIds.has(stock.product_id) && Number(stock.qty || 0) > 0)
+        .forEach((stock) => {
+          const product = productById.get(stock.product_id)
+          const location = locations.get(stock.location_id)
+          if (!product || !location) return
+          const typeLabel = location.location_type === 'picking'
+            ? 'จุดหยิบหลัก'
+            : location.location_type === 'reserve'
+              ? 'เก็บสำรอง'
+              : location.location_type === 'hold'
+                ? 'พัก/รอตรวจ'
+                : 'ยังไม่จัดสรร'
+          locationDetailRows.push({
+            'รหัสสินค้า': product.product_code,
+            'ชื่อสินค้า': product.product_name,
+            'รหัสจุดจัดเก็บ': location.code,
+            'ชื่อจุดจัดเก็บ': location.name || '-',
+            'ประเภทจุดจัดเก็บ': typeLabel,
+            'จำนวน': Number(stock.qty || 0),
+            'หน่วย': product.unit_name?.trim() || 'ชิ้น',
+          })
+        })
+
+      const ws = XLSX.utils.json_to_sheet(rows)
+      const locationWs = XLSX.utils.json_to_sheet(locationDetailRows.length > 0 ? locationDetailRows : [{ 'ข้อมูล': 'ไม่พบยอดตามจุดจัดเก็บ' }])
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, 'คลังสินค้า')
+      XLSX.utils.book_append_sheet(wb, locationWs, 'ยอดตามจุดเก็บ')
+      const today = toLocalDateString(new Date())
+      XLSX.writeFile(wb, `คลังสินค้า_${today}.xlsx`)
+    } catch (error) {
+      console.error('Export warehouse Excel failed:', error)
+      setExcelError(error instanceof Error ? error.message : 'ดาวน์โหลด Excel ไม่สำเร็จ')
+    } finally {
+      setExportingExcel(false)
+    }
+  }, [filteredProducts, salesFromDate, canSeeCost, isSpecialTracked, specialTrackedSources])
 
   return (
     <>
@@ -559,18 +712,20 @@ export default function Warehouse() {
           </div>
           <button
             type="button"
-            onClick={handleDownloadExcel}
-            className="px-4 py-2.5 rounded-xl font-semibold text-sm border border-green-500 bg-green-500 text-white hover:bg-green-600 transition-colors whitespace-nowrap flex items-center gap-1.5"
+            onClick={() => void handleDownloadExcel()}
+            disabled={exportingExcel}
+            className="ml-auto shrink-0 px-4 py-2.5 rounded-xl font-semibold text-sm border border-green-500 bg-green-500 text-white hover:bg-green-600 transition-colors whitespace-nowrap flex items-center justify-center gap-1.5 disabled:cursor-wait disabled:opacity-60"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-            ดาวน์โหลด Excel
+            {exportingExcel ? 'กำลังเตรียม Excel...' : 'ดาวน์โหลด Excel'}
           </button>
+          <div className="basis-full" aria-hidden="true" />
           <button
             type="button"
             onClick={() => setOnlyWithoutFifo((value) => !value)}
             disabled={!fifoStatusLoaded}
             title={fifoStatusLoaded ? 'แสดงเฉพาะสินค้าที่ไม่มีล็อต FIFO คงเหลือ' : 'กำลังโหลดข้อมูล FIFO'}
-            className={`px-4 py-2.5 rounded-xl font-semibold text-sm border transition-colors whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-50 ${
+            className={`ml-auto px-4 py-2.5 rounded-xl font-semibold text-sm border transition-colors whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-50 ${
               onlyWithoutFifo
                 ? 'border-red-500 bg-red-500 text-white hover:bg-red-600'
                 : 'border-red-300 bg-white text-red-600 hover:bg-red-50'
@@ -578,7 +733,27 @@ export default function Warehouse() {
           >
             ไม่มี FIFO
           </button>
+          <button
+            type="button"
+            onClick={() => navigate('/warehouse/transfers')}
+            className="px-4 py-2.5 rounded-xl font-semibold text-sm border border-blue-300 bg-white text-blue-700 hover:bg-blue-50 transition-colors whitespace-nowrap"
+          >
+            ประวัติการย้าย
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate('/warehouse/transfers?create=1')}
+            className="shrink-0 px-4 py-2.5 rounded-xl font-semibold text-sm border border-blue-600 bg-blue-600 text-white hover:bg-blue-700 transition-colors whitespace-nowrap"
+          >
+            + สร้างใบย้าย
+          </button>
         </div>
+
+        {excelError && (
+          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            ดาวน์โหลด Excel ไม่สำเร็จ: {excelError}
+          </div>
+        )}
 
         {loading ? (
           <div className="flex justify-center items-center py-12">
@@ -602,6 +777,7 @@ export default function Warehouse() {
                   <th className="p-3 text-center font-semibold">รอรับเข้า</th>
                   <th className="p-3 text-center font-semibold">Safety stock</th>
                   <th className="p-3 text-center font-semibold">รวมในคลัง</th>
+                  <th className="p-3 text-center font-semibold">จุดจัดเก็บ</th>
                   <th className="p-3 text-center font-semibold">การใช้</th>
                   <th className={`p-3 text-center font-semibold ${!canSeeCost ? 'rounded-tr-xl' : ''}`}>วันขายคงเหลือ</th>
                   {canSeeCost && <th className="p-3 text-right font-semibold rounded-tr-xl">ต้นทุนสินค้า</th>}
@@ -620,7 +796,14 @@ export default function Warehouse() {
                   const isLow = isBelowReorderThreshold(product, onHand)
                   const unitName = product.unit_name?.trim() || 'ชิ้น'
                   return (
-                    <tr key={product.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                    <tr
+                      key={product.id}
+                      onClick={(event) => {
+                        if (specialTracked || (event.target as HTMLElement).closest('a,button,input,select')) return
+                        void openLocationDrawer(product)
+                      }}
+                      className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${specialTracked ? '' : 'cursor-pointer'} ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}
+                    >
                       <td className="p-3">
                         <div className="inline-flex items-center gap-1">
                           {hasFifo && (
@@ -677,6 +860,17 @@ export default function Warehouse() {
                           </button>
                         )}
                       </td>
+                      <td className="p-3 text-center">
+                        {specialTracked ? <span className="text-gray-400">-</span> : (
+                          <button
+                            type="button"
+                            onClick={() => void openLocationDrawer(product)}
+                            className="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                          >
+                            {locationCountMap[product.id] || 0} จุด
+                          </button>
+                        )}
+                      </td>
                       <td className="p-3 text-center text-sm text-gray-600">
                         {(() => {
                           if (specialTracked) return <span className="text-gray-400">-</span>
@@ -721,6 +915,75 @@ export default function Warehouse() {
         )}
         </div>
       </div>
+
+      {locationProduct && (
+        <div
+          className="fixed bottom-0 left-0 right-0 top-[calc(3.5rem+var(--subnav-height,0rem))] z-50 md:top-[calc(4rem+var(--subnav-height,0rem))]"
+          role="dialog"
+          aria-modal="true"
+          aria-label="รายละเอียดสต๊อกตามจุดจัดเก็บ"
+        >
+          <button type="button" aria-label="ปิด" onClick={() => setLocationProduct(null)} className="absolute inset-0 bg-gray-900/30" />
+          <aside className="absolute bottom-0 right-0 top-0 flex w-full max-w-2xl flex-col bg-white shadow-2xl">
+            <div className="flex items-start justify-between border-b px-5 py-4">
+              <div>
+                <h2 className="text-lg font-bold text-gray-900">รายละเอียดสต๊อกตามจุดจัดเก็บ</h2>
+                <p className="mt-1 text-sm text-gray-500">{locationProduct.product_code} · {locationProduct.product_name}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLocationProduct(null)}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-600 text-white shadow-sm transition-colors hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2"
+                aria-label="ปิด"
+              >
+                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              {locationLoading ? (
+                <div className="py-16 text-center text-gray-500">กำลังโหลด...</div>
+              ) : (
+                <>
+                  <div className="mb-5 rounded-xl border border-blue-100 bg-blue-50 p-4">
+                    <div className="text-sm text-blue-700">ยอดรวมทุกจุด</div>
+                    <div className="mt-1 text-2xl font-bold text-blue-900">
+                      {locationRows.reduce((sum, row) => sum + row.qty, 0).toLocaleString()} {locationProduct.unit_name?.trim() || 'ชิ้น'}
+                    </div>
+                  </div>
+                  <h3 className="mb-2 font-semibold text-gray-900">ยอดตามจุดจัดเก็บ</h3>
+                  <div className="divide-y rounded-xl border">
+                    {locationRows.length === 0 ? <p className="p-6 text-center text-sm text-gray-400">ยังไม่มีการระบุตำแหน่ง</p> : locationRows.map((row) => (
+                      <div key={row.location_id} className="flex items-center justify-between p-3">
+                        <div><b>{row.code}</b>{row.name ? <span className="ml-2 text-sm text-gray-500">{row.name}</span> : null}<div className="text-xs text-gray-400">{row.location_type === 'picking' ? 'จุดหยิบหลัก' : row.location_type === 'reserve' ? 'เก็บสำรอง' : row.location_type === 'hold' ? 'พัก/รอตรวจ' : 'ยังไม่จัดสรร'}</div></div>
+                        <b>{row.qty.toLocaleString()} {locationProduct.unit_name?.trim() || 'ชิ้น'}</b>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mb-2 mt-6 flex items-center justify-between">
+                    <h3 className="font-semibold text-gray-900">ประวัติล่าสุด</h3>
+                    <span className="text-xs text-gray-400">สูงสุด 5 ครั้ง</span>
+                  </div>
+                  <div className="divide-y rounded-xl border">
+                    {locationHistory.length === 0 ? <p className="p-6 text-center text-sm text-gray-400">ยังไม่มีประวัติการย้ายตำแหน่ง</p> : locationHistory.map((row) => (
+                      <div key={row.id} className="p-3">
+                        <div className="flex items-center justify-between gap-3"><b className="text-sm">{row.from_code} → {row.to_code}</b><b className="text-sm text-blue-700">{row.qty.toLocaleString()} {locationProduct.unit_name?.trim() || 'ชิ้น'}</b></div>
+                        <div className="mt-1 flex justify-between gap-3 text-xs text-gray-500"><span>{new Intl.DateTimeFormat('th-TH', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(row.posted_at || row.created_at))}</span><span>{row.created_by_name}</span></div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="flex gap-2 border-t p-4">
+              <button type="button" onClick={() => navigate(`/warehouse/transfers?create=1&product=${locationProduct.id}`)} className="flex-1 rounded-xl bg-blue-600 px-4 py-2.5 font-semibold text-white hover:bg-blue-700">ย้ายตำแหน่ง</button>
+              <button type="button" onClick={() => navigate(`/warehouse/transfers?product=${locationProduct.id}`)} className="flex-1 rounded-xl border border-blue-300 px-4 py-2.5 font-semibold text-blue-700 hover:bg-blue-50">ดูประวัติทั้งหมด</button>
+            </div>
+          </aside>
+        </div>
+      )}
 
       <Modal
         open={specialTrackedDetail !== null}

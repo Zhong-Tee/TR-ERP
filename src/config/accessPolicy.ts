@@ -64,6 +64,7 @@ export const DESKTOP_MENU_PATH_ORDER: { key: string; path: string; roles: UserRo
 ]
 
 const PATH_MENU_PREFIX_MAP: Array<{ prefix: string; key: string }> = [
+  { prefix: '/warehouse/transfers', key: 'warehouse-stock' },
   { prefix: '/warehouse/sub', key: 'warehouse-sub' },
   { prefix: '/warehouse/audit', key: 'warehouse-audit' },
   { prefix: '/warehouse/adjust', key: 'warehouse-adjust' },

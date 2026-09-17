@@ -387,12 +387,14 @@ export interface InventoryPO {
   total_amount?: number | null
   grand_total?: number | null
   expected_arrival_date?: string | null
+  tracking_number?: string | null
   note?: string | null
   created_at: string
   updated_at: string
   /** joined */
   inv_po_items?: InventoryPOItem[]
   inv_pr?: { pr_no: string; note?: string | null } | null
+  pr_sellers?: { seller_type?: string | null } | null
 }
 
 export interface InventoryPOItem {
@@ -433,6 +435,7 @@ export interface InventoryGR {
   inv_gr_items?: InventoryGRItem[]
   inv_po?: {
     po_no: string
+    tracking_number?: string | null
     note?: string | null
     status?: string | null
     expected_arrival_date?: string | null

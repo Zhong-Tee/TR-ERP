@@ -724,7 +724,8 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
             <div className="flex items-center justify-between gap-4">
               <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
                 {activeSubTabs.map((tab) => {
-                  const isActive = location.pathname === tab.path
+                  const isActive = location.pathname === tab.path ||
+                    (tab.path === '/warehouse' && location.pathname.startsWith('/warehouse/transfers'))
                   const badge = tab.path === '/warehouse' && belowOrderPointCount > 0
                     ? belowOrderPointCount
                     : tab.path === '/warehouse/returns' && warehousePendingReturnCount > 0

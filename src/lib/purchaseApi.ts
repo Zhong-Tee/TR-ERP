@@ -512,6 +512,19 @@ export async function updatePOExpectedArrivalDate(input: {
   if (error) throw error
 }
 
+export async function updatePOTrackingNumber(input: {
+  poId: string
+  trackingNumber?: string | null
+  userId?: string
+}) {
+  const { error } = await supabase.rpc('rpc_update_po_tracking_number', {
+    p_po_id: input.poId,
+    p_tracking_number: input.trackingNumber?.trim() || null,
+    p_user_id: input.userId || null,
+  })
+  if (error) throw error
+}
+
 /* ──────────────── GR (Goods Receipt) ──────────────── */
 
 export interface GRListFilters {
@@ -525,8 +538,8 @@ export async function loadGRList(filters: GRListFilters = {}, includeCost = fals
   let q = supabase
     .from('inv_gr')
     .select(includeCost
-      ? '*, inv_po(po_no, status, expected_arrival_date, intl_shipping_cost_thb, inv_pr(pr_type), inv_po_items(resolution_type, qty_received_total)), inv_gr_items(id, qty_ordered, qty_received)'
-      : 'id, gr_no, po_id, status, received_by, received_at, dom_shipping_company, note, shortage_note, created_at, updated_at, inv_po(po_no, status, expected_arrival_date, inv_pr(pr_type), inv_po_items(resolution_type, qty_received_total)), inv_gr_items(id, qty_ordered, qty_received)')
+      ? '*, inv_po(po_no, tracking_number, status, expected_arrival_date, intl_shipping_cost_thb, inv_pr(pr_type), inv_po_items(resolution_type, qty_received_total)), inv_gr_items(id, qty_ordered, qty_received)'
+      : 'id, gr_no, po_id, status, received_by, received_at, dom_shipping_company, note, shortage_note, created_at, updated_at, inv_po(po_no, tracking_number, status, expected_arrival_date, inv_pr(pr_type), inv_po_items(resolution_type, qty_received_total)), inv_gr_items(id, qty_ordered, qty_received)')
     .order('created_at', { ascending: false })
 
   if (filters.status && filters.status !== 'all') {
@@ -554,6 +567,7 @@ export async function loadGRDetail(grId: string, includeCost = false) {
       *,
       inv_po(
         po_no,
+        tracking_number,
         note,
         expected_arrival_date,
         intl_shipping_cost_thb,
@@ -567,7 +581,7 @@ export async function loadGRDetail(grId: string, includeCost = false) {
       )
     ` : `
       id, gr_no, po_id, status, received_by, received_at, dom_shipping_company, note, shortage_note, created_at, updated_at,
-      inv_po(po_no, note, expected_arrival_date, inv_pr(pr_no, note), inv_po_items(product_id, qty, qty_received_total)),
+      inv_po(po_no, tracking_number, note, expected_arrival_date, inv_pr(pr_no, note), inv_po_items(product_id, qty, qty_received_total)),
       inv_gr_items(id, gr_id, product_id, qty_ordered, qty_received, shortage_note, created_at,
         pr_products(id, product_code, product_name, product_name_cn, seller_name, unit_name), inv_gr_item_images(*))
     `)
@@ -880,7 +894,7 @@ export async function loadApprovedPRsWithoutPO(): Promise<InventoryPR[]> {
 export async function loadPOsForGR(): Promise<{ newPOs: InventoryPO[]; partialPOs: InventoryPO[] }> {
   const { data: allOrdered, error: poErr } = await supabase
     .from('inv_po')
-    .select('*, inv_pr(pr_no, note, supplier_name), inv_po_items(id, product_id, qty, qty_received_total, unit, unit_price, note, pr_products(product_code, product_name, unit_name))')
+    .select('*, inv_pr(pr_no, note, supplier_name), pr_sellers(seller_type), inv_po_items(id, product_id, qty, qty_received_total, unit, unit_price, note, pr_products(product_code, product_name, unit_name))')
     .in('status', ['ordered', 'partial'])
     .order('created_at', { ascending: false })
   if (poErr) throw poErr

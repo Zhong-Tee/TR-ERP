@@ -11,6 +11,7 @@ import {
   receiveGR,
   loadUserDisplayNames,
   updatePOExpectedArrivalDate,
+  updatePOTrackingNumber,
 } from '../lib/purchaseApi'
 import { getPublicUrl } from '../lib/qcApi'
 import { supabase } from '../lib/supabase'
@@ -116,6 +117,10 @@ function getEtaMeta(value?: string | null) {
   return { label: `อีก ${daysDiff} วัน`, color: 'bg-red-100 text-red-700', sortValue: daysDiff }
 }
 
+function getPOSellerType(po: InventoryPO): 'thailand' | 'foreign' {
+  return po.pr_sellers?.seller_type === 'thailand' ? 'thailand' : 'foreign'
+}
+
 function getStoragePublicUrl(bucket: string | undefined, path: string | undefined) {
   if (!path) return ''
   const { data } = supabase.storage.from(bucket || GR_ITEM_IMAGES_BUCKET).getPublicUrl(path)
@@ -149,6 +154,8 @@ export default function PurchaseGR() {
   const [domCompany, setDomCompany] = useState('')
   const [domCost, setDomCost] = useState('')
   const [grNote, setGrNote] = useState('')
+  const [trackingNumber, setTrackingNumber] = useState('')
+  const [trackingSaving, setTrackingSaving] = useState(false)
   const [shortageNote, setShortageNote] = useState('')
   const [saving, setSaving] = useState(false)
   const [shippingExpanded, setShippingExpanded] = useState(false)
@@ -270,6 +277,7 @@ export default function PurchaseGR() {
     setDomCompany('')
     setDomCost('')
     setGrNote('')
+    setTrackingNumber(po.tracking_number || '')
     setShortageNote('')
     setShippingExpanded(false)
 
@@ -373,6 +381,25 @@ export default function PurchaseGR() {
       showMessage({ title: 'เกิดข้อผิดพลาด', message: 'แก้ไขกำหนดเข้าไม่สำเร็จ: ' + (e?.message || e) })
     } finally {
       setEtaSaving(false)
+    }
+  }
+
+  async function saveTrackingNumber() {
+    if (!selectedPO) return
+    setTrackingSaving(true)
+    try {
+      await updatePOTrackingNumber({
+        poId: selectedPO.id,
+        trackingNumber,
+        userId: user?.id,
+      })
+      clearReceiveDraft()
+      await loadAll(true)
+      showMessage({ title: 'บันทึกสำเร็จ', message: 'บันทึกเลขพัสดุแล้ว โดยยังไม่ได้รับสินค้าเข้าคลัง' })
+    } catch (e: any) {
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'บันทึกเลขพัสดุไม่สำเร็จ: ' + (e?.message || e) })
+    } finally {
+      setTrackingSaving(false)
     }
   }
 
@@ -682,16 +709,31 @@ export default function PurchaseGR() {
           <div className="md:hidden space-y-2">
             {sortedNewPOs.map((po) => {
               const eta = getEtaMeta(po.expected_arrival_date)
+              const isThailand = getPOSellerType(po) === 'thailand'
               return (
                 <div
                   key={po.id}
                   className={`rounded-xl border p-3 text-sm ${
-                    embedDark ? 'border-sky-700/35 bg-slate-900/80' : 'border-blue-200 bg-white'
+                    embedDark
+                      ? isThailand ? 'border-sky-700/50 bg-sky-950/30' : 'border-orange-700/50 bg-orange-950/25'
+                      : isThailand ? 'border-sky-300 bg-sky-50' : 'border-orange-300 bg-orange-50'
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className={`font-semibold ${embedDark ? 'text-white' : 'text-gray-900'}`}>{po.po_no}</div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className={`font-semibold ${embedDark ? 'text-white' : 'text-gray-900'}`}>{po.po_no}</span>
+                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                          isThailand ? 'bg-sky-200 text-sky-800' : 'bg-orange-200 text-orange-800'
+                        }`}>
+                          {isThailand ? 'ไทย' : 'ตปท.'}
+                        </span>
+                      </div>
+                      {po.tracking_number && (
+                        <div className={`mt-1 w-fit rounded-md px-2 py-0.5 text-xs font-semibold ${embedDark ? 'bg-violet-950/70 text-violet-300' : 'bg-violet-100 text-violet-700'}`}>
+                          เลขพัสดุ: {po.tracking_number}
+                        </div>
+                      )}
                       <div className="mt-1 flex flex-wrap items-center gap-1.5">
                         <span className="inline-block px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">
                           {formatDateThai(po.expected_arrival_date)}
@@ -703,13 +745,18 @@ export default function PurchaseGR() {
                     </div>
                     <button
                       onClick={() => openEtaEdit(po)}
-                      className={`px-2.5 py-1.5 rounded-md border text-xs font-semibold whitespace-nowrap ${
+                      aria-label="แก้ไขกำหนดเข้า"
+                      title="แก้ไขกำหนดเข้า"
+                      className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border ${
                         embedDark
                           ? 'border-sky-600/50 bg-slate-800 text-sky-300'
                           : 'border-blue-300 bg-blue-50 text-blue-700'
                       }`}
                     >
-                      แก้ไขวันที่
+                      <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 3.487a2.25 2.25 0 1 1 3.182 3.182L8.71 18.003 4.5 19.125l1.122-4.21L16.862 3.487Z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 4.5l3.182 3.182" />
+                      </svg>
                     </button>
                   </div>
                   <button
@@ -723,19 +770,20 @@ export default function PurchaseGR() {
             })}
           </div>
 
-          <div className="hidden md:flex md:flex-wrap gap-2">
+          <div className="hidden md:grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2">
             {sortedNewPOs.map((po) => {
               const eta = getEtaMeta(po.expected_arrival_date)
+              const isThailand = getPOSellerType(po) === 'thailand'
               return (
                 <div
                   key={po.id}
-                  className={`w-full md:w-auto px-3 py-2 border rounded-lg text-sm ${
+                  className={`relative w-full min-h-[104px] px-3 pt-2 pb-10 border rounded-lg text-sm ${
                     embedDark
-                      ? 'border-sky-700/40 bg-slate-900/70 text-sky-200'
-                      : 'border-blue-200 bg-white text-blue-700'
+                      ? isThailand ? 'border-sky-700/50 bg-sky-950/30 text-sky-200' : 'border-orange-700/50 bg-orange-950/25 text-orange-200'
+                      : isThailand ? 'border-sky-300 bg-sky-50 text-sky-800' : 'border-orange-300 bg-orange-50 text-orange-800'
                   }`}
                 >
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex h-full items-start justify-between gap-3">
                     <button
                       onClick={() => openReceive(po, false)}
                       className={`text-left font-medium transition-colors ${
@@ -744,25 +792,40 @@ export default function PurchaseGR() {
                     >
                       <div className="flex items-center gap-2">
                         <span className="text-base">{po.po_no}</span>
-                        <span className={`inline-block px-2 py-0.5 rounded-full text-sm font-semibold ${eta.color}`}>
-                          {eta.label}
+                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                          isThailand ? 'bg-sky-200 text-sky-800' : 'bg-orange-200 text-orange-800'
+                        }`}>
+                          {isThailand ? 'ไทย' : 'ตปท.'}
                         </span>
                       </div>
                       <div className={`text-sm mt-1 font-medium ${embedDark ? 'text-gray-400' : 'text-gray-600'}`}>
                         กำหนดเข้า: {formatDateThai(po.expected_arrival_date)}
                       </div>
+                      {po.tracking_number && (
+                        <div className={`text-sm mt-1 w-fit rounded-md px-2 py-0.5 font-semibold ${embedDark ? 'bg-violet-950/70 text-violet-300' : 'bg-violet-100 text-violet-700'}`}>
+                          เลขพัสดุ: {po.tracking_number}
+                        </div>
+                      )}
                     </button>
                     <button
                       onClick={() => openEtaEdit(po)}
-                      className={`px-2.5 py-1.5 rounded-md border text-xs font-semibold transition-colors whitespace-nowrap ${
+                      aria-label="แก้ไขกำหนดเข้า"
+                      title="แก้ไขกำหนดเข้า"
+                      className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border transition-colors ${
                         embedDark
                           ? 'border-sky-600/50 bg-slate-800 text-sky-300 hover:bg-slate-700'
                           : 'border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100'
                       }`}
                     >
-                      แก้ไขกำหนดเข้า
+                      <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 3.487a2.25 2.25 0 1 1 3.182 3.182L8.71 18.003 4.5 19.125l1.122-4.21L16.862 3.487Z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 4.5l3.182 3.182" />
+                      </svg>
                     </button>
                   </div>
+                  <span className={`absolute bottom-2 right-3 inline-block px-2 py-0.5 rounded-full text-sm font-semibold ${eta.color}`}>
+                    {eta.label}
+                  </span>
                 </div>
               )
             })}
@@ -791,16 +854,31 @@ export default function PurchaseGR() {
               const totalRecv = items.reduce((s: number, i: any) => s + (Number(i.qty_received_total) || 0), 0)
               const outstanding = totalQty - totalRecv
               const eta = getEtaMeta(po.expected_arrival_date)
+              const isThailand = getPOSellerType(po) === 'thailand'
               return (
                 <div
                   key={po.id}
                   className={`border rounded-xl p-3 space-y-2.5 ${
-                    embedDark ? 'border-amber-700/35 bg-slate-900/80' : 'border-amber-200 bg-white'
+                    embedDark
+                      ? isThailand ? 'border-sky-700/50 bg-sky-950/30' : 'border-orange-700/50 bg-orange-950/25'
+                      : isThailand ? 'border-sky-300 bg-sky-50' : 'border-orange-300 bg-orange-50'
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className={`font-semibold ${embedDark ? 'text-white' : 'text-gray-900'}`}>{po.po_no}</div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className={`font-semibold ${embedDark ? 'text-white' : 'text-gray-900'}`}>{po.po_no}</span>
+                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                          isThailand ? 'bg-sky-200 text-sky-800' : 'bg-orange-200 text-orange-800'
+                        }`}>
+                          {isThailand ? 'ไทย' : 'ตปท.'}
+                        </span>
+                      </div>
+                      {po.tracking_number && (
+                        <div className={`text-xs mt-1 w-fit rounded-md px-2 py-0.5 font-semibold ${embedDark ? 'bg-violet-950/70 text-violet-300' : 'bg-violet-100 text-violet-700'}`}>
+                          เลขพัสดุ: {po.tracking_number}
+                        </div>
+                      )}
                       <div className={`text-xs mt-1 ${embedDark ? 'text-gray-400' : 'text-gray-500'}`}>
                         รับแล้ว {totalRecv.toLocaleString()}/{totalQty.toLocaleString()}
                       </div>
@@ -835,15 +913,28 @@ export default function PurchaseGR() {
               const totalRecv = items.reduce((s: number, i: any) => s + (Number(i.qty_received_total) || 0), 0)
               const outstanding = totalQty - totalRecv
               const eta = getEtaMeta(po.expected_arrival_date)
+              const isThailand = getPOSellerType(po) === 'thailand'
               return (
                 <div
                   key={po.id}
                   className={`flex flex-col md:flex-row md:items-center md:justify-between gap-2 border rounded-lg px-3 md:px-4 py-2.5 ${
-                    embedDark ? 'border-amber-700/35 bg-slate-900/75' : 'border-amber-200 bg-white'
+                    embedDark
+                      ? isThailand ? 'border-sky-700/50 bg-sky-950/30' : 'border-orange-700/50 bg-orange-950/25'
+                      : isThailand ? 'border-sky-300 bg-sky-50' : 'border-orange-300 bg-orange-50'
                   }`}
                 >
                   <div className="flex flex-wrap items-center gap-2 md:gap-3">
                     <span className={`font-medium text-sm ${embedDark ? 'text-white' : 'text-gray-900'}`}>{po.po_no}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                      isThailand ? 'bg-sky-200 text-sky-800' : 'bg-orange-200 text-orange-800'
+                    }`}>
+                      {isThailand ? 'ไทย' : 'ตปท.'}
+                    </span>
+                    {po.tracking_number && (
+                      <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${embedDark ? 'bg-violet-950/70 text-violet-300' : 'bg-violet-100 text-violet-700'}`}>
+                        เลขพัสดุ: {po.tracking_number}
+                      </span>
+                    )}
                     <span className={`text-xs ${embedDark ? 'text-gray-400' : 'text-gray-500'}`}>
                       รับแล้ว {totalRecv.toLocaleString()}/{totalQty.toLocaleString()}
                     </span>
@@ -1081,6 +1172,9 @@ export default function PurchaseGR() {
                     <div>
                       PO: <span className="font-medium">{gr.inv_po?.po_no || '-'}</span>
                     </div>
+                    <div>
+                      เลขพัสดุ: <span className="font-semibold text-violet-700">{gr.inv_po?.tracking_number || '-'}</span>
+                    </div>
                     <div>วันที่รับ: {gr.received_at ? new Date(gr.received_at).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}</div>
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span
@@ -1133,6 +1227,7 @@ export default function PurchaseGR() {
                 <tr className="bg-gray-50 border-b">
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">เลขที่ GR</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">PO</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">เลขพัสดุ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">กำหนดเข้า</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">สถานะ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">วันที่รับ</th>
@@ -1171,6 +1266,7 @@ export default function PurchaseGR() {
                     <tr key={gr.id} className={rowBg}>
                       <td className="px-4 py-3 font-medium text-gray-900">{gr.gr_no}</td>
                       <td className="px-4 py-3 text-gray-600">{gr.inv_po?.po_no || '-'}</td>
+                      <td className="px-4 py-3 text-violet-700 font-semibold">{gr.inv_po?.tracking_number || '-'}</td>
                       <td className="px-4 py-3 text-gray-600">
                         <div className="flex flex-col gap-1">
                           <span>{formatDateThai(gr.inv_po?.expected_arrival_date)}</span>
@@ -1232,11 +1328,33 @@ export default function PurchaseGR() {
           {selectedPO && (
             <>
               <div className={`rounded-lg p-3 text-sm ${isFollowUp ? 'bg-red-50' : 'bg-orange-50'}`}>
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <span className={`font-semibold ${isFollowUp ? 'text-red-800' : 'text-orange-800'}`}>PO: {selectedPO.po_no}</span>
-                  {selectedPO.supplier_name && <span className="text-gray-600">ผู้ขาย: {selectedPO.supplier_name}</span>}
-                  <span className="text-gray-600">กำหนดเข้า: {formatDateThai(selectedPO.expected_arrival_date)}</span>
-                  {isFollowUp && <span className="text-red-600 font-medium">รับรอบถัดไป (แสดงเฉพาะยอดค้างรับ)</span>}
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span className={`font-semibold ${isFollowUp ? 'text-red-800' : 'text-orange-800'}`}>PO: {selectedPO.po_no}</span>
+                    {selectedPO.supplier_name && <span className="text-gray-600">ผู้ขาย: {selectedPO.supplier_name}</span>}
+                    <span className="text-gray-600">กำหนดเข้า: {formatDateThai(selectedPO.expected_arrival_date)}</span>
+                    {isFollowUp && <span className="text-red-600 font-medium">รับรอบถัดไป (แสดงเฉพาะยอดค้างรับ)</span>}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <label htmlFor="po-tracking-number" className="font-medium text-gray-700 whitespace-nowrap">เลขพัสดุ</label>
+                    <input
+                      id="po-tracking-number"
+                      type="text"
+                      value={trackingNumber}
+                      onChange={(e) => setTrackingNumber(e.target.value)}
+                      maxLength={100}
+                      placeholder="กรอกเลขพัสดุ"
+                      className="min-w-0 flex-1 md:w-80 md:flex-none px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-orange-400 focus:border-orange-400"
+                    />
+                    <button
+                      type="button"
+                      onClick={saveTrackingNumber}
+                      disabled={saving || trackingSaving}
+                      className="px-4 py-2 border border-blue-600 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-semibold whitespace-nowrap"
+                    >
+                      {trackingSaving ? 'กำลังบันทึก...' : 'บันทึก'}
+                    </button>
+                  </div>
                 </div>
               </div>
               {(selectedPO.note || (selectedPO as any).inv_pr?.note) && (
@@ -1708,7 +1826,7 @@ export default function PurchaseGR() {
           </div>
 
           <div className="flex justify-end gap-3 pt-2 border-t border-gray-200">
-            <button type="button" onClick={handleReceive} disabled={saving} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-semibold">
+            <button type="button" onClick={handleReceive} disabled={saving || trackingSaving} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-semibold">
               {saving ? 'กำลังบันทึก...' : hasExcess ? 'รับเกิน' : hasShortage ? 'รับบางส่วน' : 'รับเข้าคลัง'}
             </button>
           </div>
@@ -1735,6 +1853,9 @@ export default function PurchaseGR() {
                       PO: <span className="font-semibold text-gray-800">{(viewing as any).inv_po.po_no}</span>
                     </div>
                   )}
+                  <div className="text-sm text-gray-500">
+                    เลขพัสดุ: <span className="font-semibold text-violet-700">{viewing.inv_po?.tracking_number || '-'}</span>
+                  </div>
                 </div>
                 <span className={`inline-flex items-center justify-center text-center leading-tight px-3 py-1 rounded-full text-xs font-semibold shrink-0 min-w-[64px] ${(STATUS_MAP[viewing.status] || { color: 'bg-gray-100 text-gray-700' }).color}`}>
                   {(STATUS_MAP[viewing.status] || { label: viewing.status }).label}
