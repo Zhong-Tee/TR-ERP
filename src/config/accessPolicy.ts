@@ -357,16 +357,6 @@ export function isOperationalIssueRole(role: MaybeRole): boolean {
   return isRoleInAllowedList(role, ['production', 'qc_staff', 'packing_staff'])
 }
 
-export function canOperationalRoleSeeIssue(
-  viewerId: string | null | undefined,
-  issueCreatedBy: string | null | undefined,
-  issueCreatorRole: MaybeRole,
-): boolean {
-  return !!viewerId && (
-    issueCreatedBy === viewerId || isRoleInAllowedList(issueCreatorRole, ['sales-tr', 'sales-pump'])
-  )
-}
-
 export function canClearAllChats(role: MaybeRole): boolean {
   return isAdminOrSuperadmin(role)
 }

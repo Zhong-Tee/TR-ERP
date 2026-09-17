@@ -9,7 +9,7 @@ import Modal from '../ui/Modal'
 import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import OrderDetailView from './OrderDetailView'
 import { FiMessageCircle, FiInfo, FiCheckCircle } from 'react-icons/fi'
-import { canOperationalRoleSeeIssue, getIssueVisibilityScope, isSalesTrTeamRole, isSuperadmin } from '../../config/accessPolicy'
+import { getIssueVisibilityScope, isSalesTrTeamRole, isSuperadmin } from '../../config/accessPolicy'
 import { fetchSalesTrTeamAdminValues } from '../../lib/salesTrTeam'
 import { getChatEnterToSendPref, setChatEnterToSendPref } from '../../lib/chatEnterToSendPrefs'
 import { STOP_PRODUCTION_ISSUE_SLUG } from '../../lib/issueTypeSlugs'
@@ -42,7 +42,6 @@ type IssueWithOrder = Issue & {
   order?: Pick<Order, 'id' | 'bill_no' | 'customer_name' | 'channel_code' | 'work_order_name' | 'admin_user'>
   type?: IssueType | null
   creatorName?: string
-  creatorRole?: string
 }
 
 type UnreadOrderChatRow = {
@@ -304,28 +303,32 @@ export default function IssueBoard({
         orderMap = new Map((orders || []).map((o: any) => [o.id, o as Order]))
       }
       const creatorIds = Array.from(new Set(list.map((i) => i.created_by))).filter(Boolean)
-      let creatorMap = new Map<string, { name: string; role: string }>()
+      let creatorMap = new Map<string, string>()
       if (creatorIds.length > 0) {
         const { data: creators, error: creatorsError } = await supabase.rpc('get_issue_creator_profiles', {
           p_user_ids: creatorIds,
         })
-        if (creatorsError) throw creatorsError
-        creatorMap = new Map((creators || []).map((u: { id: string; username?: string; role?: string }) => [
-          u.id,
-          { name: u.username || u.id, role: u.role || '' },
-        ]))
+        if (creatorsError) {
+          // Creator data is display-only. RLS on or_issues remains the source of truth
+          // for visibility, so a profile lookup failure must not hide valid tickets.
+          console.error('IssueBoard creator profiles:', creatorsError)
+        } else {
+          creatorMap = new Map((creators || []).map((u: { id: string; username?: string }) => [
+            u.id,
+            u.username || u.id,
+          ]))
+        }
       }
       const typeMap = new Map(types.map((t) => [t.id, t]))
       let withOrder: IssueWithOrder[] = list.map((i) => ({
         ...i,
         order: orderMap.get(i.order_id),
         type: i.type_id ? typeMap.get(i.type_id) || null : null,
-        creatorName: creatorMap.get(i.created_by)?.name,
-        creatorRole: creatorMap.get(i.created_by)?.role,
+        creatorName: creatorMap.get(i.created_by),
       }))
       // sales-tr: issue ของบิลที่ผู้ลงข้อมูลเป็นสมาชิก sales-tr ทั้งทีม
       // sales-pump: เฉพาะบิลตัวเอง
-      // production / qc_staff / packing_staff: issue ที่ตัวเองเปิด + issue ที่ฝ่ายขายเปิด
+      // production / qc_staff / packing_staff: RLS คืนเฉพาะ issue ที่มีสิทธิ์เห็นอยู่แล้ว
       // superadmin / admin: ทั้งหมด
       const visibilityScope = getIssueVisibilityScope(user?.role)
       const ownerName = user?.username || user?.email || ''
@@ -337,8 +340,6 @@ export default function IssueBoard({
         }
       } else if (visibilityScope === 'ownerOrders') {
         withOrder = withOrder.filter((i) => (i.order?.admin_user || '') === ownerName)
-      } else if (visibilityScope === 'operational') {
-        withOrder = withOrder.filter((i) => canOperationalRoleSeeIssue(user?.id, i.created_by, i.creatorRole))
       } else if (visibilityScope === 'none') {
         withOrder = []
       }

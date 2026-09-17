@@ -1347,6 +1347,7 @@ export default function WorkOrderManageList({
           parsedAddress: addressClean,
           parsedPostalCode: postalCode,
           parsedPhones,
+          preferParsedAddress: (order.bill_no || '').toUpperCase().startsWith('REQ') || Boolean(order.claim_type),
         })
 
         // 5. COD

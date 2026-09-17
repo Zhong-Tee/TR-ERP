@@ -13,13 +13,22 @@ import Modal from '../ui/Modal'
 import { sortOrderItemsForBillDisplay } from '../../lib/orderItemExportSort'
 import { STOP_PRODUCTION_ISSUE_SLUG } from '../../lib/issueTypeSlugs'
 import { identifyCondoStampItems, isCondoStampItem } from '../../lib/condoStamp'
+import { claimTypeLabel, fetchClaimTypeLabelMap } from '../../lib/claimTypeLabels'
 
 /** Helper: แสดงเฉพาะฟิลด์ที่มีค่า */
-function InfoRow({ label, value }: { label: string; value?: string | number | null }) {
+function InfoRow({
+  label,
+  value,
+  labelClassName = 'w-28',
+}: {
+  label: string
+  value?: string | number | null
+  labelClassName?: string
+}) {
   if (value === null || value === undefined || value === '') return null
   return (
     <div className="flex gap-2 py-1.5">
-      <dt className="text-gray-500 text-sm shrink-0 w-28">{label}</dt>
+      <dt className={`text-gray-500 text-sm shrink-0 ${labelClassName}`}>{label}</dt>
       <dd className="text-sm text-gray-900 font-medium select-all break-all">{value}</dd>
     </div>
   )
@@ -80,6 +89,7 @@ export default function OrderDetailView({
     phone: '',
   })
   const [workflowActors, setWorkflowActors] = useState<{ qc: string[]; packing: string[] }>({ qc: [], packing: [] })
+  const [claimTypeLabels, setClaimTypeLabels] = useState<Record<string, string>>({})
 
   /* ── Edit attachment link ── */
   const [editLinkItem, setEditLinkItem] = useState<{ itemId: string; displayIndex: number; productName: string; value: string; name: string } | null>(null)
@@ -155,6 +165,7 @@ export default function OrderDetailView({
     initialOrder.fulfillment_method === undefined
 
   const order = (isPartial && fullOrder) ? fullOrder : initialOrder
+  const isClaimOrder = order.bill_no?.toUpperCase().startsWith('REQ') || Boolean(order.claim_type || order.claim_details)
 
   const inlineItems = ((order as any).or_order_items || []) as OrderItem[]
   const billing = (billingOverride || order.billing_details || null) as TaxRequestBillingDetails | null
@@ -162,7 +173,8 @@ export default function OrderDetailView({
     (typeof billing?.mobile_phone === 'string' && billing.mobile_phone.trim()) ||
     (billing && typeof (billing as { mobilePhone?: unknown }).mobilePhone === 'string'
       ? String((billing as { mobilePhone?: string }).mobilePhone).trim()
-      : '')
+      : '') ||
+    (typeof billing?.tax_customer_phone === 'string' && billing.tax_customer_phone.trim())
 
   // Parse ที่อยู่เพื่อดึงเบอร์จากข้อความเมื่อยังไม่มี mobile_phone ใน billing (เช่น billing มีแต่จังหวัดจากบิลอ้างอิง)
   const [parsedAddr, setParsedAddr] = useState<ParsedAddress | null>(null)
@@ -205,6 +217,10 @@ export default function OrderDetailView({
     setTaxRequestOpen(false)
     setTaxRequestError('')
   }, [initialOrder.id])
+
+  useEffect(() => {
+    void fetchClaimTypeLabelMap().then(setClaimTypeLabels)
+  }, [])
 
   // Lazy-load full order เมื่อได้ข้อมูลไม่ครบ
   useEffect(() => {
@@ -594,7 +610,7 @@ export default function OrderDetailView({
             <InfoRow label="สถานะ" value={order.status} />
             <InfoRow label="ชื่อลูกค้า" value={order.customer_name} />
             <InfoRow label="ชื่อผู้รับ" value={displayRecipientName} />
-            <InfoRow label="เบอร์โทร" value={displayPhone || addressParts.phone} />
+            {!isClaimOrder && <InfoRow label="เบอร์โทร" value={displayPhone || addressParts.phone} />}
             <InfoRow label="เลขคำสั่งซื้อ" value={order.channel_order_no} />
             <InfoRow label="เลขพัสดุ" value={order.tracking_number} />
             <InfoRow label="เลขรับพัสดุด่วน" value={order.express_receipt_number} />
@@ -629,6 +645,31 @@ export default function OrderDetailView({
             <InfoRow label="วันที่สร้าง" value={order.created_at ? formatDateTime(order.created_at) : null} />
           </dl>
         </section>
+
+        {isClaimOrder && (
+          <section>
+            <h4 className="text-sm font-bold text-gray-800 border-b border-gray-200 pb-1.5 mb-2">ข้อมูลการเคลม</h4>
+            <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
+              <InfoRow
+                label="ประเภทการเคลม"
+                value={claimTypeLabel(claimTypeLabels, order.claim_type)}
+                labelClassName="w-40 whitespace-nowrap"
+              />
+              <InfoRow
+                label="เบอร์โทรตอนเคลม"
+                value={displayPhone || addressParts.phone || '–'}
+                labelClassName="w-40 whitespace-nowrap"
+              />
+              <div className="md:col-span-2">
+                <InfoRow
+                  label="คำอธิบายการเคลม"
+                  value={order.claim_details || '–'}
+                  labelClassName="w-40 whitespace-nowrap"
+                />
+              </div>
+            </dl>
+          </section>
+        )}
 
         {/* ── ยอดเงิน ── */}
         <section>

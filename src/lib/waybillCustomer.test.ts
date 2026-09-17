@@ -32,4 +32,48 @@ describe('resolveWaybillCustomer', () => {
       phone2: '',
     })
   })
+
+  it('keeps the phone from a legacy claim billing snapshot when exporting a waybill', () => {
+    const result = resolveWaybillCustomer({
+      customerAddress: '99/9 ต.ในเมือง อ.เมือง ขอนแก่น 40000',
+      recipientName: 'ลูกค้าเคลม',
+      customerName: 'ลูกค้าเดิม',
+      billingDetails: {
+        address_line: '99/9',
+        sub_district: 'ในเมือง',
+        district: 'เมืองขอนแก่น',
+        province: 'ขอนแก่น',
+        postal_code: '40000',
+        mobilePhone: '0812345678',
+      },
+      parsedAddress: '99/9 ต.ในเมือง อ.เมือง ขอนแก่น',
+      parsedPostalCode: '40000',
+      parsedPhones: [],
+    })
+
+    expect(result.phone1).toBe('0812345678')
+  })
+
+  it('uses the newly confirmed claim address instead of inherited structured address fields', () => {
+    const result = resolveWaybillCustomer({
+      customerAddress: '88/8 ต.ใหม่ อ.เมือง เชียงใหม่ 50000',
+      recipientName: 'ผู้รับเคลม',
+      customerName: 'ลูกค้าเดิม',
+      billingDetails: {
+        address_line: '11/1 ที่อยู่บิลต้นฉบับ',
+        district: 'เมืองขอนแก่น',
+        province: 'ขอนแก่น',
+        postal_code: '40000',
+        mobile_phone: '0891234567',
+      },
+      parsedAddress: '88/8 ต.ใหม่ อ.เมือง เชียงใหม่',
+      parsedPostalCode: '50000',
+      parsedPhones: [],
+      preferParsedAddress: true,
+    })
+
+    expect(result.address).toBe('88/8 ต.ใหม่ อ.เมือง เชียงใหม่')
+    expect(result.postalCode).toBe('50000')
+    expect(result.phone1).toBe('0891234567')
+  })
 })

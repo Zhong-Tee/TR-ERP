@@ -5,6 +5,8 @@ export type WaybillBillingDetails = {
   province?: string | null
   postal_code?: string | null
   mobile_phone?: string | null
+  /** Legacy claim/order snapshots used camelCase before shipping was normalized. */
+  mobilePhone?: string | null
 }
 
 type WaybillCustomerInput = {
@@ -15,6 +17,8 @@ type WaybillCustomerInput = {
   parsedAddress: string
   parsedPostalCode: string
   parsedPhones: string[]
+  /** Claim shipments must use the newly confirmed address, not inherited structured fields. */
+  preferParsedAddress?: boolean
 }
 
 /**
@@ -25,7 +29,9 @@ export function resolveWaybillCustomer(input: WaybillCustomerInput) {
   const billing = input.billingDetails
   const structuredAddress = [billing?.address_line, billing?.sub_district, billing?.district, billing?.province]
     .filter(Boolean).join(' ').trim()
-  const billingPhone = String(billing?.mobile_phone || '').trim()
+  const billingPhone = String(
+    billing?.mobile_phone || billing?.mobilePhone || '',
+  ).trim()
   const phones: string[] = []
   for (const phone of [billingPhone, ...input.parsedPhones]) {
     if (phone && !phones.includes(phone)) phones.push(phone)
@@ -34,8 +40,12 @@ export function resolveWaybillCustomer(input: WaybillCustomerInput) {
   return {
     addressRaw: String(input.customerAddress || '').trim(),
     consigneeName: String(input.recipientName || '').trim() || String(input.customerName || '').trim(),
-    address: structuredAddress || input.parsedAddress,
-    postalCode: String(billing?.postal_code || '').trim() || input.parsedPostalCode,
+    address: input.preferParsedAddress
+      ? input.parsedAddress || structuredAddress
+      : structuredAddress || input.parsedAddress,
+    postalCode: input.preferParsedAddress
+      ? input.parsedPostalCode || String(billing?.postal_code || '').trim()
+      : String(billing?.postal_code || '').trim() || input.parsedPostalCode,
     phone1: phones[0] || '',
     phone2: phones[1] || '',
   }
