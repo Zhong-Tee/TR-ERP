@@ -32,12 +32,14 @@ import { isSelfPickupBill, isSelfPickupChannel } from '../../lib/channelBehavior
 import { getMissingCustomerShippingFields } from '../../lib/orderCustomerValidation'
 import {
   evaluatePromotions,
+  promotionApplicationLimit,
   promotionMatchesChannel,
   totalPromotionDiscount,
   type PromotionDefinition,
   type PromotionEvaluation,
   type PromotionOrderItem,
 } from '../../lib/promotionRules'
+import { calculateShippingCharge, findShippingAreaRule, SHIPPING_AREA_TYPE_LABELS, type ShippingAreaRule } from '../../lib/shippingAreaRules'
 
 // Component for uploading slips without immediate verification
 function SlipUploadSimple({
@@ -709,14 +711,16 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const [productStockMap, setProductStockMap] = useState<Record<string, ProductStockSnapshot>>({})
   const [productChannelPriceMap, setProductChannelPriceMap] = useState<Record<string, number>>({})
   const [cartoonPatterns, setCartoonPatterns] = useState<CartoonPattern[]>([])
-  const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
+  const [channels, setChannels] = useState<{ channel_code: string; channel_name: string; default_carrier?: string | null }[]>([])
   /** metadata ช่องทางจาก migration 280 (โหลดแยกแบบ fail-safe — ถ้า migration ยังไม่รันจะว่าง แล้ว fallback พฤติกรรมเดิม) */
   const [channelMeta, setChannelMeta] = useState<Record<string, { is_active: boolean; receive_transfer: boolean; is_self_pickup: boolean; roles: string[] }>>({})
   const [channelOrderNoPrefixMap, setChannelOrderNoPrefixMap] = useState<Record<string, string[]>>({})
   const [promotions, setPromotions] = useState<PromotionDefinition[]>([])
   const [selectedPromotionIds, setSelectedPromotionIds] = useState<string[]>([])
-  const [shippingFeeSettings, setShippingFeeSettings] = useState({ auto_calculate_enabled: false, charge_promotion_orders: true })
+  const [promotionApplicationCounts, setPromotionApplicationCounts] = useState<Record<string, number>>({})
+  const [shippingFeeSettings, setShippingFeeSettings] = useState({ auto_calculate_enabled: false, charge_promotion_orders: true, special_area_enabled: false })
   const [shippingFeeRanges, setShippingFeeRanges] = useState<Array<{ min_amount: number; max_amount: number | null; shipping_fee: number }>>([])
+  const [shippingAreaRules, setShippingAreaRules] = useState<ShippingAreaRule[]>([])
   const [inkTypes, setInkTypes] = useState<{ id: number; ink_name: string }[]>([])
   const [fonts, setFonts] = useState<{ font_code: string; font_name: string }[]>([])
   const [items, setItems] = useState<Partial<OrderItem>[]>([])
@@ -1070,6 +1074,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     async function loadOrderData() {
       if (order) {
         setSelectedPromotionIds([])
+        setPromotionApplicationCounts({})
         const bd = order.billing_details as { address_line?: string; sub_district?: string; district?: string; province?: string; postal_code?: string; mobile_phone?: string } | undefined
         const hasAddressParts = bd?.address_line != null || bd?.sub_district != null || bd?.province != null || bd?.postal_code != null
         const customerAddress = order.customer_address || (hasAddressParts
@@ -1113,10 +1118,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         })
         const { data: linkedPromotions, error: linkedPromotionsError } = await supabase
           .from('or_order_promotions')
-          .select('promotion_id')
+          .select('promotion_id, application_count')
           .eq('order_id', order.id)
         if (!linkedPromotionsError && linkedPromotions) {
-          setSelectedPromotionIds(linkedPromotions.map((row: { promotion_id: string }) => row.promotion_id))
+          setSelectedPromotionIds(linkedPromotions.map((row: { promotion_id: string; application_count: number }) => row.promotion_id))
+          setPromotionApplicationCounts(Object.fromEntries(linkedPromotions.map((row: { promotion_id: string; application_count: number }) => [row.promotion_id, Math.max(1, Math.floor(Number(row.application_count) || 1))])))
         }
         {
           const oc = ((order as Order).channel_code ?? '').trim()
@@ -1176,6 +1182,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         }
       } else {
         setSelectedPromotionIds([])
+        setPromotionApplicationCounts({})
         setItems([{ product_type: 'ชั้น1', quantity: 1 }])
         setUploadedSlipPaths([])
         setRequiresConfirmDesign(false)
@@ -1189,7 +1196,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     if (!order?.promotion || selectedPromotionIds.length > 0 || promotions.length === 0) return
     const names = String(order.promotion).split(',').map((name) => name.trim()).filter(Boolean)
     const matched = promotions.filter((promotion) => names.includes(promotion.name)).map((promotion) => promotion.id)
-    if (matched.length) setSelectedPromotionIds(matched)
+    if (matched.length) {
+      setSelectedPromotionIds(matched)
+      setPromotionApplicationCounts(Object.fromEntries(matched.map((id) => [id, 1])))
+    }
   }, [order?.promotion, promotions, selectedPromotionIds.length])
 
   // โหลด review (error_fields + rejection_reason) เมื่อออเดอร์สถานะ "ลงข้อมูลผิด"
@@ -1547,7 +1557,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       const [productsRes, patternsRes, channelsRes, inkTypesRes, fontsRes, categorySettingsRes, promotionsRes, productOverridesRes, stockBalancesRes, orderNoPrefixesRes] = await Promise.all([
         fetchAllSupabasePagesResult((from, to) => supabase.from('pr_products').select('*').eq('is_active', true).in('product_type', ['FG', 'PP']).order('id').range(from, to)),
         fetchAllSupabasePagesResult((from, to) => supabase.from('cp_cartoon_patterns').select('*').eq('is_active', true).order('id').range(from, to)),
-        supabase.from('channels').select('channel_code, channel_name'),
+        supabase.from('channels').select('channel_code, channel_name, default_carrier'),
         supabase.from('ink_types').select('id, ink_name').order('ink_name'),
         supabase.from('fonts').select('font_code, font_name').eq('is_active', true).order('font_code', { ascending: true }),
         supabase.from('pr_category_field_settings').select('*'),
@@ -1696,25 +1706,30 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
   async function loadShippingFeeRules() {
     try {
-      const [settingsResult, rangesResult] = await Promise.all([
-        supabase.from('or_shipping_fee_settings').select('auto_calculate_enabled, charge_promotion_orders').eq('id', 1).maybeSingle(),
+      const [settingsResult, rangesResult, areaRulesResult] = await Promise.all([
+        supabase.from('or_shipping_fee_settings').select('auto_calculate_enabled, charge_promotion_orders, special_area_enabled').eq('id', 1).maybeSingle(),
         supabase.from('or_shipping_fee_ranges').select('min_amount, max_amount, shipping_fee').order('sort_order').order('min_amount'),
+        supabase.from('or_shipping_area_rules').select('*').eq('is_active', true),
       ])
       if (settingsResult.error) throw settingsResult.error
       if (rangesResult.error) throw rangesResult.error
+      if (areaRulesResult.error) throw areaRulesResult.error
       if (settingsResult.data) setShippingFeeSettings({
         auto_calculate_enabled: settingsResult.data.auto_calculate_enabled === true,
         charge_promotion_orders: settingsResult.data.charge_promotion_orders !== false,
+        special_area_enabled: settingsResult.data.special_area_enabled === true,
       })
       setShippingFeeRanges((rangesResult.data || []).map((row) => ({
         min_amount: Number(row.min_amount || 0),
         max_amount: row.max_amount == null ? null : Number(row.max_amount),
         shipping_fee: Number(row.shipping_fee || 0),
       })))
+      setShippingAreaRules((areaRulesResult.data || []).map((row) => ({ ...row, surcharge: Number(row.surcharge || 0) })) as ShippingAreaRule[])
     } catch (error) {
       console.warn('[OrderForm] shipping fee rules unavailable (migration 528 not applied?):', error)
-      setShippingFeeSettings({ auto_calculate_enabled: false, charge_promotion_orders: true })
+      setShippingFeeSettings({ auto_calculate_enabled: false, charge_promotion_orders: true, special_area_enabled: false })
       setShippingFeeRanges([])
+      setShippingAreaRules([])
     }
   }
 
@@ -1784,7 +1799,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       })
   }
 
-  function getPromotionEvaluations(sourceItems: typeof items, selectedIds = selectedPromotionIds) {
+  function getPromotionEvaluations(
+    sourceItems: typeof items,
+    selectedIds = selectedPromotionIds,
+    applicationCounts = promotionApplicationCounts,
+  ) {
     const selected = selectedIds.map((id) => promotions.find((promotion) => promotion.id === id)).filter(Boolean) as PromotionDefinition[]
     const subtotal = CHANNELS_MANUAL_PRICE.includes(formData.channel_code || '')
       ? Number(formData.price || 0)
@@ -1794,13 +1813,20 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       // วันธุรกิจประเทศไทย (UTC+7) เพื่อไม่ให้ช่วง 00:00–06:59 ถูกนับเป็นวันก่อนหน้า
       order_date: new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10),
       order_subtotal: subtotal,
+      application_counts: applicationCounts,
     })
   }
 
-  function updateSelectedPromotions(nextIds: string[]) {
+  function updateSelectedPromotions(nextIds: string[], requestedCounts = promotionApplicationCounts) {
+    const nextCounts = Object.fromEntries(nextIds.map((id) => {
+      const promotion = promotions.find((item) => item.id === id)
+      const limit = promotion ? promotionApplicationLimit(promotion) : 1
+      return [id, Math.min(limit, Math.max(1, Math.floor(Number(requestedCounts[id]) || 1)))]
+    }))
     setSelectedPromotionIds(nextIds)
+    setPromotionApplicationCounts(nextCounts)
     const selected = nextIds.map((id) => promotions.find((promotion) => promotion.id === id)).filter(Boolean) as PromotionDefinition[]
-    const results = getPromotionEvaluations(items, nextIds)
+    const results = getPromotionEvaluations(items, nextIds, nextCounts)
     const hasRuleBasedPromotion = selected.some((promotion) => promotion.rule_type !== 'legacy')
     const automaticDiscount = totalPromotionDiscount(results)
     setDiscountType('baht')
@@ -1826,33 +1852,55 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   function renderPromotionChoice(promotion: PromotionDefinition, showStar = false) {
     const checked = selectedPromotionIds.includes(promotion.id)
     const result = livePromotionResults.find((item) => item.promotion_id === promotion.id)
+    const applicationLimit = promotionApplicationLimit(promotion)
     return (
-      <label key={promotion.id} className={`flex items-start gap-2 rounded-md px-2 py-1.5 text-sm ${formDisabled ? '' : 'cursor-pointer hover:bg-blue-50'}`}>
-        <input
-          type="checkbox"
-          checked={checked}
-          disabled={formDisabled}
-          onChange={(event) => updateSelectedPromotions(event.target.checked
-            ? [...selectedPromotionIds, promotion.id]
-            : selectedPromotionIds.filter((id) => id !== promotion.id))}
-          className="mt-0.5 h-4 w-4 rounded border-gray-300 accent-blue-600"
-        />
-        <span className="min-w-0 flex-1">
-          <span className="font-medium">{showStar && <span className="mr-1 text-amber-500">★</span>}{promotion.name}</span>
-          {checked && result?.checked && (
-            <span className={`ml-2 text-xs font-semibold ${result.passed ? 'text-emerald-600' : 'text-red-600'}`}>
-              {result.passed ? 'ผ่าน' : 'ไม่ผ่าน'}
-            </span>
-          )}
-        </span>
-      </label>
+      <div key={promotion.id} className={`flex items-start gap-2 rounded-md px-2 py-1.5 text-sm ${formDisabled ? '' : 'hover:bg-blue-50'}`}>
+        <label className={`flex min-w-0 flex-1 items-start gap-2 ${formDisabled ? '' : 'cursor-pointer'}`}>
+          <input
+            type="checkbox"
+            checked={checked}
+            disabled={formDisabled}
+            onChange={(event) => updateSelectedPromotions(event.target.checked
+              ? [...selectedPromotionIds, promotion.id]
+              : selectedPromotionIds.filter((id) => id !== promotion.id))}
+            className="mt-0.5 h-4 w-4 rounded border-gray-300 accent-blue-600"
+          />
+          <span className="min-w-0 flex-1">
+            <span className="font-medium">{showStar && <span className="mr-1 text-amber-500">★</span>}{promotion.name}</span>
+            {checked && result?.checked && (
+              <span className={`ml-2 text-xs font-semibold ${result.passed ? 'text-emerald-600' : 'text-red-600'}`}>
+                {result.passed ? 'ผ่าน' : 'ไม่ผ่าน'}
+              </span>
+            )}
+          </span>
+        </label>
+        {applicationLimit > 1 && (
+          <input
+            type="number"
+            inputMode="numeric"
+            min="1"
+            max={applicationLimit}
+            step="1"
+            value={promotionApplicationCounts[promotion.id] || 1}
+            disabled={formDisabled || !checked}
+            onWheel={(event) => event.currentTarget.blur()}
+            onChange={(event) => updateSelectedPromotions(selectedPromotionIds, {
+              ...promotionApplicationCounts,
+              [promotion.id]: Math.min(applicationLimit, Math.max(1, Math.floor(Number(event.target.value) || 1))),
+            })}
+            aria-label={`จำนวน ${promotion.name} ต่อบิล`}
+            title={`ระบุจำนวนที่ใช้ (สูงสุด ${applicationLimit})`}
+            className="w-14 shrink-0 appearance-none rounded-md border px-2 py-1 text-center text-xs tabular-nums [appearance:textfield] disabled:bg-gray-100 disabled:text-gray-400 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+          />
+        )}
+      </div>
     )
   }
 
   const livePromotionResults = useMemo(
     () => getPromotionEvaluations(items),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [items, products, promotions, selectedPromotionIds, formData.channel_code, formData.price],
+    [items, products, promotions, selectedPromotionIds, promotionApplicationCounts, formData.channel_code, formData.price],
   )
   const promotionDiscountLocked = selectedPromotionIds.some((id) => {
     const promotion = promotions.find((item) => item.id === id)
@@ -1867,7 +1915,30 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const hasFreeShippingPromotion = selectedPromotionDefinitions.some((promotion) =>
     promotion.free_shipping === true && livePromotionResults.some((result) => result.promotion_id === promotion.id && result.passed),
   )
-  const automaticShippingActive = hasFreeShippingPromotion || shippingFeeSettings.auto_calculate_enabled
+  const orderBusinessDate = new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const orderCarrier = channels.find((channel) => channel.channel_code.trim().toUpperCase() === String(formData.channel_code || '').trim().toUpperCase())?.default_carrier || ''
+  const matchedShippingAreaRule = useMemo(() => findShippingAreaRule(shippingAreaRules, {
+    carrier: orderCarrier,
+    channel_code: formData.channel_code,
+    postal_code: formData.postal_code,
+    province: formData.province,
+    district: formData.district,
+    sub_district: formData.sub_district,
+    order_date: orderBusinessDate,
+  }), [shippingAreaRules, orderCarrier, formData.channel_code, formData.postal_code, formData.province, formData.district, formData.sub_district, orderBusinessDate])
+  const orderSubtotalForShipping = CHANNELS_MANUAL_PRICE.includes(formData.channel_code || '')
+    ? Number(formData.price || 0)
+    : calculateChargeableItemsTotal(items, isCondoSubRow)
+  const matchedShippingRange = shippingFeeRanges.find((range) =>
+    orderSubtotalForShipping >= range.min_amount && (range.max_amount == null || orderSubtotalForShipping <= range.max_amount),
+  )
+  const standardShippingFee = matchedShippingRange ? matchedShippingRange.shipping_fee : 0
+  const specialAreaSurcharge = shippingFeeSettings.special_area_enabled && matchedShippingAreaRule
+    ? Number(matchedShippingAreaRule.surcharge || 0)
+    : 0
+  const baseShippingWaived = hasFreeShippingPromotion || (selectedPromotionIds.length > 0 && !shippingFeeSettings.charge_promotion_orders)
+  const shippingCharge = calculateShippingCharge(standardShippingFee, specialAreaSurcharge, baseShippingWaived)
+  const automaticShippingActive = hasFreeShippingPromotion || shippingFeeSettings.auto_calculate_enabled || shippingFeeSettings.special_area_enabled
   const promotionsForSelection = useMemo(
     () => promotions
       .filter((promotion) => {
@@ -1892,24 +1963,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
   useEffect(() => {
     let nextShipping: number | null = null
-    if (hasFreeShippingPromotion) {
-      nextShipping = 0
-    } else if (shippingFeeSettings.auto_calculate_enabled) {
-      if (selectedPromotionIds.length > 0 && !shippingFeeSettings.charge_promotion_orders) {
-        nextShipping = 0
-      } else {
-        const orderSubtotal = CHANNELS_MANUAL_PRICE.includes(formData.channel_code || '')
-          ? Number(formData.price || 0)
-          : calculateChargeableItemsTotal(items, isCondoSubRow)
-        const matchedRange = shippingFeeRanges.find((range) =>
-          orderSubtotal >= range.min_amount && (range.max_amount == null || orderSubtotal <= range.max_amount),
-        )
-        nextShipping = matchedRange ? matchedRange.shipping_fee : 0
-      }
+    if (hasFreeShippingPromotion || shippingFeeSettings.auto_calculate_enabled || shippingFeeSettings.special_area_enabled) {
+      nextShipping = shippingFeeSettings.auto_calculate_enabled || baseShippingWaived
+        ? shippingCharge.total_shipping_fee
+        : shippingCharge.special_area_surcharge
     }
     if (nextShipping == null) return
     setFormData((current) => current.shipping_cost === nextShipping ? current : { ...current, shipping_cost: nextShipping })
-  }, [hasFreeShippingPromotion, shippingFeeSettings, shippingFeeRanges, selectedPromotionIds.length, items, formData.channel_code, formData.price])
+  }, [hasFreeShippingPromotion, shippingFeeSettings.auto_calculate_enabled, shippingFeeSettings.special_area_enabled, baseShippingWaived, shippingCharge.total_shipping_fee, shippingCharge.special_area_surcharge])
 
   const isManualPriceChannel = CHANNELS_MANUAL_PRICE.includes(formData.channel_code || '')
 
@@ -2556,6 +2617,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             promotion_name_snapshot: promotion.name,
             promotion_version: Number(promotion.version || 1),
             rule_snapshot: promotion,
+            application_count: promotionApplicationCounts[promotion.id] || 1,
             selected_by: currentUserName,
           })),
         )
@@ -6371,7 +6433,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   formData.shipping_cost === 0 ? 'text-gray-400' : ''
                 }`}
               />
-              {automaticShippingActive && <p className="mt-1 text-xs text-sky-600">{hasFreeShippingPromotion ? 'ฟรีค่าส่งจากโปรโมชั่นที่เลือก' : selectedPromotionIds.length > 0 && !shippingFeeSettings.charge_promotion_orders ? 'ตั้งค่าไม่คิดค่าส่งเมื่อบิลมีโปรโมชั่น' : 'คำนวณอัตโนมัติตามช่วงยอดซื้อ'}</p>}
+              {automaticShippingActive && <div className="mt-1 space-y-0.5 text-xs">
+                {(shippingFeeSettings.auto_calculate_enabled || baseShippingWaived) && <p className="text-sky-600">ค่าส่งตามยอดซื้อ {standardShippingFee.toLocaleString('th-TH')} บาท{baseShippingWaived ? ' · ส่งฟรี เหลือ 0 บาท' : ''}</p>}
+                {matchedShippingAreaRule && shippingFeeSettings.special_area_enabled && <p className="font-medium text-violet-700">ค่าขนส่ง{SHIPPING_AREA_TYPE_LABELS[matchedShippingAreaRule.area_type]} +{specialAreaSurcharge.toLocaleString('th-TH')} บาท</p>}
+              </div>}
             </div>
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -6465,7 +6530,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         const result = livePromotionResults.find((item) => item.promotion_id === promotion.id)
                         return (
                           <span key={promotion.id} className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold ${result?.checked && !result.passed ? 'border-red-200 bg-red-50 text-red-700' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>
-                            {promotion.name}
+                            {promotion.name}{promotionApplicationLimit(promotion) > 1 && ` ×${promotionApplicationCounts[promotion.id] || 1}`}
                             {!formDisabled && (
                               <button
                                 type="button"

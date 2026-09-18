@@ -85,6 +85,43 @@ describe('promotion rules', () => {
     expect(passed.expected_discount).toBe(120)
   })
 
+  it('ตรวจโปรโมชั่นหลายครั้งตามจำนวนที่ระบุในบิล', () => {
+    const promo: PromotionDefinition = {
+      ...base,
+      rule_type: 'quantity_fixed',
+      rule_config: {
+        max_applications: 3,
+        discount_value: 120,
+        condition_groups: [{ id: 'แก้ว 2 ใบ', quantity: 2, options: [{ selector_type: 'category', category: 'แก้ว' }] }],
+      },
+    }
+    const failed = evaluatePromotion(promo, [{ ...items[0], quantity: 3 }], {
+      channel_code: 'FBTR',
+      application_counts: { [promo.id]: 2 },
+    })
+    const passed = evaluatePromotion(promo, [{ ...items[0], quantity: 4 }], {
+      channel_code: 'FBTR',
+      application_counts: { [promo.id]: 2 },
+    })
+    expect(failed.passed).toBe(false)
+    expect(passed.passed).toBe(true)
+    expect(passed.application_count).toBe(2)
+    expect(passed.expected_discount).toBe(240)
+  })
+
+  it('ไม่ยอมให้จำนวนที่ตรวจเกินจำนวนโปรโมชั่นต่อบิล', () => {
+    const promo: PromotionDefinition = {
+      ...base,
+      rule_config: { ...base.rule_config, max_applications: 2 },
+    }
+    const result = evaluatePromotion(promo, [{ ...items[0], quantity: 10 }], {
+      channel_code: 'FBTR',
+      application_counts: { [promo.id]: 3 },
+    })
+    expect(result.passed).toBe(false)
+    expect(result.messages.join(' ')).toContain('สูงสุด 2 ครั้งต่อบิล')
+  })
+
   it('ซื้อครบ X บาท ส่วนลด 0 ผ่านได้เมื่อสิทธิ์คือฟรีค่าส่ง', () => {
     const promo: PromotionDefinition = {
       ...base,

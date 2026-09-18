@@ -127,14 +127,29 @@ export async function getAddressByZip(
   if (!zip || zip.length !== 5) return empty
 
   if (supabaseClient) {
-    const { data: rows, error } = await supabaseClient
+    type Row = { name_th?: string; thai_districts?: { name_th?: string | null; thai_provinces?: { name_th?: string } | null } | { name_th?: string | null }[] | null }
+    const canonicalResult = await supabaseClient
       .from('thai_sub_districts')
       .select('name_th, district_id, thai_districts(name_th, province_id, thai_provinces(name_th))')
       .eq('zip_code', zip)
       .limit(50)
+    let rows = (canonicalResult.data || []) as unknown as Row[]
 
-    if (!error && rows && rows.length > 0) {
-      type Row = { name_th?: string; thai_districts?: { name_th?: string | null; thai_provinces?: { name_th?: string } | null } | { name_th?: string | null }[] | null }
+    if (!canonicalResult.error) {
+      type AliasRow = { thai_sub_districts?: Row | Row[] | null }
+      const aliasResult = await supabaseClient
+        .from('thai_sub_district_postal_aliases')
+        .select('thai_sub_districts(name_th, thai_districts(name_th, province_id, thai_provinces(name_th)))')
+        .eq('zip_code', zip)
+        .limit(50)
+      if (!aliasResult.error) {
+        const aliasRows = ((aliasResult.data || []) as unknown as AliasRow[])
+          .flatMap((item) => Array.isArray(item.thai_sub_districts) ? item.thai_sub_districts : item.thai_sub_districts ? [item.thai_sub_districts] : [])
+        rows = [...rows, ...aliasRows]
+      }
+    }
+
+    if (!canonicalResult.error && rows.length > 0) {
       const getDistrict = (r: Row): string => {
         const td = r.thai_districts
         if (!td) return ''
@@ -316,7 +331,7 @@ export function splitAddressParts(raw: string | null | undefined, fallbackRecipi
   const phone = candidates[0] ? e164ToLocal(candidates[0]) : ''
 
   // ตัดคำนำหน้าเบอร์โทร (tel / โทร / เบอร์) ที่หลงเหลือหลังจากตัดตัวเลขออก
-  let body = rest
+  const body = rest
     .replace(/\b(tel|โทร\.?|เบอร์(?:โทร)?\.?)\b[:\s]*/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -330,7 +345,7 @@ export function splitAddressParts(raw: string | null | undefined, fallbackRecipi
     if (address.startsWith(prefixedRecipient)) {
       address = address
         .slice(prefixedRecipient.length)
-        .replace(/^[\s,;:|/\-]+/, '')
+        .replace(/^[\s,;:|/-]+/, '')
         .trim()
     }
     return { recipientName: fallback, phone, address }

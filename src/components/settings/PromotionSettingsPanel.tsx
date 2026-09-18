@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import Modal from '../ui/Modal'
+import ShippingAreaRulesPanel from './ShippingAreaRulesPanel'
 import {
   PROMOTION_RULE_LABELS,
   type PromotionDefinition,
@@ -11,12 +12,13 @@ import {
 } from '../../lib/promotionRules'
 
 type ProductOption = { id: string; product_code: string; product_name: string; product_category: string | null }
-type ChannelOption = { channel_code: string; channel_name: string }
+type ChannelOption = { channel_code: string; channel_name: string; default_carrier?: string | null }
 type PromotionRow = PromotionDefinition & { sort_order?: number | null }
 type ShippingFeeSettings = {
   id: number
   auto_calculate_enabled: boolean
   charge_promotion_orders: boolean
+  special_area_enabled: boolean
 }
 type ShippingFeeRange = {
   id?: string
@@ -35,7 +37,7 @@ const emptyPromotion = (): PromotionRow => ({
   start_date: null,
   end_date: null,
   channel_codes: [],
-  rule_config: {},
+  rule_config: { max_applications: 1 },
   allow_stack: true,
   is_featured: false,
   free_shipping: false,
@@ -237,6 +239,7 @@ export default function PromotionSettingsPanel() {
     id: 1,
     auto_calculate_enabled: false,
     charge_promotion_orders: true,
+    special_area_enabled: false,
   })
   const [shippingRanges, setShippingRanges] = useState<ShippingFeeRange[]>([])
   const [savingShipping, setSavingShipping] = useState(false)
@@ -249,7 +252,7 @@ export default function PromotionSettingsPanel() {
     try {
       const [promotionRes, channelRes, productRes, shippingSettingsRes, shippingRangesRes] = await Promise.all([
         supabase.from('promotion').select('*'),
-        supabase.from('channels').select('channel_code, channel_name').order('channel_name'),
+        supabase.from('channels').select('channel_code, channel_name, default_carrier').order('channel_name'),
         supabase.from('pr_products').select('id, product_code, product_name, product_category').eq('is_active', true).in('product_type', ['FG', 'PP']).order('product_name'),
         supabase.from('or_shipping_fee_settings').select('*').eq('id', 1).maybeSingle(),
         supabase.from('or_shipping_fee_ranges').select('*').order('sort_order').order('min_amount'),
@@ -316,6 +319,10 @@ export default function PromotionSettingsPanel() {
       setError('ส่วนลดเปอร์เซ็นต์ต้องไม่เกิน 100%')
       return
     }
+    if (!Number.isInteger(Number(config.max_applications)) || Number(config.max_applications) < 1) {
+      setError('จำนวนโปรโมชั่นต่อบิลต้องเป็นจำนวนเต็มตั้งแต่ 1 ขึ้นไป')
+      return
+    }
     setSaving(true)
     setError('')
     try {
@@ -327,7 +334,7 @@ export default function PromotionSettingsPanel() {
         start_date: editor.start_date || null,
         end_date: editor.end_date || null,
         channel_codes: editor.channel_codes || [],
-        rule_config: editor.rule_config || {},
+        rule_config: { ...(editor.rule_config || {}), max_applications: Math.max(1, Math.floor(Number(config.max_applications) || 1)) },
         allow_stack: editor.allow_stack !== false,
         is_featured: editor.is_featured === true,
         free_shipping: editor.free_shipping === true,
@@ -380,6 +387,7 @@ export default function PromotionSettingsPanel() {
         id: 1,
         auto_calculate_enabled: shippingSettings.auto_calculate_enabled,
         charge_promotion_orders: shippingSettings.charge_promotion_orders,
+        special_area_enabled: shippingSettings.special_area_enabled,
         updated_at: new Date().toISOString(),
       })
       if (settingsResult.error) throw settingsResult.error
@@ -439,9 +447,10 @@ export default function PromotionSettingsPanel() {
           </div>
           <button type="button" onClick={saveShippingSettings} disabled={savingShipping} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-700 disabled:opacity-50">{savingShipping ? 'กำลังบันทึก...' : 'บันทึกค่าขนส่ง'}</button>
         </div>
-        <div className="grid gap-3 md:grid-cols-2">
+        <div className="grid gap-3 md:grid-cols-3">
           <label className="flex items-center gap-3 rounded-xl border bg-white p-3"><input type="checkbox" checked={shippingSettings.auto_calculate_enabled} onChange={(event) => setShippingSettings({ ...shippingSettings, auto_calculate_enabled: event.target.checked })} className="h-5 w-5" /><span><b className="block text-sm">คำนวณค่าขนส่งอัตโนมัติ</b><small className="text-gray-500">เลือกค่าขนส่งจากช่วงยอดซื้อด้านล่าง</small></span></label>
           <label className="flex items-center gap-3 rounded-xl border bg-white p-3"><input type="checkbox" checked={shippingSettings.charge_promotion_orders} onChange={(event) => setShippingSettings({ ...shippingSettings, charge_promotion_orders: event.target.checked })} className="h-5 w-5" /><span><b className="block text-sm">นับรวมบิลที่มีโปรโมชั่น</b><small className="text-gray-500">หากปิด บิลที่เลือกโปรโมชั่นจะไม่คิดค่าขนส่ง</small></span></label>
+          <label className="flex items-center gap-3 rounded-xl border bg-white p-3"><input type="checkbox" checked={shippingSettings.special_area_enabled} onChange={(event) => setShippingSettings({ ...shippingSettings, special_area_enabled: event.target.checked })} className="h-5 w-5" /><span><b className="block text-sm">คำนวณค่าพื้นที่พิเศษ</b><small className="text-gray-500">บวกค่าพื้นที่ห่างไกล/ท่องเที่ยวพิเศษตามที่อยู่</small></span></label>
         </div>
         <div className="space-y-2">
           {shippingRanges.map((range, index) => <div key={range.id || index} className="grid gap-2 rounded-xl border bg-white p-3 sm:grid-cols-[1fr_1fr_1fr_auto] sm:items-end">
@@ -453,6 +462,7 @@ export default function PromotionSettingsPanel() {
           <button type="button" onClick={() => setShippingRanges((current) => [...current, { min_amount: 0, max_amount: null, shipping_fee: 0, sort_order: current.length + 1 }])} className="rounded-lg border border-dashed border-sky-400 px-4 py-2 text-sm font-semibold text-sky-700 hover:bg-sky-50">+ เพิ่มช่วงค่าขนส่ง</button>
         </div>
       </section>
+      <ShippingAreaRulesPanel channels={channels} />
       {loading ? <div className="py-10 text-center text-gray-400">กำลังโหลด...</div> : (
         <div className="overflow-x-auto rounded-xl border">
           <table className="w-full min-w-[850px] text-sm">
@@ -495,11 +505,12 @@ export default function PromotionSettingsPanel() {
             <label className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50/50 p-3"><input type="checkbox" checked={editor.free_shipping === true} onChange={(e) => setEditor({ ...editor, free_shipping: e.target.checked })} className="h-5 w-5 accent-emerald-600" /><b className="block text-sm text-emerald-900">ฟรีค่าส่ง</b></label>
           </div>
           <div><h4 className="mb-2 font-bold text-gray-800">ช่องทางที่ร่วมรายการ</h4><p className="mb-2 text-xs text-gray-500">ไม่เลือกช่องทาง = ใช้ได้ทุกช่องทาง</p><div className="grid gap-2 sm:grid-cols-2 md:grid-cols-4">{channels.map((channel) => <label key={channel.channel_code} className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm"><input type="checkbox" checked={(editor.channel_codes || []).includes(channel.channel_code)} onChange={(e) => setEditor({ ...editor, channel_codes: e.target.checked ? [...(editor.channel_codes || []), channel.channel_code] : (editor.channel_codes || []).filter((code) => code !== channel.channel_code) })} />{channel.channel_code} · {channel.channel_name}</label>)}</div></div>
-          {(needsThreshold || needsDiscount || editor.rule_type === 'bundle_fixed_price') && <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-3">
             {needsThreshold && <label className="text-sm font-semibold text-gray-700">ยอดซื้อขั้นต่ำ (บาท)<input type="number" min="0" value={config.threshold_amount ?? ''} onChange={(e) => updateConfig({ threshold_amount: Number(e.target.value) || 0 })} className="mt-1 w-full rounded-xl border px-3 py-2" /></label>}
             {needsDiscount && <label className="text-sm font-semibold text-gray-700">{editor.rule_type === 'spend_percent' ? 'ส่วนลด (%)' : 'ส่วนลด (บาท)'}<input type="number" min="0" max={editor.rule_type === 'spend_percent' ? 100 : undefined} value={config.discount_value ?? ''} onChange={(e) => updateConfig({ discount_value: Number(e.target.value) || 0 })} className="mt-1 w-full rounded-xl border px-3 py-2" /><span className="mt-1 block text-xs font-normal text-gray-500">ใส่ 0 ได้เมื่อเลือก “ฟรีค่าส่ง”</span></label>}
             {editor.rule_type === 'bundle_fixed_price' && <label className="text-sm font-semibold text-gray-700">ราคาเซ็ต (บาท)<input type="text" inputMode="decimal" value={formatAmount(config.set_price)} onChange={(e) => updateConfig({ set_price: parseAmount(e.target.value) })} placeholder="0" className="mt-1 w-full rounded-xl border px-3 py-2 text-right tabular-nums" /></label>}
-          </div>}
+            <label className="text-sm font-semibold text-gray-700">จำนวนโปรโมชั่นต่อบิล<input type="number" inputMode="numeric" min="1" step="1" value={config.max_applications ?? 1} onWheel={(event) => event.currentTarget.blur()} onChange={(e) => updateConfig({ max_applications: Math.max(1, Math.floor(Number(e.target.value) || 1)) })} className="mt-1 w-full appearance-none rounded-xl border px-3 py-2 text-right tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" /></label>
+          </div>
           {needsConditions && <RuleGroupsEditor title="สินค้าฝั่งซื้อ" groups={config.condition_groups || []} onChange={(condition_groups) => updateConfig({ condition_groups })} categories={categories} products={products} />}
           {needsRewards && <RuleGroupsEditor title="ของแถม" groups={config.reward_groups || []} onChange={(reward_groups) => updateConfig({ reward_groups })} categories={categories} products={products} />}
           {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}

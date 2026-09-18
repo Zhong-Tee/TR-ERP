@@ -63,6 +63,13 @@ export type PromotionEvaluation = {
   application_count: number
 }
 
+export type PromotionEvaluationContext = {
+  channel_code: string
+  order_date?: string
+  order_subtotal?: number
+  application_counts?: Record<string, number>
+}
+
 const money = (value: number) => Math.round((Number(value) || 0) * 100) / 100
 const positiveInt = (value: unknown, fallback = 1) => {
   const parsed = Math.floor(Number(value))
@@ -76,6 +83,15 @@ function optionMatches(item: PromotionOrderItem, option: PromotionSelector): boo
 
 function groupMatches(item: PromotionOrderItem, group: PromotionRuleGroup): boolean {
   return group.options.some((option) => optionMatches(item, option))
+}
+
+export function promotionApplicationLimit(promotion: PromotionDefinition): number {
+  return positiveInt(promotion.rule_config?.max_applications, 1)
+}
+
+function scaledGroups(groups: PromotionRuleGroup[], count: number): PromotionRuleGroup[] {
+  if (count <= 1) return groups
+  return groups.map((group) => ({ ...group, quantity: positiveInt(group.quantity) * count }))
 }
 
 /**
@@ -181,9 +197,11 @@ function eligibilityMessages(
 export function evaluatePromotion(
   promotion: PromotionDefinition,
   items: PromotionOrderItem[],
-  context: { channel_code: string; order_date?: string; order_subtotal?: number },
+  context: PromotionEvaluationContext,
 ): PromotionEvaluation {
   const config = promotion.rule_config || {}
+  const applicationLimit = promotionApplicationLimit(promotion)
+  const requestedApplications = positiveInt(context.application_counts?.[promotion.id], 1)
   const orderDate = context.order_date || new Date().toISOString().slice(0, 10)
   const paidItems = items.filter((item) => !item.is_free && Number(item.quantity || 0) > 0)
   const freeItems = items.filter((item) => !!item.is_free && Number(item.quantity || 0) > 0)
@@ -191,6 +209,9 @@ export function evaluatePromotion(
     context.order_subtotal ?? paidItems.reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0), 0),
   )
   const messages = eligibilityMessages(promotion, context.channel_code, orderDate)
+  if (requestedApplications > applicationLimit) {
+    messages.push(`โปรโมชั่นนี้ใช้ได้สูงสุด ${applicationLimit} ครั้งต่อบิล`)
+  }
   let expectedDiscount = 0
   let applicationCount = 0
 
@@ -202,14 +223,14 @@ export function evaluatePromotion(
       checked: false,
       messages,
       expected_discount: 0,
-      application_count: 0,
+      application_count: requestedApplications,
     }
   }
 
   if (messages.length === 0) {
-    const threshold = Math.max(0, Number(config.threshold_amount) || 0)
-    const conditionGroups = config.condition_groups || []
-    const rewardGroups = config.reward_groups || []
+    const threshold = Math.max(0, Number(config.threshold_amount) || 0) * requestedApplications
+    const conditionGroups = scaledGroups(config.condition_groups || [], requestedApplications)
+    const rewardGroups = scaledGroups(config.reward_groups || [], requestedApplications)
 
     if (promotion.rule_type === 'spend_percent' || promotion.rule_type === 'spend_fixed') {
       if (subtotal < threshold) {
@@ -217,8 +238,8 @@ export function evaluatePromotion(
       } else {
         const value = Math.max(0, Number(config.discount_value) || 0)
         if (value > 0 || promotion.free_shipping === true) {
-          applicationCount = 1
-          expectedDiscount = promotion.rule_type === 'spend_percent' ? subtotal * (value / 100) : value
+          applicationCount = requestedApplications
+          expectedDiscount = promotion.rule_type === 'spend_percent' ? subtotal * (value / 100) : value * requestedApplications
         } else {
           messages.push('ยังไม่ได้กำหนดส่วนลดหรือสิทธิ์ฟรีค่าส่ง')
         }
@@ -230,8 +251,8 @@ export function evaluatePromotion(
       else {
         const discountValue = Math.max(0, Number(config.discount_value) || 0)
         if (conditionGroups.length && (discountValue > 0 || promotion.free_shipping === true)) {
-          applicationCount = 1
-          expectedDiscount = discountValue
+          applicationCount = requestedApplications
+          expectedDiscount = discountValue * requestedApplications
         } else if (discountValue <= 0) {
           messages.push('ยังไม่ได้กำหนดส่วนลดหรือสิทธิ์ฟรีค่าส่ง')
         }
@@ -240,8 +261,8 @@ export function evaluatePromotion(
       const allocation = allocateGroups(paidItems, conditionGroups)
       if (!allocation.passed) messages.push(...allocation.missing)
       else {
-        applicationCount = 1
-        expectedDiscount = Math.max(0, allocation.subtotal - Math.max(0, Number(config.set_price) || 0))
+        applicationCount = requestedApplications
+        expectedDiscount = Math.max(0, allocation.subtotal - Math.max(0, Number(config.set_price) || 0) * requestedApplications)
       }
     } else {
       if (promotion.rule_type === 'spend_get' && subtotal < threshold) {
@@ -253,7 +274,7 @@ export function evaluatePromotion(
       }
       const rewardAllocation = allocateGroups(freeItems, rewardGroups)
       if (!rewardAllocation.passed) messages.push(...rewardAllocation.missing.map((m) => `ของแถม: ${m}`))
-      if (messages.length === 0) applicationCount = Math.min(1, positiveInt(config.max_applications))
+      if (messages.length === 0) applicationCount = requestedApplications
     }
   }
 
@@ -272,7 +293,7 @@ export function evaluatePromotion(
 export function evaluatePromotions(
   promotions: PromotionDefinition[],
   items: PromotionOrderItem[],
-  context: { channel_code: string; order_date?: string; order_subtotal?: number },
+  context: PromotionEvaluationContext,
 ): PromotionEvaluation[] {
   const evaluations = promotions.map((promotion) => evaluatePromotion(promotion, items, context))
   if (promotions.length > 1 && promotions.some((promotion) => promotion.allow_stack === false)) {
