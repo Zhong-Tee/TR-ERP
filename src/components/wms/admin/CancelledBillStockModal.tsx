@@ -78,6 +78,10 @@ export default function CancelledBillStockModal({
             p_user_id: user?.id,
           })
       if (actionError) throw actionError
+      const { error: reconcileError } = await supabase.rpc('reconcile_work_order_after_cancellation', {
+        p_work_order_id: workOrderId,
+      })
+      if (reconcileError) throw reconcileError
       await loadLines(selectedOrderId)
       onChanged?.()
       window.dispatchEvent(new Event('wms-data-changed'))
@@ -91,7 +95,7 @@ export default function CancelledBillStockModal({
   const pendingCount = lines.filter((line) => !line.stock_action).length
 
   return (
-    <Modal open={open} onClose={onClose} contentClassName="max-w-5xl max-h-[88vh] overflow-y-auto">
+    <Modal open={open} onClose={onClose} contentClassName="max-w-6xl max-h-[88vh] overflow-y-auto">
       <div className="p-6 space-y-4">
         <div className="border-b pb-4">
           <div>
@@ -125,7 +129,7 @@ export default function CancelledBillStockModal({
           <div className="rounded-lg border border-gray-200 py-10 text-center text-gray-500">ไม่พบรายการ WMS ของบิลนี้ หรือรายการไม่เคยถูกมอบหมายให้ Picker</div>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-gray-200">
-            <table className="w-full min-w-[850px] text-sm">
+            <table className="w-full min-w-[1000px] text-sm">
               <thead className="bg-gray-50 text-gray-700">
                 <tr>
                   <th className="px-3 py-3 text-left">รหัสสินค้า</th>
@@ -133,8 +137,9 @@ export default function CancelledBillStockModal({
                   <th className="px-3 py-3 text-left">จุดจัดเก็บ</th>
                   <th className="px-3 py-3 text-center">จำนวน</th>
                   <th className="px-3 py-3 text-left">Picker</th>
-                  <th className="px-3 py-3 text-center">ผลต่อสต๊อค</th>
-                  <th className="px-3 py-3 text-center">จัดการ</th>
+                  <th className="px-3 py-3 text-center">สถานะการยกเลิก</th>
+                  <th className="px-3 py-3 text-left">ผู้ดำเนินการ/เวลา</th>
+                  <th className="w-[210px] px-3 py-3 text-center">จัดการ</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -145,20 +150,31 @@ export default function CancelledBillStockModal({
                     <td className="px-3 py-3">{line.location || '-'}</td>
                     <td className="px-3 py-3 text-center font-semibold">{line.qty ?? '-'}</td>
                     <td className="px-3 py-3">{line.us_users?.username || '-'}</td>
-                    <td className="px-3 py-3 text-center">
-                      {line.stock_action === 'recalled' ? (
-                        <span className="rounded-full bg-green-100 px-2 py-1 text-xs font-semibold text-green-700">คืนสต๊อคแล้ว</span>
+                    <td className="w-[210px] px-3 py-3 text-center">
+                      {line.stock_action === 'recalled' && line.status === 'returned' ? (
+                        <span className="rounded-full bg-green-100 px-2 py-1 text-xs font-semibold text-green-700">คืนเข้าชั้นแล้ว</span>
+                      ) : line.stock_action === 'recalled' ? (
+                        <span className="rounded-full bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-700">คืนยอดแล้ว · รอเข้าชั้น</span>
                       ) : line.stock_action === 'waste' ? (
                         <span className="rounded-full bg-orange-100 px-2 py-1 text-xs font-semibold text-orange-700">ของเสีย/ไม่คืนสต๊อค</span>
                       ) : (
                         <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-700">รอตัดสินใจ</span>
                       )}
                     </td>
+                    <td className="px-3 py-3 text-xs text-gray-600">
+                      {line.stock_action_user?.username || line.shelf_return_user?.username || '-'}
+                      {line.stock_action_at && (
+                        <div className="mt-0.5 text-gray-400">{new Date(line.stock_action_at).toLocaleString('th-TH')}</div>
+                      )}
+                      {line.returned_to_shelf_at && (
+                        <div className="mt-0.5 text-green-600">เข้าชั้น {new Date(line.returned_to_shelf_at).toLocaleString('th-TH')}</div>
+                      )}
+                    </td>
                     <td className="px-3 py-3 text-center">
                       {!line.stock_action && canManageStock ? (
                         <div className="flex justify-center gap-2">
-                          <button type="button" disabled={actionLoading === line.id} onClick={() => void handleStockAction(line.id, 'recall')} className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-green-700 disabled:opacity-50">คืนสต๊อค</button>
-                          <button type="button" disabled={actionLoading === line.id} onClick={() => void handleStockAction(line.id, 'waste')} className="rounded-lg bg-orange-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-orange-700 disabled:opacity-50">ของเสีย</button>
+                          <button type="button" disabled={actionLoading === line.id} onClick={() => void handleStockAction(line.id, 'recall')} className="whitespace-nowrap rounded-lg bg-green-600 px-4 py-2 text-xs font-bold text-white hover:bg-green-700 disabled:opacity-50">คืนสต๊อค</button>
+                          <button type="button" disabled={actionLoading === line.id} onClick={() => void handleStockAction(line.id, 'waste')} className="whitespace-nowrap rounded-lg bg-orange-600 px-4 py-2 text-xs font-bold text-white hover:bg-orange-700 disabled:opacity-50">ของเสีย</button>
                         </div>
                       ) : !line.stock_action ? <span className="text-xs text-gray-400">รอผู้มีสิทธิ์</span> : <span className="text-xs text-gray-400">ดำเนินการแล้ว</span>}
                     </td>

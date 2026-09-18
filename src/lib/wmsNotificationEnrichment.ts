@@ -22,17 +22,23 @@ export async function enrichWmsNotificationsWithOrderDetails(
   if (!data.length) return []
 
   const oids = [...new Set(data.map((n: any) => n.order_id))]
-  const [{ data: oDetails }, { data: candidateOrders }] = await Promise.all([
+  const [{ data: oDetails }, { data: candidateOrders }, { data: workOrders }] = await Promise.all([
     supabase
       .from('wms_orders')
-      .select('id, order_id, source_order_id, product_code, product_name, location, status, stock_action')
+      .select('id, work_order_id, order_id, source_order_id, product_code, product_name, location, status, stock_action, stock_action_at, returned_to_shelf_at, stock_action_user:us_users!stock_action_by(username), shelf_return_user:us_users!returned_to_shelf_by(username)')
       .in('order_id', oids),
     supabase
       .from('or_orders')
       .select('id, bill_no, customer_name, work_order_name, created_at')
       .in('work_order_name', oids)
       .order('created_at', { ascending: false }),
+    supabase
+      .from('or_work_orders')
+      .select('id, work_order_name, cancellation_state')
+      .in('work_order_name', oids),
   ])
+
+  const workOrderByName = new Map((workOrders || []).map((row: any) => [String(row.work_order_name || ''), row]))
 
   const candidateOrderIds = (candidateOrders || []).map((row: any) => row.id).filter(Boolean)
   const { data: cancelledItemRows } = candidateOrderIds.length
@@ -94,27 +100,44 @@ export async function enrichWmsNotificationsWithOrderDetails(
 
   return normalizedRows.map((n: any) => {
     const rows = (oDetails || []).filter((o: any) => o.order_id === n.order_id)
-    const cancelledRows = rows.filter((o: any) => o.status === 'cancelled')
+    const cancelledRows = rows.filter((o: any) =>
+      o.status === 'cancelled' || o.stock_action === 'recalled' || o.stock_action === 'waste'
+    )
     const cancelledOrdersForRow = cancelledByWorkOrder[String(n.order_id || '')] || []
-    const primaryCancelledOrderId = cancelledOrdersForRow[0]?.id
-    const primaryOrderItemCount = primaryCancelledOrderId
-      ? orderItemCountMap.get(String(primaryCancelledOrderId)) || 0
-      : 0
-    const primaryCodeSet = primaryCancelledOrderId ? orderCodeSetMap.get(String(primaryCancelledOrderId)) : undefined
+    const cancelledOrderIdSet = new Set(cancelledOrdersForRow.map((order) => String(order.id)))
+    const cancelledCodeSet = new Set<string>()
+    let cancelledOrderItemCount = 0
+    cancelledOrderIdSet.forEach((orderId) => {
+      cancelledOrderItemCount += orderItemCountMap.get(orderId) || 0
+      orderCodeSetMap.get(orderId)?.forEach((code) => cancelledCodeSet.add(code))
+    })
     const filteredCancelledRows =
-      n.type === 'ยกเลิกบิล' && primaryCancelledOrderId
+      n.type === 'ยกเลิกบิล' && cancelledOrderIdSet.size > 0
         ? cancelledRows.filter((o: any) =>
             o.source_order_id
-              ? o.source_order_id === primaryCancelledOrderId
-              : primaryCodeSet?.has(String(o.product_code || '').trim().toUpperCase())
+              ? cancelledOrderIdSet.has(String(o.source_order_id))
+              : cancelledCodeSet.has(String(o.product_code || '').trim().toUpperCase())
           )
         : cancelledRows
     const pendingCancelled = filteredCancelledRows.filter((o: any) => o.stock_action == null).length
+    const awaitingShelf = filteredCancelledRows.filter((o: any) => o.stock_action === 'recalled' && o.status !== 'returned').length
+    const returnedToShelf = filteredCancelledRows.filter((o: any) => o.stock_action === 'recalled' && o.status === 'returned').length
+    const wasteCount = filteredCancelledRows.filter((o: any) => o.stock_action === 'waste').length
+    const uniqueNames = (values: unknown[]) => [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))]
+    const awaitingShelfActors = uniqueNames(filteredCancelledRows
+      .filter((o: any) => o.stock_action === 'recalled' && o.status !== 'returned')
+      .map((o: any) => o.stock_action_user?.username))
+    const returnedToShelfActors = uniqueNames(filteredCancelledRows
+      .filter((o: any) => o.stock_action === 'recalled' && o.status === 'returned')
+      .map((o: any) => o.shelf_return_user?.username || o.stock_action_user?.username))
+    const wasteActors = uniqueNames(filteredCancelledRows
+      .filter((o: any) => o.stock_action === 'waste')
+      .map((o: any) => o.stock_action_user?.username))
     const first = rows[0] || { product_name: '---', location: '---' }
     const productName =
       n.type === 'ยกเลิกบิล'
-        ? primaryOrderItemCount > 0
-          ? `รวม ${primaryOrderItemCount} รายการ`
+        ? cancelledOrderItemCount > 0
+          ? `รวม ${cancelledOrderItemCount} รายการ`
           : filteredCancelledRows.length > 0
             ? `รวม ${filteredCancelledRows.length} รายการ`
             : 'บิลยกเลิก'
@@ -125,6 +148,14 @@ export async function enrichWmsNotificationsWithOrderDetails(
       product_name: productName,
       location,
       pendingCancelled,
+      awaitingShelf,
+      returnedToShelf,
+      wasteCount,
+      awaitingShelfActors,
+      returnedToShelfActors,
+      wasteActors,
+      work_order_id: workOrderByName.get(String(n.order_id || ''))?.id || rows[0]?.work_order_id || null,
+      cancellation_state: workOrderByName.get(String(n.order_id || ''))?.cancellation_state || null,
       cancelled_orders: cancelledOrdersForRow,
     }
   })

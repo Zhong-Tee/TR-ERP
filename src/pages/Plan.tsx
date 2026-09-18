@@ -250,7 +250,6 @@ function getRawJobStatusForDept(
   settings: PlanSettingsData,
   deptQtyByWorkOrderId?: DeptQtyByWorkOrderId
 ): { text: string; key: 'pending' | 'progress' | 'done' } {
-  if (getEffectiveQty(job, dept, settings, deptQtyByWorkOrderId) <= 0) return { text: 'รอดำเนินการ', key: 'pending' }
   const procs = (settings.processes[dept] || []).map((p) => p.name)
   const tracks = job.tracks?.[dept] || {}
   const trackEntries = Object.entries(tracks).filter(([key, t]) => key !== 'เตรียมไฟล์' && !!(t?.start || t?.end))
@@ -259,8 +258,6 @@ function getRawJobStatusForDept(
   if ((dept === 'QC' || dept === 'PACK') && tracks['เสร็จแล้ว']?.end) {
     return { text: 'เสร็จแล้ว', key: 'done' }
   }
-
-  if (procs.length === 0 && trackEntries.length === 0) return { text: 'รอดำเนินการ', key: 'pending' }
 
   // เบิก: WMS เคยบันทึกขั้นสุดท้ายเป็น "เสร็จแล้ว" — ถือว่าครบขั้น "ส่งมอบ" ใน settings
   const procHasEnd = (p: string) =>
@@ -273,6 +270,12 @@ function getRawJobStatusForDept(
   if (completedSettingsSteps === 0 && trackEntries.length > 0 && trackEntries.every(([, t]) => t?.end)) {
     return { text: 'เสร็จแล้ว', key: 'done' }
   }
+
+  // ขั้นที่ทำเสร็จก่อนยกเลิกยังคงแสดงประวัติว่าเสร็จแล้ว ส่วนขั้นที่ไม่ต้องทำต่อจึงแสดงยกเลิก/ข้าม
+  if (job.is_production_voided) return { text: 'ยกเลิก/ข้าม', key: 'done' }
+  if (getEffectiveQty(job, dept, settings, deptQtyByWorkOrderId) <= 0) return { text: 'ยกเลิก/ข้าม', key: 'done' }
+
+  if (procs.length === 0 && trackEntries.length === 0) return { text: 'รอดำเนินการ', key: 'pending' }
 
   // เช็ค "กำลังทำ": มี start ใน tracks ไหม
   if (Object.values(tracks).some((t) => t?.start)) {

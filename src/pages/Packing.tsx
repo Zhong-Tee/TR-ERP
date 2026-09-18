@@ -103,6 +103,7 @@ type PackingItem = {
 }
 
 type WorkOrderStatus = {
+  activeBills: number
   hasTracking: boolean
   isPartiallyPacked: boolean
   qcCompleted: boolean
@@ -1749,15 +1750,18 @@ export default function Packing() {
   }, [view, currentGroup])
 
   const newWorkOrders = useMemo(() => {
-    return workOrders
-  }, [workOrders])
+    return workOrders.filter((workOrder) => {
+      const status = workOrderStatus[workOrder.work_order_name]
+      return !status || (status.activeBills > 0 && status.totalItems > 0)
+    })
+  }, [workOrders, workOrderStatus])
 
   // readyCount removed — unused
 
-  // แจ้ง Sidebar ทุกครั้งที่จำนวนใบงานใหม่ทั้งหมดเปลี่ยน
+  // แจ้ง Sidebar เฉพาะใบงานที่ยังมีบิล/สินค้าสำหรับแพ็คจริง
   useEffect(() => {
-    window.dispatchEvent(new CustomEvent('packing-ready-count', { detail: { count: workOrders.length } }))
-  }, [workOrders.length])
+    window.dispatchEvent(new CustomEvent('packing-ready-count', { detail: { count: newWorkOrders.length } }))
+  }, [newWorkOrders.length])
 
   const shippedOrdersFiltered = useMemo(() => {
     const base = shippedOrders.filter((row) => {
@@ -2088,6 +2092,7 @@ export default function Packing() {
           const allUnitsSkipped = allUnitCount > 0 && skipUnitCount === allUnitCount
 
           statusMap[wo.work_order_name] = {
+            activeBills: ordersInWo.length,
             hasTracking,
             isPartiallyPacked,
             qcCompleted: finishedWoSet.has(wo.work_order_name),
