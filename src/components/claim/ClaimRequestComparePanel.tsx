@@ -14,7 +14,7 @@ const cellOrDash = (v: string | null | undefined) => (v && String(v).trim() ? St
 function FullItemsTable({ items }: { items: OrderItemRow[] }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-xs min-w-[1020px]">
+      <table className="w-full text-xs min-w-[1180px]">
         <thead>
           <tr className="text-left text-gray-600 border-b bg-gray-50">
             <th className="py-1.5 px-2 min-w-[140px]">สินค้า</th>
@@ -27,6 +27,7 @@ function FullItemsTable({ items }: { items: OrderItemRow[] }) {
             <th className="py-1.5 px-2">บรรทัด 3</th>
             <th className="py-1.5 px-2 text-right">จำนวน</th>
             <th className="py-1.5 px-2 text-right">ราคา/หน่วย</th>
+            <th className="py-1.5 px-2 min-w-[160px]">หมายเหตุ</th>
             <th className="py-1.5 px-2 text-right">รวม</th>
           </tr>
         </thead>
@@ -43,6 +44,7 @@ function FullItemsTable({ items }: { items: OrderItemRow[] }) {
               <td className="py-1.5 px-2">{cellOrDash(it.line_3)}</td>
               <td className="py-1.5 px-2 text-right tabular-nums">{it.quantity ?? '–'}</td>
               <td className="py-1.5 px-2 text-right tabular-nums">{fmtMoney(Number(it.unit_price) || 0)}</td>
+              <td className="py-1.5 px-2 whitespace-pre-wrap break-words">{cellOrDash(it.notes)}</td>
               <td className="py-1.5 px-2 text-right tabular-nums">{fmtMoney(lineTotal(it))}</td>
             </tr>
           ))}

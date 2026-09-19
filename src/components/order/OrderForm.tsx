@@ -7656,7 +7656,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     <Modal
       open={claimModalOpen}
       onClose={() => setClaimModalOpen(false)}
-      contentClassName="max-w-7xl w-full max-h-[90vh] flex flex-col"
+      contentClassName="max-w-[96vw] w-full max-h-[90vh] flex flex-col"
       closeOnBackdropClick
     >
       <div className="p-5 flex flex-col flex-1 min-h-0">
@@ -7899,6 +7899,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     <th className="text-left p-2 min-w-[100px]">บรรทัด 3</th>
                     <th className="text-right p-2 w-16">จำนวน</th>
                     <th className="text-right p-2 w-20">ราคา/หน่วย</th>
+                    <th className="text-left p-2 min-w-[160px]">หมายเหตุ</th>
                     <th className="w-10" />
                   </tr>
                 </thead>
@@ -8058,6 +8059,20 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                             )
                           }}
                           className="w-full px-2 py-1 border rounded text-right"
+                        />
+                      </td>
+                      <td className="p-1">
+                        <input
+                          type="text"
+                          value={row.notes ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setClaimDraftItems((prev) =>
+                              prev.map((r, i) => (i === idx ? { ...r, notes: v.trim() ? v : null } : r)),
+                            )
+                          }}
+                          placeholder="หมายเหตุ"
+                          className="w-full px-2 py-1 border rounded"
                         />
                       </td>
                       <td className="p-1">

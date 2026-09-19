@@ -45,6 +45,9 @@ import ModeSwitchButton from '../components/ModeSwitchButton'
 import { MachineryPurchaseRequest, MachineryPurchaseSettings, MachineryStock } from '../components/MachineryPurchase'
 import { ChecklistSettings, MachineryChecklist, MachineryMaintenance } from '../components/MachineryOperations'
 import { useWmsModal } from '../components/wms/useWmsModal'
+import { fetchMachinerySpareProducts, saveMachinePartAssignments, type MachinerySpareProduct } from '../lib/machinerySpareApi'
+import { MachineryPartHistoryDrawer } from '../components/MachinerySpareParts'
+import { canAccessMachinerySpareStock, canManageMachinerySpares, canUseMachinerySpares } from '../lib/machinerySpareAccess'
 
 type TabKey = 'monitor' | 'inspection' | 'maintenance' | 'machineSettings' | 'checklistSettings' | 'history' | 'purchaseRequest' | 'stock' | 'purchaseSettings'
 
@@ -148,6 +151,7 @@ export default function Machinery() {
   const [events, setEvents] = useState<MachineryEvent[]>([])
   const [readiness, setReadiness] = useState<MachineReadiness[]>([])
   const [productOptions, setProductOptions] = useState<MachineryProductOption[]>([])
+  const [sparePartOptions, setSparePartOptions] = useState<MachinerySpareProduct[]>([])
   const [planLineSettings, setPlanLineSettings] = useState<{ departments: string[]; linesPerDept: Record<string, number> }>({ departments: [], linesPerDept: {} })
   const [todayQuantityByProduct, setTodayQuantityByProduct] = useState<Map<string, number>>(new Map())
   const [loading, setLoading] = useState(true)
@@ -158,6 +162,9 @@ export default function Machinery() {
   const [grantedInspectionMachineIds, setGrantedInspectionMachineIds] = useState<string[]>([])
 
   const isProductionRole = user?.role === 'production'
+  const isStoreRole = user?.role === 'store'
+  const canManageSpares = canManageMachinerySpares(user?.role)
+  const showSpareStockTab = canAccessMachinerySpareStock(user?.role)
   const canToggleMachinePower = ['superadmin', 'admin', 'technician'].includes(user?.role || '')
 
   const showMachineSettingsTab =
@@ -167,7 +174,7 @@ export default function Machinery() {
     (user?.role === 'technician' || isSuperadmin(user?.role) || hasAccess('machinery-settings'))
   const showChecklistSettingsTab =
     !isProductionRole && (user?.role === 'technician' || showMachineSettingsTab)
-  const showPurchaseSettingsTab = user?.role === 'superadmin' || user?.role === 'admin' || user?.role === 'technician'
+  const showPurchaseSettingsTab = user?.role === 'superadmin' || user?.role === 'admin'
   const showInspectionTab =
     user?.role === 'superadmin' ||
     user?.role === 'admin' ||
@@ -196,9 +203,11 @@ export default function Machinery() {
       (!showChecklistSettingsTab && tab === 'checklistSettings') ||
       (!showInspectionTab && tab === 'inspection') ||
       (!showPurchaseSettingsTab && tab === 'purchaseSettings') ||
+      (!showSpareStockTab && tab === 'stock') ||
+      (isStoreRole && tab !== 'stock') ||
       (isProductionRole && PRODUCTION_HIDDEN_TABS.has(tab))
-    ) setTab('monitor')
-  }, [showMachineSettingsTab, showChecklistSettingsTab, showInspectionTab, showPurchaseSettingsTab, isProductionRole, tab])
+    ) setTab(isStoreRole ? 'stock' : 'monitor')
+  }, [showMachineSettingsTab, showChecklistSettingsTab, showInspectionTab, showPurchaseSettingsTab, showSpareStockTab, isStoreRole, isProductionRole, tab])
 
   const isTechnicianMobile =
     user?.role === 'technician' && window.innerWidth <= 768 && !hasDesktopOverride()
@@ -227,19 +236,26 @@ export default function Machinery() {
   const [selectedMonitorMachineId, setSelectedMonitorMachineId] = useState<string | null>(null)
   const load = useCallback(async () => {
     setError(null)
+    if (isStoreRole) {
+      setMachines([])
+      setLoading(false)
+      return
+    }
     try {
       const currentDate = new Date()
       const inspectionDate = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(currentDate.getDate()).padStart(2, '0')}`
-      const [m, products, quantities, checklistItems, inspections] = await Promise.all([
-        fetchMachines(),
+      const [m, products, quantities, checklistItems, inspections, spareProducts] = await Promise.all([
+        fetchMachines(canManageSpares),
         fetchMachineryProductOptions(),
         fetchTodayWorkOrderQuantityByProduct(),
         fetchChecklistItems(),
         fetchTodayInspections(inspectionDate),
+        canManageSpares ? fetchMachinerySpareProducts() : Promise.resolve([]),
       ])
       setMachines(m)
       setReadiness(buildReadiness(m.map((machine) => machine.id), checklistItems, inspections.inspections, inspections.results))
       setProductOptions(products)
+      setSparePartOptions(spareProducts)
       setTodayQuantityByProduct(quantities)
       const from = new Date()
       from.setDate(from.getDate() - 2)
@@ -254,7 +270,7 @@ export default function Machinery() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [canManageSpares, isStoreRole])
 
   useEffect(() => {
     let active = true
@@ -484,17 +500,34 @@ export default function Machinery() {
     sort_order: 0,
     image_url: null,
     incident_titles: [],
+    commissioned_on: null,
+    spare_product_ids: [],
   })
   const [photoFile, setPhotoFile] = useState<File | null>(null)
   const [incidentTitleDraft, setIncidentTitleDraft] = useState('')
   const [productSearch, setProductSearch] = useState('')
   const [showSelectedProducts, setShowSelectedProducts] = useState(false)
+  const [sparePartSearch, setSparePartSearch] = useState('')
+  const [showSelectedSpareParts, setShowSelectedSpareParts] = useState(false)
+  const [partHistoryMachine, setPartHistoryMachine] = useState<MachineryMachine | null>(null)
   const [photoRemove, setPhotoRemove] = useState(false)
   const [photoPreview, setPhotoPreview] = useState<string | null>(null)
   const [isMachineFormOpen, setIsMachineFormOpen] = useState(false)
   const [copySourceMachineId, setCopySourceMachineId] = useState<string | null>(null)
   const [draggedMachineId, setDraggedMachineId] = useState<string | null>(null)
   const [isReorderingMachines, setIsReorderingMachines] = useState(false)
+  const [machineSettingsSearch, setMachineSettingsSearch] = useState('')
+  const [machineSettingsType, setMachineSettingsType] = useState('')
+
+  const machineSettingsTypes = [...new Set(machines.map((machine) => machine.machine_type?.trim() || 'ทั่วไป'))]
+    .sort((a, b) => a.localeCompare(b, 'th'))
+  const normalizedMachineSettingsSearch = machineSettingsSearch.trim().toLocaleLowerCase('th')
+  const machineSettingsRows = machines.filter((machine) => {
+    const machineType = machine.machine_type?.trim() || 'ทั่วไป'
+    const matchesType = !machineSettingsType || machineType === machineSettingsType
+    const searchable = `${machine.name} ${machine.ip_address || ''} ${machineType} ${machine.location || ''}`.toLocaleLowerCase('th')
+    return matchesType && (!normalizedMachineSettingsSearch || searchable.includes(normalizedMachineSettingsSearch))
+  })
 
   useEffect(() => {
     return () => {
@@ -521,6 +554,8 @@ export default function Machinery() {
       sort_order: 0,
       image_url: null,
       incident_titles: [],
+      commissioned_on: null,
+      spare_product_ids: [],
     })
     setPhotoFile(null)
     setIncidentTitleDraft('')
@@ -550,6 +585,7 @@ export default function Machinery() {
         is_primary_machine: form.is_primary_machine ?? true,
         can_substitute: form.can_substitute ?? false,
         incident_titles: form.incident_titles || [],
+        commissioned_on: form.commissioned_on || null,
         image_url: photoRemove ? null : form.image_url ?? null,
         sort_order: form.id
           ? Number(form.sort_order) || 0
@@ -567,6 +603,9 @@ export default function Machinery() {
       }
       if (!form.id && copySourceMachineId) {
         await copyMachineryChecklistSettings(copySourceMachineId, savedMachine.id)
+      }
+      if (canManageSpares) {
+        await saveMachinePartAssignments(savedMachine.id, form.spare_product_ids || [])
       }
       resetForm()
       setIsMachineFormOpen(false)
@@ -607,6 +646,8 @@ export default function Machinery() {
       sort_order: m.sort_order,
       image_url: m.image_url ?? null,
       incident_titles: m.incident_titles || [],
+      commissioned_on: m.commissioned_on || null,
+      spare_product_ids: m.spare_product_ids || [],
     })
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -649,6 +690,8 @@ export default function Machinery() {
       sort_order: 0,
       image_url: m.image_url ?? null,
       incident_titles: [...(m.incident_titles || [])],
+      commissioned_on: m.commissioned_on || null,
+      spare_product_ids: [...(m.spare_product_ids || [])],
     })
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -868,6 +911,7 @@ export default function Machinery() {
     const isPowerOff = st === 'power_off'
     const canTogglePower = st === 'power_off' || st === 'working' || st === 'idle'
     const isPowerOn = st === 'working' || st === 'idle'
+    const canViewPartHistory = canUseMachinerySpares(user?.role)
     const textColor = isPowerOff ? 'text-slate-900' : 'text-white'
     const subTextColor = isPowerOff ? 'text-slate-700' : 'text-white'
     return (
@@ -930,15 +974,9 @@ export default function Machinery() {
             <dt>ใช้กำลังผลิตรวมของกลุ่ม</dt>
             <dd className="text-right font-mono tabular-nums font-semibold">{(groupStats?.utilizationPercent || 0).toFixed(1)}%</dd>
           </dl>
-          <div className="mt-auto text-xs">
-            <span className="mb-0.5 block font-medium">สถานะเครื่อง</span>
-            <div className={`w-full rounded-lg border px-2.5 py-2 text-sm font-semibold ${
-              isPowerOff
-                ? 'border-slate-300 bg-white text-slate-900'
-                : 'border-white/30 bg-white/95 text-gray-900'
-            }`}>
-              {displayedStatusLabel}
-            </div>
+          <div className={`mt-auto grid gap-2 text-xs ${canViewPartHistory ? 'grid-cols-2' : 'grid-cols-1'}`}>
+            <div><span className="mb-0.5 block font-medium">สถานะเครื่อง</span><div className={`w-full rounded-lg border px-2.5 py-2 text-sm font-semibold ${isPowerOff ? 'border-slate-300 bg-white text-slate-900' : 'border-white/30 bg-white/95 text-gray-900'}`}>{displayedStatusLabel}</div></div>
+            {canViewPartHistory && <div><span className="mb-0.5 block font-medium">อะไหล่</span><button type="button" onClick={()=>setPartHistoryMachine(m)} className="w-full rounded-lg border border-orange-300 bg-orange-500 px-2.5 py-2 text-sm font-semibold text-white hover:bg-orange-600">ประวัติอะไหล่</button></div>}
           </div>
         </div>
       </article>
@@ -989,11 +1027,13 @@ export default function Machinery() {
 
       <nav className={`flex gap-1 border-b border-gray-200 ${isStandaloneMobile ? 'flex-nowrap overflow-x-auto scrollbar-thin' : 'flex-wrap'}`}>
         {(['monitor', 'inspection', 'maintenance', 'machineSettings', 'checklistSettings', 'history', 'purchaseRequest', 'stock', 'purchaseSettings'] as TabKey[]).map((k) => {
+          if (isStoreRole && k !== 'stock') return null
           if (isProductionRole && PRODUCTION_HIDDEN_TABS.has(k)) return null
           if (k === 'inspection' && !showInspectionTab) return null
           if (k === 'machineSettings' && !showMachineSettingsTab) return null
           if (k === 'checklistSettings' && !showChecklistSettingsTab) return null
           if (k === 'purchaseSettings' && !showPurchaseSettingsTab) return null
+          if (k === 'stock' && !showSpareStockTab) return null
           const labels: Record<TabKey, string> = {
             monitor: 'สถานะ / มอนิเตอร์',
             inspection: 'ตรวจความพร้อม',
@@ -1327,6 +1367,17 @@ export default function Machinery() {
                   onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))}
                 />
               </label>
+              {canManageSpares && <label className="block">
+                <span className="text-sm text-gray-500">วันที่เริ่มใช้งานเครื่อง</span>
+                <input
+                  type="date"
+                  max={new Date().toISOString().slice(0, 10)}
+                  className="mt-1 w-full rounded-lg border px-3 py-2.5 text-base"
+                  value={form.commissioned_on || ''}
+                  onChange={(e) => setForm((current) => ({ ...current, commissioned_on: e.target.value || null }))}
+                />
+                <span className="mt-1 block text-xs font-medium text-emerald-700">อายุเครื่อง: {formatMachineAge(form.commissioned_on)}</span>
+              </label>}
               <label className="block">
                 <span className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>เริ่มกะ</span>
                 <input
@@ -1548,6 +1599,18 @@ export default function Machinery() {
                     })}
                 </div>
               </div>
+              {canManageSpares && <div className="sm:col-span-2 xl:order-2 xl:col-span-12 xl:col-start-9 rounded-xl border border-violet-200 bg-violet-50/30 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2"><div><span className="text-sm font-semibold text-gray-800">อะไหล่ที่ใช้กับเครื่องนี้</span><p className="text-xs text-gray-500">เลือกได้เฉพาะรายการที่เปิดไว้ในเมนูตั้งค่าสินค้า</p></div><button type="button" onClick={() => setShowSelectedSpareParts((current) => !current)} className={`rounded-full px-2.5 py-1 text-xs font-semibold ${showSelectedSpareParts ? 'bg-violet-600 text-white' : 'bg-violet-100 text-violet-700'}`}>เลือกแล้ว {(form.spare_product_ids || []).length} รายการ</button></div>
+                <input value={sparePartSearch} onChange={(event) => setSparePartSearch(event.target.value)} placeholder="ค้นหารหัสหรือชื่ออะไหล่" className="mt-3 w-full rounded-lg border px-3 py-2 text-sm"/>
+                <div className="mt-2 max-h-72 overflow-y-auto rounded-lg border bg-white">{sparePartOptions.filter((part) => {
+                  if (showSelectedSpareParts && !(form.spare_product_ids || []).includes(part.product_id)) return false
+                  const query = sparePartSearch.trim().toLowerCase()
+                  return !query || `${part.product_code} ${part.product_name} ${part.product_category || ''}`.toLowerCase().includes(query)
+                }).map((part) => {
+                  const checked = (form.spare_product_ids || []).includes(part.product_id)
+                  return <label key={part.product_id} className="flex cursor-pointer items-center gap-3 border-b px-3 py-2.5 last:border-0 hover:bg-violet-50"><input type="checkbox" checked={checked} onChange={(event) => setForm((current) => ({ ...current, spare_product_ids: event.target.checked ? [...new Set([...(current.spare_product_ids || []), part.product_id])] : (current.spare_product_ids || []).filter((id) => id !== part.product_id) }))}/><span className="min-w-0 flex-1"><b className="mr-2 text-sm text-violet-700">{part.product_code}</b><span className="text-sm">{part.product_name}</span></span><span className="text-xs text-gray-500">คงเหลือ {part.machinery_qty.toLocaleString()}</span></label>
+                })}{sparePartOptions.length === 0 && <div className="p-5 text-center text-sm text-gray-500">ยังไม่มีสินค้าที่เปิดใช้ใน Machinery</div>}</div>
+              </div>}
               <div className="sm:col-span-2 xl:order-1 xl:col-span-8 xl:col-start-1 space-y-2 rounded-xl border border-gray-200 p-4">
                 <span className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>รูปเครื่อง (JPEG/PNG/WebP)</span>
                 <input
@@ -1622,12 +1685,45 @@ export default function Machinery() {
             </div>
           </form>}
 
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <input
+              type="search"
+              value={machineSettingsSearch}
+              onChange={(event) => setMachineSettingsSearch(event.target.value)}
+              placeholder="ค้นหาชื่อเครื่อง, IP, ประเภท หรือสถานที่..."
+              className="min-w-0 flex-1 rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm"
+            />
+            <select
+              value={machineSettingsType}
+              onChange={(event) => setMachineSettingsType(event.target.value)}
+              className="w-full rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm sm:w-64"
+              aria-label="กรองประเภทเครื่อง"
+            >
+              <option value="">ประเภทเครื่องทั้งหมด</option>
+              {machineSettingsTypes.map((machineType) => <option key={machineType} value={machineType}>{machineType}</option>)}
+            </select>
+            <span className="shrink-0 text-sm text-gray-500">แสดง {machineSettingsRows.length.toLocaleString()} / {machines.length.toLocaleString()} เครื่อง</span>
+          </div>
+
           <div
             className={`overflow-x-auto rounded-xl border shadow-sm ${
               isMobileRole ? 'border-slate-600 bg-slate-800/90 shadow-black/30' : 'border-gray-200 bg-white'
             }`}
           >
-            <table className="min-w-full text-base sm:text-lg">
+            <table className="w-full min-w-[1480px] table-fixed text-base sm:text-lg">
+              <colgroup>
+                <col className="w-20" />
+                <col className="w-16" />
+                <col className="w-52" />
+                <col className="w-32" />
+                <col className="w-36" />
+                <col className="w-40" />
+                <col className="w-32" />
+                <col className="w-40" />
+                <col className="w-40" />
+                <col className="w-44" />
+                <col className="w-56" />
+              </colgroup>
               <thead
                 className={`text-left ${isMobileRole ? 'bg-slate-800/90 text-gray-300' : 'bg-gray-50 text-gray-600'}`}
               >
@@ -1638,6 +1734,7 @@ export default function Machinery() {
                   <th className="px-3 py-3 whitespace-nowrap">IP Address</th>
                   <th className="px-3 py-3 whitespace-nowrap">ประเภท</th>
                   <th className="px-3 py-3 whitespace-nowrap min-w-[8rem]">สถานที่</th>
+                  <th className="px-3 py-3 whitespace-nowrap">อายุเครื่อง</th>
                   <th className="px-3 py-3 whitespace-nowrap">กะ</th>
                   <th className="px-3 py-3 whitespace-nowrap">กำลังผลิต/ชม.</th>
                   <th className="px-3 py-3 whitespace-nowrap">กำลังผลิตรวม</th>
@@ -1645,10 +1742,10 @@ export default function Machinery() {
                 </tr>
               </thead>
               <tbody>
-                {machines.map((m) => (
+                {machineSettingsRows.map((m) => (
                   <tr
                     key={m.id}
-                    draggable={!isReorderingMachines}
+                    draggable={!isReorderingMachines && !normalizedMachineSettingsSearch && !machineSettingsType}
                     onDragStart={(event) => {
                       setDraggedMachineId(m.id)
                       event.dataTransfer.effectAllowed = 'move'
@@ -1679,23 +1776,24 @@ export default function Machinery() {
                         <span className={`text-xs ${isMobileRole ? 'text-gray-500' : 'text-gray-400'}`}>—</span>
                       )}
                     </td>
-                    <td className={`px-3 py-3 font-medium ${isMobileRole ? 'text-slate-100' : 'text-gray-900'}`}>
+                    <td className={`truncate px-3 py-3 font-medium ${isMobileRole ? 'text-slate-100' : 'text-gray-900'}`} title={m.name}>
                       {m.name}
                     </td>
                     <td className={`px-3 py-3 font-mono text-sm ${isMobileRole ? 'text-gray-300' : 'text-gray-600'}`}>
                       {m.ip_address?.trim() || '—'}
                     </td>
-                    <td className="px-3 py-3 text-gray-600">{m.machine_type || 'ทั่วไป'}</td>
-                    <td className={`px-3 py-3 ${isMobileRole ? 'text-gray-400' : 'text-gray-600'}`}>
+                    <td className="truncate px-3 py-3 text-gray-600" title={m.machine_type || 'ทั่วไป'}>{m.machine_type || 'ทั่วไป'}</td>
+                    <td className={`truncate px-3 py-3 ${isMobileRole ? 'text-gray-400' : 'text-gray-600'}`} title={m.location?.trim() || '—'}>
                       {m.location?.trim() ? m.location : '—'}
                     </td>
-                    <td className={`px-3 py-3 font-mono text-sm sm:text-base ${isMobileRole ? 'text-gray-400' : ''}`}>
+                    <td className="px-3 py-3 whitespace-nowrap text-sm text-gray-600">{formatMachineAge(m.commissioned_on)}</td>
+                    <td className={`whitespace-nowrap px-3 py-3 font-mono text-sm sm:text-base ${isMobileRole ? 'text-gray-400' : ''}`}>
                       {m.work_start.slice(0, 5)} – {m.work_end.slice(0, 5)}
                     </td>
-                    <td className={`px-3 py-3 tabular-nums ${isMobileRole ? 'text-gray-200' : ''}`}>
+                    <td className={`whitespace-nowrap px-3 py-3 tabular-nums ${isMobileRole ? 'text-gray-200' : ''}`}>
                       {fmtInt(Number(m.capacity_units_per_hour))} {m.capacity_unit || 'หน่วย'}
                     </td>
-                    <td className={`px-3 py-3 tabular-nums font-medium ${isMobileRole ? 'text-emerald-300/90' : 'text-emerald-800'}`}>
+                    <td className={`whitespace-nowrap px-3 py-3 tabular-nums font-medium ${isMobileRole ? 'text-emerald-300/90' : 'text-emerald-800'}`}>
                       {fmtInt(totalProductionCapacityPerShift(m))} {m.capacity_unit || 'หน่วย'}
                     </td>
                     <td className="px-3 py-3 whitespace-nowrap">
@@ -1737,6 +1835,7 @@ export default function Machinery() {
                     </td>
                   </tr>
                 ))}
+                {machineSettingsRows.length === 0 && <tr><td colSpan={11} className="px-4 py-12 text-center text-gray-500">ไม่พบเครื่องตามคำค้นหาและประเภทที่เลือก</td></tr>}
               </tbody>
             </table>
           </div>
@@ -1745,7 +1844,7 @@ export default function Machinery() {
 
       {tab === 'purchaseRequest' && <MachineryPurchaseRequest onCountChange={setMyPendingPurchaseCount} />}
 
-      {tab === 'stock' && <MachineryStock />}
+      {tab === 'stock' && showSpareStockTab && <MachineryStock />}
 
       {tab === 'purchaseSettings' && showPurchaseSettingsTab && <MachineryPurchaseSettings />}
 
@@ -2115,6 +2214,7 @@ export default function Machinery() {
           </div>
         </section>
       )}
+      {partHistoryMachine&&<MachineryPartHistoryDrawer machine={partHistoryMachine} onClose={()=>setPartHistoryMachine(null)}/>}
       {ConfirmModal}
       </div>
     </div>
@@ -2137,6 +2237,22 @@ function fmtInt(n: number): string {
 function fmtQuantity(n: number): string {
   if (!Number.isFinite(n)) return '0'
   return n.toLocaleString('th-TH', { maximumFractionDigits: 2 })
+}
+
+function formatMachineAge(commissionedOn: string | null | undefined): string {
+  if (!commissionedOn) return 'ยังไม่ระบุ'
+  const start = new Date(`${commissionedOn}T00:00:00`)
+  const now = new Date()
+  if (Number.isNaN(start.getTime()) || start > now) return 'วันที่ไม่ถูกต้อง'
+  let years = now.getFullYear() - start.getFullYear()
+  let months = now.getMonth() - start.getMonth()
+  if (now.getDate() < start.getDate()) months -= 1
+  if (months < 0) { years -= 1; months += 12 }
+  if (years > 0 && months > 0) return `${years} ปี ${months} เดือน`
+  if (years > 0) return `${years} ปี`
+  if (months > 0) return `${months} เดือน`
+  const days = Math.max(0, Math.floor((now.getTime() - start.getTime()) / 86_400_000))
+  return `${days} วัน`
 }
 
 const HOURS_TO_MS = 3600000

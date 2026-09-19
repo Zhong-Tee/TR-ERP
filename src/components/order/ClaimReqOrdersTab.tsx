@@ -1485,7 +1485,7 @@ export default function ClaimReqOrdersTab({
       <Modal
         open={compareOpen}
         onClose={() => !compareLoading && setCompareOpen(false)}
-        contentClassName="max-w-6xl w-full max-h-[92vh] flex flex-col"
+        contentClassName="max-w-[96vw] w-full max-h-[92vh] flex flex-col"
         closeOnBackdropClick={!compareLoading}
       >
         <div className="p-5 flex flex-col flex-1 min-h-0">

@@ -16,6 +16,7 @@ type EditClaimItemRow = Record<string, unknown> & {
   line_1?: string | null
   line_2?: string | null
   line_3?: string | null
+  notes?: string | null
 }
 
 type Props = {
@@ -122,7 +123,7 @@ export default function ClaimEditModal({ open, detail, refOrderTotal, onClose, o
     <Modal
       open={open}
       onClose={() => !saving && onClose()}
-      contentClassName="max-w-7xl w-full max-h-[90vh] flex flex-col"
+      contentClassName="max-w-[96vw] w-full max-h-[90vh] flex flex-col"
       closeOnBackdropClick={false}
     >
       <div className="p-5 flex flex-col flex-1 min-h-0">
@@ -145,6 +146,7 @@ export default function ClaimEditModal({ open, detail, refOrderTotal, onClose, o
                 <th className="text-left p-2 min-w-[100px]">บรรทัด 3</th>
                 <th className="text-right p-2 w-16">จำนวน</th>
                 <th className="text-right p-2 w-20">ราคา/หน่วย</th>
+                <th className="text-left p-2 min-w-[160px]">หมายเหตุ</th>
                 <th className="w-10" />
               </tr>
             </thead>
@@ -190,6 +192,15 @@ export default function ClaimEditModal({ open, detail, refOrderTotal, onClose, o
                         )
                       }}
                       className="w-full px-2 py-1 border rounded text-right"
+                    />
+                  </td>
+                  <td className="p-1">
+                    <input
+                      type="text"
+                      value={String(row.notes ?? '')}
+                      onChange={(e) => setTextField(idx, 'notes', e.target.value)}
+                      placeholder="หมายเหตุ"
+                      className="w-full px-2 py-1 border rounded"
                     />
                   </td>
                   <td className="p-1">

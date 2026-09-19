@@ -781,7 +781,12 @@ export default function OrderDetailView({
                       <td className="px-3 py-2 text-right font-medium text-gray-900">{item.quantity}</td>
                       <td className="px-3 py-2 text-right text-gray-700">฿{fmt(item.unit_price)}</td>
                       <td className="px-3 py-2 text-gray-600 text-xs">
-                        {item.no_name_line ? <span className="text-red-500 font-medium">ไม่รับชื่อ</span> : (item.notes || '-')}
+                        {item.no_name_line ? (
+                          <>
+                            <span className="text-red-500 font-medium">ไม่รับชื่อ</span>
+                            {item.notes ? <span className="ml-1 whitespace-pre-wrap break-words">{item.notes}</span> : null}
+                          </>
+                        ) : (item.notes || '-')}
                       </td>
                       {showAttachmentColumn && (
                         <td className="px-3 py-2 text-center">

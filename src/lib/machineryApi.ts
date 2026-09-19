@@ -1,5 +1,6 @@
 import { supabase } from './supabase'
 import { fetchAllSupabasePages } from './supabasePagination'
+import { fetchMachinePartIds } from './machinerySpareApi'
 
 export type PrMachineryStatus =
   | 'working'
@@ -26,6 +27,8 @@ export interface MachineryMachine {
   is_primary_machine: boolean
   can_substitute: boolean
   incident_titles: string[]
+  commissioned_on: string | null
+  spare_product_ids: string[]
   current_status: PrMachineryStatus
   status_changed_at: string
   sort_order: number
@@ -171,14 +174,18 @@ export const MACHINERY_STATUS_LABELS: Record<PrMachineryStatus, string> = {
   power_off: 'ปิดเครื่อง',
 }
 
-export async function fetchMachines(): Promise<MachineryMachine[]> {
+export async function fetchMachines(includeSpareParts = false): Promise<MachineryMachine[]> {
   const { data, error } = await supabase
     .from('pr_machinery_machines')
     .select('*')
     .order('sort_order', { ascending: true })
     .order('name', { ascending: true })
   if (error) throw error
-  return (data || []) as MachineryMachine[]
+  const partIds = includeSpareParts ? await fetchMachinePartIds() : {}
+  return (data || []).map((machine) => ({
+    ...machine,
+    spare_product_ids: partIds[machine.id] || [],
+  })) as MachineryMachine[]
 }
 
 export async function updateMachineSortOrders(
@@ -211,6 +218,7 @@ export async function upsertMachine(
     is_primary_machine: row.is_primary_machine ?? true,
     can_substitute: row.can_substitute ?? false,
     incident_titles: [...new Set((row.incident_titles || []).map((title) => title.trim()).filter(Boolean))],
+    commissioned_on: row.commissioned_on || null,
     sort_order: row.sort_order ?? 0,
   }
   if ('image_url' in row) {

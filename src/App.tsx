@@ -348,7 +348,7 @@ function AppRoutes() {
       <Route
         path="/machinery"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'production', 'production_mb', 'manager', 'technician', 'packing_staff']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'production', 'production_mb', 'manager', 'technician', 'packing_staff', 'store']}>
             {isMachineryMobileLayout ? (
               <Machinery />
             ) : (

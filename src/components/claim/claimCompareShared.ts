@@ -48,11 +48,12 @@ export type OrderItemRow = {
   line_1?: string | null
   line_2?: string | null
   line_3?: string | null
+  notes?: string | null
 }
 
 /** คอลัมน์รายการสินค้าที่ต้องโหลดเพื่อแสดงข้อมูลผลิตครบ */
 export const ORDER_ITEM_DETAIL_COLUMNS =
-  'product_name, quantity, unit_price, is_free, ink_color, cartoon_pattern, line_pattern, font, line_1, line_2, line_3'
+  'product_name, quantity, unit_price, is_free, ink_color, cartoon_pattern, line_pattern, font, line_1, line_2, line_3, notes'
 
 export type RefOrderDetail = {
   bill_no: string

@@ -3,6 +3,18 @@ import { supabase } from '../lib/supabase'
 import { useAuthContext } from '../contexts/AuthContext'
 import { getPublicUrl } from '../lib/qcApi'
 import PhotoLightbox from './hr/PhotoLightbox'
+import {
+  confirmMachineryStockTransfer,
+  fetchMachinerySpareProducts,
+  fetchMachineryStockTransfers,
+  requestMachineryStockReturn,
+  requestMachineryStockTransfer,
+  type MachinerySpareProduct,
+  type MachineryStockTransfer,
+} from '../lib/machinerySpareApi'
+import { canConfirmMachinerySpareTransfer, canManageMachinerySpares } from '../lib/machinerySpareAccess'
+
+const MACHINERY_PRODUCT_QUERY_CHUNK_SIZE = 100
 
 export type MachineryPurchaseProduct = {
   product_id: string
@@ -57,12 +69,19 @@ async function loadProducts(includeDisabled = false): Promise<MachineryPurchaseP
   const productIds = rows.map((row) => row.product_id)
   const productMetaById = new Map<string, { order_point: string | null; order_point_days: number | null; product_type: 'FG' | 'RM' | 'PP' | null }>()
   if (productIds.length > 0) {
-    const { data: productRows, error: productError } = await supabase
-      .from('pr_products')
-      .select('id, order_point, order_point_days, product_type')
-      .in('id', productIds)
-    if (productError) throw productError
-    for (const product of productRows || []) {
+    const idChunks: string[][] = []
+    for (let index = 0; index < productIds.length; index += MACHINERY_PRODUCT_QUERY_CHUNK_SIZE) {
+      idChunks.push(productIds.slice(index, index + MACHINERY_PRODUCT_QUERY_CHUNK_SIZE))
+    }
+    const productPages = await Promise.all(idChunks.map(async (ids) => {
+      const { data: productRows, error: productError } = await supabase
+        .from('pr_products')
+        .select('id, order_point, order_point_days, product_type')
+        .in('id', ids)
+      if (productError) throw productError
+      return productRows || []
+    }))
+    for (const product of productPages.flat()) {
       productMetaById.set(product.id, {
         order_point: product.order_point != null ? String(product.order_point) : null,
         order_point_days: product.order_point_days != null ? Number(product.order_point_days) : null,
@@ -298,62 +317,123 @@ export function MachineryPurchaseRequest({ onCountChange }: { onCountChange?: (c
 }
 
 export function MachineryStock() {
-  const [products, setProducts] = useState<MachineryPurchaseProduct[]>([])
+  const { user } = useAuthContext()
+  const [products, setProducts] = useState<MachinerySpareProduct[]>([])
+  const [transfers, setTransfers] = useState<MachineryStockTransfer[]>([])
   const [search, setSearch] = useState('')
-  const [stockFilter, setStockFilter] = useState<'all' | 'reorder'>('all')
-  useEffect(() => { loadProducts(false).then(setProducts).catch(console.error) }, [])
-  const isAtReorderPoint = (p: MachineryPurchaseProduct) => {
-    const rawPoint = String(p.order_point ?? '').replace(/,/g, '').trim()
-    if (!rawPoint) return false
-    const point = Number(rawPoint)
-    return Number.isFinite(point) && point >= 0 && p.on_hand <= point
+  const [stockFilter, setStockFilter] = useState<'all' | 'in_stock' | 'pending'>('all')
+  const [qtyByProduct, setQtyByProduct] = useState<Record<string, string>>({})
+  const [loading, setLoading] = useState(true)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [message, setMessage] = useState('')
+  const canRequest = canManageMachinerySpares(user?.role)
+  const canConfirm = canConfirmMachinerySpareTransfer(user?.role)
+  const load = useCallback(async () => {
+    setLoading(true)
+    setMessage('')
+    try {
+      const [productRows, transferRows] = await Promise.all([
+        fetchMachinerySpareProducts(),
+        fetchMachineryStockTransfers(),
+      ])
+      setProducts(productRows)
+      setTransfers(transferRows)
+    } catch (error) {
+      console.error('Unable to load Machinery spare stock:', error)
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+  useEffect(() => { void load() }, [load])
+  async function requestTransfer(product: MachinerySpareProduct, direction: 'to_machinery' | 'to_main') {
+    const qty = Number(qtyByProduct[product.product_id])
+    if (!Number.isInteger(qty) || qty <= 0) { setMessage('กรุณาระบุจำนวนเป็นจำนวนเต็มมากกว่า 0'); return }
+    if (direction === 'to_main' && qty > product.machinery_qty) { setMessage('จำนวนคืนมากกว่าสต๊อก Machinery'); return }
+    setBusyId(product.product_id); setMessage('')
+    try {
+      if (direction === 'to_main') await requestMachineryStockReturn(product.product_id, qty)
+      else await requestMachineryStockTransfer(product.product_id, qty)
+      setQtyByProduct((current) => ({ ...current, [product.product_id]: '' }))
+      await load()
+    } catch (error) { setMessage(error instanceof Error ? error.message : String(error)) }
+    finally { setBusyId(null) }
   }
-  const reorderCount = products.filter(isAtReorderPoint).length
+  async function confirmTransfer(transfer: MachineryStockTransfer) {
+    setBusyId(transfer.id); setMessage('')
+    try { await confirmMachineryStockTransfer(transfer.id); await load() }
+    catch (error) { setMessage(error instanceof Error ? error.message : String(error)) }
+    finally { setBusyId(null) }
+  }
+  const pendingTransfers = transfers.filter((transfer) => transfer.status === 'pending')
+  const pendingProductIds = new Set(pendingTransfers.map((transfer) => transfer.product_id))
   const rows = products.filter((p) => {
     const matchesSearch = `${p.product_code} ${p.product_name} ${p.product_category || ''}`.toLowerCase().includes(search.toLowerCase())
-    return matchesSearch && (stockFilter === 'all' || isAtReorderPoint(p))
+    const matchesFilter = stockFilter === 'all'
+      || (stockFilter === 'in_stock' && p.machinery_qty > 0)
+      || (stockFilter === 'pending' && pendingProductIds.has(p.product_id))
+    return matchesSearch && matchesFilter
   })
   return <section className="space-y-4">
-    <div className="flex flex-col gap-3 lg:flex-row">
-      <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ค้นหาสินค้า…" className="min-w-0 flex-1 rounded-xl border px-4 py-2.5" />
-      <div className="flex shrink-0 overflow-hidden rounded-xl border bg-white p-1">
-        <button type="button" onClick={() => setStockFilter('all')} className={`rounded-lg px-4 py-2 text-sm font-semibold ${stockFilter === 'all' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>ทั้งหมด <span className="ml-1">{products.length.toLocaleString()}</span></button>
-        <button type="button" onClick={() => setStockFilter('reorder')} className={`rounded-lg px-4 py-2 text-sm font-semibold ${stockFilter === 'reorder' ? 'bg-orange-500 text-white' : 'text-orange-700 hover:bg-orange-50'}`}>ถึงจุดสั่งซื้อ <span className={`ml-1 rounded-full px-2 py-0.5 text-xs ${stockFilter === 'reorder' ? 'bg-white/25 text-white' : 'bg-orange-100 text-orange-800'}`}>{reorderCount.toLocaleString()}</span></button>
-      </div>
+    <div className="grid gap-3 sm:grid-cols-3">
+      <button type="button" aria-pressed={stockFilter === 'all'} onClick={() => setStockFilter('all')} className={`rounded-xl border border-blue-200 bg-blue-50 p-4 text-left transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${stockFilter === 'all' ? 'ring-2 ring-blue-500 shadow-md' : ''}`}><div className="text-sm text-blue-700">รายการอะไหล่</div><div className="text-2xl font-black text-blue-900">{products.length.toLocaleString()}</div></button>
+      <button type="button" aria-pressed={stockFilter === 'in_stock'} onClick={() => setStockFilter('in_stock')} className={`rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-left transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-emerald-500 ${stockFilter === 'in_stock' ? 'ring-2 ring-emerald-500 shadow-md' : ''}`}><div className="text-sm text-emerald-700">จำนวนในคลัง Machinery</div><div className="text-2xl font-black text-emerald-900">{products.reduce((sum, product) => sum + product.machinery_qty, 0).toLocaleString()}</div></button>
+      <button type="button" aria-pressed={stockFilter === 'pending'} onClick={() => setStockFilter('pending')} className={`rounded-xl border border-amber-200 bg-amber-50 p-4 text-left transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-amber-500 ${stockFilter === 'pending' ? 'ring-2 ring-amber-500 shadow-md' : ''}`}><div className="text-sm text-amber-700">รอยืนยันโอน/คืน</div><div className="text-2xl font-black text-amber-900">{pendingTransfers.length.toLocaleString()}</div></button>
     </div>
-    <div className="divide-y overflow-hidden rounded-xl border bg-white">{rows.map((p) => <article key={p.product_id} className="flex items-center gap-4 p-4 sm:p-5">
-      <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border bg-gray-50 sm:h-24 sm:w-24">
-        <img src={getPublicUrl('product-images', p.product_code, '.jpg')} alt={p.product_name} className="h-full w-full object-contain p-1" onError={(e) => { e.currentTarget.style.display = 'none' }} />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="text-lg font-bold text-blue-700"><span className="text-sm font-semibold text-gray-500">รหัสสินค้า: </span>{p.product_code}</div>
-        <div className="font-semibold text-gray-800">{p.product_name}</div>
-        <div className="mt-1 flex flex-wrap gap-2 text-xs text-gray-500">
-          <span className="rounded-full bg-slate-100 px-2.5 py-0.5 font-semibold text-slate-700">ประเภท: {p.product_category || 'ไม่ระบุ'}</span>
-          <span>ตำแหน่ง: {p.storage_location || 'ไม่ระบุ'}</span>
-          <span>จุดสั่งซื้อ: <b className="text-gray-700">{p.order_point || '-'}</b></span>
-          <span>จุดสั่งซื้อ (วัน): <b className="text-gray-700">{p.order_point_days ?? '-'}</b></span>
-        </div>
-      </div>
-      <div className="shrink-0 text-right">
-        <div className="text-xs font-medium text-gray-500">จำนวนคงเหลือ</div>
-        <div className="text-2xl font-black text-emerald-700 tabular-nums sm:text-3xl">{p.on_hand.toLocaleString()} <span className="text-sm font-semibold">{p.unit_name || 'ชิ้น'}</span></div>
-      </div>
-    </article>)}</div>
-    {rows.length === 0 && <div className="rounded-xl border bg-white py-10 text-center text-gray-500">ไม่พบสินค้า</div>}
+    {message && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{message}</div>}
+    {pendingTransfers.length > 0 && stockFilter !== 'in_stock' && <div className="overflow-hidden rounded-xl border bg-white"><div className="border-b bg-amber-50 px-4 py-3 font-bold text-amber-900">รายการรอยืนยันโอน/คืนสต๊อก</div><div className="divide-y">{pendingTransfers.map((transfer) => <div key={transfer.id} className="flex flex-wrap items-center gap-3 p-4"><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><b>{transfer.transfer_no}</b><span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${transfer.direction === 'to_main' ? 'bg-violet-100 text-violet-700' : 'bg-blue-100 text-blue-700'}`}>{transfer.direction === 'to_main' ? 'คืนเข้าคลังหลัก' : 'โอนเข้า Machinery'}</span></div><div className="text-sm text-gray-700">{transfer.product_code} · {transfer.product_name}</div><div className="text-xs text-gray-500">จำนวน {transfer.qty.toLocaleString()} {transfer.unit_name || 'ชิ้น'} · {new Date(transfer.requested_at).toLocaleString('th-TH')}</div></div>{canConfirm && <button disabled={busyId === transfer.id} onClick={() => void confirmTransfer(transfer)} className={`rounded-lg px-4 py-2 font-semibold text-white disabled:opacity-50 ${transfer.direction === 'to_main' ? 'bg-violet-600' : 'bg-emerald-600'}`}>{transfer.direction === 'to_main' ? 'ยืนยันรับคืน' : 'ยืนยันการโอน'}</button>}</div>)}</div></div>}
+    <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ค้นหารหัสหรือชื่ออะไหล่..." className="w-full rounded-xl border px-4 py-2.5" />
+    {loading ? <div className="rounded-xl border bg-white py-12 text-center text-gray-500">กำลังโหลดสต๊อกอะไหล่...</div> : <div className="divide-y overflow-hidden rounded-xl border bg-white">{rows.map((product) => <article key={product.product_id} className="grid items-center gap-4 p-4 md:grid-cols-[72px_minmax(0,1fr)_150px_150px_minmax(300px,auto)]">
+      <ProductThumb code={product.product_code} name={product.product_name} size="h-16 w-16" />
+      <div className="min-w-0"><div className="font-bold text-blue-700">{product.product_code}</div><div className="font-semibold text-gray-900">{product.product_name}</div><div className="text-xs text-gray-500">{product.product_category || 'ไม่ระบุหมวดหมู่'}</div></div>
+      <div className="text-right"><div className="text-xs text-gray-500">สต๊อกหลัก</div><div className="text-xl font-bold text-slate-700">{product.main_qty.toLocaleString()} <span className="text-xs">{product.unit_name || 'ชิ้น'}</span></div></div>
+      <div className="text-right"><div className="text-xs text-gray-500">สต๊อก Machinery</div><div className="text-xl font-black text-emerald-700">{product.machinery_qty.toLocaleString()} <span className="text-xs">{product.unit_name || 'ชิ้น'}</span></div></div>
+      <div>{canRequest ? <div className="flex gap-2"><input type="number" inputMode="numeric" min="1" step="1" value={qtyByProduct[product.product_id] || ''} onWheel={(event) => event.currentTarget.blur()} onKeyDown={(event) => { if (['.', ',', 'e', 'E', '+', '-'].includes(event.key)) event.preventDefault() }} onChange={(event) => { const value = event.target.value; if (value === '' || /^\d+$/.test(value)) setQtyByProduct((current) => ({ ...current, [product.product_id]: value })) }} placeholder="จำนวน" className="min-w-0 flex-1 rounded-lg border px-3 py-2"/><button disabled={busyId === product.product_id} onClick={() => void requestTransfer(product, 'to_machinery')} className="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">ขอโอน</button><button disabled={busyId === product.product_id || product.machinery_qty <= 0} onClick={() => void requestTransfer(product, 'to_main')} className="shrink-0 rounded-lg bg-violet-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-40">ขอคืน</button></div> : <div className="text-right text-xs text-gray-400">ดูข้อมูลเท่านั้น</div>}</div>
+    </article>)}</div>}
+    {!loading && rows.length === 0 && <div className="rounded-xl border bg-white py-10 text-center text-gray-500">{stockFilter === 'in_stock' ? 'ยังไม่มีอะไหล่คงเหลือในคลัง Machinery' : stockFilter === 'pending' ? 'ไม่มีสินค้าที่รอยืนยันโอน' : 'ไม่พบอะไหล่ที่เปิดใช้งาน'}</div>}
   </section>
 }
 
 export function MachineryPurchaseSettings() {
   const [products, setProducts] = useState<MachineryPurchaseProduct[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
   const [productTypeFilter, setProductTypeFilter] = useState<'' | 'FG' | 'RM' | 'PP'>('')
   const [selectedFilter, setSelectedFilter] = useState<'all' | 'selected' | 'unselected'>('all')
   const [saving, setSaving] = useState<string | null>(null)
-  const load = () => loadProducts(true).then(setProducts).catch(console.error)
+  const load = async () => {
+    setLoading(true)
+    setLoadError('')
+    try {
+      setProducts(await loadProducts(true))
+    } catch (error) {
+      console.error('Unable to load Machinery products:', error)
+      setProducts([])
+      setLoadError('ไม่สามารถโหลดรายการสินค้าได้ กรุณาลองใหม่อีกครั้ง')
+    } finally {
+      setLoading(false)
+    }
+  }
   useEffect(() => { void load() }, [])
-  async function toggle(p: MachineryPurchaseProduct) { setSaving(p.product_id); await supabase.rpc('set_machinery_purchase_product', { p_product_id: p.product_id, p_enabled: !p.enabled }); await load(); setSaving(null) }
+  async function toggle(p: MachineryPurchaseProduct) {
+    setSaving(p.product_id)
+    setLoadError('')
+    try {
+      const { error } = await supabase.rpc('set_machinery_purchase_product', {
+        p_product_id: p.product_id,
+        p_enabled: !p.enabled,
+      })
+      if (error) throw error
+      await load()
+    } catch (error) {
+      console.error('Unable to update Machinery product:', error)
+      setLoadError('ไม่สามารถบันทึกการเลือกสินค้าได้ กรุณาลองใหม่อีกครั้ง')
+    } finally {
+      setSaving(null)
+    }
+  }
   const categories = useMemo(
     () => [...new Set(products.map((p) => p.product_category?.trim()).filter((v): v is string => !!v))].sort(),
     [products],
@@ -389,7 +469,8 @@ export function MachineryPurchaseSettings() {
         <option value="unselected">ยังไม่เลือก</option>
       </select>
     </div>
-    <div className="divide-y rounded-xl border bg-white">{rows.map((p) => <label key={p.product_id} className="flex cursor-pointer items-center gap-3 p-4">
+    {loadError && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{loadError}</div>}
+    {loading ? <div className="rounded-xl border bg-white py-10 text-center text-gray-500">กำลังโหลดรายการสินค้า...</div> : <div className="divide-y rounded-xl border bg-white">{rows.map((p) => <label key={p.product_id} className="flex cursor-pointer items-center gap-3 p-4">
       <input type="checkbox" checked={p.enabled} disabled={saving === p.product_id} onChange={() => toggle(p)} className="h-5 w-5 shrink-0" />
       <div className="min-w-0 flex-1">
         <div className="font-semibold"><span className="text-sm text-gray-500">รหัสสินค้า: </span>{p.product_code} — {p.product_name}</div>
@@ -405,7 +486,7 @@ export function MachineryPurchaseSettings() {
         <div className="text-xs text-gray-500">คงเหลือ</div>
         <div className="text-lg font-black text-emerald-700 tabular-nums">{p.on_hand.toLocaleString()} <span className="text-xs font-semibold">{p.unit_name || 'ชิ้น'}</span></div>
       </div>
-    </label>)}</div>
-    {rows.length === 0 && <div className="rounded-xl border bg-white py-10 text-center text-gray-500">ไม่พบสินค้าตามตัวกรอง</div>}
+    </label>)}</div>}
+    {!loading && !loadError && rows.length === 0 && <div className="rounded-xl border bg-white py-10 text-center text-gray-500">ไม่พบสินค้าตามตัวกรอง</div>}
   </section>
 }

@@ -453,7 +453,7 @@ export default function ClaimApprovalSection() {
       <Modal
         open={detail != null}
         onClose={() => setDetail(null)}
-        contentClassName="max-w-6xl max-h-[92vh] flex flex-col"
+        contentClassName="max-w-[96vw] w-full max-h-[92vh] flex flex-col"
         closeOnBackdropClick
       >
         {detail && (
