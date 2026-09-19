@@ -1,5 +1,6 @@
 import { getPublicUrl } from '../../lib/qcApi'
 import type { InventoryAuditItem } from '../../types'
+import AuditLocationDisplay from './AuditLocationDisplay'
 
 interface SafetyStockTableProps {
   items: InventoryAuditItem[]
@@ -59,7 +60,9 @@ export default function SafetyStockTable({ items }: SafetyStockTableProps) {
                     <div className="text-xs text-gray-500">{item.pr_products?.product_name || ''}</div>
                   </td>
                   <td className="p-3 text-xs text-gray-600">{item.product_category || '-'}</td>
-                  <td className="p-3 text-xs text-gray-600">{item.storage_location || '-'}</td>
+                  <td className="p-3 text-xs text-gray-600">
+                    <AuditLocationDisplay entries={item.location_snapshot} onlyType="safety" fallback={item.storage_location || '-'} />
+                  </td>
                   <td className="p-3 text-right font-medium">{systemSafety.toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}</td>
                   <td className="p-3 text-right font-medium">{countedSafety.toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}</td>
                   <td className={`p-3 text-right font-bold ${diff >= 0 ? 'text-blue-600' : 'text-red-600'}`}>

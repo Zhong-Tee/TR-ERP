@@ -5,14 +5,39 @@ import { buildIlikeOr } from '../lib/searchFilter'
 import { getPublicUrl } from '../lib/qcApi'
 import { getNextProductCode } from '../lib/purchaseApi'
 import Modal from '../components/ui/Modal'
+import ColumnVisibilityMenu from '../components/ui/ColumnVisibilityMenu'
+import { useColumnVisibility, type ColumnVisibilityOption } from '../lib/columnVisibility'
+import {
+  fetchProductLocationLabels,
+  getMoveLocationInputName,
+  saveProductLocationLabels,
+  toProductLocationLabelInputs,
+  type ProductLocationLabelInput,
+} from '../lib/productLocationLabels'
 import { Product, ProductType } from '../types'
 import { useAuthContext } from '../contexts/AuthContext'
 
 const COST_VISIBLE_ROLES = ['superadmin', 'account']
+const PRODUCT_COLUMNS: ColumnVisibilityOption[] = [
+  { id: 'image', label: 'รูป' },
+  { id: 'code', label: 'รหัสสินค้า' },
+  { id: 'name', label: 'ชื่อสินค้า' },
+  { id: 'type', label: 'ประเภท' },
+  { id: 'seller', label: 'ชื่อผู้ขาย' },
+  { id: 'nameCn', label: 'ชื่อภาษาจีน' },
+  { id: 'location', label: 'จุดจัดเก็บ' },
+  { id: 'rubberCode', label: 'รหัสหน้ายาง' },
+  { id: 'category', label: 'หมวดหมู่' },
+  { id: 'orderPoint', label: 'จุดสั่งซื้อ' },
+  { id: 'orderPointDays', label: 'จุดสั่งซื้อ (วัน)' },
+  { id: 'unit', label: 'หน่วย' },
+  { id: 'actions', label: 'การจัดการ' },
+]
 const PRODUCT_SAFE_COLUMNS = 'id, product_code, product_name, seller_name, product_name_cn, order_point, order_point_days, product_category, product_type, rubber_code, storage_location, safety_stock, unit_name, unit_multiplier, is_hold, hold_reason, hold_at, hold_by, is_active, created_at, updated_at'
 
 const SEARCH_DEBOUNCE_MS = 400
 const PAGE_SIZE = 50
+type ProductVisibilityFilter = 'active' | 'hold' | 'hidden' | 'all'
 /** PostgREST / payload size safety for bulk insert */
 const DB_CHUNK_SIZE = 500
 /** Keep PostgREST `.in(...)` URLs small enough for every proxy in front of Supabase. */
@@ -380,17 +405,23 @@ function productToFormState(product: Product) {
 
 export default function Products() {
   const { user } = useAuthContext()
+  const { hiddenColumns, isColumnVisible, toggleColumn, resetColumns } = useColumnVisibility('tr-erp:products:hidden-columns:v1')
   const canSeeCost = COST_VISIBLE_ROLES.includes(user?.role || '')
   const canSeeChannelPrices = user?.role !== 'store'
   const [products, setProducts] = useState<Product[]>([])
+  const [productMoveLocationNames, setProductMoveLocationNames] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [searchInput, setSearchInput] = useState('')
   const [appliedSearch, setAppliedSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
   const [productTypeFilter, setProductTypeFilter] = useState<'' | ProductType>('')
-  const [productVisibilityFilter, setProductVisibilityFilter] = useState<'active' | 'hold' | 'hidden' | 'all'>('active')
+  const [productVisibilityFilter, setProductVisibilityFilter] = useState<ProductVisibilityFilter>('active')
+  const [activeCount, setActiveCount] = useState(0)
   const [hiddenCount, setHiddenCount] = useState(0)
   const [holdCount, setHoldCount] = useState(0)
+  const [allCount, setAllCount] = useState(0)
+  const [productLocationLabels, setProductLocationLabels] = useState<ProductLocationLabelInput[]>([])
+  const [productLocationLabelsLoading, setProductLocationLabelsLoading] = useState(false)
   const [channels, setChannels] = useState<ChannelOption[]>([])
   const [channelPrices, setChannelPrices] = useState<Record<string, string>>({})
   const [categories, setCategories] = useState<string[]>([])
@@ -428,6 +459,7 @@ export default function Products() {
   const isSuperAdmin = user?.role === 'superadmin'
 
   // Init import state
+  const [showInitialStockActions, setShowInitialStockActions] = useState(false)
   const [initImportOpen, setInitImportOpen] = useState(false)
   const [initImportRows, setInitImportRows] = useState<InitImportRow[]>([])
   const [initImportDupCodes, setInitImportDupCodes] = useState<Set<string>>(new Set())
@@ -544,6 +576,11 @@ export default function Products() {
         .select((canSeeCost ? '*' : PRODUCT_SAFE_COLUMNS) as '*', { count: 'exact' })
         .order('product_code', { ascending: true })
         .range(from, to)
+      const activeCountQuery = supabase
+        .from('pr_products')
+        .select('*', { count: 'exact', head: true })
+        .eq('is_active', true)
+        .eq('is_hold', false)
       const hiddenCountQuery = supabase
         .from('pr_products')
         .select('*', { count: 'exact', head: true })
@@ -553,6 +590,9 @@ export default function Products() {
         .select('*', { count: 'exact', head: true })
         .eq('is_active', true)
         .eq('is_hold', true)
+      const allCountQuery = supabase
+        .from('pr_products')
+        .select('*', { count: 'exact', head: true })
 
       if (productVisibilityFilter === 'active') {
         query = query.eq('is_active', true).eq('is_hold', false)
@@ -572,19 +612,56 @@ export default function Products() {
         query = query.eq('product_type', productTypeFilter)
       }
 
-      const [{ data, error, count }, { count: hiddenTotal, error: hiddenErr }, { count: holdTotal, error: holdErr }] = await Promise.all([
+      const [
+        { data, error, count },
+        { count: activeTotal, error: activeErr },
+        { count: hiddenTotal, error: hiddenErr },
+        { count: holdTotal, error: holdErr },
+        { count: allTotal, error: allErr },
+      ] = await Promise.all([
         query,
+        activeCountQuery,
         hiddenCountQuery,
         holdCountQuery,
+        allCountQuery,
       ])
 
       if (error) throw error
+      if (activeErr) throw activeErr
       if (hiddenErr) throw hiddenErr
       if (holdErr) throw holdErr
-      setProducts(data || [])
+      if (allErr) throw allErr
+      const productRows = (data || []) as Product[]
+      const moveNames: Record<string, string> = {}
+      if (productRows.length > 0) {
+        const { data: moveLocation, error: moveLocationError } = await supabase
+          .from('wh_storage_locations')
+          .select('id')
+          .ilike('code', 'MOVE')
+          .maybeSingle()
+        if (moveLocationError) throw moveLocationError
+
+        if (moveLocation) {
+          const { data: moveLabels, error: moveLabelsError } = await supabase
+            .from('wh_product_location_labels')
+            .select('product_id, display_name')
+            .eq('label_type', 'storage')
+            .eq('location_id', moveLocation.id)
+            .in('product_id', productRows.map((product) => product.id))
+          if (moveLabelsError) throw moveLabelsError
+          ;(moveLabels || []).forEach((label) => {
+            const name = String(label.display_name || '').trim()
+            if (name) moveNames[label.product_id] = name
+          })
+        }
+      }
+      setProducts(productRows)
+      setProductMoveLocationNames(moveNames)
       setTotalCount(count || 0)
+      setActiveCount(activeTotal || 0)
       setHiddenCount(hiddenTotal || 0)
       setHoldCount(holdTotal || 0)
+      setAllCount(allTotal || 0)
     } catch (error: any) {
       console.error('Error loading products:', error)
       showNotify('error', 'เกิดข้อผิดพลาดในการโหลดข้อมูล', error.message)
@@ -604,6 +681,41 @@ export default function Products() {
     }
   }
 
+  async function loadNewProductLocationLabels() {
+    setProductLocationLabelsLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('wh_storage_locations')
+        .select('id, code, name, sort_order')
+        .eq('is_active', true)
+        .order('sort_order')
+        .order('code')
+      if (error) throw error
+      setProductLocationLabels([
+        ...(data || []).map((location) => ({
+          label_type: 'storage' as const,
+          location_id: location.id,
+          code: location.code,
+          default_name: location.name || location.code,
+          display_name: location.name || location.code,
+          configured_name: null,
+          qty: 0,
+          sort_order: Number(location.sort_order || 0),
+          input_name: '',
+        })),
+        {
+          label_type: 'safety', location_id: null, code: 'SAFETY', default_name: 'Safety stock',
+          display_name: 'Safety stock', configured_name: null, qty: 0, sort_order: 2000000000, input_name: '',
+        },
+      ])
+    } catch (error) {
+      console.error('Load storage locations for new product failed:', error)
+      setProductLocationLabels([])
+    } finally {
+      setProductLocationLabelsLoading(false)
+    }
+  }
+
   function openAdd() {
     setForm(emptyForm())
     setChannelPrices({})
@@ -611,6 +723,7 @@ export default function Products() {
     setUploadFile(null)
     setUploadPreview(null)
     setModalMode('add')
+    void loadNewProductLocationLabels()
     void autoGenerateProductCodeByType('FG')
   }
 
@@ -621,10 +734,15 @@ export default function Products() {
     setUploadPreview(null)
     setModalMode('edit')
     if (canSeeChannelPrices) void loadProductChannelPrices(product.id)
+    setProductLocationLabelsLoading(true)
 
     try {
-      const { data, error } = await supabase.from('pr_products').select((canSeeCost ? '*' : PRODUCT_SAFE_COLUMNS) as '*').eq('id', product.id).single()
+      const [{ data, error }, locationRows] = await Promise.all([
+        supabase.from('pr_products').select((canSeeCost ? '*' : PRODUCT_SAFE_COLUMNS) as '*').eq('id', product.id).single(),
+        fetchProductLocationLabels(product.id),
+      ])
       if (error) throw error
+      setProductLocationLabels(toProductLocationLabelInputs(locationRows).filter((row) => row.label_type !== 'movement'))
       if (data) {
         const row = data as Product
         setEditingProduct(row)
@@ -632,6 +750,9 @@ export default function Products() {
       }
     } catch (e) {
       console.error('openEdit: failed to load product row', e)
+      setProductLocationLabels([])
+    } finally {
+      setProductLocationLabelsLoading(false)
     }
   }
 
@@ -641,6 +762,7 @@ export default function Products() {
     setEditingProduct(null)
     setForm(emptyForm())
     setChannelPrices({})
+    setProductLocationLabels([])
     setUploadFile(null)
     setUploadPreview(null)
   }
@@ -729,6 +851,7 @@ export default function Products() {
         modalMode === 'add' && form.product_type === 'PP'
           ? 'FG'
           : (form.product_type || 'FG')
+      const movementLocationName = getMoveLocationInputName(productLocationLabels, form.storage_location)
 
       if (modalMode === 'add') {
         const { data: createdProduct, error } = await supabase.from('pr_products').insert({
@@ -741,7 +864,7 @@ export default function Products() {
           product_category: form.product_category.trim() || null,
           product_type: productTypeToSave,
           rubber_code: form.rubber_code.trim() || null,
-          storage_location: form.storage_location.trim() || null,
+          storage_location: movementLocationName || null,
           unit_cost: form.unit_cost.trim() ? Number(form.unit_cost.trim()) : 0,
           safety_stock: form.safety_stock.trim() ? Number(form.safety_stock.trim()) : 0,
           unit_name: form.unit_name.trim() || 'ชิ้น',
@@ -749,6 +872,9 @@ export default function Products() {
           is_active: true,
         }).select('id').single()
         if (error) throw error
+        if (productLocationLabels.length > 0) {
+          await saveProductLocationLabels(createdProduct.id, productLocationLabels)
+        }
         await saveProductChannelPrices(createdProduct.id)
         showNotify('success', 'เพิ่มสินค้าเรียบร้อย')
       } else if (modalMode === 'edit' && editingProduct) {
@@ -764,7 +890,7 @@ export default function Products() {
             product_category: form.product_category.trim() || null,
             product_type: productTypeToSave,
             rubber_code: form.rubber_code.trim() || null,
-            storage_location: form.storage_location.trim() || null,
+            storage_location: movementLocationName || null,
             unit_cost: form.unit_cost.trim() ? Number(form.unit_cost.trim()) : 0,
             safety_stock: form.safety_stock.trim() ? Number(form.safety_stock.trim()) : 0,
             unit_name: form.unit_name.trim() || 'ชิ้น',
@@ -772,6 +898,9 @@ export default function Products() {
           })
           .eq('id', editingProduct.id)
         if (error) throw error
+        if (productLocationLabels.length > 0) {
+          await saveProductLocationLabels(editingProduct.id, productLocationLabels)
+        }
         await saveProductChannelPrices(editingProduct.id)
         showNotify('success', 'แก้ไขสินค้าเรียบร้อย')
       }
@@ -1505,6 +1634,20 @@ export default function Products() {
   return (
     <div className="space-y-6 mt-4">
       <div className="flex flex-wrap items-center justify-end gap-2">
+          {isSuperAdmin && (
+            <button
+              type="button"
+              onClick={() => setShowInitialStockActions((value) => !value)}
+              aria-expanded={showInitialStockActions}
+              className={`mr-auto px-3 py-2 rounded-xl border text-sm font-semibold transition-colors ${
+                showInitialStockActions
+                  ? 'border-teal-600 bg-teal-600 text-white hover:bg-teal-700'
+                  : 'border-teal-300 bg-white text-teal-700 hover:bg-teal-50'
+              }`}
+            >
+              เริ่มต้น
+            </button>
+          )}
           {canSeeCost && <button
             type="button"
             onClick={downloadProductsExcel}
@@ -1535,7 +1678,7 @@ export default function Products() {
               }}
             />
           </label>}
-          {isSuperAdmin && (
+          {isSuperAdmin && showInitialStockActions && (
             <>
               <button
                 type="button"
@@ -1629,27 +1772,23 @@ export default function Products() {
           </div>
           <div className="w-full sm:w-auto sm:min-w-[190px]">
             <label htmlFor="products-visibility" className="sr-only">สถานะสินค้า</label>
-            <select
+            <ProductVisibilitySelect
               id="products-visibility"
               value={productVisibilityFilter}
-              onChange={(e) => setProductVisibilityFilter(e.target.value as 'active' | 'hold' | 'hidden' | 'all')}
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-surface-50 text-base"
-            >
-              <option value="active">ใช้งานอยู่</option>
-              <option value="hold">Hold</option>
-              <option value="hidden">ที่ซ่อนอยู่</option>
-              <option value="all">ทั้งหมด</option>
-            </select>
-            <div className="mt-1 flex items-center gap-2 text-xs text-surface-500">
-              <span className="inline-flex items-center gap-1">
-                Hold <span className="font-semibold text-amber-700">{holdCount}</span> รายการ
-              </span>
-              <span className="text-surface-300">|</span>
-              <span className="inline-flex items-center gap-1">
-                ซ่อนอยู่ <span className="font-semibold text-surface-700">{hiddenCount}</span> รายการ
-              </span>
-            </div>
+              onChange={setProductVisibilityFilter}
+              activeCount={activeCount}
+              holdCount={holdCount}
+              hiddenCount={hiddenCount}
+              allCount={allCount}
+            />
           </div>
+          <ColumnVisibilityMenu
+            columns={PRODUCT_COLUMNS}
+            hiddenColumns={hiddenColumns}
+            onToggle={toggleColumn}
+            onReset={resetColumns}
+            className="ml-auto self-start"
+          />
         </div>
 
         {loading ? (
@@ -1661,23 +1800,23 @@ export default function Products() {
             ไม่พบข้อมูลสินค้า
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="max-h-[60dvh] overflow-auto rounded-t-xl [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
             <table className="w-full text-sm">
-              <thead>
+              <thead className="sticky top-0 z-20 bg-blue-600 shadow-sm">
                 <tr className="bg-blue-600 text-[12px] leading-tight text-white">
-                  <th className="px-2 py-2.5 text-left font-semibold rounded-tl-xl">รูป</th>
-                  <th className="px-2 py-2.5 text-left font-semibold">รหัสสินค้า</th>
-                  <th className="px-2 py-2.5 text-left font-semibold">ชื่อสินค้า</th>
-                  <th className="px-2 py-2.5 text-center font-semibold">ประเภท</th>
-                  <th className="px-2 py-2.5 text-left font-semibold">ชื่อผู้ขาย</th>
-                  <th className="px-2 py-2.5 text-left font-semibold">ชื่อภาษาจีน</th>
-                  <th className="px-2 py-2.5 text-left font-semibold">จุดจัดเก็บ</th>
-                  <th className="px-2 py-2.5 text-left font-semibold">รหัสหน้ายาง</th>
-                  <th className="px-2 py-2.5 text-left font-semibold">หมวดหมู่</th>
-                  <th className="px-2 py-2.5 text-center font-semibold">จุดสั่งซื้อ</th>
-                  <th className="px-2 py-2.5 text-center font-semibold">จุดสั่งซื้อ<wbr />(วัน)</th>
-                  <th className="px-2 py-2.5 text-center font-semibold">หน่วย</th>
-                  <th className="px-2 py-2.5 text-right font-semibold rounded-tr-xl">การจัดการ</th>
+                  {isColumnVisible('image') && <th className="px-2 py-2.5 text-left font-semibold rounded-tl-xl">รูป</th>}
+                  {isColumnVisible('code') && <th className="px-2 py-2.5 text-left font-semibold">รหัสสินค้า</th>}
+                  {isColumnVisible('name') && <th className="px-2 py-2.5 text-left font-semibold">ชื่อสินค้า</th>}
+                  {isColumnVisible('type') && <th className="px-2 py-2.5 text-center font-semibold">ประเภท</th>}
+                  {isColumnVisible('seller') && <th className="px-2 py-2.5 text-left font-semibold">ชื่อผู้ขาย</th>}
+                  {isColumnVisible('nameCn') && <th className="px-2 py-2.5 text-left font-semibold">ชื่อภาษาจีน</th>}
+                  {isColumnVisible('location') && <th className="px-2 py-2.5 text-left font-semibold">จุดจัดเก็บ</th>}
+                  {isColumnVisible('rubberCode') && <th className="px-2 py-2.5 text-left font-semibold">รหัสหน้ายาง</th>}
+                  {isColumnVisible('category') && <th className="px-2 py-2.5 text-left font-semibold">หมวดหมู่</th>}
+                  {isColumnVisible('orderPoint') && <th className="px-2 py-2.5 text-center font-semibold">จุดสั่งซื้อ</th>}
+                  {isColumnVisible('orderPointDays') && <th className="px-2 py-2.5 text-center font-semibold">จุดสั่งซื้อ<wbr />(วัน)</th>}
+                  {isColumnVisible('unit') && <th className="px-2 py-2.5 text-center font-semibold">หน่วย</th>}
+                  {isColumnVisible('actions') && <th className="px-2 py-2.5 text-right font-semibold rounded-tr-xl">การจัดการ</th>}
                 </tr>
               </thead>
               <tbody>
@@ -1685,35 +1824,35 @@ export default function Products() {
                   const orderPointDaysDisplay = orderPointDaysToFormString(product.order_point_days)
                   return (
                   <tr key={product.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
-                    <td className="px-3 py-2">
+                    {isColumnVisible('image') && <td className="px-3 py-2">
                       <ProductImage
                         code={product.product_code}
                         name={product.product_name}
                       />
-                    </td>
-                    <td className="px-3 py-2 font-semibold text-surface-900">{product.product_code}</td>
-                    <td className="px-3 py-2 text-surface-800">{product.product_name}</td>
-                    <td className="px-3 py-2 text-center">
+                    </td>}
+                    {isColumnVisible('code') && <td className="px-3 py-2 font-semibold text-surface-900">{product.product_code}</td>}
+                    {isColumnVisible('name') && <td className="px-3 py-2 text-surface-800">{product.product_name}</td>}
+                    {isColumnVisible('type') && <td className="px-3 py-2 text-center">
                       <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-bold ${product.product_type === 'RM' ? 'bg-orange-100 text-orange-700' : product.product_type === 'PP' ? 'bg-purple-100 text-purple-700' : 'bg-green-100 text-green-700'}`}>
                         {product.product_type}
                       </span>
-                    </td>
-                    <td className="px-3 py-2 text-surface-700">{product.seller_name || '-'}</td>
-                    <td className="px-3 py-2 text-surface-700">{product.product_name_cn || '-'}</td>
-                    <td className="px-3 py-2 text-surface-700">{product.storage_location || '-'}</td>
-                    <td className="px-3 py-2 text-surface-700">{product.rubber_code || '-'}</td>
-                    <td className="px-3 py-2 text-surface-700">{product.product_category || '-'}</td>
-                    <td className="px-3 py-2 text-center text-surface-700">{product.order_point || '-'}</td>
-                    <td className="px-3 py-2 text-center text-surface-700">
+                    </td>}
+                    {isColumnVisible('seller') && <td className="px-3 py-2 text-surface-700">{product.seller_name || '-'}</td>}
+                    {isColumnVisible('nameCn') && <td className="px-3 py-2 text-surface-700">{product.product_name_cn || '-'}</td>}
+                    {isColumnVisible('location') && <td className="px-3 py-2 text-surface-700">{productMoveLocationNames[product.id] || product.storage_location || '-'}</td>}
+                    {isColumnVisible('rubberCode') && <td className="px-3 py-2 text-surface-700">{product.rubber_code || '-'}</td>}
+                    {isColumnVisible('category') && <td className="px-3 py-2 text-surface-700">{product.product_category || '-'}</td>}
+                    {isColumnVisible('orderPoint') && <td className="px-3 py-2 text-center text-surface-700">{product.order_point || '-'}</td>}
+                    {isColumnVisible('orderPointDays') && <td className="px-3 py-2 text-center text-surface-700">
                       {orderPointDaysDisplay === '' ? '-' : orderPointDaysDisplay}
-                    </td>
-                    <td className="px-3 py-2 text-center text-surface-700">
+                    </td>}
+                    {isColumnVisible('unit') && <td className="px-3 py-2 text-center text-surface-700">
                       {product.unit_name || 'ชิ้น'}
                       {product.unit_multiplier != null && product.unit_multiplier > 1 && (
                         <span className="text-xs text-gray-400 ml-1">(x{product.unit_multiplier})</span>
                       )}
-                    </td>
-                    <td className="px-3 py-2 text-right">
+                    </td>}
+                    {isColumnVisible('actions') && <td className="px-3 py-2 text-right">
                       <div className="flex gap-2 justify-end items-center">
                         <button
                           type="button"
@@ -1754,7 +1893,7 @@ export default function Products() {
                           {deletingId === product.id ? 'กำลังบันทึก...' : product.is_active ? 'เปิด' : 'ซ่อน'}
                         </span>
                       </div>
-                    </td>
+                    </td>}
                   </tr>
                   )
                 })}
@@ -1896,16 +2035,62 @@ export default function Products() {
                 className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
               />
             </div>
-            {/* จุดจัดเก็บ */}
-            <div>
-              <label className="block text-sm font-semibold text-surface-700 mb-1">จุดจัดเก็บ</label>
-              <input
-                type="text"
-                value={form.storage_location}
-                onChange={(e) => setForm((f) => ({ ...f, storage_location: e.target.value }))}
-                placeholder="จุดจัดเก็บ"
-                className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
-              />
+            {/* ชื่อจุดจัดเก็บรายสินค้า */}
+            <div className="sm:col-span-2 rounded-xl border border-blue-100 bg-blue-50/40 p-3">
+              <div className="mb-3">
+                <div className="text-sm font-semibold text-surface-800">ชื่อจุดจัดเก็บของสินค้านี้</div>
+              </div>
+              {productLocationLabelsLoading ? (
+                <div className="py-5 text-center text-sm text-surface-500">กำลังโหลดจุดจัดเก็บ...</div>
+              ) : productLocationLabels.length === 0 ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+                  ไม่สามารถโหลดข้อมูลจุดจัดเก็บได้ กรุณาตรวจสอบว่าได้รัน Migration 552 แล้ว
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      {productLocationLabels.filter((row) => row.label_type === 'storage').map((row) => (
+                        <label key={row.location_id} className="rounded-lg border border-surface-200 bg-white p-2">
+                          <span className="mb-1 flex items-center justify-between gap-2 text-xs text-surface-600">
+                            <span><b className="text-surface-800">{row.code}</b> · {row.default_name}</span>
+                            {modalMode === 'edit' && <span className="shrink-0 tabular-nums">{row.qty.toLocaleString()} หน่วย</span>}
+                          </span>
+                          <input
+                            type="text"
+                            value={row.input_name}
+                            onChange={(event) => setProductLocationLabels((current) => current.map((item) => (
+                              item.label_type === 'storage' && item.location_id === row.location_id
+                                ? { ...item, input_name: event.target.value }
+                                : item
+                            )))}
+                            placeholder={`ค่าเริ่มต้น: ${row.default_name}`}
+                            className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  {productLocationLabels.filter((row) => row.label_type === 'safety').map((row) => (
+                    <label key={row.code} className="block">
+                      <span className="mb-1 flex items-center justify-between gap-2 text-xs font-semibold text-amber-800">
+                        <span>Safety stock</span>
+                        {modalMode === 'edit' && <span className="font-normal tabular-nums text-amber-700">{row.qty.toLocaleString()} หน่วย</span>}
+                      </span>
+                      <input
+                        type="text"
+                        value={row.input_name}
+                        onChange={(event) => setProductLocationLabels((current) => current.map((item) => (
+                          item.label_type === 'safety' ? { ...item, input_name: event.target.value } : item
+                        )))}
+                        placeholder="ค่าเริ่มต้น: Safety stock"
+                        className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-base"
+                      />
+                    </label>
+                  ))}
+                </div>
+              )}
             </div>
             {/* หมวดหมู่ */}
             <div>
@@ -2288,6 +2473,109 @@ export default function Products() {
           </button>
         </div>
       </Modal>
+    </div>
+  )
+}
+
+function ProductVisibilitySelect({
+  id,
+  value,
+  onChange,
+  activeCount,
+  holdCount,
+  hiddenCount,
+  allCount,
+}: {
+  id: string
+  value: ProductVisibilityFilter
+  onChange: (value: ProductVisibilityFilter) => void
+  activeCount: number
+  holdCount: number
+  hiddenCount: number
+  allCount: number
+}) {
+  const [open, setOpen] = useState(false)
+  const wrapperRef = useRef<HTMLDivElement>(null)
+  const options: Array<{ value: ProductVisibilityFilter; label: string; count?: number }> = [
+    { value: 'active', label: 'ใช้งานอยู่', count: activeCount },
+    { value: 'hold', label: 'Hold', count: holdCount },
+    { value: 'hidden', label: 'ที่ซ่อนอยู่', count: hiddenCount },
+    { value: 'all', label: 'ทั้งหมด', count: allCount },
+  ]
+  const selected = options.find((option) => option.value === value) ?? options[0]
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  return (
+    <div ref={wrapperRef} className="relative w-full">
+      <button
+        id={id}
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') setOpen(false)
+        }}
+        className="flex w-full items-center gap-3 rounded-xl border border-gray-300 bg-surface-50 px-4 py-2.5 text-left text-base outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+      >
+        <span className="min-w-0 flex-1 truncate">{selected.label}</span>
+        {selected.count !== undefined && (
+          <span className="font-semibold tabular-nums text-surface-600">{selected.count}</span>
+        )}
+        <svg
+          className={`h-4 w-4 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div
+          role="listbox"
+          aria-labelledby={id}
+          className="absolute left-0 right-0 z-50 mt-1 overflow-hidden rounded-xl border border-surface-200 bg-white py-1 shadow-lg"
+        >
+          {options.map((option) => {
+            const isSelected = option.value === value
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="option"
+                aria-selected={isSelected}
+                onClick={() => {
+                  onChange(option.value)
+                  setOpen(false)
+                }}
+                className={`flex w-full items-center gap-3 px-4 py-2 text-left text-base transition-colors ${
+                  isSelected ? 'bg-blue-600 text-white' : 'text-surface-900 hover:bg-blue-50'
+                }`}
+              >
+                <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                {option.count !== undefined && (
+                  <span className={`font-semibold tabular-nums ${isSelected ? 'text-white' : 'text-surface-600'}`}>
+                    {option.count}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

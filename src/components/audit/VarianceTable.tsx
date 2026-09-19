@@ -1,5 +1,6 @@
 import { getPublicUrl } from '../../lib/qcApi'
 import type { InventoryAuditItem } from '../../types'
+import AuditLocationDisplay from './AuditLocationDisplay'
 
 interface VarianceTableProps {
   items: InventoryAuditItem[]
@@ -66,7 +67,9 @@ export default function VarianceTable({ items, showOnlyMismatch }: VarianceTable
                     <div className="text-xs text-gray-500">{item.pr_products?.product_name || ''}</div>
                   </td>
                   <td className="p-3 text-xs text-gray-600">{item.product_category || '-'}</td>
-                  <td className="p-3 text-xs text-gray-600">{item.storage_location || '-'}</td>
+                  <td className="p-3 text-xs text-gray-600">
+                    <AuditLocationDisplay entries={item.location_snapshot} fallback={item.storage_location || '-'} />
+                  </td>
                   <td className="p-3 text-right font-medium">{Number(item.system_qty).toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}</td>
                   <td className="p-3 text-right font-medium">{Number(item.counted_qty).toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}</td>
                   <td className={`p-3 text-right font-bold ${

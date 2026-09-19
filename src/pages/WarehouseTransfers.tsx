@@ -34,18 +34,21 @@ type TransferRow = {
   item_count: number
   product_codes: string
   product_names: string
+  selected_product_qty: number | null
+  selected_product_unit: string | null
 }
 
 type DraftLine = ProductStock & { transfer_qty: string }
 type TransferIndexRow = {
   transfer_id: string
   product_id: string
-  pr_products: { product_code: string; product_name: string } | null
+  qty: number | string
+  pr_products: { product_code: string; product_name: string; unit_name: string | null } | null
 }
 type UserRow = { id: string; username: string | null; email: string | null }
 type SourceStockRow = { product_id: string; qty: number | string; pr_products: { product_code: string; product_name: string; unit_name: string | null } }
 type TransferDetailItem = { id: string; qty: number | string; product_id: string; pr_products: { product_code: string; product_name: string; unit_name: string | null } }
-type TransferDbRow = Omit<TransferRow, 'from_code' | 'to_code' | 'item_count' | 'product_codes' | 'product_names'> & { created_by: string }
+type TransferDbRow = Omit<TransferRow, 'from_code' | 'to_code' | 'item_count' | 'product_codes' | 'product_names' | 'selected_product_qty' | 'selected_product_unit'> & { created_by: string }
 
 const statusLabel = {
   draft: { text: 'ร่าง', css: 'bg-amber-100 text-amber-700' },
@@ -103,7 +106,7 @@ export default function WarehouseTransfers() {
       const [locationRes, transferRes, itemRes, usersRes] = await Promise.all([
         supabase.from('wh_storage_locations').select('*').order('sort_order').order('code'),
         supabase.from('wh_stock_transfers').select('*').order('created_at', { ascending: false }).limit(500),
-        supabase.from('wh_stock_transfer_items').select('transfer_id, product_id, pr_products(product_code, product_name)'),
+        supabase.from('wh_stock_transfer_items').select('transfer_id, product_id, qty, pr_products(product_code, product_name, unit_name)'),
         supabase.from('us_users').select('id, username, email'),
       ])
       if (locationRes.error) throw locationRes.error
@@ -126,22 +129,32 @@ export default function WarehouseTransfers() {
       if (initialProductId && !selectedProduct) {
         const { data: productData } = await supabase
           .from('pr_products')
-          .select('product_code, product_name')
+          .select('product_code, product_name, unit_name')
           .eq('id', initialProductId)
           .maybeSingle()
         selectedProduct = productData
       }
       setHistoryProduct(selectedProduct)
       const userMap = new Map(userData.map((row) => [row.id, row.username || row.email || row.id]))
-      setTransfers(transferData.filter((row) => !productTransferIds || productTransferIds.has(row.id)).map((row) => ({
-        ...row,
-        from_code: locationMap.get(row.from_location_id) || '-',
-        to_code: locationMap.get(row.to_location_id) || '-',
-        item_count: countMap.get(row.id) || 0,
-        created_by: userMap.get(row.created_by) || row.created_by,
-        product_codes: [...new Set(itemData.filter((item) => item.transfer_id === row.id).map((item) => item.pr_products?.product_code).filter(Boolean))].join(', '),
-        product_names: [...new Set(itemData.filter((item) => item.transfer_id === row.id).map((item) => item.pr_products?.product_name).filter(Boolean))].join(', '),
-      })))
+      setTransfers(transferData.filter((row) => !productTransferIds || productTransferIds.has(row.id)).map((row) => {
+        const transferItems = itemData.filter((item) => item.transfer_id === row.id)
+        const selectedProductItems = initialProductId
+          ? transferItems.filter((item) => item.product_id === initialProductId)
+          : []
+        return {
+          ...row,
+          from_code: locationMap.get(row.from_location_id) || '-',
+          to_code: locationMap.get(row.to_location_id) || '-',
+          item_count: countMap.get(row.id) || 0,
+          created_by: userMap.get(row.created_by) || row.created_by,
+          product_codes: [...new Set(transferItems.map((item) => item.pr_products?.product_code).filter(Boolean))].join(', '),
+          product_names: [...new Set(transferItems.map((item) => item.pr_products?.product_name).filter(Boolean))].join(', '),
+          selected_product_qty: initialProductId
+            ? selectedProductItems.reduce((sum, item) => sum + Number(item.qty || 0), 0)
+            : null,
+          selected_product_unit: selectedProductItems[0]?.pr_products?.unit_name || null,
+        }
+      }))
     } catch (error) {
       setMessage({ type: 'error', text: errorMessage(error) })
     } finally {
@@ -316,11 +329,11 @@ export default function WarehouseTransfers() {
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead><tr className="bg-blue-600 text-white"><th className="rounded-tl-xl p-3 text-left">เลขที่ใบย้าย</th><th className="p-3 text-left">วันที่</th>{!initialProductId && <><th className="p-3 text-left">รหัสสินค้า</th><th className="p-3 text-left">ชื่อสินค้า</th></>}<th className="p-3 text-left">ต้นทาง → ปลายทาง</th><th className="p-3 text-center">รายการ</th><th className="p-3 text-left">ผู้ทำรายการ</th><th className="rounded-tr-xl p-3 text-center">สถานะ</th></tr></thead>
+            <thead><tr className="bg-blue-600 text-white"><th className="rounded-tl-xl p-3 text-left">เลขที่ใบย้าย</th><th className="p-3 text-left">วันที่</th>{!initialProductId && <><th className="p-3 text-left">รหัสสินค้า</th><th className="p-3 text-left">ชื่อสินค้า</th></>}<th className="p-3 text-left">ต้นทาง → ปลายทาง</th><th className="p-3 text-center">รายการ</th>{initialProductId && <th className="p-3 text-right">จำนวน</th>}<th className="p-3 text-left">ผู้ทำรายการ</th><th className="rounded-tr-xl p-3 text-center">สถานะ</th></tr></thead>
             <tbody>
-              {loading ? <tr><td colSpan={initialProductId ? 6 : 8} className="p-10 text-center text-gray-500">กำลังโหลด...</td></tr> : filteredTransfers.length === 0 ? <tr><td colSpan={initialProductId ? 6 : 8} className="p-10 text-center text-gray-500">ยังไม่มีประวัติการย้าย</td></tr> : filteredTransfers.map((row) => (
+              {loading ? <tr><td colSpan={initialProductId ? 7 : 8} className="p-10 text-center text-gray-500">กำลังโหลด...</td></tr> : filteredTransfers.length === 0 ? <tr><td colSpan={initialProductId ? 7 : 8} className="p-10 text-center text-gray-500">ยังไม่มีประวัติการย้าย</td></tr> : filteredTransfers.map((row) => (
                 <tr key={row.id} onClick={() => void openDetail(row)} className="cursor-pointer border-b hover:bg-blue-50">
-                  <td className="p-3 font-semibold text-blue-700">{row.transfer_no}</td><td className="p-3">{formatDate(row.posted_at || row.created_at)}</td>{!initialProductId && <><td className="max-w-[220px] p-3 font-medium" title={row.product_codes}>{row.product_codes || '-'}</td><td className="max-w-[320px] truncate p-3" title={row.product_names}>{row.product_names || '-'}</td></>}<td className="p-3 font-medium">{row.from_code} → {row.to_code}</td><td className="p-3 text-center">{row.item_count}</td><td className="p-3">{row.created_by}</td><td className="p-3 text-center"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusLabel[row.status].css}`}>{statusLabel[row.status].text}</span></td>
+                  <td className="p-3 font-semibold text-blue-700">{row.transfer_no}</td><td className="p-3">{formatDate(row.posted_at || row.created_at)}</td>{!initialProductId && <><td className="max-w-[220px] p-3 font-medium" title={row.product_codes}>{row.product_codes || '-'}</td><td className="max-w-[320px] truncate p-3" title={row.product_names}>{row.product_names || '-'}</td></>}<td className="p-3 font-medium">{row.from_code} → {row.to_code}</td><td className="p-3 text-center">{row.item_count}</td>{initialProductId && <td className="p-3 text-right font-semibold tabular-nums">{(row.selected_product_qty ?? 0).toLocaleString()} {row.selected_product_unit?.trim() || 'ชิ้น'}</td>}<td className="p-3">{row.created_by}</td><td className="p-3 text-center"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusLabel[row.status].css}`}>{statusLabel[row.status].text}</span></td>
                 </tr>
               ))}
             </tbody>

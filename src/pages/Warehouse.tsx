@@ -7,9 +7,30 @@ import { useAuthContext } from '../contexts/AuthContext'
 import { Product, ProductType, StockBalance } from '../types'
 import LotCostPopover from '../components/ui/LotCostPopover'
 import Modal from '../components/ui/Modal'
+import ColumnVisibilityMenu from '../components/ui/ColumnVisibilityMenu'
+import { useColumnVisibility, type ColumnVisibilityOption } from '../lib/columnVisibility'
+import { fetchProductLocationLabels, type ProductLocationLabelRow } from '../lib/productLocationLabels'
+import { canManageWarehouseTransfers } from '../lib/warehouseTransferAccess'
 import * as XLSX from 'xlsx'
 
 const BUCKET_PRODUCT_IMAGES = 'product-images'
+const WAREHOUSE_COLUMNS: ColumnVisibilityOption[] = [
+  { id: 'image', label: 'รูป' },
+  { id: 'code', label: 'รหัสสินค้า' },
+  { id: 'type', label: 'ประเภท' },
+  { id: 'category', label: 'หมวดหมู่' },
+  { id: 'name', label: 'ชื่อสินค้า' },
+  { id: 'seller', label: 'ผู้ขาย' },
+  { id: 'orderPoint', label: 'จุดสั่งซื้อ' },
+  { id: 'movement', label: 'Movement' },
+  { id: 'pending', label: 'รอรับเข้า' },
+  { id: 'safety', label: 'Safety stock' },
+  { id: 'total', label: 'รวมในคลัง' },
+  { id: 'locations', label: 'จุดจัดเก็บ' },
+  { id: 'usage', label: 'การใช้' },
+  { id: 'days', label: 'วันขายคงเหลือ' },
+  { id: 'cost', label: 'ต้นทุนสินค้า' },
+]
 type WarehouseProductTypeFilter = '' | ProductType | 'ST'
 type FifoStatus = {
   sellableLotCount: number
@@ -57,6 +78,12 @@ export default function Warehouse() {
   const navigate = useNavigate()
   const { user } = useAuthContext()
   const canSeeCost = user?.role === 'superadmin'
+  const canManageTransfers = canManageWarehouseTransfers(user?.role)
+  const warehouseColumns = useMemo(
+    () => WAREHOUSE_COLUMNS.filter((column) => column.id !== 'cost' || canSeeCost),
+    [canSeeCost],
+  )
+  const { hiddenColumns, isColumnVisible, toggleColumn, resetColumns } = useColumnVisibility('tr-erp:warehouse:hidden-columns:v1')
 
   const [products, setProducts] = useState<Product[]>([])
   const [balances, setBalances] = useState<Record<string, StockBalance>>({})
@@ -84,6 +111,7 @@ export default function Warehouse() {
   const [locationCountMap, setLocationCountMap] = useState<Record<string, number>>({})
   const [locationProduct, setLocationProduct] = useState<Product | null>(null)
   const [locationRows, setLocationRows] = useState<LocationSummary[]>([])
+  const [locationLabels, setLocationLabels] = useState<ProductLocationLabelRow[]>([])
   const [locationHistory, setLocationHistory] = useState<TransferHistory[]>([])
   const [locationLoading, setLocationLoading] = useState(false)
   const [exportingExcel, setExportingExcel] = useState(false)
@@ -114,15 +142,25 @@ export default function Warehouse() {
   async function openLocationDrawer(product: Product) {
     setLocationProduct(product)
     setLocationLoading(true)
-    const [summaryRes, historyRes] = await Promise.all([
-      supabase.rpc('rpc_get_product_location_summary', { p_product_id: product.id }),
-      supabase.rpc('rpc_get_product_transfer_history', { p_product_id: product.id, p_limit: 5 }),
-    ])
-    if (summaryRes.error) console.error('Load product locations failed:', summaryRes.error)
-    if (historyRes.error) console.error('Load product transfer history failed:', historyRes.error)
-    setLocationRows((summaryRes.data || []).map((row: LocationSummary) => ({ ...row, qty: Number(row.qty || 0) })))
-    setLocationHistory((historyRes.data || []).map((row: TransferHistory) => ({ ...row, qty: Number(row.qty || 0) })))
-    setLocationLoading(false)
+    setLocationLabels([])
+    try {
+      const [summaryRes, historyRes, labels] = await Promise.all([
+        supabase.rpc('rpc_get_product_location_summary', { p_product_id: product.id }),
+        supabase.rpc('rpc_get_product_transfer_history', { p_product_id: product.id, p_limit: 5 }),
+        fetchProductLocationLabels(product.id),
+      ])
+      if (summaryRes.error) throw summaryRes.error
+      if (historyRes.error) throw historyRes.error
+      setLocationRows((summaryRes.data || []).map((row: LocationSummary) => ({ ...row, qty: Number(row.qty || 0) })))
+      setLocationHistory((historyRes.data || []).map((row: TransferHistory) => ({ ...row, qty: Number(row.qty || 0) })))
+      setLocationLabels(labels)
+    } catch (error) {
+      console.error('Load product location detail failed:', error)
+      setLocationRows([])
+      setLocationHistory([])
+    } finally {
+      setLocationLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -475,7 +513,7 @@ export default function Warehouse() {
     setExportingExcel(true)
     setExcelError('')
     try {
-      const [freshBalances, freshLocationStock, locationResult, pendingResult, salesResult] = await Promise.all([
+      const [freshBalances, freshLocationStock, locationResult, pendingResult, salesResult, freshLocationLabels] = await Promise.all([
         fetchAllSupabasePages<StockBalance>((from, to) => supabase
           .from('inv_stock_balances')
           .select('id, product_id, on_hand, reserved, safety_stock, created_at, updated_at')
@@ -490,6 +528,11 @@ export default function Warehouse() {
         supabase.from('wh_storage_locations').select('id, code, name, location_type').order('sort_order').order('code'),
         supabase.rpc('rpc_get_pending_po_by_product'),
         salesFromDate ? supabase.rpc('calc_avg_daily_sales', { p_from_date: salesFromDate }) : Promise.resolve({ data: [], error: null }),
+        fetchAllSupabasePages<{ product_id: string; label_type: string; location_id: string | null; display_name: string }>((from, to) => supabase
+          .from('wh_product_location_labels')
+          .select('product_id, label_type, location_id, display_name')
+          .order('product_id')
+          .range(from, to)),
       ])
       if (locationResult.error) throw locationResult.error
       if (pendingResult.error) throw pendingResult.error
@@ -506,6 +549,11 @@ export default function Warehouse() {
         freshSalesMap[row.product_id] = Number(row.total_sold || 0)
       })
       const locations = new Map((locationResult.data || []).map((location: { id: string; code: string; name: string | null; location_type: string }) => [location.id, location]))
+      const moveLocationId = [...locations.values()].find((location) => location.code.trim().toUpperCase() === 'MOVE')?.id
+      const locationLabelMap = new Map(freshLocationLabels.map((label) => [
+        `${label.product_id}:${label.label_type}:${label.location_id || ''}`,
+        label.display_name,
+      ]))
       const locationStockByProduct = new Map<string, Array<{ location_id: string; qty: number }>>()
       freshLocationStock.forEach((stock) => {
         const productRows = locationStockByProduct.get(stock.product_id) || []
@@ -553,9 +601,13 @@ export default function Warehouse() {
         'หน่วย': unitName,
         'ผู้ขาย': p.seller_name || '-',
         'จุดสั่งซื้อ': p.order_point || '-',
+        'ชื่อจุด Movement': moveLocationId
+          ? locationLabelMap.get(`${p.id}:storage:${moveLocationId}`) || 'ไม่มีจุดจัดเก็บ'
+          : 'ไม่มีจุดจัดเก็บ',
         'จำนวนคงเหลือ': specialTracked ? 'ไม่มีค่า' : onHand,
         'รอรับเข้า': specialTracked ? 'ไม่มีค่า' : (pendingQty > 0 ? pendingQty : '-'),
         'Safety stock': specialTracked ? 'ไม่มีค่า' : (safetyStock ?? '-'),
+        'ชื่อจุด Safety stock': locationLabelMap.get(`${p.id}:safety:`) || 'Safety stock',
         'รวมในคลัง': stockDisplay.total,
         'จำนวนจุดจัดเก็บ': specialTracked ? '-' : positiveLocationRows.length,
         'ยอดรวมตามจุดเก็บ': specialTracked ? '-' : locationTotal,
@@ -594,7 +646,7 @@ export default function Warehouse() {
             'รหัสสินค้า': product.product_code,
             'ชื่อสินค้า': product.product_name,
             'รหัสจุดจัดเก็บ': location.code,
-            'ชื่อจุดจัดเก็บ': location.name || '-',
+            'ชื่อจุดจัดเก็บ': locationLabelMap.get(`${stock.product_id}:storage:${stock.location_id}`) || location.name || '-',
             'ประเภทจุดจัดเก็บ': typeLabel,
             'จำนวน': Number(stock.qty || 0),
             'หน่วย': product.unit_name?.trim() || 'ชิ้น',
@@ -720,12 +772,19 @@ export default function Warehouse() {
             {exportingExcel ? 'กำลังเตรียม Excel...' : 'ดาวน์โหลด Excel'}
           </button>
           <div className="basis-full" aria-hidden="true" />
+          <ColumnVisibilityMenu
+            columns={warehouseColumns}
+            hiddenColumns={hiddenColumns}
+            onToggle={toggleColumn}
+            onReset={resetColumns}
+            className="ml-auto"
+          />
           <button
             type="button"
             onClick={() => setOnlyWithoutFifo((value) => !value)}
             disabled={!fifoStatusLoaded}
             title={fifoStatusLoaded ? 'แสดงเฉพาะสินค้าที่ไม่มีล็อต FIFO คงเหลือ' : 'กำลังโหลดข้อมูล FIFO'}
-            className={`ml-auto px-4 py-2.5 rounded-xl font-semibold text-sm border transition-colors whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-50 ${
+            className={`px-4 py-2.5 rounded-xl font-semibold text-sm border transition-colors whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-50 ${
               onlyWithoutFifo
                 ? 'border-red-500 bg-red-500 text-white hover:bg-red-600'
                 : 'border-red-300 bg-white text-red-600 hover:bg-red-50'
@@ -733,20 +792,24 @@ export default function Warehouse() {
           >
             ไม่มี FIFO
           </button>
-          <button
-            type="button"
-            onClick={() => navigate('/warehouse/transfers')}
-            className="px-4 py-2.5 rounded-xl font-semibold text-sm border border-blue-300 bg-white text-blue-700 hover:bg-blue-50 transition-colors whitespace-nowrap"
-          >
-            ประวัติการย้าย
-          </button>
-          <button
-            type="button"
-            onClick={() => navigate('/warehouse/transfers?create=1')}
-            className="shrink-0 px-4 py-2.5 rounded-xl font-semibold text-sm border border-blue-600 bg-blue-600 text-white hover:bg-blue-700 transition-colors whitespace-nowrap"
-          >
-            + สร้างใบย้าย
-          </button>
+          {canManageTransfers && (
+            <>
+              <button
+                type="button"
+                onClick={() => navigate('/warehouse/transfers')}
+                className="px-4 py-2.5 rounded-xl font-semibold text-sm border border-blue-300 bg-white text-blue-700 hover:bg-blue-50 transition-colors whitespace-nowrap"
+              >
+                ประวัติการย้าย
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate('/warehouse/transfers?create=1')}
+                className="shrink-0 px-4 py-2.5 rounded-xl font-semibold text-sm border border-blue-600 bg-blue-600 text-white hover:bg-blue-700 transition-colors whitespace-nowrap"
+              >
+                + สร้างใบย้าย
+              </button>
+            </>
+          )}
         </div>
 
         {excelError && (
@@ -762,25 +825,25 @@ export default function Warehouse() {
         ) : filteredProducts.length === 0 ? (
           <div className="text-center py-12 text-gray-500">ไม่พบข้อมูลสินค้า</div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="max-h-[60dvh] overflow-auto rounded-t-xl">
             <table className="w-full">
-              <thead>
+              <thead className="sticky top-0 z-20 bg-blue-600 shadow-sm">
                 <tr className="bg-blue-600 text-white text-xs leading-tight [&>th]:whitespace-normal [&>th]:break-words">
-                  <th className="p-3 text-left font-semibold rounded-tl-xl">รูป</th>
-                  <th className="p-3 text-left font-semibold">รหัสสินค้า</th>
-                  <th className="p-3 text-center font-semibold">ประเภท</th>
-                  <th className="p-3 text-left font-semibold">หมวดหมู่</th>
-                  <th className="p-3 text-left font-semibold">ชื่อสินค้า</th>
-                  <th className="p-3 text-left font-semibold">ผู้ขาย</th>
-                  <th className="p-3 text-center font-semibold">จุดสั่งซื้อ</th>
-                  <th className="p-3 text-center font-semibold">จำนวนคงเหลือ</th>
-                  <th className="p-3 text-center font-semibold">รอรับเข้า</th>
-                  <th className="p-3 text-center font-semibold">Safety stock</th>
-                  <th className="p-3 text-center font-semibold">รวมในคลัง</th>
-                  <th className="p-3 text-center font-semibold">จุดจัดเก็บ</th>
-                  <th className="p-3 text-center font-semibold">การใช้</th>
-                  <th className={`p-3 text-center font-semibold ${!canSeeCost ? 'rounded-tr-xl' : ''}`}>วันขายคงเหลือ</th>
-                  {canSeeCost && <th className="p-3 text-right font-semibold rounded-tr-xl">ต้นทุนสินค้า</th>}
+                  {isColumnVisible('image') && <th className="p-3 text-left font-semibold rounded-tl-xl">รูป</th>}
+                  {isColumnVisible('code') && <th className="p-3 text-left font-semibold">รหัสสินค้า</th>}
+                  {isColumnVisible('type') && <th className="p-3 text-center font-semibold">ประเภท</th>}
+                  {isColumnVisible('category') && <th className="p-3 text-left font-semibold">หมวดหมู่</th>}
+                  {isColumnVisible('name') && <th className="p-3 text-left font-semibold">ชื่อสินค้า</th>}
+                  {isColumnVisible('seller') && <th className="p-3 text-left font-semibold">ผู้ขาย</th>}
+                  {isColumnVisible('orderPoint') && <th className="p-3 text-center font-semibold">จุดสั่งซื้อ</th>}
+                  {isColumnVisible('movement') && <th className="p-3 text-center font-semibold">Movement</th>}
+                  {isColumnVisible('pending') && <th className="p-3 text-center font-semibold">รอรับเข้า</th>}
+                  {isColumnVisible('safety') && <th className="p-3 text-center font-semibold">Safety stock</th>}
+                  {isColumnVisible('total') && <th className="p-3 text-center font-semibold">รวมในคลัง</th>}
+                  {isColumnVisible('locations') && <th className="p-3 text-center font-semibold">จุดจัดเก็บ</th>}
+                  {isColumnVisible('usage') && <th className="p-3 text-center font-semibold">การใช้</th>}
+                  {isColumnVisible('days') && <th className="p-3 text-center font-semibold">วันขายคงเหลือ</th>}
+                  {canSeeCost && isColumnVisible('cost') && <th className="p-3 text-right font-semibold rounded-tr-xl">ต้นทุนสินค้า</th>}
                 </tr>
               </thead>
               <tbody>
@@ -804,7 +867,7 @@ export default function Warehouse() {
                       }}
                       className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${specialTracked ? '' : 'cursor-pointer'} ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}
                     >
-                      <td className="p-3">
+                      {isColumnVisible('image') && <td className="p-3">
                         <div className="inline-flex items-center gap-1">
                           {hasFifo && (
                             <span
@@ -817,9 +880,9 @@ export default function Warehouse() {
                           )}
                           <ProductImage code={product.product_code} name={product.product_name} />
                         </div>
-                      </td>
-                      <td className="p-3 font-medium">{product.product_code}</td>
-                      <td className="p-3 text-center">
+                      </td>}
+                      {isColumnVisible('code') && <td className="p-3 font-medium">{product.product_code}</td>}
+                      {isColumnVisible('type') && <td className="p-3 text-center">
                         <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${
                           specialTracked
                             ? 'bg-sky-100 text-sky-700'
@@ -831,21 +894,21 @@ export default function Warehouse() {
                         }`}>
                           {specialTracked ? 'ST' : (product.product_type || 'FG')}
                         </span>
-                      </td>
-                      <td className="p-3">{product.product_category || '-'}</td>
-                      <td className="p-3">{product.product_name}</td>
-                      <td className="p-3 text-sm">{product.seller_name || '-'}</td>
-                      <td className="p-3 text-center">{product.order_point ? `${Number(product.order_point).toLocaleString()} ${unitName}` : '-'}</td>
-                      <td className={`p-3 text-center ${isLow ? 'bg-orange-50 text-orange-700 font-semibold' : ''}`}>
+                      </td>}
+                      {isColumnVisible('category') && <td className="p-3">{product.product_category || '-'}</td>}
+                      {isColumnVisible('name') && <td className="p-3">{product.product_name}</td>}
+                      {isColumnVisible('seller') && <td className="p-3 text-sm">{product.seller_name || '-'}</td>}
+                      {isColumnVisible('orderPoint') && <td className="p-3 text-center">{product.order_point ? `${Number(product.order_point).toLocaleString()} ${unitName}` : '-'}</td>}
+                      {isColumnVisible('movement') && <td className={`p-3 text-center ${isLow ? 'bg-orange-50 text-orange-700 font-semibold' : ''}`}>
                         {specialTracked ? <span className="text-xs text-gray-400">ไม่มีค่า</span> : `${onHand.toLocaleString()} ${unitName}`}
-                      </td>
-                      <td className="p-3 text-center">
+                      </td>}
+                      {isColumnVisible('pending') && <td className="p-3 text-center">
                         {specialTracked ? <span className="text-xs text-gray-400">ไม่มีค่า</span> : (pendingQty > 0 ? `${pendingQty.toLocaleString()} ${unitName}` : '-')}
-                      </td>
-                      <td className="p-3 text-center">
+                      </td>}
+                      {isColumnVisible('safety') && <td className="p-3 text-center">
                         {specialTracked ? <span className="text-xs text-gray-400">ไม่มีค่า</span> : (safetyStock !== null ? `${safetyStock.toLocaleString()} ${unitName}` : '-')}
-                      </td>
-                      <td className="p-3 text-center font-medium text-gray-700 align-middle">
+                      </td>}
+                      {isColumnVisible('total') && <td className="p-3 text-center font-medium text-gray-700 align-middle">
                         <span title={specialTracked ? `ยอดรวมจากสินค้าผลิตที่ผูกไว้ ${specialTrackedSources[product.id]?.length || 0} SKU (ไม่กระทบ FIFO)` : undefined}>
                           {totalInStock.toLocaleString()} {unitName}
                         </span>
@@ -859,8 +922,8 @@ export default function Warehouse() {
                             รวม {specialTrackedSources[product.id]?.length || 0} SKU
                           </button>
                         )}
-                      </td>
-                      <td className="p-3 text-center">
+                      </td>}
+                      {isColumnVisible('locations') && <td className="p-3 text-center">
                         {specialTracked ? <span className="text-gray-400">-</span> : (
                           <button
                             type="button"
@@ -870,16 +933,16 @@ export default function Warehouse() {
                             {locationCountMap[product.id] || 0} จุด
                           </button>
                         )}
-                      </td>
-                      <td className="p-3 text-center text-sm text-gray-600">
+                      </td>}
+                      {isColumnVisible('usage') && <td className="p-3 text-center text-sm text-gray-600">
                         {(() => {
                           if (specialTracked) return <span className="text-gray-400">-</span>
                           const avg = calcAvgDailySales(product.id)
                           if (avg === null) return <span className="text-gray-400">-</span>
                           return <span>{avg.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {unitName}/วัน</span>
                         })()}
-                      </td>
-                      <td className="p-3 text-center">
+                      </td>}
+                      {isColumnVisible('days') && <td className="p-3 text-center">
                         {(() => {
                           if (specialTracked) return <span className="text-gray-400">-</span>
                           const days = calcDaysRemaining(product.id, onHand)
@@ -894,8 +957,8 @@ export default function Warehouse() {
                                   : 'text-green-600'
                           return <span className={color}>{days} วัน</span>
                         })()}
-                      </td>
-                      {canSeeCost && (
+                      </td>}
+                      {canSeeCost && isColumnVisible('cost') && (
                         <td className="p-3 text-right font-medium">
                           {specialTracked ? (
                             <span className="text-xs font-normal text-gray-400">ไม่มีค่า</span>
@@ -946,10 +1009,28 @@ export default function Warehouse() {
                 <div className="py-16 text-center text-gray-500">กำลังโหลด...</div>
               ) : (
                 <>
-                  <div className="mb-5 rounded-xl border border-blue-100 bg-blue-50 p-4">
-                    <div className="text-sm text-blue-700">ยอดรวมทุกจุด</div>
-                    <div className="mt-1 text-2xl font-bold text-blue-900">
-                      {locationRows.reduce((sum, row) => sum + row.qty, 0).toLocaleString()} {locationProduct.unit_name?.trim() || 'ชิ้น'}
+                  <div className="mb-5 grid grid-cols-2 gap-3">
+                    <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
+                      <div className="flex items-center justify-between gap-3 text-sm text-blue-700">
+                        <span>Movement</span>
+                        <span className="min-w-0 truncate text-right text-xs font-medium text-blue-600" title={locationLabels.find((row) => row.label_type === 'storage' && row.code.trim().toUpperCase() === 'MOVE')?.configured_name || 'ไม่มีจุดจัดเก็บ'}>
+                          {locationLabels.find((row) => row.label_type === 'storage' && row.code.trim().toUpperCase() === 'MOVE')?.configured_name || 'ไม่มีจุดจัดเก็บ'}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-2xl font-bold text-blue-900">
+                        {getStockDisplay(locationProduct.id).onHand.toLocaleString()} {locationProduct.unit_name?.trim() || 'ชิ้น'}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-amber-100 bg-amber-50 p-4">
+                      <div className="flex items-center justify-between gap-3 text-sm text-amber-700">
+                        <span>Safety stock</span>
+                        <span className="min-w-0 truncate text-right text-xs font-medium text-amber-700" title={locationLabels.find((row) => row.label_type === 'safety')?.configured_name || 'ไม่มีจุดจัดเก็บ'}>
+                          {locationLabels.find((row) => row.label_type === 'safety')?.configured_name || 'ไม่มีจุดจัดเก็บ'}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-2xl font-bold text-amber-900">
+                        {(getStockDisplay(locationProduct.id).safetyStock ?? 0).toLocaleString()} {locationProduct.unit_name?.trim() || 'ชิ้น'}
+                      </div>
                     </div>
                   </div>
                   <h3 className="mb-2 font-semibold text-gray-900">ยอดตามจุดจัดเก็บ</h3>
@@ -977,10 +1058,12 @@ export default function Warehouse() {
                 </>
               )}
             </div>
-            <div className="flex gap-2 border-t p-4">
-              <button type="button" onClick={() => navigate(`/warehouse/transfers?create=1&product=${locationProduct.id}`)} className="flex-1 rounded-xl bg-blue-600 px-4 py-2.5 font-semibold text-white hover:bg-blue-700">ย้ายตำแหน่ง</button>
-              <button type="button" onClick={() => navigate(`/warehouse/transfers?product=${locationProduct.id}`)} className="flex-1 rounded-xl border border-blue-300 px-4 py-2.5 font-semibold text-blue-700 hover:bg-blue-50">ดูประวัติทั้งหมด</button>
-            </div>
+            {canManageTransfers && (
+              <div className="flex gap-2 border-t p-4">
+                <button type="button" onClick={() => navigate(`/warehouse/transfers?create=1&product=${locationProduct.id}`)} className="flex-1 rounded-xl bg-blue-600 px-4 py-2.5 font-semibold text-white hover:bg-blue-700">ย้ายตำแหน่ง</button>
+                <button type="button" onClick={() => navigate(`/warehouse/transfers?product=${locationProduct.id}`)} className="flex-1 rounded-xl border border-blue-300 px-4 py-2.5 font-semibold text-blue-700 hover:bg-blue-50">ดูประวัติทั้งหมด</button>
+              </div>
+            )}
           </aside>
         </div>
       )}

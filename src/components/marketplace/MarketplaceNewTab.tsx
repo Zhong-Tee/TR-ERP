@@ -9,6 +9,7 @@ import {
   parseMarketplaceWorkbook,
   type MpParsedOrder,
 } from '../../lib/marketplaceImport'
+import { getMarketplaceImportErrorMessage } from '../../lib/marketplaceImportError'
 import { formatDateTime } from '../../lib/utils'
 import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import UrgencyBadge from '../common/UrgencyBadge'
@@ -221,28 +222,14 @@ export default function MarketplaceNewTab({
         })
       }
 
-      // insert batch
-      const { data: batch, error: batchError } = await supabase
-        .from('mp_import_batches')
-        .insert({
-          config_id: config.id,
-          file_name: file.name,
-          row_count: result.rowCount,
-          order_count: importOrders.length,
-          duplicate_count: duplicateCount,
-          uploaded_by: user.id,
-        })
-        .select('id')
-        .single()
-      if (batchError) throw batchError
-
-      // insert orders + items (chunked)
-      let insertedOrders = 0
-      let unmatchedSku = 0
-      for (const chunk of chunked(importOrders, 50)) {
-        const payload = chunk.map((o: MpParsedOrder) => ({
-          batch_id: batch.id,
-          config_id: config.id,
+      // ส่งทั้ง batch ไปให้ฐานข้อมูลบันทึกใน transaction เดียวกัน
+      // RPC ตรวจรายการซ้ำโดยไม่ติดข้อจำกัด RLS และกันการ import พร้อมกันด้วย ON CONFLICT
+      const unmatchedSkuByOrder = new Map<string, number>()
+      const payload = importOrders.map((o: MpParsedOrder) => {
+        const channelCode = o.channel_code || config.channel_code
+        const built = buildMpItemRows('', o.items, skuToProductId)
+        unmatchedSkuByOrder.set(`${channelCode}\u0000${o.marketplace_order_no}`, built.unmatchedSku)
+        return {
           channel_code: o.channel_code || config.channel_code,
           shipping_option: o.shipping_option,
           urgency_label: o.urgency_label,
@@ -266,31 +253,41 @@ export default function MarketplaceNewTab({
           raw_snapshot: o.raw_snapshot,
           ship_due_at: o.ship_due_at,
           overdue_at: o.overdue_at,
-          status: 'new',
-        }))
-        const { data: inserted, error: orderError } = await supabase
-          .from('mp_orders')
-          .insert(payload)
-          .select('id, marketplace_order_no, channel_code')
-        if (orderError) throw orderError
-        insertedOrders += (inserted || []).length
-
-        const idByOrderNo = new Map<string, string>()
-        ;(inserted || []).forEach((r: { id: string; marketplace_order_no: string; channel_code: string }) =>
-          idByOrderNo.set(`${r.channel_code}\u0000${r.marketplace_order_no}`, r.id),
-        )
-        const itemsPayload = chunk.flatMap((o) => {
-          const mpOrderId = idByOrderNo.get(`${o.channel_code || config.channel_code}\u0000${o.marketplace_order_no}`)
-          if (!mpOrderId) return []
-          const built = buildMpItemRows(mpOrderId, o.items, skuToProductId)
-          unmatchedSku += built.unmatchedSku
-          return built.rows
-        })
-        for (const itemChunk of chunked(itemsPayload, CHUNK)) {
-          const { error: itemError } = await supabase.from('mp_order_items').insert(itemChunk)
-          if (itemError) throw itemError
+          items: built.rows.map((item) => ({
+            line_index: item.line_index,
+            product_name_raw: item.product_name_raw,
+            sku_ref: item.sku_ref,
+            variation: item.variation,
+            qty: item.qty,
+            unit_price: item.unit_price,
+            line_total: item.line_total,
+            raw_snapshot: item.raw_snapshot,
+            product_id: item.product_id,
+          })),
         }
-      }
+      })
+      const { data: importResult, error: importError } = await supabase.rpc('import_marketplace_orders', {
+        p_config_id: config.id,
+        p_file_name: file.name,
+        p_row_count: result.rowCount,
+        p_known_duplicate_count: duplicateCount,
+        p_orders: payload,
+      })
+      if (importError) throw importError
+
+      const summary = (Array.isArray(importResult) ? importResult[0] : importResult) as {
+        imported_count?: number
+        duplicate_count?: number
+        imported_order_keys?: Array<{ channel_code: string; marketplace_order_no: string }>
+      } | null
+      if (!summary) throw new Error('Marketplace import returned no summary')
+
+      const insertedOrders = Number(summary.imported_count) || 0
+      const totalDuplicateCount = Number(summary.duplicate_count) || 0
+      const unmatchedSku = (summary.imported_order_keys || []).reduce(
+        (total, order) => total + (unmatchedSkuByOrder.get(`${order.channel_code}\u0000${order.marketplace_order_no}`) || 0),
+        0,
+      )
 
       const warningText = result.warnings.length
         ? `\n\nคำเตือน:\n${result.warnings.slice(0, 8).join('\n')}${result.warnings.length > 8 ? '\n...' : ''}`
@@ -299,13 +296,14 @@ export default function MarketplaceNewTab({
       const trackingText = trackingSkipped > 0 ? `\nข้ามรายการที่มีเลขพัสดุ ${trackingSkipped} ออเดอร์` : ''
       showMessage({
         title: 'นำเข้าสำเร็จ',
-        message: `นำเข้า ${insertedOrders} ออเดอร์ (${result.rowCount} แถว)\nข้ามรายการซ้ำ ${duplicateCount} ออเดอร์${trackingText}${skuText}${warningText}`,
+        message: `นำเข้า ${insertedOrders} ออเดอร์ (${result.rowCount} แถว)\nข้ามรายการซ้ำ ${totalDuplicateCount} ออเดอร์${trackingText}${skuText}${warningText}`,
       })
       window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
       onChanged()
       loadOrders()
     } catch (err) {
-      showMessage({ title: 'นำเข้าไม่สำเร็จ', message: (err as Error).message || String(err) })
+      console.error('Marketplace import failed:', err)
+      showMessage({ title: 'นำเข้าไม่สำเร็จ', message: getMarketplaceImportErrorMessage(err) })
     } finally {
       setImporting(false)
       if (fileInputRef.current) fileInputRef.current.value = ''

@@ -95,6 +95,7 @@ export default function MobileCountView() {
     countedQty: number
     locationMatch: boolean
     actualLocation?: string
+    actualLocationKey?: string
     countedSafetyStock?: number
   }) {
     if (!selectedItem || !user?.id) return
@@ -105,6 +106,7 @@ export default function MobileCountView() {
         countedQty: data.countedQty,
         locationMatch: data.locationMatch,
         actualLocation: data.actualLocation || null,
+        actualLocationKey: data.actualLocationKey || null,
         countedSafetyStock: data.countedSafetyStock ?? null,
         countedBy: user.id,
       })
@@ -310,7 +312,9 @@ export default function MobileCountView() {
                     <div className="font-semibold text-sm text-gray-900 truncate">{productCode}</div>
                     <div className="text-xs text-gray-500 truncate">{productName}</div>
                     <div className="text-xs text-red-600 font-medium mt-0.5">
-                      {item.system_location || item.storage_location || '-'}
+                      {Array.isArray(item.location_snapshot) && item.location_snapshot.length > 0
+                        ? item.location_snapshot.map((location) => `${location.code}: ${location.name}`).join(' · ')
+                        : (item.system_location || item.storage_location || '-')}
                     </div>
                     {audit.show_system_qty && (
                       <div className="text-xs text-blue-700 font-semibold mt-0.5">

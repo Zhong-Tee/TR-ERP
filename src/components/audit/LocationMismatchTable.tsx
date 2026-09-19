@@ -1,5 +1,6 @@
 import { getPublicUrl } from '../../lib/qcApi'
 import type { InventoryAuditItem } from '../../types'
+import { getAuditedLocationName } from '../../lib/productLocationLabels'
 
 interface LocationMismatchTableProps {
   items: InventoryAuditItem[]
@@ -53,7 +54,7 @@ export default function LocationMismatchTable({ items }: LocationMismatchTablePr
                   <div className="text-xs text-gray-500">{item.pr_products?.product_name || ''}</div>
                 </td>
                 <td className="p-3 text-xs text-gray-600">{item.product_category || '-'}</td>
-                <td className="p-3 font-medium text-gray-600">{item.system_location || '-'}</td>
+                <td className="p-3 font-medium text-gray-600">{getAuditedLocationName(item)}</td>
                 <td className="p-3 font-bold text-orange-700">{item.actual_location || '-'}</td>
                 <td className="p-3 text-center">
                   <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-bold bg-orange-500 text-white">

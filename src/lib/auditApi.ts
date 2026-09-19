@@ -1,5 +1,11 @@
 import { supabase } from './supabase'
 import { fetchAllSupabasePages } from './supabasePagination'
+import {
+  fetchDistinctProductLocationNames,
+  formatLocationSnapshot,
+  loadProductLocationSnapshotMap,
+  locationSnapshotMatches,
+} from './productLocationLabels'
 import type { AuditType, InventoryAudit, InventoryAuditItem } from '../types'
 
 const AUDIT_QUERY_BATCH_SIZE = 100
@@ -245,11 +251,6 @@ export async function createAudit(input: CreateAuditInput) {
 
     if (input.auditType === 'category' && input.scopeFilter?.categories?.length) {
       productQuery = productQuery.in('product_category', input.scopeFilter.categories)
-    } else if (input.auditType === 'location' && input.scopeFilter?.locations?.length) {
-      const locationFilters = input.scopeFilter.locations
-        .map((loc) => `storage_location.ilike.%${loc}%`)
-        .join(',')
-      productQuery = productQuery.or(locationFilters)
     } else if (input.auditType === 'custom' && input.scopeFilter?.product_ids?.length) {
       productQuery = productQuery.in('id', input.scopeFilter.product_ids)
     }
@@ -266,15 +267,36 @@ export async function createAudit(input: CreateAuditInput) {
     // 3. ดึง stock balance + safety stock
     const productIds = products.map((p) => p.id)
     let stockSnapshots: Record<string, AuditStockSnapshot>
+    let locationSnapshots: Awaited<ReturnType<typeof loadProductLocationSnapshotMap>>
     try {
       stockSnapshots = await loadAuditStockSnapshots(productIds)
+      locationSnapshots = await loadProductLocationSnapshotMap(
+        products,
+        Object.fromEntries(Object.entries(stockSnapshots).map(([productId, snapshot]) => [
+          productId,
+          {
+            systemQty: snapshot.systemQty,
+            systemSafetyStock: Number(snapshot.systemSafetyStock || 0),
+          },
+        ])),
+      )
     } catch (error) {
       throw new AuditCreateError('snapshot', error)
+    }
+
+    if (input.auditType === 'location' && input.scopeFilter?.locations?.length) {
+      products = products.filter((product) => locationSnapshotMatches(
+        locationSnapshots[product.id] || [],
+        input.scopeFilter?.locations || [],
+      ))
+      if (!products.length) throw new AuditCreateError('products', new Error('ไม่พบสินค้าตามจุดจัดเก็บที่เลือก'))
     }
 
     // 4. สร้าง audit items พร้อม snapshot
     const items = products.map((p) => {
       const snapshot = stockSnapshots[p.id] || { systemQty: 0, systemSafetyStock: 0 }
+      const locationSnapshot = locationSnapshots[p.id] || []
+      const locationSummary = formatLocationSnapshot(locationSnapshot)
       return {
         audit_id: audit.id,
         product_id: p.id,
@@ -282,10 +304,11 @@ export async function createAudit(input: CreateAuditInput) {
         counted_qty: 0,
         variance: 0,
         is_counted: false,
-        storage_location: p.storage_location || null,
+        storage_location: locationSummary === '-' ? (p.storage_location || null) : locationSummary,
         product_category: p.product_category || null,
         unit_name: p.unit_name?.trim() || 'ชิ้น',
-        system_location: p.storage_location || null,
+        system_location: locationSummary === '-' ? (p.storage_location || null) : locationSummary,
+        location_snapshot: locationSnapshot,
         system_safety_stock: snapshot.systemSafetyStock,
       }
     })
@@ -334,6 +357,7 @@ interface SaveCountInput {
   countedQty: number
   locationMatch: boolean
   actualLocation?: string | null
+  actualLocationKey?: string | null
   countedSafetyStock?: number | null
   countedBy: string
 }
@@ -368,6 +392,7 @@ export async function saveCount(input: SaveCountInput) {
       counted_at: now,
       location_match: input.locationMatch,
       actual_location: input.locationMatch ? null : (input.actualLocation || null),
+      actual_location_key: input.locationMatch ? null : (input.actualLocationKey || 'movement'),
       counted_safety_stock: input.countedSafetyStock ?? null,
       safety_stock_match: safetyMatch,
     })
@@ -380,6 +405,7 @@ export async function saveCount(input: SaveCountInput) {
     log_type: 'count',
     counted_qty: input.countedQty,
     actual_location: input.locationMatch ? null : (input.actualLocation || null),
+    actual_location_key: input.locationMatch ? null : (input.actualLocationKey || 'movement'),
     counted_safety_stock: input.countedSafetyStock ?? null,
     counted_by: input.countedBy,
     counted_at: now,
@@ -527,13 +553,18 @@ export async function createAdjustmentFromAudit(auditId: string) {
     throw new Error('ไม่มีรายการที่ต้องปรับ')
   }
 
-  // อัปเดต storage_location สำหรับรายการที่จุดเก็บไม่ตรง
+  // อัปเดตชื่อของ bucket/จุดจัดเก็บที่ผู้ตรวจระบุว่าไม่ตรง
   if (locationItems.length) {
     for (const item of locationItems) {
-      await supabase
-        .from('pr_products')
-        .update({ storage_location: item.actual_location })
-        .eq('id', item.product_id)
+      const locationKey = item.actual_location_key || 'movement'
+      const isStorage = locationKey.startsWith('storage:')
+      const { error } = await supabase.rpc('rpc_update_product_location_label', {
+        p_product_id: item.product_id,
+        p_label_type: isStorage ? 'storage' : locationKey === 'safety' ? 'safety' : 'movement',
+        p_location_id: isStorage ? locationKey.slice('storage:'.length) : null,
+        p_display_name: item.actual_location,
+      })
+      if (error) throw error
     }
   }
 
@@ -628,14 +659,7 @@ export async function fetchDistinctCategories(): Promise<string[]> {
 }
 
 export async function fetchDistinctLocations(): Promise<string[]> {
-  const { data, error } = await supabase
-    .from('pr_products')
-    .select('storage_location')
-    .eq('is_active', true)
-    .not('storage_location', 'is', null)
-  if (error) throw error
-  const unique = [...new Set((data || []).map((d) => d.storage_location).filter(Boolean))]
-  return unique.sort()
+  return fetchDistinctProductLocationNames()
 }
 
 export async function fetchAuditors(): Promise<{ id: string; username: string }[]> {

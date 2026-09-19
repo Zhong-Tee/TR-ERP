@@ -9,6 +9,7 @@ interface ProductCountCardProps {
     countedQty: number
     locationMatch: boolean
     actualLocation?: string
+    actualLocationKey?: string
     countedSafetyStock?: number
   }) => Promise<void>
   onCancel: () => void
@@ -23,6 +24,10 @@ export default function ProductCountCard({ item, showSystemQty = false, onSave, 
     item.location_match ?? null
   )
   const [actualLocation, setActualLocation] = useState(item.actual_location || '')
+  const locationSnapshot = Array.isArray(item.location_snapshot) ? item.location_snapshot : []
+  const [actualLocationKey, setActualLocationKey] = useState(
+    item.actual_location_key || locationSnapshot[0]?.key || 'movement'
+  )
   const [countedSafetyStock, setCountedSafetyStock] = useState<string>(
     item.counted_safety_stock != null ? String(item.counted_safety_stock) : ''
   )
@@ -45,6 +50,7 @@ export default function ProductCountCard({ item, showSystemQty = false, onSave, 
       countedQty: Number(countedQty),
       locationMatch: locationMatch!,
       actualLocation: locationMatch === false ? actualLocation.trim() : undefined,
+      actualLocationKey: locationMatch === false ? actualLocationKey : undefined,
       countedSafetyStock: countedSafetyStock !== '' ? Number(countedSafetyStock) : undefined,
     })
   }
@@ -72,9 +78,18 @@ export default function ProductCountCard({ item, showSystemQty = false, onSave, 
         <div>
           <div className="text-lg font-bold text-gray-900">{productCode}</div>
           <div className="text-sm text-gray-600 mt-0.5">{productName}</div>
-          <div className="text-sm text-red-600 font-semibold mt-1">
-            จุดเก็บ: {systemLocation}
-          </div>
+          {locationSnapshot.length > 0 ? (
+            <div className="mt-2 grid grid-cols-1 gap-1 rounded-lg border border-surface-200 bg-surface-50 p-2 text-xs">
+              {locationSnapshot.map((location) => (
+                <div key={location.key} className="flex items-center justify-between gap-3">
+                  <span className="min-w-0 truncate text-surface-600"><b>{location.code}</b> · {location.name}</span>
+                  <span className="shrink-0 font-semibold tabular-nums text-surface-800">{location.qty.toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-sm text-red-600 font-semibold mt-1">จุดเก็บ: {systemLocation}</div>
+          )}
           {showSystemQty && (
             <div className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-lg">
               <span className="text-xs font-medium text-blue-700">สต๊อคคงเหลือ (ระบบ)</span>
@@ -130,13 +145,26 @@ export default function ProductCountCard({ item, showSystemQty = false, onSave, 
             </button>
           </div>
           {locationMatch === false && (
-            <input
-              type="text"
-              value={actualLocation}
-              onChange={(e) => setActualLocation(e.target.value)}
-              placeholder="กรอกจุดเก็บจริงที่พบ"
-              className="w-full px-4 py-3 border-2 rounded-xl text-sm mt-2 focus:border-red-500 focus:ring-2 focus:ring-red-200"
-            />
+            <div className="mt-2 space-y-2">
+              {locationSnapshot.length > 0 && (
+                <select
+                  value={actualLocationKey}
+                  onChange={(event) => setActualLocationKey(event.target.value)}
+                  className="w-full rounded-xl border-2 px-4 py-3 text-sm focus:border-red-500 focus:ring-2 focus:ring-red-200"
+                >
+                  {locationSnapshot.map((location) => (
+                    <option key={location.key} value={location.key}>{location.code} · {location.name}</option>
+                  ))}
+                </select>
+              )}
+              <input
+                type="text"
+                value={actualLocation}
+                onChange={(e) => setActualLocation(e.target.value)}
+                placeholder="กรอกชื่อจุดจัดเก็บจริงที่พบ"
+                className="w-full rounded-xl border-2 px-4 py-3 text-sm focus:border-red-500 focus:ring-2 focus:ring-red-200"
+              />
+            </div>
           )}
         </div>
 

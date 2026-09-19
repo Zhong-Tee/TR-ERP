@@ -373,7 +373,7 @@ export async function parseMarketplaceWorkbook(file: File, config: MpParseConfig
 
   const wanted = (config.sheet_name || '').trim()
   const sheetName = wanted && wb.SheetNames.includes(wanted) ? wanted : wb.SheetNames[0]
-  if (!sheetName) throw new Error('ไม่พบ sheet ในไฟล์')
+  if (!sheetName) throw new Error('ไม่พบแผ่นงานในไฟล์')
   const sheet = wb.Sheets[sheetName]
 
   const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: true, defval: null })

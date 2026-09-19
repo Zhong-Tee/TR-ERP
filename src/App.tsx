@@ -26,6 +26,7 @@ import WarehouseAudit from './pages/WarehouseAudit'
 import WarehouseAdjust from './pages/WarehouseAdjust'
 import WarehouseSub from './pages/WarehouseSub'
 import WarehouseTransfers from './pages/WarehouseTransfers'
+import { WAREHOUSE_TRANSFER_ROLES } from './lib/warehouseTransferAccess'
 import CreateAuditForm from './components/audit/CreateAuditForm'
 import MobileCountView from './components/audit/MobileCountView'
 import AuditReviewView from './components/audit/AuditReviewView'
@@ -445,7 +446,7 @@ function AppRoutes() {
       <Route
         path="/warehouse"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store', 'account']}>
             <Layout>
               <Warehouse />
             </Layout>
@@ -455,7 +456,7 @@ function AppRoutes() {
       <Route
         path="/warehouse/transfers"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store']}>
+          <ProtectedRoute allowedRoles={[...WAREHOUSE_TRANSFER_ROLES]}>
             <Layout>
               <WarehouseTransfers />
             </Layout>

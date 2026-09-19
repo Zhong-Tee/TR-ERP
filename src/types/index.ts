@@ -564,7 +564,16 @@ export interface InventoryAuditItem {
   unit_name?: string | null
   system_location?: string | null
   actual_location?: string | null
+  actual_location_key?: string | null
   location_match?: boolean | null
+  location_snapshot?: Array<{
+    key: string
+    label_type: 'movement' | 'storage' | 'safety'
+    location_id: string | null
+    code: string
+    name: string
+    qty: number
+  }> | null
   system_safety_stock?: number | null
   counted_safety_stock?: number | null
   safety_stock_match?: boolean | null
@@ -585,6 +594,7 @@ export interface InventoryAuditCountLog {
   log_type: 'count' | 'location' | 'safety_stock'
   counted_qty?: number | null
   actual_location?: string | null
+  actual_location_key?: string | null
   counted_safety_stock?: number | null
   counted_by?: string | null
   counted_at: string
