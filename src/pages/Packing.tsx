@@ -567,6 +567,7 @@ export default function Packing() {
   const [shippedOrders, setShippedOrders] = useState<
     Array<{
       id: string
+      work_order_id: string | null
       work_order_name: string | null
       shipped_time: string | null
       channel_code: string | null
@@ -588,6 +589,7 @@ export default function Packing() {
   const [aggregatedData, setAggregatedData] = useState<PackingItem[][]>([])
   const [currentIndex, setCurrentIndex] = useState(-1)
   const [currentWorkOrderName, setCurrentWorkOrderName] = useState<string | null>(null)
+  const [currentWorkOrderId, setCurrentWorkOrderId] = useState<string | null>(null)
   const [packStartTime, setPackStartTime] = useState<Date | null>(null)
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: '' | 'success' | 'error' }>({
     text: '',
@@ -739,7 +741,13 @@ export default function Packing() {
     return data as { success: boolean; shipped_count: number; closed_at: string }
   }
 
-  const handleSelectNewWorkOrder = async (workOrderName: string, hasTracking: boolean, hasBillsWithTracking: boolean, viewOnly = false) => {
+  const handleSelectNewWorkOrder = async (
+    workOrderName: string,
+    hasTracking: boolean,
+    hasBillsWithTracking: boolean,
+    viewOnly = false,
+    workOrderId?: string | null
+  ) => {
     if (!hasTracking) {
       openAlert('ใบงานนี้ยังไม่มีเลขพัสดุ ไม่สามารถจัดของได้')
       return
@@ -772,7 +780,7 @@ export default function Packing() {
     if (planStart && !shouldViewOnly) startTime = new Date(planStart)
 
     setPackStartTime(startTime)
-    await loadPackingData(workOrderName, shouldViewOnly)
+    await loadPackingData(workOrderName, shouldViewOnly, workOrderId)
   }
 
   useEffect(() => {
@@ -1784,18 +1792,22 @@ export default function Packing() {
       return bill.includes(q) || customer.includes(q) || (qNoSpace !== '' && (tracking.includes(qNoSpace) || expressReceipt.includes(qNoSpace)))
     }
     // แสดงทั้งใบงานที่มีบิลตรงคำค้นอย่างน้อย 1 บิล (จำนวนบิลบนการ์ดจึงยังครบ)
-    const matchedWo = new Set(base.filter(rowMatches).map((r) => r.work_order_name))
-    return base.filter((row) => matchedWo.has(row.work_order_name))
+    const workOrderKey = (row: (typeof shippedOrders)[number]) =>
+      `${row.work_order_id || ''}\u0001${row.work_order_name || ''}`
+    const matchedWo = new Set(base.filter(rowMatches).map(workOrderKey))
+    return base.filter((row) => matchedWo.has(workOrderKey(row)))
   }, [shippedOrders, shippedDateFrom, shippedDateTo, shippedChannelFilter, shippedPackerFilter, shippedSearch])
 
   const shippedWorkOrders = useMemo(() => {
     const grouped = new Map<
       string,
-      { work_order_name: string; order_count: number; shipped_time: string | null; channels: Set<string>; packers: Set<string> }
+      { work_order_id: string | null; work_order_name: string; order_count: number; shipped_time: string | null; channels: Set<string>; packers: Set<string> }
     >()
     shippedOrdersFiltered.forEach((row) => {
       if (!row.work_order_name) return
-      const existing = grouped.get(row.work_order_name) || {
+      const groupKey = `${row.work_order_id || ''}\u0001${row.work_order_name}`
+      const existing = grouped.get(groupKey) || {
+        work_order_id: row.work_order_id,
         work_order_name: row.work_order_name,
         order_count: 0,
         shipped_time: null,
@@ -1808,7 +1820,7 @@ export default function Packing() {
       }
       if (row.channel_code) existing.channels.add(row.channel_code)
       if (row.shipped_by) existing.packers.add(row.shipped_by)
-      grouped.set(row.work_order_name, existing)
+      grouped.set(groupKey, existing)
     })
     return Array.from(grouped.values()).sort((a, b) => (a.shipped_time || '').localeCompare(b.shipped_time || ''))
   }, [shippedOrdersFiltered])
@@ -1934,6 +1946,7 @@ export default function Packing() {
     clearInactivityTimer()
     setLoading(true)
     setView('selection')
+    setCurrentWorkOrderId(null)
     setPackStartTime(null)
     setOperationViewOnly(false)
     try {
@@ -2138,7 +2151,7 @@ export default function Packing() {
       const shippedData = await fetchAllSupabasePages<(typeof shippedOrders)[number]>((from, to) =>
         supabase
           .from('or_orders')
-          .select('id, work_order_name, shipped_time, channel_code, shipped_by, bill_no, customer_name, tracking_number, express_receipt_number')
+          .select('id, work_order_id, work_order_name, shipped_time, channel_code, shipped_by, bill_no, customer_name, tracking_number, express_receipt_number')
           .eq('status', 'จัดส่งแล้ว')
           .not('work_order_name', 'is', null)
           .order('id', { ascending: true })
@@ -2153,23 +2166,39 @@ export default function Packing() {
     }
   }
 
-  async function loadPackingData(workOrderName: string, viewOnly = isViewOnly) {
+  async function loadPackingData(
+    workOrderName: string,
+    viewOnly = isViewOnly,
+    preferredWorkOrderId: string | null | undefined = currentWorkOrderId
+  ) {
     setIsLoadingOrders(true)
     setCurrentWorkOrderName(workOrderName)
     try {
       const selfPickupChannelCodes = await fetchSelfPickupChannelCodes()
-      const { data: workOrderHeader } = await supabase
-        .from('or_work_orders')
-        .select('id')
-        .eq('work_order_name', workOrderName)
-        .maybeSingle()
+      let resolvedWorkOrderId = preferredWorkOrderId || null
+      if (!resolvedWorkOrderId) {
+        // work_order_name is intentionally reusable since migration 189. A
+        // bare maybeSingle() fails when the same display name has historical
+        // headers, which used to skip both readiness RPCs and mark every item
+        // (including non-Picker items) as not picked.
+        const { data: latestHeader, error: headerError } = await supabase
+          .from('or_work_orders')
+          .select('id')
+          .eq('work_order_name', workOrderName)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        if (headerError) throw headerError
+        resolvedWorkOrderId = latestHeader?.id || null
+      }
+      setCurrentWorkOrderId(resolvedWorkOrderId)
       let ordersQuery = supabase
         .from('or_orders')
         .select('*, or_order_items(*, pr_products(product_code))')
         .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
         .order('bill_no', { ascending: true })
-      ordersQuery = workOrderHeader?.id
-        ? ordersQuery.eq('work_order_id', workOrderHeader.id)
+      ordersQuery = resolvedWorkOrderId
+        ? ordersQuery.eq('work_order_id', resolvedWorkOrderId)
         : ordersQuery.eq('work_order_name', workOrderName)
       const { data, error } = await ordersQuery
 
@@ -2178,10 +2207,10 @@ export default function Packing() {
       const ordersWithTracking = orders.filter((order) => hasPackingReference(order, selfPickupChannelCodes))
       const wmsReadyByOrder: Record<string, boolean> = {}
       const wmsReadyByOrderItem: Record<string, boolean> = {}
-      if (workOrderHeader?.id) {
+      if (resolvedWorkOrderId) {
         const [orderReadinessResult, itemReadinessResult] = await Promise.all([
-          supabase.rpc('rpc_get_packing_wms_readiness', { p_work_order_id: workOrderHeader.id }),
-          supabase.rpc('rpc_get_packing_wms_item_readiness', { p_work_order_id: workOrderHeader.id }),
+          supabase.rpc('rpc_get_packing_wms_readiness', { p_work_order_id: resolvedWorkOrderId }),
+          supabase.rpc('rpc_get_packing_wms_item_readiness', { p_work_order_id: resolvedWorkOrderId }),
         ])
         const { data: readinessRows, error: readinessError } = orderReadinessResult
         if (readinessError) throw readinessError
@@ -3491,7 +3520,7 @@ export default function Packing() {
                           <div className="flex shrink-0 gap-2">
                             <button
                               type="button"
-                              onClick={() => handleSelectNewWorkOrder(wo.work_order_name, hasTracking, totalBills > 0, true)}
+                              onClick={() => handleSelectNewWorkOrder(wo.work_order_name, hasTracking, totalBills > 0, true, wo.id)}
                               className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold shadow-sm hover:bg-emerald-700"
                               title="เปิดดูรายการโดยไม่บันทึกเวลาเริ่มและไม่สามารถแพ็คสินค้า"
                             >
@@ -3500,7 +3529,7 @@ export default function Packing() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => handleSelectNewWorkOrder(wo.work_order_name, hasTracking, totalBills > 0)}
+                              onClick={() => handleSelectNewWorkOrder(wo.work_order_name, hasTracking, totalBills > 0, false, wo.id)}
                               disabled={roleViewOnly}
                               className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-semibold shadow-sm hover:bg-blue-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                             >
@@ -3595,10 +3624,10 @@ export default function Packing() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {shippedWorkOrders.map((wo) => (
                     <button
-                      key={wo.work_order_name}
+                      key={`${wo.work_order_id || ''}-${wo.work_order_name}`}
                       className="p-4 border border-l-4 rounded-xl text-left transition-all duration-200 shadow-sm bg-orange-50/80 border-orange-200 border-l-orange-500 hover:bg-orange-100 hover:shadow-md"
                       onClick={() => {
-                        loadPackingData(wo.work_order_name)
+                        loadPackingData(wo.work_order_name, isViewOnly, wo.work_order_id)
                       }}
                     >
                       <div className="flex items-center justify-between gap-2">
