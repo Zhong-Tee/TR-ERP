@@ -167,6 +167,8 @@ export function MachineryPurchaseRequest({ onCountChange }: { onCountChange?: (c
     }),
     [products, selectedProductIds],
   )
+  const hasSearchQuery = search.trim().length > 0
+  const showSearchResults = searchOpen && hasSearchQuery && searchResults.length > 0
 
   function addProduct(product: MachineryPurchaseProduct) {
     setSelectedProductIds((ids) => ids.includes(product.product_id) ? ids : [...ids, product.product_id])
@@ -261,12 +263,17 @@ export function MachineryPurchaseRequest({ onCountChange }: { onCountChange?: (c
     {loading ? <div className="py-12 text-center text-gray-500">กำลังโหลด…</div> : subtab === 'new' ? <>
       <div className="relative rounded-xl border bg-white p-4">
         <label className="mb-2 block text-sm font-semibold text-gray-700">เพิ่มสินค้า</label>
-        <input value={search} onFocus={() => setSearchOpen(true)} onChange={(e) => { setSearch(e.target.value); setSearchOpen(true) }} placeholder="ค้นหาหรือเลือกรายการสินค้า…" role="combobox" aria-expanded={searchOpen} className="w-full rounded-xl border px-4 py-2.5" />
-        {searchOpen && <div className="absolute left-4 right-4 top-[5.3rem] z-20 max-h-80 divide-y overflow-y-auto rounded-xl border bg-white shadow-xl">{searchResults.length > 0 ? searchResults.map((p) => <div key={p.product_id} className="flex items-center gap-3 bg-white p-3 hover:bg-gray-50">
+        <div className="relative">
+          <input id="machinery-purchase-product-search" value={search} onFocus={() => setSearchOpen(hasSearchQuery)} onKeyDown={(e) => { if (e.key === 'Escape') setSearchOpen(false) }} onChange={(e) => { const value = e.target.value; setSearch(value); setSearchOpen(value.trim().length > 0) }} placeholder="ค้นหาหรือเลือกรายการสินค้า…" role="combobox" aria-controls="machinery-purchase-search-results" aria-expanded={showSearchResults} className="w-full rounded-xl border py-2.5 pl-4 pr-12" />
+          {hasSearchQuery && <button type="button" onClick={() => { setSearch(''); setSearchOpen(false) }} aria-label="ล้างข้อความค้นหา" title="ล้างข้อความค้นหา" className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full text-xl font-semibold leading-none text-gray-500 hover:bg-gray-100 hover:text-gray-800">
+            ×
+          </button>}
+        </div>
+        {showSearchResults && <div id="machinery-purchase-search-results" className="mt-2 max-h-80 divide-y overflow-y-auto rounded-xl border bg-white shadow-sm">{searchResults.map((p) => <div key={p.product_id} className="flex items-center gap-3 bg-white p-3 hover:bg-gray-50">
           <ProductThumb code={p.product_code} name={p.product_name} size="h-12 w-12" />
           <div className="min-w-0 flex-1"><div className="font-semibold">รหัสสินค้า: {p.product_code}</div><div className="text-sm text-gray-600">{p.product_name} · คงเหลือ {p.on_hand.toLocaleString()} {p.unit_name || 'ชิ้น'}</div></div>
           <button type="button" onClick={() => addProduct(p)} className="shrink-0 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700">+ เพิ่มรายการ</button>
-        </div>) : <div className="p-4 text-center text-sm text-gray-500">ไม่พบสินค้า หรือสินค้าถูกเพิ่มแล้ว</div>}</div>}
+        </div>)}</div>}
       </div>
       {selectedProducts.length === 0 ? <div className="rounded-xl border border-dashed bg-gray-50 py-10 text-center text-gray-500">ยังไม่มีรายการสินค้า กรุณาค้นหาและเพิ่มสินค้าทีละรายการ</div> : <div className="overflow-x-auto rounded-xl border bg-white"><table className="w-full min-w-[1100px] table-fixed text-sm"><colgroup><col className="w-[5%]" /><col className="w-[8%]" /><col className="w-[10%]" /><col className="w-[30%]" /><col className="w-[12%]" /><col className="w-[11%]" /><col className="w-[17%]" /><col className="w-[7%]" /></colgroup><thead className="bg-gray-50"><tr><th className="p-3 text-center">ลำดับ</th><th className="p-3 text-center">รูปสินค้า</th><th className="p-3 text-left">รหัส</th><th className="p-3 text-left">สินค้า</th><th className="p-3 text-right">จำนวนคงเหลือ</th><th className="p-3 text-left">จำนวนที่ขอ</th><th className="p-3 text-left">หมายเหตุ</th><th className="p-3 text-center">จัดการ</th></tr></thead><tbody className="divide-y">{selectedProducts.map((p, index) => <tr key={p.product_id} className="align-middle"><td className="p-3 text-center font-bold text-gray-500">{index + 1}</td><td className="p-3"><div className="flex justify-center"><ProductThumb code={p.product_code} name={p.product_name} /></div></td><td className="p-3 font-semibold text-blue-700">{p.product_code}</td><td className="p-3 font-medium text-gray-800">{p.product_name}</td><td className="p-3 text-right font-bold tabular-nums">{p.on_hand.toLocaleString()} {p.unit_name || 'ชิ้น'}</td><td className="p-3"><input type="number" min="1" value={qty[p.product_id] || ''} onChange={(e) => setQty((v) => ({ ...v, [p.product_id]: e.target.value }))} className="w-full rounded-lg border px-3 py-2" /></td><td className="p-3"><input value={notes[p.product_id] || ''} onChange={(e) => setNotes((v) => ({ ...v, [p.product_id]: e.target.value }))} placeholder="ระบุหมายเหตุของรายการ" className="w-full rounded-lg border px-3 py-2" /></td><td className="p-3 text-center"><button type="button" onClick={() => removeProduct(p.product_id)} className="rounded-lg border border-red-200 px-3 py-2 font-semibold text-red-600 hover:bg-red-50">ลบ</button></td></tr>)}</tbody></table></div>}
       <textarea value={requestNote} onChange={(e) => setRequestNote(e.target.value)} placeholder="หมายเหตุคำขอซื้อ" className="w-full rounded-xl border px-4 py-3" rows={3} />

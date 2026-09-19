@@ -16,13 +16,14 @@ import TrialBalanceSection from '../components/account/TrialBalanceSection'
 import EcommerceSection from '../components/account/EcommerceSection'
 import PromotionAuditReport from '../components/account/PromotionAuditReport'
 import PayrollSection from '../components/account/PayrollSection'
+import BankReconciliationSection from '../components/account/BankReconciliationSection'
 import { fetchAllSupabasePages, fetchAllSupabasePagesResult } from '../lib/supabasePagination'
 import AmendmentSection from '../components/account/AmendmentSection'
 import ClaimApprovalSection from '../components/account/ClaimApprovalSection'
 import { SLIP_BANK_APPS_30D, SLIP_BANK_APPS_7D, bankLogoUrl } from '../config/thaiBanks'
 import * as XLSX from 'xlsx'
 
-type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bill-edit' | 'amendment' | 'claim-approval' | 'slip-age' | 'ecommerce' | 'promotion-audit' | 'payroll' | 'trial-balance'
+type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bank-reconciliation' | 'bill-edit' | 'amendment' | 'claim-approval' | 'slip-age' | 'ecommerce' | 'promotion-audit' | 'payroll' | 'trial-balance'
 type AccountTab = 'refunds' | 'claim-approval' | 'tax-invoice' | 'approvals'
 type ApprovalFilter = 'refund' | 'claim' | 'tax-invoice'
 
@@ -173,7 +174,7 @@ async function fetchSlipImageUrlsForOrder(orderId: string): Promise<string[]> {
 }
 
 const ALL_ACCOUNT_SECTIONS: AccountSection[] = [
-  'dashboard', 'slip-verification', 'manual-slip-check',
+  'dashboard', 'slip-verification', 'manual-slip-check', 'bank-reconciliation',
   'bill-edit', 'amendment', 'claim-approval', 'slip-age', 'ecommerce', 'promotion-audit', 'payroll', 'trial-balance',
 ]
 
@@ -190,6 +191,7 @@ const ACCOUNT_TOP_NAV_ITEMS: Array<{
   { id: 'nav-dashboard', section: 'dashboard', label: 'Dashboard', count: 'dashboard', accessKey: 'account-dashboard' },
   { id: 'nav-slip-verification', section: 'slip-verification', label: 'รายการการตรวจสลิป' },
   { id: 'nav-manual-slip', section: 'manual-slip-check', label: 'ตรวจสลิปมือ', count: 'manualSlip' },
+  { id: 'nav-bank-reconciliation', section: 'bank-reconciliation', label: 'กระทบยอดธนาคาร' },
   { id: 'nav-bill-edit', section: 'bill-edit', label: 'แก้ไขบิล' },
   { id: 'nav-amendment', section: 'amendment', label: 'ขอยกเลิกบิล', count: 'amendment' },
   { id: 'nav-slip-age', section: 'slip-age', label: 'อายุสลิป' },
@@ -202,16 +204,21 @@ const ACCOUNT_TOP_NAV_ITEMS: Array<{
 export default function Account() {
   const { user } = useAuthContext()
   const { hasAccess, menuAccessLoading } = useMenuAccess()
+  const canUseBankReconciliation = user?.role === 'superadmin' || user?.role === 'account'
+  const visibleAccountSections = useMemo(
+    () => ALL_ACCOUNT_SECTIONS.filter((section) => section !== 'bank-reconciliation' || canUseBankReconciliation),
+    [canUseBankReconciliation],
+  )
   const [accountSection, setAccountSection] = useState<AccountSection>('dashboard')
   const [activeTab, setActiveTab] = useState<AccountTab>('refunds')
 
   useEffect(() => {
     if (menuAccessLoading) return
-    if (!hasAccess(`account-${accountSection}`)) {
-      const first = ALL_ACCOUNT_SECTIONS.find((s) => hasAccess(`account-${s}`))
+    if (!visibleAccountSections.includes(accountSection) || !hasAccess(`account-${accountSection}`)) {
+      const first = visibleAccountSections.find((s) => hasAccess(`account-${s}`))
       if (first) setAccountSection(first)
     }
-  }, [menuAccessLoading])
+  }, [accountSection, hasAccess, menuAccessLoading, visibleAccountSections])
 
   const [orderToAmend, setOrderToAmend] = useState<(Order & { order_items?: any[] }) | null>(null)
   const [refunds, setRefunds] = useState<Refund[]>([])
@@ -1016,7 +1023,10 @@ export default function Account() {
     <div className="space-y-4 md:space-y-8">
       <div className="sticky top-0 z-10 -mx-3 border-b border-surface-200 bg-white shadow-soft sm:-mx-4 md:-mx-6">
         <nav className="flex min-w-max flex-nowrap gap-1 overflow-x-auto px-2 py-2 scrollbar-thin sm:gap-3 sm:px-4 md:px-6 md:py-3 lg:px-8">
-          {ACCOUNT_TOP_NAV_ITEMS.filter((item) => hasAccess(item.accessKey ?? `account-${item.section}`)).map((item) => {
+          {ACCOUNT_TOP_NAV_ITEMS.filter((item) => (
+            (item.section !== 'bank-reconciliation' || canUseBankReconciliation)
+            && hasAccess(item.accessKey ?? `account-${item.section}`)
+          )).map((item) => {
             const pill = accountTopNavCountPill(item)
             return (
               <button
@@ -1230,6 +1240,8 @@ export default function Account() {
         </section>
       ) : accountSection === 'manual-slip-check' ? (
         <ManualSlipCheckSection />
+      ) : accountSection === 'bank-reconciliation' && canUseBankReconciliation ? (
+        <BankReconciliationSection />
       ) : accountSection === 'bill-edit' ? (
         <BillEditSection
           onRequestAmendment={(order) => {

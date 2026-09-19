@@ -14,7 +14,7 @@ type ManualSlipRow = {
   transfer_amount: number
   submitted_by: string
   submitted_at: string
-  status: 'pending' | 'approved' | 'rejected' | 'cancelled'
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled' | 'verified_by_easyslip'
   reviewed_by: string | null
   reviewed_at: string | null
   rejected_reason: string | null
@@ -43,6 +43,7 @@ export default function ManualSlipCheckSection() {
   const [rows, setRows] = useState<ManualSlipRow[]>([])
   const [loading, setLoading] = useState(true)
   const [filterTab, setFilterTab] = useState<'pending' | 'done'>('pending')
+  const [searchQuery, setSearchQuery] = useState('')
 
   const [detailOrder, setDetailOrder] = useState<Order | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -181,9 +182,31 @@ export default function ManualSlipCheckSection() {
   }, [rows])
 
   const filteredGroups = useMemo(() => {
-    if (filterTab === 'pending') return orderGroups.filter(g => g.entries.some(e => e.status === 'pending'))
-    return orderGroups.filter(g => g.entries.every(e => e.status !== 'pending'))
-  }, [orderGroups, filterTab])
+    const groupsByStatus = filterTab === 'pending'
+      ? orderGroups.filter(g => g.entries.some(e => e.status === 'pending'))
+      : orderGroups.filter(g => g.entries.every(e => e.status !== 'pending'))
+    const query = searchQuery.trim().toLocaleLowerCase('th-TH')
+    if (!query) return groupsByStatus
+    return groupsByStatus.filter((group) => {
+      const searchableValues = [
+        group.bill_no,
+        group.submitted_by,
+        group.reviewed_by,
+        group.rejected_reason,
+        ...group.entries.flatMap((entry) => [
+          entry.transfer_date,
+          entry.transfer_time,
+          String(entry.transfer_amount),
+          Number(entry.transfer_amount).toFixed(2),
+          Number(entry.transfer_amount).toLocaleString('th-TH'),
+          entry.submitted_by,
+          entry.reviewed_by,
+          entry.status,
+        ]),
+      ]
+      return searchableValues.some((value) => String(value || '').toLocaleLowerCase('th-TH').includes(query))
+    })
+  }, [filterTab, orderGroups, searchQuery])
 
   const pendingCount = useMemo(() => orderGroups.filter(g => g.entries.some(e => e.status === 'pending')).length, [orderGroups])
   const doneCount = useMemo(() => orderGroups.filter(g => g.entries.every(e => e.status !== 'pending')).length, [orderGroups])
@@ -325,12 +348,14 @@ export default function ManualSlipCheckSection() {
 
   const statusColor = (s: string) => {
     if (s === 'approved') return 'bg-green-100 text-green-700'
+    if (s === 'verified_by_easyslip') return 'bg-blue-100 text-blue-700'
     if (s === 'rejected') return 'bg-red-100 text-red-700'
     if (s === 'cancelled') return 'bg-gray-200 text-gray-700'
     return 'bg-yellow-100 text-yellow-800'
   }
   const statusLabel = (s: string) => {
     if (s === 'approved') return 'อนุมัติแล้ว'
+    if (s === 'verified_by_easyslip') return 'ยืนยันซ้ำด้วย EasySlip'
     if (s === 'rejected') return 'ปฏิเสธแล้ว'
     if (s === 'cancelled') return 'ยกเลิก'
     return 'รอตรวจสอบ'
@@ -387,25 +412,38 @@ export default function ManualSlipCheckSection() {
         </div>
 
         {/* Filter tabs */}
-        <div className="px-6 py-3 border-b border-gray-100 flex gap-2">
-          <button
-            onClick={() => setFilterTab('pending')}
-            className={`px-4 py-2 rounded-lg text-sm font-bold transition ${filterTab === 'pending' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
-          >
-            รายการใหม่
-            <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs ${filterTab === 'pending' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'}`}>
-              {pendingCount}
-            </span>
-          </button>
-          <button
-            onClick={() => setFilterTab('done')}
-            className={`px-4 py-2 rounded-lg text-sm font-bold transition ${filterTab === 'done' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
-          >
-            เสร็จสิ้น
-            <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs ${filterTab === 'done' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'}`}>
-              {doneCount}
-            </span>
-          </button>
+        <div className="px-6 py-3 border-b border-gray-100 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex gap-2">
+            <button
+              onClick={() => setFilterTab('pending')}
+              className={`px-4 py-2 rounded-lg text-sm font-bold transition ${filterTab === 'pending' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+            >
+              รายการใหม่
+              <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs ${filterTab === 'pending' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'}`}>
+                {pendingCount}
+              </span>
+            </button>
+            <button
+              onClick={() => setFilterTab('done')}
+              className={`px-4 py-2 rounded-lg text-sm font-bold transition ${filterTab === 'done' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+            >
+              เสร็จสิ้น
+              <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs ${filterTab === 'done' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'}`}>
+                {doneCount}
+              </span>
+            </button>
+          </div>
+          <label className="relative block w-full sm:w-96">
+            <span className="sr-only">ค้นหารายการตรวจสลิปมือ</span>
+            <i className="fas fa-search pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-400"></i>
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="ค้นหาเลขบิล ผู้ส่ง ผู้ตรวจ วันที่ เวลา หรือยอดโอน"
+              className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+            />
+          </label>
         </div>
 
         {loading ? (
@@ -415,7 +453,7 @@ export default function ManualSlipCheckSection() {
         ) : filteredGroups.length === 0 ? (
           <div className="text-center py-12 text-gray-400">
             <i className="fas fa-inbox text-4xl mb-3 block"></i>
-            <p>{filterTab === 'pending' ? 'ไม่มีรายการใหม่' : 'ไม่มีรายการที่เสร็จสิ้น'}</p>
+            <p>{searchQuery.trim() ? `ไม่พบรายการที่ตรงกับ “${searchQuery.trim()}”` : filterTab === 'pending' ? 'ไม่มีรายการใหม่' : 'ไม่มีรายการที่เสร็จสิ้น'}</p>
           </div>
         ) : (
           <div className="divide-y">

@@ -3270,6 +3270,12 @@ export default function Plan({ tvMode = false }: PlanProps) {
         }).filter((row) => row.machines.length > 0)
         const readyLineRows = lineRows.filter((row) => row.status === 'ready')
         const warningLineRows = lineRows.filter((row) => row.status !== 'ready')
+        // A blocked line can still contain other machines that have not been
+        // inspected yet. Keep those lines visible in the pending/partial card
+        // instead of letting the blocked status hide their pending checks.
+        const pendingOrPartialLineRows = lineRows.filter(
+          (row) => row.pending.length > 0 || row.status === 'partial',
+        )
         const compactMachineNames = (machines: MachineryMachine[]) => {
           const visible = machines.slice(0, 5).map((machine) => machine.name)
           const remaining = machines.length - visible.length
@@ -3403,7 +3409,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                       : 'ยังไม่มีไลน์ที่ผ่านครบ'}
                   </div>
                 </div>
-                <div className="rounded-xl border bg-amber-50 p-3"><div className="text-xs text-amber-700">รอตรวจ / พร้อมบางส่วน</div><b className="text-xl text-amber-800">{lineRows.filter(row=>row.status==='pending'||row.status==='partial').length}</b></div>
+                <div className="rounded-xl border bg-amber-50 p-3"><div className="text-xs text-amber-700">รอตรวจ / พร้อมบางส่วน</div><b className="text-xl text-amber-800">{pendingOrPartialLineRows.length}</b></div>
                 <div className="rounded-xl border bg-red-50 p-3"><div className="text-xs text-red-700">เครื่องเสีย / ไลน์ไม่พร้อม</div><b className="text-xl text-red-800">{activeIncidents.filter(row=>!['ready','closed'].includes(row.status)).length} / {lineRows.filter(row=>row.status==='blocked').length}</b></div>
                 <div className="rounded-xl border bg-orange-50 p-3"><div className="text-xs text-orange-700">งานที่มีความเสี่ยง</div><b className="text-xl text-orange-800">{affectedJobs.length}</b></div>
                 <div className="rounded-xl border bg-blue-50 p-3"><div className="text-xs text-blue-700">กำลังผลิต ตามแผน → คาดการณ์</div><b className="text-lg text-blue-800">{Math.round(plannedCapacity).toLocaleString()} → {Math.round(expectedCapacity).toLocaleString()}</b><div className="text-xs text-red-600">สูญเสีย {Math.round(lostCapacity).toLocaleString()}</div></div>

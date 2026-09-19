@@ -3,8 +3,10 @@ import { supabase } from '../lib/supabase'
 import { Order } from '../types'
 import { useAuthContext } from '../contexts/AuthContext'
 import Modal from '../components/ui/Modal'
+import DeliveryCheckPanel from '../components/transport/DeliveryCheckPanel'
 
 type ChannelRow = { channel_code: string; channel_name: string; default_carrier?: string | null; is_self_pickup?: boolean }
+type CarrierRow = { code: string; name: string }
 type MessageModal = { open: boolean; title: string; message: string }
 type ConfirmModal = { open: boolean; title: string; message: string; onConfirm: () => void; tone?: 'danger' | 'success' }
 type TransportTab = 'verification' | 'self-pickup' | 'delivery-check'
@@ -82,6 +84,7 @@ export default function TransportVerification() {
   const [pickupDateFrom, setPickupDateFrom] = useState(monthStartISO())
   const [pickupDateTo, setPickupDateTo] = useState(todayISO())
   const [channels, setChannels] = useState<ChannelRow[]>([])
+  const [transportCarriers, setTransportCarriers] = useState<CarrierRow[]>([])
   const [orders, setOrders] = useState<Order[]>([])
   const [activeCarrier, setActiveCarrier] = useState<string | null>(null)
   const [activeParcelType, setActiveParcelType] = useState<(typeof PARCEL_TYPES)[number]>('กล่อง')
@@ -112,6 +115,7 @@ export default function TransportVerification() {
 
   useEffect(() => {
     loadChannels().catch(() => null)
+    loadTransportCarriers().catch(() => null)
   }, [])
 
   useEffect(() => {
@@ -136,9 +140,23 @@ export default function TransportVerification() {
     setChannels((data || []) as ChannelRow[])
   }
 
-  function getCarrierName(channelCode: string) {
-    const channel = channels.find((c) => c.channel_code === channelCode)
-    return (channel?.default_carrier || 'OTHER').toUpperCase()
+  async function loadTransportCarriers() {
+    const { data, error } = await supabase
+      .from('tr_shipping_carriers')
+      .select('code,name')
+      .eq('is_active', true)
+      .order('sort_order')
+      .order('code')
+    if (error) {
+      console.error('loadTransportCarriers:', error)
+      setTransportCarriers([])
+      return
+    }
+    setTransportCarriers((data || []) as CarrierRow[])
+  }
+
+  function getCarrierName(order: Order) {
+    return String(order.transport_meta?.carrier || '').trim().toUpperCase()
   }
 
   function isSelfPickupOrder(order: Order) {
@@ -208,16 +226,8 @@ export default function TransportVerification() {
   }
 
   const carriersList = useMemo(() => {
-    const list = Array.from(
-      new Set(
-        channels
-          .filter((c) => !c.is_self_pickup)
-          .map((c) => (c.default_carrier || 'OTHER').toUpperCase())
-          .filter((carrier) => carrier !== 'SELF' && carrier !== 'SEFL')
-      )
-    ).sort()
-    return list
-  }, [channels])
+    return transportCarriers.map((carrier) => carrier.code.trim().toUpperCase())
+  }, [transportCarriers])
 
   const relevantOrders = useMemo(() => {
     return orders.filter((o) => {
@@ -257,7 +267,8 @@ export default function TransportVerification() {
     relevantOrders.forEach((o) => {
       const isRangeVerified = o.transport_meta?.verified && isInDateRange(o.transport_meta?.verified_at, dateFilter, dateFilter)
       if (!isRangeVerified) return
-      const carrier = getCarrierName(o.channel_code)
+      const carrier = getCarrierName(o)
+      if (!carrier) return
       const ch = (o.channel_code || 'N/A').toUpperCase()
       const pType = normalizeParcelType(o.transport_meta?.parcel_type)
       if (!nested[carrier]) nested[carrier] = {}
@@ -279,20 +290,20 @@ export default function TransportVerification() {
       if (o.status === 'จัดส่งแล้ว') gTotal += 1
       const isV = o.transport_meta?.verified && isInDateRange(o.transport_meta?.verified_at, dateFilter, dateFilter)
       if (isV) gVer += 1
-      if (activeCarrier && getCarrierName(o.channel_code) === activeCarrier) {
-        if (o.status === 'จัดส่งแล้ว') cTotal += 1
+      if (activeCarrier && getCarrierName(o) === activeCarrier) {
+        if (isV) cTotal += 1
         if (isV) cVer += 1
       }
     })
     return { gTotal, gVer, cTotal, cVer }
-  }, [relevantOrders, dateFilter, activeCarrier, channels])
+  }, [relevantOrders, dateFilter, activeCarrier])
 
   const displayOrders = useMemo(() => {
     if (!activeCarrier) return []
     return relevantOrders.filter(
-      (o) => getCarrierName(o.channel_code) === activeCarrier && o.status === 'จัดส่งแล้ว'
+      (o) => getCarrierName(o) === activeCarrier && o.status === 'จัดส่งแล้ว'
     )
-  }, [relevantOrders, activeCarrier, channels])
+  }, [relevantOrders, activeCarrier])
 
   function playSound(type: 'success' | 'error') {
     const sound = type === 'success' ? successSoundRef.current : errorSoundRef.current
@@ -316,11 +327,10 @@ export default function TransportVerification() {
       const order = orders[orderIndex]
       if (!order) throw new Error('ไม่พบเลขพัสดุ!')
       if (order.status !== 'จัดส่งแล้ว') throw new Error('บิลยังแพ็คไม่เสร็จ')
-      const carrier = getCarrierName(order.channel_code)
-      if (carrier !== activeCarrier) throw new Error(`ผิด! ของเจ้า ${carrier}`)
       if (order.transport_meta?.verified) throw new Error('สแกนซ้ำ')
 
       const now = new Date().toISOString()
+      const carrier = activeCarrier
       const transport_meta = {
         verified: true,
         verified_at: now,
@@ -684,7 +694,7 @@ export default function TransportVerification() {
       <div className="bg-white rounded-xl border border-gray-200 p-3 flex flex-wrap gap-2">
         {carriersList.map((carrier) => {
           const cCount = relevantOrders.filter(
-            (o) => getCarrierName(o.channel_code) === carrier && o.status === 'จัดส่งแล้ว'
+            (o) => getCarrierName(o) === carrier && o.status === 'จัดส่งแล้ว'
           ).length
           return (
             <button
@@ -1019,11 +1029,7 @@ export default function TransportVerification() {
       )}
 
       {activeTab === 'delivery-check' && (
-        <div className="flex min-h-[360px] flex-col items-center justify-center rounded-xl border border-dashed border-gray-300 bg-white p-10 text-center">
-          <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-2xl">🚚</div>
-          <h2 className="text-xl font-bold text-gray-800">ตรวจสอบการส่ง</h2>
-          <p className="mt-2 text-gray-500">เมนูนี้อยู่ระหว่างรอพัฒนา</p>
-        </div>
+        <DeliveryCheckPanel />
       )}
 
       <Modal

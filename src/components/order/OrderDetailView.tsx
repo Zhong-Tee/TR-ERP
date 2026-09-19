@@ -14,6 +14,7 @@ import { sortOrderItemsForBillDisplay } from '../../lib/orderItemExportSort'
 import { STOP_PRODUCTION_ISSUE_SLUG } from '../../lib/issueTypeSlugs'
 import { identifyCondoStampItems, isCondoStampItem } from '../../lib/condoStamp'
 import { claimTypeLabel, fetchClaimTypeLabelMap } from '../../lib/claimTypeLabels'
+import { accountDisplay, easySlipAccountDetails } from '../../lib/easySlipAccount'
 
 /** Helper: แสดงเฉพาะฟิลด์ที่มีค่า */
 function InfoRow({
@@ -51,6 +52,28 @@ type LateTaxInvoiceForm = {
   phone: string
 }
 
+type PaymentProof = {
+  id: string
+  source: 'easyslip' | 'manual'
+  amount: number
+  paymentAt: string | null
+  accepted: boolean
+  status: string
+  reviewedBy?: string | null
+  senderName?: string | null
+  senderAccount?: string | null
+  receiverName?: string | null
+  receiverAccount?: string | null
+}
+
+function paymentProofStatusLabel(status: string): string {
+  if (status === 'passed' || status === 'approved') return 'ผ่าน'
+  if (status === 'failed') return 'ไม่ผ่าน'
+  if (status === 'rejected') return 'ไม่อนุมัติ'
+  if (status === 'pending') return 'รอตรวจ'
+  return status || 'ไม่ทราบสถานะ'
+}
+
 export default function OrderDetailView({
   order: initialOrder,
   onClose,
@@ -62,6 +85,7 @@ export default function OrderDetailView({
 }) {
   const { user } = useAuthContext()
   const { hasAccess } = useMenuAccess()
+  const canViewPaymentProofs = user?.role === 'superadmin' || user?.role === 'account'
   const [fullOrder, setFullOrder] = useState<Order | null>(null)
   const [loadedItems, setLoadedItems] = useState<OrderItem[] | null>(null)
   const [issueTypes, setIssueTypes] = useState<IssueType[]>([])
@@ -90,6 +114,9 @@ export default function OrderDetailView({
   })
   const [workflowActors, setWorkflowActors] = useState<{ qc: string[]; packing: string[] }>({ qc: [], packing: [] })
   const [claimTypeLabels, setClaimTypeLabels] = useState<Record<string, string>>({})
+  const [paymentProofs, setPaymentProofs] = useState<PaymentProof[]>([])
+  const [paymentProofsLoading, setPaymentProofsLoading] = useState(false)
+  const [paymentProofsError, setPaymentProofsError] = useState('')
 
   /* ── Edit attachment link ── */
   const [editLinkItem, setEditLinkItem] = useState<{ itemId: string; displayIndex: number; productName: string; value: string; name: string } | null>(null)
@@ -294,6 +321,72 @@ export default function OrderDetailView({
     })()
     return () => { cancelled = true }
   }, [order.id, order.work_order_name])
+
+  // โหลดหลักฐานชำระเงินจากทั้ง EasySlip และรายการตรวจมือ เพื่อแสดงประวัติการรับเงินของบิล
+  useEffect(() => {
+    if (!order.id || !canViewPaymentProofs) {
+      setPaymentProofs([])
+      setPaymentProofsError('')
+      setPaymentProofsLoading(false)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      setPaymentProofsLoading(true)
+      setPaymentProofsError('')
+      const [easySlipResult, manualResult] = await Promise.all([
+        supabase
+          .from('ac_verified_slips')
+          .select('id, verified_amount, easyslip_date, verified_at, created_at, validation_status, is_validated, easyslip_response, easyslip_receiver_account')
+          .eq('order_id', order.id)
+          .or('is_deleted.is.null,is_deleted.eq.false')
+          .order('created_at', { ascending: true }),
+        supabase
+          .from('ac_manual_slip_checks')
+          .select('id, transfer_date, transfer_time, transfer_amount, status, reviewed_by, reviewed_at, submitted_at')
+          .eq('order_id', order.id)
+          .in('status', ['pending', 'approved', 'rejected'])
+          .order('submitted_at', { ascending: true }),
+      ])
+      if (cancelled) return
+      const errors = [easySlipResult.error, manualResult.error].filter(Boolean)
+      if (errors.length > 0) {
+        console.warn('Unable to load payment proofs for order detail:', errors)
+        setPaymentProofsError('โหลดรายละเอียดสลิปไม่สำเร็จ')
+      }
+      const easyProofs = (easySlipResult.data || []).map((row) => {
+        const accounts = easySlipAccountDetails(row.easyslip_response, row.easyslip_receiver_account)
+        return {
+          id: row.id,
+          source: 'easyslip' as const,
+          amount: Number(row.verified_amount || 0),
+          paymentAt: row.easyslip_date || row.verified_at || row.created_at || null,
+          accepted: row.validation_status === 'passed' || row.is_validated === true,
+          status: row.validation_status || (row.is_validated ? 'passed' : 'pending'),
+          ...accounts,
+        }
+      })
+      const manualProofs = (manualResult.data || []).map((row) => {
+        const paymentAt = row.transfer_date && row.transfer_time
+          ? `${row.transfer_date}T${row.transfer_time}:00+07:00`
+          : row.reviewed_at || row.submitted_at || null
+        return {
+          id: row.id,
+          source: 'manual' as const,
+          amount: Number(row.transfer_amount || 0),
+          paymentAt,
+          accepted: row.status === 'approved',
+          status: row.status,
+          reviewedBy: row.reviewed_by,
+        }
+      })
+      setPaymentProofs([...easyProofs, ...manualProofs].sort((a, b) => (
+        new Date(a.paymentAt || 0).getTime() - new Date(b.paymentAt || 0).getTime()
+      )))
+      setPaymentProofsLoading(false)
+    })()
+    return () => { cancelled = true }
+  }, [canViewPaymentProofs, order.id])
 
   const items = inlineItems.length > 0 ? inlineItems : (loadedItems || [])
   const displayItems = useMemo(() => sortOrderItemsForBillDisplay(items as any[]), [items])
@@ -690,6 +783,37 @@ export default function OrderDetailView({
           <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-8 mt-1">
             <InfoRow label="ชำระโดย" value={order.payment_method} />
             <InfoRow label="วันที่ชำระ" value={order.payment_date ? `${order.payment_date}${order.payment_time ? ` ${order.payment_time}` : ''}` : null} />
+            {canViewPaymentProofs && <div className="md:col-span-2 mt-1 border-t border-dashed border-gray-200 pt-2">
+              {paymentProofsLoading ? (
+                <p className="text-sm text-gray-500">กำลังโหลดรายละเอียดสลิป...</p>
+              ) : paymentProofsError ? (
+                <p className="text-sm text-red-600">{paymentProofsError}</p>
+              ) : paymentProofs.length === 0 ? (
+                <InfoRow label="ตรวจการชำระ" value="ยังไม่พบสลิปในระบบ" />
+              ) : (() => {
+                const acceptedProofs = paymentProofs.filter((proof) => proof.accepted)
+                const acceptedTotal = acceptedProofs.reduce((sum, proof) => sum + proof.amount, 0)
+                const easyCount = acceptedProofs.filter((proof) => proof.source === 'easyslip').length
+                const manualCount = acceptedProofs.filter((proof) => proof.source === 'manual').length
+                const sourceSummary = [
+                  easyCount > 0 ? `EasySlip ${easyCount} ใบ` : '',
+                  manualCount > 0 ? `ตรวจมือ ${manualCount} ใบ` : '',
+                ].filter(Boolean).join(', ') || 'ยังไม่มีรายการที่ผ่านการตรวจ'
+                return <div className="flex items-center gap-3 overflow-x-auto pb-1 text-sm">
+                  <div className="shrink-0 whitespace-nowrap"><span className="text-gray-500">ตรวจผ่าน</span><span className="ml-2 font-semibold text-gray-900">{sourceSummary}</span></div>
+                  <div className="shrink-0 whitespace-nowrap border-l border-gray-200 pl-3"><span className="text-gray-500">สลิปโอน</span><span className="ml-2 font-semibold text-gray-900">{paymentProofs.length} ใบ · ผ่าน {acceptedProofs.length} ใบ · ฿{fmt(acceptedTotal)}</span></div>
+                  {paymentProofs.map((proof, index) => <div key={`${proof.source}-${proof.id}`} className={`flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border px-3 py-2 ${proof.accepted ? 'border-emerald-100 bg-emerald-50' : 'border-amber-100 bg-amber-50'}`}>
+                    <span className="font-semibold text-gray-800">สลิป {index + 1} · {proof.source === 'easyslip' ? 'EasySlip' : 'ตรวจมือ'}</span>
+                    <span className="font-semibold text-gray-900">฿{fmt(proof.amount)}</span>
+                    <span className="text-gray-600">{proof.paymentAt ? formatDateTime(proof.paymentAt) : 'ไม่พบเวลาโอน'}</span>
+                    <span className="text-gray-600">ผู้โอน: {proof.source === 'easyslip' ? accountDisplay(proof.senderName, proof.senderAccount) : 'สลิปมือต้องตรวจจากภาพ'}</span>
+                    <span className="text-gray-600">ผู้รับ: {proof.source === 'easyslip' ? accountDisplay(proof.receiverName, proof.receiverAccount) : 'สลิปมือต้องตรวจจากภาพ'}</span>
+                    {proof.reviewedBy && <span className="text-gray-500">ตรวจโดย {proof.reviewedBy}</span>}
+                    <span className={proof.accepted ? 'font-semibold text-emerald-700' : 'font-semibold text-amber-700'}>{paymentProofStatusLabel(proof.status)}</span>
+                  </div>)}
+                </div>
+              })()}
+            </div>}
           </dl>
         </section>
 
