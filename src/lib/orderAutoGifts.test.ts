@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
+  getJumboSharpenerEligibleQuantity,
+  isJumboSharpenerAutoGiftItem,
+  JUMBO_SHARPENER_GIFT_PRODUCT_CODE,
   TUBE_GIFT_PRODUCT_CODE,
   getTubeEligibleQuantity,
   getMarketplaceTubeEligibleQuantity,
   isMarketplaceTubeAutoGiftItem,
   isTubeAutoGiftItem,
   reconcileMarketplaceTubeGiftItems,
+  reconcileJumboSharpenerGiftItems,
   reconcileTubeGiftItems,
 } from './orderAutoGifts'
 
@@ -14,7 +18,59 @@ const products = [
   { id: 'tube-b', product_code: '110000253', product_name: 'TUBEY เมนูปูสีเหลือง', product_category: ' tube ' },
   { id: 'normal', product_code: 'NORMAL', product_name: 'สินค้าปกติ', product_category: 'ETC' },
   { id: 'gift', product_code: TUBE_GIFT_PRODUCT_CODE, product_name: 'เชือกคละสี 10 เส้น', product_category: 'ETC' },
+  { id: 'pencil-104', product_code: '110000104', product_name: 'FPB01-SD กล่องดินสอ 5DAY สีฟ้า', product_category: 'PP' },
+  { id: 'pencil-105', product_code: '110000105', product_name: 'FPB01-SE กล่องดินสอ 5DAY สีฟ้า', product_category: 'PP' },
+  { id: 'pencil-109', product_code: '110000109', product_name: 'FPB02-SD กล่องดินสอ 5DAY สีชมพู', product_category: 'PP' },
+  { id: 'pencil-110', product_code: '110000110', product_name: 'FPB02-SE กล่องดินสอ 5DAY สีชมพู', product_category: 'PP' },
+  { id: 'pencil-119', product_code: '110000119', product_name: 'PCJ ดินสอแท่งใหญ่HB 10แท่ง', product_category: 'PP' },
+  { id: 'sharpener-gift', product_code: JUMBO_SHARPENER_GIFT_PRODUCT_CODE, product_name: 'กบเหลา JUMBO', product_category: 'FG' },
 ]
+
+describe('JUMBO sharpener automatic gift', () => {
+  it('adds one sharpener per eligible product quantity', () => {
+    const result = reconcileJumboSharpenerGiftItems([
+      { product_id: 'pencil-104', quantity: 5, unit_price: 100 },
+      { product_id: 'pencil-109', quantity: 1, unit_price: 100 },
+      { product_id: 'normal', quantity: 1, unit_price: 20 },
+    ], products)
+
+    expect(getJumboSharpenerEligibleQuantity(result, products)).toBe(6)
+    expect(result.filter((item) => isJumboSharpenerAutoGiftItem(item, products))).toEqual([
+      expect.objectContaining({
+        product_id: 'sharpener-gift',
+        product_name: 'กบเหลา JUMBO',
+        quantity: 6,
+        unit_price: 0,
+        is_free: true,
+      }),
+    ])
+  })
+
+  it('updates the gift when eligible rows are added or removed', () => {
+    const first = reconcileJumboSharpenerGiftItems([
+      { product_id: 'pencil-104', quantity: 1 },
+      { product_id: 'pencil-105', quantity: 1 },
+      { product_id: 'sharpener-gift', product_name: 'กบเหลา JUMBO', quantity: 1, unit_price: 0, is_free: true },
+    ], products)
+    expect(first.filter((item) => isJumboSharpenerAutoGiftItem(item, products))[0]).toEqual(expect.objectContaining({ quantity: 2 }))
+
+    const second = reconcileJumboSharpenerGiftItems(first.filter((item) => item.product_id !== 'pencil-105'), products)
+    expect(second.filter((item) => isJumboSharpenerAutoGiftItem(item, products))[0]).toEqual(expect.objectContaining({ quantity: 1 }))
+
+    const third = reconcileJumboSharpenerGiftItems(second.filter((item) => item.product_id !== 'pencil-104'), products)
+    expect(third.some((item) => isJumboSharpenerAutoGiftItem(item, products))).toBe(false)
+  })
+
+  it('ignores free and detail rows and does not add an invalid gift product', () => {
+    const sourceItems = [
+      { product_id: 'pencil-104', quantity: 1, is_free: true },
+      { product_id: 'pencil-105', quantity: 1, is_detail_row: true },
+      { product_id: 'pencil-119', quantity: 10 },
+    ]
+    expect(getJumboSharpenerEligibleQuantity(sourceItems, products)).toBe(10)
+    expect(reconcileJumboSharpenerGiftItems(sourceItems, products.filter((product) => product.id !== 'sharpener-gift'))).toBe(sourceItems)
+  })
+})
 
 describe('TUBE automatic gift', () => {
   it('adds one free rope row using the total TUBE quantity', () => {

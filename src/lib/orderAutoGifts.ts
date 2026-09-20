@@ -1,5 +1,14 @@
 export const TUBE_GIFT_PRODUCT_CODE = '110000025'
 export const TUBE_GIFT_PRODUCT_NAME = 'เชือกคละสี 10 เส้น'
+export const JUMBO_SHARPENER_GIFT_PRODUCT_CODE = '110000121'
+export const JUMBO_SHARPENER_GIFT_PRODUCT_NAME = 'กบเหลา JUMBO'
+export const JUMBO_SHARPENER_ELIGIBLE_PRODUCT_CODES = new Set([
+  '110000104',
+  '110000105',
+  '110000109',
+  '110000110',
+  '110000119',
+])
 
 type AutoGiftItem = {
   product_id?: string | null
@@ -140,6 +149,101 @@ export function reconcileTubeGiftItems<T extends AutoGiftItem>(
         parent_item_id: null,
       }
     })
+}
+
+export function findJumboSharpenerGiftProduct<T extends AutoGiftProduct>(products: T[]): T | undefined {
+  return products.find((product) => normalize(product.product_code) === JUMBO_SHARPENER_GIFT_PRODUCT_CODE)
+}
+
+export function isJumboSharpenerAutoGiftItem(
+  item: AutoGiftItem,
+  products: AutoGiftProduct[],
+): boolean {
+  if (!item.is_free) return false
+  const product = products.find((candidate) => String(candidate.id) === String(item.product_id || ''))
+  if (normalize(product?.product_code) === JUMBO_SHARPENER_GIFT_PRODUCT_CODE) return true
+  return String(item.product_name || '').trim() === JUMBO_SHARPENER_GIFT_PRODUCT_NAME
+}
+
+/** รวมจำนวนสินค้าที่ร่วมรายการ เพื่อแถมกบเหลา JUMBO หนึ่งชิ้นต่อสินค้าหนึ่งชิ้น */
+export function getJumboSharpenerEligibleQuantity(
+  items: AutoGiftItem[],
+  products: AutoGiftProduct[],
+): number {
+  const productById = new Map(products.map((product) => [String(product.id), product]))
+  return items.reduce((total, item) => {
+    if (item.is_free || item.is_detail_row) return total
+    const product = productById.get(String(item.product_id || ''))
+    if (!JUMBO_SHARPENER_ELIGIBLE_PRODUCT_CODES.has(normalize(product?.product_code))) return total
+    const quantity = Number(item.quantity || 0)
+    return Number.isFinite(quantity) && quantity > 0 ? total + quantity : total
+  }, 0)
+}
+
+/** ทำให้มีแถวกบเหลา JUMBO เพียงหนึ่งแถว และจำนวนเท่ากับจำนวนสินค้าที่ร่วมรายการ */
+export function reconcileJumboSharpenerGiftItems<T extends AutoGiftItem>(
+  items: T[],
+  products: AutoGiftProduct[],
+): T[] {
+  const requiredQuantity = getJumboSharpenerEligibleQuantity(items, products)
+  const giftProduct = findJumboSharpenerGiftProduct(products)
+  const giftIndexes = items.reduce<number[]>((indexes, item, index) => {
+    if (isJumboSharpenerAutoGiftItem(item, products)) indexes.push(index)
+    return indexes
+  }, [])
+
+  if (requiredQuantity <= 0) {
+    if (giftIndexes.length === 0) return items
+    const indexesToRemove = new Set(giftIndexes)
+    return items.filter((_, index) => !indexesToRemove.has(index))
+  }
+  if (!giftProduct) return items
+
+  const firstGiftIndex = giftIndexes[0]
+  if (firstGiftIndex == null) {
+    return [
+      ...items,
+      {
+        product_id: giftProduct.id,
+        product_name: giftProduct.product_name || JUMBO_SHARPENER_GIFT_PRODUCT_NAME,
+        product_type: 'ชั้น1',
+        quantity: requiredQuantity,
+        unit_price: 0,
+        is_free: true,
+        is_detail_row: false,
+        parent_item_id: null,
+      } as T,
+    ]
+  }
+
+  const existingGift = items[firstGiftIndex]
+  const expectedName = giftProduct.product_name || JUMBO_SHARPENER_GIFT_PRODUCT_NAME
+  const giftIsCorrect = giftIndexes.length === 1 &&
+    String(existingGift.product_id || '') === String(giftProduct.id) &&
+    String(existingGift.product_name || '') === expectedName &&
+    Number(existingGift.quantity || 0) === requiredQuantity &&
+    Number(existingGift.unit_price || 0) === 0 &&
+    existingGift.is_free === true &&
+    existingGift.is_detail_row !== true &&
+    existingGift.parent_item_id == null
+  if (giftIsCorrect) return items
+
+  const duplicateIndexes = new Set(giftIndexes.slice(1))
+  return items
+    .filter((_, index) => !duplicateIndexes.has(index))
+    .map((item, index) => index === firstGiftIndex
+      ? {
+          ...item,
+          product_id: giftProduct.id,
+          product_name: expectedName,
+          product_type: item.product_type || 'ชั้น1',
+          quantity: requiredQuantity,
+          unit_price: 0,
+          is_free: true,
+          is_detail_row: false,
+          parent_item_id: null,
+        }
+      : item)
 }
 
 export function isMarketplaceTubeAutoGiftItem(

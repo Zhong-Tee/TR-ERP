@@ -1,14 +1,15 @@
 import * as XLSX from 'xlsx'
 
-export const DELIVERY_REQUIRED_HEADERS = [
-  'PU time',
-  'Order No.',
-  'Tracking No.',
-  'Sender',
-  'Consignee',
-  'Consignee phone',
-  'Consignee address',
-] as const
+const DELIVERY_HEADER_ALIASES = {
+  pickupAt: ['เวลาสร้าง', 'PU time'],
+  orderNo: ['เลขออเดอร์', 'Order No.'],
+  trackingNo: ['เลขพัสดุ', 'Tracking No.'],
+  sender: ['ชื่อผู้ส่ง', 'Sender'],
+  consignee: ['ชื่อผู้รับ', 'Consignee'],
+  consigneePhone: ['เบอร์ผู้รับ', 'Consignee phone'],
+  consigneeAddress: ['ที่อยู่ที่รับ', 'Consignee address'],
+  pickupStatus: ['สถานะงานรับ'],
+} as const
 
 export type DeliveryCheckParsedRow = {
   source_row_number: number
@@ -19,6 +20,7 @@ export type DeliveryCheckParsedRow = {
   consignee: string
   consignee_phone: string
   consignee_address: string
+  pickup_status: string
   is_consignment: boolean
   note: string | null
   raw_data: Record<string, unknown>
@@ -101,39 +103,61 @@ export function parseDeliveryWorksheetRows(matrix: unknown[][], sheetName = 'She
   if (matrix.length < 2) throw new Error('ไฟล์ไม่มีรายการสำหรับตรวจสอบ')
   const headers = matrix[0].map(normalizedHeader)
   const positions = new Map(headers.map((header, index) => [header, index]))
-  const missing = DELIVERY_REQUIRED_HEADERS.filter((header) => !positions.has(normalizedHeader(header)))
+  const positionOf = (aliases: readonly string[]) => aliases
+    .map((header) => positions.get(normalizedHeader(header)))
+    .find((position) => position !== undefined)
+  const requiredFields = [
+    ['เวลาสร้าง', DELIVERY_HEADER_ALIASES.pickupAt],
+    ['เลขออเดอร์', DELIVERY_HEADER_ALIASES.orderNo],
+    ['เลขพัสดุ', DELIVERY_HEADER_ALIASES.trackingNo],
+    ['ชื่อผู้ส่ง', DELIVERY_HEADER_ALIASES.sender],
+    ['ชื่อผู้รับ', DELIVERY_HEADER_ALIASES.consignee],
+    ['เบอร์ผู้รับ', DELIVERY_HEADER_ALIASES.consigneePhone],
+    ['ที่อยู่ที่รับ', DELIVERY_HEADER_ALIASES.consigneeAddress],
+  ] as const
+  const missing = requiredFields
+    .filter(([, aliases]) => positionOf(aliases) === undefined)
+    .map(([label]) => label)
   if (missing.length > 0) throw new Error(`ไฟล์ขาดคอลัมน์: ${missing.join(', ')}`)
 
-  const get = (row: unknown[], header: typeof DELIVERY_REQUIRED_HEADERS[number]) => row[positions.get(normalizedHeader(header))!]
+  const get = (row: unknown[], aliases: readonly string[]) => {
+    const position = positionOf(aliases)
+    return position === undefined ? '' : row[position]
+  }
   const rows: DeliveryCheckParsedRow[] = []
   const warnings: string[] = []
 
   matrix.slice(1).forEach((source, index) => {
     if (source.every((value) => !text(value))) return
-    const pickupAt = parsePickupAt(get(source, 'PU time'))
-    const orderNo = text(get(source, 'Order No.'))
-    const trackingNo = text(get(source, 'Tracking No.'))
+    const pickupAt = parsePickupAt(get(source, DELIVERY_HEADER_ALIASES.pickupAt))
+    const orderNo = text(get(source, DELIVERY_HEADER_ALIASES.orderNo))
+    const trackingNo = text(get(source, DELIVERY_HEADER_ALIASES.trackingNo))
+    const pickupStatus = text(get(source, DELIVERY_HEADER_ALIASES.pickupStatus))
     const isConsignment = isConsignmentOrderNo(orderNo)
-    if (!pickupAt) warnings.push(`แถว ${index + 2}: วันที่ PU time ไม่ถูกต้อง`)
+    if (!pickupAt) warnings.push(`แถว ${index + 2}: เวลาสร้างไม่ถูกต้อง`)
     if (!trackingNo) warnings.push(`แถว ${index + 2}: ไม่มี Tracking No.`)
+    if (positionOf(DELIVERY_HEADER_ALIASES.pickupStatus) !== undefined && !pickupStatus) {
+      warnings.push(`แถว ${index + 2}: ไม่มีสถานะงานรับ`)
+    }
     rows.push({
       source_row_number: index + 2,
       pickup_at: pickupAt,
       order_no: orderNo,
       tracking_no: trackingNo,
-      sender: text(get(source, 'Sender')),
-      consignee: text(get(source, 'Consignee')).replace(/^"+/, ''),
-      consignee_phone: normalizeDeliveryPhone(get(source, 'Consignee phone')),
-      consignee_address: text(get(source, 'Consignee address')),
+      sender: text(get(source, DELIVERY_HEADER_ALIASES.sender)),
+      consignee: text(get(source, DELIVERY_HEADER_ALIASES.consignee)).replace(/^"+/, ''),
+      consignee_phone: normalizeDeliveryPhone(get(source, DELIVERY_HEADER_ALIASES.consigneePhone)),
+      consignee_address: text(get(source, DELIVERY_HEADER_ALIASES.consigneeAddress)),
+      pickup_status: pickupStatus,
       is_consignment: isConsignment,
       note: isConsignment && orderNo ? orderNo : null,
-      raw_data: Object.fromEntries(DELIVERY_REQUIRED_HEADERS.map((header) => [header, get(source, header)])),
+      raw_data: Object.fromEntries(matrix[0].map((header, column) => [text(header) || `คอลัมน์ ${column + 1}`, source[column] ?? ''])),
     })
   })
 
   if (rows.length === 0) throw new Error('ไฟล์ไม่มีรายการสำหรับตรวจสอบ')
   const dates = rows.map((row) => row.pickup_at).filter(Boolean).map(bangkokDate).sort()
-  if (dates.length === 0) throw new Error('ไม่พบวันที่ PU time ที่ใช้งานได้')
+  if (dates.length === 0) throw new Error('ไม่พบเวลาสร้างที่ใช้งานได้')
   const uniqueDates = [...new Set(dates)]
   if (uniqueDates.length > 1) warnings.push(`ไฟล์มีรายการ ${uniqueDates.length} วัน (${uniqueDates[0]} ถึง ${uniqueDates.at(-1)})`)
 
@@ -170,4 +194,3 @@ export async function deliveryFileHash(file: File): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
-

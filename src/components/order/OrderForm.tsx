@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, forwardRef, useImperativeHandle } from 'react'
+import { createPortal } from 'react-dom'
 import { supabase } from '../../lib/supabase'
 import { fetchAllSupabasePagesResult } from '../../lib/supabasePagination'
 import { Order, OrderItem, OrderStatus, Product, CartoonPattern, BankSetting } from '../../types'
@@ -21,9 +22,14 @@ import { generateBillNo } from '../../lib/billNo'
 import { findWyProduct } from '../../lib/wyProductMatcher'
 import { calculateChargeableItemsTotal } from '../../lib/orderItemPricing'
 import {
+  findJumboSharpenerGiftProduct,
   findTubeGiftProduct,
+  getJumboSharpenerEligibleQuantity,
   getTubeEligibleQuantity,
+  isJumboSharpenerAutoGiftItem,
   isTubeAutoGiftItem,
+  JUMBO_SHARPENER_GIFT_PRODUCT_CODE,
+  reconcileJumboSharpenerGiftItems,
   reconcileTubeGiftItems,
   TUBE_GIFT_PRODUCT_CODE,
 } from '../../lib/orderAutoGifts'
@@ -40,6 +46,78 @@ import {
   type PromotionOrderItem,
 } from '../../lib/promotionRules'
 import { calculateShippingCharge, findShippingAreaRule, SHIPPING_AREA_TYPE_LABELS, type ShippingAreaRule } from '../../lib/shippingAreaRules'
+
+type FloatingLookupOption = { key: string; value: string; secondary?: string }
+const NATURAL_LOOKUP_COLLATOR = new Intl.Collator(['th', 'en'], { numeric: true, sensitivity: 'base' })
+type FloatingLookupInputProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, 'list'> & {
+  options: FloatingLookupOption[]
+  showAllQueries?: string[]
+  minDropdownWidth?: number
+}
+
+function FloatingLookupInput({ options, showAllQueries = [], minDropdownWidth = 0, onChange, onFocus, onBlur, disabled, className, ...inputProps }: FloatingLookupInputProps) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const [position, setPosition] = useState<{ left: number; top: number; width: number; maxHeight: number } | null>(null)
+
+  const syncPosition = () => {
+    const input = inputRef.current
+    if (!input) return
+    const rect = input.getBoundingClientRect()
+    if (rect.bottom < 0 || rect.top > window.innerHeight) {
+      setOpen(false)
+      setPosition(null)
+      return
+    }
+    const dropdownWidth = Math.min(Math.max(rect.width, minDropdownWidth), window.innerWidth - 24)
+    setPosition({ left: Math.max(12, Math.min(rect.left, window.innerWidth - dropdownWidth - 12)), top: rect.bottom + 4, width: dropdownWidth, maxHeight: Math.max(140, Math.min(288, window.innerHeight - rect.bottom - 20)) })
+  }
+
+  useEffect(() => {
+    if (!open) return
+    const handlePositionChange = () => syncPosition()
+    window.addEventListener('scroll', handlePositionChange, true)
+    window.addEventListener('resize', handlePositionChange)
+    return () => {
+      window.removeEventListener('scroll', handlePositionChange, true)
+      window.removeEventListener('resize', handlePositionChange)
+    }
+  }, [open])
+
+  const normalized = search.trim().toLowerCase()
+  const showAll = normalized !== '' && showAllQueries.some(query => query.toLowerCase().includes(normalized))
+  const matches = options.filter(option => showAll || !normalized || option.value.toLowerCase().includes(normalized) || String(option.secondary || '').toLowerCase().includes(normalized)).sort((a, b) => {
+    if (normalized && !showAll) {
+      const rank = (option: FloatingLookupOption) => {
+        const value = option.value.toLowerCase()
+        const secondary = String(option.secondary || '').toLowerCase()
+        if (value === normalized || secondary === normalized) return 0
+        if (value.startsWith(normalized)) return 1
+        if (secondary.startsWith(normalized)) return 2
+        return 3
+      }
+      const rankDifference = rank(a) - rank(b)
+      if (rankDifference !== 0) return rankDifference
+    }
+    return NATURAL_LOOKUP_COLLATOR.compare(a.value, b.value)
+  }).slice(0, 50)
+  const show = (resetSearch = false) => {
+    if (disabled) return
+    if (resetSearch) setSearch('')
+    syncPosition()
+    setOpen(true)
+  }
+  const emitValue = (value: string) => {
+    onChange?.({ target: { value }, currentTarget: { value } } as unknown as React.ChangeEvent<HTMLInputElement>)
+  }
+
+  return <div className="relative w-full">
+    <input {...inputProps} ref={inputRef} disabled={disabled} className={className} onFocus={event => { onFocus?.(event); show(true) }} onChange={event => { setSearch(event.target.value); onChange?.(event); show() }} onBlur={event => { onBlur?.(event); window.setTimeout(() => { setOpen(false); setPosition(null) }, 150) }} autoComplete="off" />
+    <button type="button" tabIndex={-1} disabled={disabled} onMouseDown={event => event.preventDefault()} onClick={() => open ? (setOpen(false), setPosition(null)) : show(true)} className="absolute right-0 top-0 h-full w-7 text-slate-500 disabled:text-slate-300">▾</button>
+    {open && position && createPortal(<div className="fixed z-[300] overflow-auto rounded-xl border border-slate-200 bg-white py-1 shadow-2xl" style={{ left: position.left, top: position.top, width: position.width, maxHeight: position.maxHeight }}>{matches.length > 0 ? matches.map(option => <button key={option.key} type="button" onMouseDown={event => { event.preventDefault(); emitValue(option.value); setOpen(false); setPosition(null) }} className="block w-full whitespace-nowrap px-3 py-2 text-left hover:bg-blue-50"><span className="block text-sm font-semibold">{option.value}</span>{option.secondary && <span className="block text-xs text-slate-500">{option.secondary}</span>}</button>) : <div className="px-3 py-4 text-center text-sm text-slate-500">ไม่พบข้อมูล</div>}</div>, globalThis.document.body)}
+  </div>
+}
 
 // Component for uploading slips without immediate verification
 function SlipUploadSimple({
@@ -1193,14 +1271,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
   // บิลเก่าที่เก็บชื่อโปรโมชั่นเป็น TEXT: จับคู่กลับเป็น id เพื่อแก้ไขต่อได้
   useEffect(() => {
-    if (!order?.promotion || selectedPromotionIds.length > 0 || promotions.length === 0) return
+    if (order?.prebill_price_locked || !order?.promotion || selectedPromotionIds.length > 0 || promotions.length === 0) return
     const names = String(order.promotion).split(',').map((name) => name.trim()).filter(Boolean)
     const matched = promotions.filter((promotion) => names.includes(promotion.name)).map((promotion) => promotion.id)
     if (matched.length) {
       setSelectedPromotionIds(matched)
       setPromotionApplicationCounts(Object.fromEntries(matched.map((id) => [id, 1])))
     }
-  }, [order?.promotion, promotions, selectedPromotionIds.length])
+  }, [order?.promotion, order?.prebill_price_locked, promotions, selectedPromotionIds.length])
 
   // โหลด review (error_fields + rejection_reason) เมื่อออเดอร์สถานะ "ลงข้อมูลผิด"
   useEffect(() => {
@@ -1769,10 +1847,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     if (changed) setItems(nextItems)
   }, [items, defaultFontName, categoryFieldSettings, productFieldOverrides, products, nameLinesOnlyMode]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ของแถม TUBE เป็นหนึ่งบรรทัดต่อบิล และจำนวนเท่ากับยอดรวมสินค้า TUBE ที่ไม่ใช่ของแถม
+  // ซิงก์ของแถมอัตโนมัติให้ตรงกับสินค้าต้นทางเสมอ
   useEffect(() => {
     if (readOnly || viewOnly || nameLinesOnlyMode || products.length === 0) return
-    const nextItems = reconcileTubeGiftItems(items, products)
+    const tubeReconciled = reconcileTubeGiftItems(items, products)
+    const nextItems = reconcileJumboSharpenerGiftItems(tubeReconciled, products)
     if (nextItems === items) return
     setItems(nextItems)
     rebuildSearchTerms(nextItems)
@@ -1962,6 +2041,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   }, [livePromotionResults, promotions, selectedPromotionIds])
 
   useEffect(() => {
+    if (order?.prebill_price_locked) return
     let nextShipping: number | null = null
     if (hasFreeShippingPromotion || shippingFeeSettings.auto_calculate_enabled || shippingFeeSettings.special_area_enabled) {
       nextShipping = shippingFeeSettings.auto_calculate_enabled || baseShippingWaived
@@ -1970,7 +2050,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     }
     if (nextShipping == null) return
     setFormData((current) => current.shipping_cost === nextShipping ? current : { ...current, shipping_cost: nextShipping })
-  }, [hasFreeShippingPromotion, shippingFeeSettings.auto_calculate_enabled, shippingFeeSettings.special_area_enabled, baseShippingWaived, shippingCharge.total_shipping_fee, shippingCharge.special_area_surcharge])
+  }, [hasFreeShippingPromotion, shippingFeeSettings.auto_calculate_enabled, shippingFeeSettings.special_area_enabled, baseShippingWaived, shippingCharge.total_shipping_fee, shippingCharge.special_area_surcharge, order?.prebill_price_locked])
 
   const isManualPriceChannel = CHANNELS_MANUAL_PRICE.includes(formData.channel_code || '')
 
@@ -2042,7 +2122,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
   useEffect(() => {
     const currentChannel = formData.channel_code || ''
-    if (!currentChannel || CHANNELS_MANUAL_PRICE.includes(currentChannel)) return
+    if (order?.prebill_price_locked || !currentChannel || CHANNELS_MANUAL_PRICE.includes(currentChannel)) return
 
     setItems((prev) => {
       let changed = false
@@ -2060,7 +2140,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       })
       return changed ? next : prev
     })
-  }, [formData.channel_code, productChannelPriceMap])
+  }, [formData.channel_code, productChannelPriceMap, order?.prebill_price_locked])
 
   useEffect(() => {
     if (undoingRef.current) return
@@ -2224,7 +2304,18 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       return
     }
 
-    const reconciledItems = reconcileTubeGiftItems(itemsToSave, products)
+    const jumboSharpenerQuantity = getJumboSharpenerEligibleQuantity(itemsToSave, products)
+    if (jumboSharpenerQuantity > 0 && !findJumboSharpenerGiftProduct(products)) {
+      setMessageModal({
+        open: true,
+        title: 'ไม่พบสินค้าของแถมกบเหลา JUMBO',
+        message: `ไม่สามารถบันทึกบิลได้ เนื่องจากไม่พบรหัสสินค้า ${JUMBO_SHARPENER_GIFT_PRODUCT_CODE} หรือสินค้าถูกปิดใช้งาน กรุณาตรวจสอบข้อมูลสินค้า`,
+      })
+      return
+    }
+
+    const tubeReconciledItems = reconcileTubeGiftItems(itemsToSave, products)
+    const reconciledItems = reconcileJumboSharpenerGiftItems(tubeReconciledItems, products)
     if (reconciledItems !== itemsToSave) {
       itemsToSave = reconciledItems
       setItems(reconciledItems)
@@ -4971,7 +5062,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   }
 
   function isSystemAutoGiftItem(item: Partial<OrderItem>): boolean {
-    return isTubeAutoGiftItem(item, products) || isPlasticInkAutoGiftItem(item, products)
+    return isTubeAutoGiftItem(item, products) || isJumboSharpenerAutoGiftItem(item, products) || isPlasticInkAutoGiftItem(item, products)
   }
 
   function getPatternByName(name: string) {
@@ -5667,9 +5758,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   </td>
                   <td className="border p-1.5">
                     <div className="relative">
-                      <input
+                      <FloatingLookupInput
                         type="text"
-                        list={`product-list-${index}`}
+                        options={products.filter(isProductCategoryActiveForOrder).map(product => ({ key: String(product.id), value: product.product_name, secondary: product.product_code })).sort((a, b) => NATURAL_LOOKUP_COLLATOR.compare(a.value, b.value))}
+                        showAllQueries={[...inkTypes.map(ink => ink.ink_name), ...fonts.map(font => font.font_name)]}
+                        minDropdownWidth={520}
                         value={productSearchTerm[index] !== undefined ? productSearchTerm[index] : (item.product_name || '')}
                         disabled={formDisabled || isCondoSubRow(item) || isSystemAutoGift}
                         title={isSystemAutoGift ? 'รายการนี้เพิ่มอัตโนมัติจากระบบ' : undefined}
@@ -5749,42 +5842,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         className={`w-full px-1.5 py-1 border rounded min-w-[160px] max-w-full ${(formDisabled || isCondoSubRow(item)) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['product_name'] ?? reviewErrorFields?.product_name) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                         autoComplete="off"
                       />
-                      <datalist id={`product-list-${index}`}>
-                        {(() => {
-                          const searchTerm = productSearchTerm[index] || ''
-                          const searchLower = searchTerm.toLowerCase().trim()
-                          
-                          // ตรวจสอบว่าคำค้นหาตรงกับสีหมึกหรือไม่
-                          const matchedInk = inkTypes.find(ink => 
-                            ink.ink_name.toLowerCase().includes(searchLower)
-                          )
-                          
-                          // ตรวจสอบว่าคำค้นหาตรงกับฟอนต์หรือไม่
-                          const matchedFont = fonts.find(font => 
-                            font.font_name.toLowerCase().includes(searchLower)
-                          )
-                          
-                          // กรองสินค้าตามเงื่อนไข (ชื่อสินค้า หรือ รหัสสินค้า) + หมวดที่เปิดการขาย
-                          const filteredProducts = products.filter(p => {
-                            if (!isProductCategoryActiveForOrder(p)) return false
-                            // ถ้าไม่มีคำค้นหา ให้แสดงสินค้าทั้งหมด (ในหมวดที่เปิดการขาย)
-                            if (!searchLower) return true
-                            // ค้นหาในชื่อสินค้า
-                            if (p.product_name.toLowerCase().includes(searchLower)) return true
-                            // ค้นหาในรหัสสินค้า
-                            if (p.product_code && p.product_code.toLowerCase().includes(searchLower)) return true
-                            // ถ้าคำค้นหาตรงกับสีหมึก ให้แสดงสินค้าทั้งหมด
-                            if (matchedInk) return true
-                            // ถ้าคำค้นหาตรงกับฟอนต์ ให้แสดงสินค้าทั้งหมด
-                            if (matchedFont) return true
-                            return false
-                          })
-                          
-                          return filteredProducts.map((p) => (
-                            <option key={p.id} value={p.product_name} data-id={p.id} />
-                          ))
-                        })()}
-                      </datalist>
                     </div>
                   </td>
                   <td className="border p-1 text-center align-middle">
@@ -5895,9 +5952,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   </td>
                   <td className="border p-1.5 w-28 min-w-[7rem]">
                     <div className="relative">
-                      <input
+                      <FloatingLookupInput
                         type="text"
-                        list={`pattern-list-${index}`}
+                        options={getFilteredPatterns(productCategory, '').map(pattern => ({ key: String(pattern.id), value: pattern.pattern_name }))}
                         value={patternInputValue}
                         onChange={(e) => {
                           const nextValue = e.target.value
@@ -5948,11 +6005,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         placeholder="ลาย"
                         autoComplete="off"
                       />
-                      <datalist id={`pattern-list-${index}`}>
-                        {getFilteredPatterns(productCategory, patternInputValue).map((p) => (
-                          <option key={p.id} value={p.pattern_name} />
-                        ))}
-                      </datalist>
                     </div>
                   </td>
                   {/* คอลัมน์เส้นซ่อนไว้ — เปิดใช้งานได้ในอนาคต */}
@@ -5968,9 +6020,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   </td> */}
                   <td className="border p-1.5 w-[6.25rem] min-w-[6.25rem]">
                     <div className="relative">
-                      <input
+                      <FloatingLookupInput
                         type="text"
-                        list={`font-list-${index}`}
+                        options={fonts.map(font => ({ key: font.font_code, value: font.font_name }))}
                         value={fontSearchTerm[index] !== undefined ? fontSearchTerm[index] : (item.font || '')}
                         onChange={(e) => {
                           const nextValue = e.target.value
@@ -6019,17 +6071,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         placeholder="ฟอนต์"
                         autoComplete="off"
                       />
-                      <datalist id={`font-list-${index}`}>
-                        {fonts
-                          .filter(f => {
-                            const search = (fontSearchTerm[index] || '').trim().toLowerCase()
-                            if (!search) return true
-                            return f.font_name.toLowerCase().includes(search)
-                          })
-                          .map((font) => (
-                            <option key={font.font_code} value={font.font_name} />
-                          ))}
-                      </datalist>
                     </div>
                   </td>
                   <td className="border p-1.5 align-middle">

@@ -198,6 +198,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'settings-easyslip': 'settings',
   'settings-backup-clear': 'settings',
   'orders-create': 'orders',
+  'orders-prebill': 'orders',
   'orders-all': 'orders',
   'orders-waiting': 'orders',
   'orders-data-error': 'orders',

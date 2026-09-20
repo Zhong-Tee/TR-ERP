@@ -40,7 +40,7 @@ serve(async (req) => {
       })
     }
 
-    const { email, password, username, role } = await req.json()
+    const { email, password, username, seller_name, role } = await req.json()
     if (!email) throw new Error('email is required')
     if (!password) throw new Error('password is required')
     if (!role) throw new Error('role is required')
@@ -81,6 +81,7 @@ serve(async (req) => {
       id: newUserId,
       email,
       username: username?.trim() || null,
+      seller_name: seller_name?.trim() || null,
       role,
       is_active: true,
     })

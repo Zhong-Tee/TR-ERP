@@ -7,7 +7,9 @@ import OrderConfirmBoard from '../components/order/OrderConfirmBoard'
 import IssueBoard from '../components/order/IssueBoard'
 import ClaimReqOrdersTab from '../components/order/ClaimReqOrdersTab'
 import RefundReturnList from '../components/order/RefundReturnList'
+import PreBillWorkspace from '../components/order/PreBillWorkspace'
 import { Order, OrderStatus } from '../types'
+import type { PreBillDocument } from '../types/prebill'
 import { supabase } from '../lib/supabase'
 import { fetchAllSupabasePages } from '../lib/supabasePagination'
 import {
@@ -22,6 +24,7 @@ import { getBangkokCalendarDayUtcBoundsISO } from '../lib/utils'
 
 type Tab =
   | 'all'
+  | 'prebill'
   | 'create'
   | 'claim-req'
   | 'waiting'
@@ -36,7 +39,7 @@ type Tab =
 
 type FailureArchiveFilter = 'active' | 'archived' | 'all'
 
-const ALL_TABS: Tab[] = ['all', 'create', 'claim-req', 'waiting', 'data-error', 'complete', 'verified', 'refund-return', 'confirm', 'shipped', 'cancelled', 'issue']
+const ALL_TABS: Tab[] = ['all', 'prebill', 'create', 'claim-req', 'waiting', 'data-error', 'complete', 'verified', 'refund-return', 'confirm', 'shipped', 'cancelled', 'issue']
 
 /** แท็บที่ sales-tr มี dropdown + ปุ่มเฉพาะฉัน กรอง admin_user */
 const SALES_TR_FILTER_TABS: Tab[] = ['all', 'waiting', 'data-error', 'complete', 'verified', 'shipped', 'issue', 'claim-req']
@@ -90,11 +93,26 @@ export default function Orders() {
   const [shippedFilteredCount, setShippedFilteredCount] = useState(0)
   const [issueCount, setIssueCount] = useState(0)
   const [claimReqNeedShippingCount, setClaimReqNeedShippingCount] = useState(0)
+  const [prebillPendingCount, setPrebillPendingCount] = useState(0)
   const [allCount, setAllCount] = useState(0)
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [adminUsers, setAdminUsers] = useState<string[]>([])
   const [listRefreshKey, setListRefreshKey] = useState(0)
   const realtimeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const prebillAllowed = user?.role === 'superadmin' || user?.role === 'sales-tr' || user?.role === 'sales-pump'
+
+  useEffect(() => {
+    if (!prebillAllowed) { setPrebillPendingCount(0); return }
+    let cancelled = false
+    const refresh = async () => {
+      const { count, error } = await supabase.from('or_prebill_documents').select('id', { count: 'exact', head: true }).eq('status', 'pending_discount')
+      if (!cancelled && !error) setPrebillPendingCount(count || 0)
+    }
+    void refresh()
+    const channel = supabase.channel('prebill-menu-badge').on('postgres_changes', { event: '*', schema: 'public', table: 'or_prebill_documents' }, refresh).subscribe()
+    return () => { cancelled = true; void supabase.removeChannel(channel) }
+  }, [prebillAllowed])
 
   /** นับบิล REQ ที่รอกรอกที่อยู่ ตั้งแต่เข้าหน้าออเดอร์ (ไม่ต้องเปิดแท็บบิลเคลมก่อน) + อัปเดตเรียลไทม์ */
   useEffect(() => {
@@ -217,6 +235,27 @@ export default function Orders() {
   /** คลิกที่รายการใน ตรวจสอบแล้ว/ยกเลิก → แสดงรายละเอียดเพื่อดู (read-only) โดยไม่สลับแท็บ */
   function handleOrderClickViewOnly(order: Order) {
     setSelectedOrder(order)
+  }
+
+  async function handleOpenPreBill(document: PreBillDocument) {
+    try {
+      const { data, error } = await supabase.rpc('rpc_convert_prebill_to_order', { p_document_id: document.id })
+      if (error) throw error
+      const orderId = String((data as { order_id?: string } | null)?.order_id || '')
+      if (!orderId) throw new Error('ระบบไม่ได้ส่งรหัสบิลที่สร้างกลับมา')
+      const { data: createdOrder, error: loadError } = await supabase
+        .from('or_orders')
+        .select('*, order_items:or_order_items(*)')
+        .eq('id', orderId)
+        .single()
+      if (loadError) throw loadError
+      setSelectedOrder({ ...createdOrder, order_items: createdOrder.order_items || [] } as Order)
+      setActiveTab('create')
+      setTabStatusFilter('')
+    } catch (error) {
+      console.error('Open bill from QT/PC:', error)
+      alert(`เปิดบิลไม่สำเร็จ: ${(error as Error).message || String(error)}`)
+    }
   }
 
   /** options.switchToTab: หลัง save แล้วให้สลับไปแท็บนั้น (เช่น ปฏิเสธโอนเกิน → ตรวจสอบไม่ผ่าน)
@@ -631,6 +670,7 @@ export default function Orders() {
           <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
             {[
               { id: 'all', label: 'ทั้งหมด' },
+              { id: 'prebill', label: `QT/PC${prebillPendingCount > 0 ? ` (${prebillPendingCount})` : ''}` },
               { id: 'create', label: 'สร้าง/แก้ไข' },
               { id: 'claim-req', label: 'บิลเคลม' },
               { id: 'waiting', label: `รอลงข้อมูล (${waitingCount})` },
@@ -642,7 +682,7 @@ export default function Orders() {
               { id: 'shipped', label: 'จัดส่งแล้ว' },
               { id: 'cancelled', label: `ยกเลิก (${cancelledCount})`, labelColor: 'text-orange-600' },
               { id: 'issue', label: 'Issue', count: issueCount, countColor: 'text-blue-600' },
-            ].filter((tab) => hasAccess(`orders-${tab.id}`)).map((tab) => (
+            ].filter((tab) => tab.id === 'prebill' ? prebillAllowed && hasAccess('orders-prebill') : hasAccess(`orders-${tab.id}`)).map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => {
@@ -678,7 +718,7 @@ export default function Orders() {
         </div>
 
         {/* Search and Filter - แสดงเมื่อไม่ใช่แท็บสร้าง/แก้ไข */}
-        {activeTab !== 'create' && activeTab !== 'confirm' && activeTab !== 'claim-req' && activeTab !== 'refund-return' && (
+        {activeTab !== 'create' && activeTab !== 'prebill' && activeTab !== 'confirm' && activeTab !== 'claim-req' && activeTab !== 'refund-return' && (
           <div className="w-full px-4 sm:px-6 lg:px-8 py-3 bg-surface-100 border-t border-surface-200">
             <div className="flex flex-wrap gap-3">
               <div className="relative flex-1 min-w-[200px]">
@@ -860,7 +900,9 @@ export default function Orders() {
         className="w-full pb-6 min-h-0 pt-4"
         aria-label="เนื้อหาออเดอร์"
       >
-        {selectedOrder ? (
+        {activeTab === 'prebill' ? (
+          <PreBillWorkspace onOpenBill={handleOpenPreBill} />
+        ) : selectedOrder ? (
           <OrderForm
             order={selectedOrder}
             onSave={handleSave}

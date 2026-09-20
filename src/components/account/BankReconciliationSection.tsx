@@ -58,6 +58,17 @@ type TransactionRow = {
   channel: string | null
   description: string | null
   reconciliation_status: 'unmatched' | 'matched' | 'ambiguous' | 'ignored'
+  classification_rule_id: string | null
+  classification_name: string | null
+}
+
+type BankTransactionRule = {
+  id: string
+  rule_name: string
+  match_keyword: string
+  classification_name: string
+  bank_setting_id: string | null
+  is_active: boolean
 }
 
 type AllocationRow = {
@@ -192,7 +203,7 @@ function maskedAccount(value: string): string {
 function statusLabel(status: TransactionRow['reconciliation_status']): string {
   if (status === 'matched') return 'จับคู่แล้ว'
   if (status === 'ambiguous') return 'รอตรวจ'
-  if (status === 'ignored') return 'ไม่นำมาคิด'
+  if (status === 'ignored') return 'รายการอื่น'
   return 'ยังจับคู่ไม่ได้'
 }
 
@@ -234,6 +245,7 @@ export default function BankReconciliationSection() {
   const [expandedDiagnostics, setExpandedDiagnostics] = useState<Record<string, boolean>>({})
   const [expandedAllocatedDiagnostics, setExpandedAllocatedDiagnostics] = useState<Record<string, boolean>>({})
   const [manualBillNos, setManualBillNos] = useState<Record<string, string>>({})
+  const [manualMatchErrors, setManualMatchErrors] = useState<Record<string, string>>({})
   const [showDebitTransactions, setShowDebitTransactions] = useState(false)
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -248,6 +260,15 @@ export default function BankReconciliationSection() {
   const [manualRetryMessage, setManualRetryMessage] = useState('')
   const [manualRetryProgress, setManualRetryProgress] = useState('')
   const [manualMatchSourceDialog, setManualMatchSourceDialog] = useState<ManualMatchSourceDialog | null>(null)
+  const [ruleDialogOpen, setRuleDialogOpen] = useState(false)
+  const [transactionRules, setTransactionRules] = useState<BankTransactionRule[]>([])
+  const [ruleEditingId, setRuleEditingId] = useState<string | null>(null)
+  const [ruleName, setRuleName] = useState('')
+  const [ruleKeyword, setRuleKeyword] = useState('')
+  const [ruleClassification, setRuleClassification] = useState('')
+  const [ruleBankSettingId, setRuleBankSettingId] = useState<string | null>(null)
+  const [ruleApplyExisting, setRuleApplyExisting] = useState(true)
+  const [ruleSaving, setRuleSaving] = useState(false)
 
   const loadBaseData = useCallback(async (preferredImportId?: string) => {
     setLoading(true)
@@ -296,7 +317,7 @@ export default function BankReconciliationSection() {
     try {
       const transactionResult = await supabase
         .from('ac_bank_statement_transactions')
-        .select('id, source_row_number, transaction_at, transaction_type, debit_amount, credit_amount, balance, channel, description, reconciliation_status')
+        .select('id, source_row_number, transaction_at, transaction_type, debit_amount, credit_amount, balance, channel, description, reconciliation_status, classification_rule_id, classification_name')
         .eq('import_id', importId)
         .order('transaction_at', { ascending: true })
         .order('id', { ascending: true })
@@ -524,11 +545,35 @@ export default function BankReconciliationSection() {
     if (!billNo) return
     setActionId(transactionId)
     setError('')
+    setManualMatchErrors((current) => ({ ...current, [transactionId]: '' }))
+    const { data: availabilityData, error: availabilityError } = await supabase.rpc(
+      'bank_reconciliation_bill_match_availability',
+      { p_bill_no: billNo },
+    )
+    if (availabilityError) {
+      setManualMatchErrors((current) => ({ ...current, [transactionId]: readableError(availabilityError) }))
+      setActionId('')
+      return
+    }
+    const availability = (availabilityData || {}) as {
+      available?: boolean
+      bill_no?: string
+      bill_amount?: number
+      allocated_amount?: number
+    }
+    if (!availability.available) {
+      setManualMatchErrors((current) => ({
+        ...current,
+        [transactionId]: `เลขบิล ${availability.bill_no || billNo} ถูกจับคู่ครบแล้ว (ยอดบิล ฿${money(availability.bill_amount)}, จับคู่แล้ว ฿${money(availability.allocated_amount)}) กรุณายกเลิกคู่เดิมก่อนหากต้องการเปลี่ยนรายการ`,
+      }))
+      setActionId('')
+      return
+    }
     const { data, error: rpcError } = await supabase.rpc('bank_reconciliation_set_manual_match', {
       p_transaction_id: transactionId,
       p_bill_no: billNo,
     })
-    if (rpcError) setError(rpcError.message)
+    if (rpcError) setManualMatchErrors((current) => ({ ...current, [transactionId]: readableError(rpcError) }))
     else {
       const result = (data || {}) as {
         requires_source_selection?: boolean
@@ -568,6 +613,93 @@ export default function BankReconciliationSection() {
     setError('')
     const { error: rpcError } = await supabase.rpc('bank_reconciliation_clear_match', { p_transaction_id: transactionId })
     if (rpcError) setError(rpcError.message)
+    else await loadDetail(selectedImportId)
+    setActionId('')
+  }
+
+  function resetRuleForm(transaction?: TransactionRow) {
+    const description = transaction?.description?.trim() || ''
+    const marketplace = description.match(/\b(Lazada|Shopee|TikTok(?:\s*Shop)?)\b/i)?.[1] || ''
+    setRuleEditingId(null)
+    setRuleName(marketplace ? `เงินรับจาก ${marketplace.toUpperCase()}` : '')
+    setRuleKeyword(marketplace || description)
+    setRuleClassification(marketplace.toUpperCase())
+    setRuleBankSettingId(selectedImport?.bank_setting_id || null)
+    setRuleApplyExisting(true)
+  }
+
+  async function loadTransactionRules() {
+    const { data, error: ruleError } = await supabase
+      .from('ac_bank_transaction_rules')
+      .select('id, rule_name, match_keyword, classification_name, bank_setting_id, is_active')
+      .order('created_at', { ascending: false })
+    if (ruleError) throw ruleError
+    const loadedRules = (data || []) as BankTransactionRule[]
+    setTransactionRules(loadedRules)
+    return loadedRules
+  }
+
+  async function openRuleDialog(transaction?: TransactionRow) {
+    setError('')
+    resetRuleForm(transaction)
+    setRuleDialogOpen(true)
+    try {
+      const loadedRules = await loadTransactionRules()
+      const existingRule = transaction?.classification_rule_id
+        ? loadedRules.find((rule) => rule.id === transaction.classification_rule_id)
+        : null
+      if (existingRule) editTransactionRule(existingRule)
+    } catch (caught) {
+      setError(`โหลดกฎจำแนกรายการไม่สำเร็จ: ${readableError(caught)}`)
+    }
+  }
+
+  function editTransactionRule(rule: BankTransactionRule) {
+    setRuleEditingId(rule.id)
+    setRuleName(rule.rule_name)
+    setRuleKeyword(rule.match_keyword)
+    setRuleClassification(rule.classification_name)
+    setRuleBankSettingId(rule.bank_setting_id)
+    setRuleApplyExisting(true)
+  }
+
+  async function saveTransactionRule() {
+    if (!ruleKeyword.trim() || !ruleClassification.trim()) return
+    setRuleSaving(true)
+    setError('')
+    const { data, error: rpcError } = await supabase.rpc('bank_reconciliation_save_rule', {
+      p_rule_id: ruleEditingId,
+      p_rule_name: ruleName.trim() || ruleClassification.trim(),
+      p_match_keyword: ruleKeyword.trim(),
+      p_classification_name: ruleClassification.trim(),
+      p_bank_setting_id: ruleBankSettingId,
+      p_apply_existing: ruleApplyExisting,
+    })
+    if (rpcError) setError(`บันทึกกฎไม่สำเร็จ: ${readableError(rpcError)}`)
+    else {
+      const result = (data || {}) as { applied_count?: number }
+      setUploadResults([{ fileName: 'กฎจำแนกรายการ', success: true, message: `บันทึกแล้ว · จัดประเภทรายการเดิม ${result.applied_count || 0} รายการ` }])
+      resetRuleForm()
+      await Promise.all([loadTransactionRules(), loadDetail(selectedImportId)])
+    }
+    setRuleSaving(false)
+  }
+
+  async function toggleTransactionRule(rule: BankTransactionRule) {
+    const { error: updateError } = await supabase
+      .from('ac_bank_transaction_rules')
+      .update({ is_active: !rule.is_active, updated_at: new Date().toISOString() })
+      .eq('id', rule.id)
+    if (updateError) setError(`เปลี่ยนสถานะกฎไม่สำเร็จ: ${readableError(updateError)}`)
+    else await loadTransactionRules()
+  }
+
+  async function unclassifyTransaction(transactionId: string) {
+    setActionId(transactionId)
+    const { error: rpcError } = await supabase.rpc('bank_reconciliation_unclassify_transaction', {
+      p_transaction_id: transactionId,
+    })
+    if (rpcError) setError(`ยกเลิกการจัดประเภทไม่สำเร็จ: ${readableError(rpcError)}`)
     else await loadDetail(selectedImportId)
     setActionId('')
   }
@@ -741,6 +873,7 @@ export default function BankReconciliationSection() {
         'ช่องทาง': row.channel || '',
         'รายละเอียด': row.description || '',
         'ผลกระทบยอด': statusLabel(row.reconciliation_status),
+        'ประเภทรายการอื่น': row.classification_name || '',
         'เลขบิล': matches.map((item) => item.or_orders?.bill_no || '').filter(Boolean).join(', '),
         'ยอดบิล': matches.reduce((sum, item) => sum + Number(item.or_orders?.total_amount || 0), 0),
       }
@@ -799,6 +932,13 @@ export default function BankReconciliationSection() {
             <p className="mt-1 text-sm text-gray-600">อัปโหลด Statement หลายบัญชี แล้วเทียบกับ EasySlip และรายการตรวจสลิปมือ</p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void openRuleDialog()}
+              className="rounded-lg border border-violet-300 bg-white px-4 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50"
+            >
+              ตั้งค่ารายการอื่น
+            </button>
             <input
               ref={fileInputRef}
               type="file"
@@ -960,11 +1100,20 @@ export default function BankReconciliationSection() {
                           {matches.length > 0 ? <div className="flex items-center gap-2">
                             <span className="flex flex-wrap gap-1">{matches.filter((item) => item.or_orders?.bill_no).map((item) => <button key={item.id} type="button" onClick={() => void openOrderDetail(item.order_id)} disabled={!!detailOrderLoadingId} className="font-mono font-semibold text-blue-700 hover:underline disabled:cursor-wait disabled:opacity-50" title="ดูรายละเอียดบิล">{item.or_orders?.bill_no}</button>)}</span>
                             <button disabled={actionId === row.id} onClick={() => void clearMatch(row.id)} className="text-xs text-red-600 hover:underline">ยกเลิกคู่</button>
+                          </div> : row.reconciliation_status === 'ignored' ? <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded bg-violet-50 px-2 py-1 text-xs font-semibold text-violet-700">{row.classification_name || 'รายการที่ไม่ใช่บิลขาย'}</span>
+                            <button type="button" onClick={() => void openRuleDialog(row)} className="text-xs font-medium text-blue-700 hover:underline">ดูกฎ</button>
+                            <button type="button" disabled={actionId === row.id} onClick={() => void unclassifyTransaction(row.id)} className="text-xs text-red-600 hover:underline disabled:opacity-50">ยกเลิกการจัดประเภท</button>
                           </div> : row.credit_amount > 0 ? <div className="space-y-2">
                             <div className="flex items-center gap-2">
-                              <input value={manualBillNos[row.id] || ''} onChange={(event) => setManualBillNos((current) => ({ ...current, [row.id]: event.target.value }))} placeholder="กรอกเลขบิล" className="w-40 rounded border border-gray-300 px-2 py-1.5 font-mono text-xs" />
+                              <input value={manualBillNos[row.id] || ''} onChange={(event) => {
+                                setManualBillNos((current) => ({ ...current, [row.id]: event.target.value }))
+                                setManualMatchErrors((current) => ({ ...current, [row.id]: '' }))
+                              }} placeholder="กรอกเลขบิล" className={`w-40 rounded border px-2 py-1.5 font-mono text-xs ${manualMatchErrors[row.id] ? 'border-red-400 bg-red-50' : 'border-gray-300'}`} />
                               <button disabled={actionId === row.id || !(manualBillNos[row.id] || '').trim()} onClick={() => void setManualMatch(row.id)} className="rounded bg-blue-600 px-2 py-1.5 text-xs font-medium text-white disabled:opacity-50">จับคู่</button>
+                              <button type="button" onClick={() => void openRuleDialog(row)} className="rounded border border-violet-200 bg-violet-50 px-2 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100">ไม่ใช่บิลขาย</button>
                             </div>
+                            {manualMatchErrors[row.id] && <p className="max-w-xl text-xs font-medium text-red-600">{manualMatchErrors[row.id]}</p>}
                             {diagnostic && <div className="max-w-xl rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <span>{diagnosticLabel(diagnostic.reason_code)}</span>
@@ -1040,6 +1189,61 @@ export default function BankReconciliationSection() {
       </section>
       <Modal open={detailOrder != null} onClose={() => setDetailOrder(null)} contentClassName="max-w-[96vw] w-full">
         {detailOrder && <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} readOnly />}
+      </Modal>
+      <Modal open={ruleDialogOpen} onClose={() => !ruleSaving && setRuleDialogOpen(false)} contentClassName="max-w-4xl w-full">
+        <div className="p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-lg font-bold text-gray-900">ตั้งค่ารายการเงินเข้าที่ไม่ใช่บิลขาย</h3>
+              <p className="mt-1 text-sm text-gray-600">เมื่อรายละเอียด Statement มีคำที่กำหนด ระบบจะจัดประเภทให้อัตโนมัติและไม่นำไปค้นหาบิลขาย</p>
+            </div>
+            <button type="button" disabled={ruleSaving} onClick={() => setRuleDialogOpen(false)} className="text-2xl text-gray-400 hover:text-gray-700 disabled:opacity-50" aria-label="ปิด">×</button>
+          </div>
+
+          <div className="mt-5 grid gap-4 rounded-lg border border-violet-200 bg-violet-50 p-4 md:grid-cols-2">
+            <label className="text-sm font-medium text-gray-700">ชื่อกฎ
+              <input value={ruleName} onChange={(event) => setRuleName(event.target.value)} placeholder="เช่น เงินรับจาก Lazada" className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2" />
+            </label>
+            <label className="text-sm font-medium text-gray-700">จัดประเภทเป็น
+              <input value={ruleClassification} onChange={(event) => setRuleClassification(event.target.value)} placeholder="เช่น LAZADA" className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2" />
+            </label>
+            <label className="text-sm font-medium text-gray-700">คำที่ต้องพบใน Statement
+              <input value={ruleKeyword} onChange={(event) => setRuleKeyword(event.target.value)} placeholder="เช่น Lazada" className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2" />
+              <span className="mt-1 block text-xs font-normal text-gray-500">ควรใช้คำเฉพาะที่พบซ้ำ เช่น Lazada ไม่ควรใส่ยอดเงินหรือวันที่</span>
+            </label>
+            <label className="text-sm font-medium text-gray-700">ใช้กับบัญชี
+              <select value={ruleBankSettingId || ''} onChange={(event) => setRuleBankSettingId(event.target.value || null)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2">
+                <option value="">ทุกบัญชี</option>
+                {banks.map((bank) => <option key={bank.id} value={bank.id}>{bank.bank_name || 'ธนาคาร'} {maskedAccount(bank.account_number)}</option>)}
+              </select>
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm text-gray-700 md:col-span-2">
+              <input type="checkbox" checked={ruleApplyExisting} onChange={(event) => setRuleApplyExisting(event.target.checked)} className="h-4 w-4 rounded border-gray-300 text-violet-600" />
+              ใช้กฎนี้กับรายการเดิมที่ยังไม่ได้จับคู่ด้วย
+            </label>
+            <div className="flex justify-end gap-2 md:col-span-2">
+              {ruleEditingId && <button type="button" disabled={ruleSaving} onClick={() => resetRuleForm()} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 disabled:opacity-50">เพิ่มกฎใหม่</button>}
+              <button type="button" disabled={ruleSaving || ruleKeyword.trim().length < 3 || !ruleClassification.trim()} onClick={() => void saveTransactionRule()} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-50">
+                {ruleSaving ? 'กำลังบันทึก...' : ruleEditingId ? 'บันทึกการแก้ไข' : 'เพิ่มกฎ'}
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-5">
+            <h4 className="font-semibold text-gray-900">กฎที่มีอยู่ ({transactionRules.length})</h4>
+            <div className="mt-2 max-h-72 overflow-y-auto rounded-lg border border-gray-200">
+              {transactionRules.length === 0 ? <p className="p-6 text-center text-sm text-gray-500">ยังไม่มีกฎจำแนกรายการ</p> : transactionRules.map((rule) => <div key={rule.id} className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-4 py-3 last:border-b-0">
+                <button type="button" onClick={() => editTransactionRule(rule)} className="text-left">
+                  <p className="font-semibold text-gray-900">{rule.classification_name} <span className="font-normal text-gray-500">· พบคำ “{rule.match_keyword}”</span></p>
+                  <p className="mt-1 text-xs text-gray-500">{rule.rule_name} · {rule.bank_setting_id ? 'เฉพาะบัญชีที่เลือก' : 'ทุกบัญชี'}</p>
+                </button>
+                <button type="button" onClick={() => void toggleTransactionRule(rule)} className={`rounded-full px-3 py-1 text-xs font-semibold ${rule.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
+                  {rule.is_active ? 'ใช้งานอยู่' : 'ปิดใช้งาน'}
+                </button>
+              </div>)}
+            </div>
+          </div>
+        </div>
       </Modal>
       <Modal open={manualMatchSourceDialog != null} onClose={() => !actionId && setManualMatchSourceDialog(null)} contentClassName="max-w-2xl w-full">
         {manualMatchSourceDialog && <div className="p-6">

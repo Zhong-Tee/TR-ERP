@@ -3,6 +3,8 @@ export interface User {
   id: string
   email: string
   username?: string
+  /** ชื่อผู้ขายที่ใช้แสดงบนเอกสาร QT/PC */
+  seller_name?: string | null
   role: UserRole
   is_active?: boolean
   /** เปิดสิทธิ์เข้าหน้า Employee บนมือถือ โดยไม่ต้องเปลี่ยน role หลัก */
@@ -127,6 +129,10 @@ export interface Order {
   } | null
   created_at: string
   updated_at: string
+  /** เอกสาร QT/PC ต้นทาง; มีค่าเมื่อเปิดบิลจากเอกสารก่อนเปิดบิล */
+  source_prebill_document_id?: string | null
+  /** คงราคาตามเอกสาร QT/PC ที่ยังไม่หมดอายุ ไม่ปรับราคาสินค้า/โปรโมชั่นอัตโนมัติเมื่อเปิดฟอร์ม */
+  prebill_price_locked?: boolean
   /** การเก็บรายการตรวจสอบไม่ผ่านเข้าประวัติ (ไม่ลบบิล/สลิป) */
   failed_queue_archived_at?: string | null
   failed_queue_archived_by?: string | null

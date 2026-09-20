@@ -60,10 +60,11 @@ type DeliveryRow = {
   previous_pickup_at: string | null
   review_status: 'open' | 'resolved'
   reviewed_at: string | null
+  raw_data: Record<string, unknown> | null
   or_orders: LinkedOrder | LinkedOrder[] | null
 }
 
-type RowFilter = 'all' | 'matched' | 'issues' | 'consignment' | 'system_only'
+type RowFilter = 'all' | 'matched' | 'issues' | 'consignment'
 
 type CarrierOption = { code: string; name: string }
 
@@ -114,6 +115,17 @@ function statusClass(row: DeliveryRow): string {
   if (row.match_status === 'matched' || row.match_status === 'manual_match') return 'bg-emerald-50 text-emerald-700 border-emerald-200'
   if (row.match_status === 'consignment') return 'bg-violet-50 text-violet-700 border-violet-200'
   return 'bg-amber-50 text-amber-700 border-amber-200'
+}
+
+function isOpenIssue(row: DeliveryRow): boolean {
+  if (row.source_kind !== 'carrier' || row.review_status === 'resolved') return false
+  const isMatched = row.match_status === 'matched' || row.match_status === 'manual_match'
+  return (!isMatched && row.match_status !== 'consignment') || row.has_duplicate || row.has_previous_import
+}
+
+function pickupStatus(row: DeliveryRow): string {
+  const value = row.raw_data?.['สถานะงานรับ']
+  return typeof value === 'string' && value.trim() ? value.trim() : '-'
 }
 
 function formatDateTime(value: string | null | undefined): string {
@@ -172,7 +184,7 @@ export default function DeliveryCheckPanel() {
     try {
       const { data, error } = await supabase
         .from('tr_delivery_check_rows')
-        .select('id,source_kind,source_row_number,pickup_at,order_no,tracking_no,sender,consignee,consignee_phone,consignee_address,is_consignment,note,order_id,match_status,match_method,match_detail,has_duplicate,has_previous_import,previous_import_id,previous_file_name,previous_carrier,previous_imported_at,previous_pickup_at,review_status,reviewed_at,or_orders(bill_no,tracking_number,customer_name,recipient_name,channel_code,shipped_time,status)')
+        .select('id,source_kind,source_row_number,pickup_at,order_no,tracking_no,sender,consignee,consignee_phone,consignee_address,is_consignment,note,order_id,match_status,match_method,match_detail,has_duplicate,has_previous_import,previous_import_id,previous_file_name,previous_carrier,previous_imported_at,previous_pickup_at,review_status,reviewed_at,raw_data,or_orders(bill_no,tracking_number,customer_name,recipient_name,channel_code,shipped_time,status)')
         .eq('import_id', importId)
         .order('source_kind', { ascending: true })
         .order('source_row_number', { ascending: true, nullsFirst: false })
@@ -265,6 +277,7 @@ export default function DeliveryCheckPanel() {
         p_import_id: result.import_id,
       })
       if (rebuildResult.error) throw rebuildResult.error
+      const finalCounts = rebuildResult.data as { issue_count?: number } | null
       await loadImports(result.import_id)
       setPreview(null)
       setSelectedFile(null)
@@ -273,7 +286,7 @@ export default function DeliveryCheckPanel() {
       if (fileInputRef.current) fileInputRef.current.value = ''
       setMessage({
         tone: 'success',
-        text: `นำเข้าสำเร็จ: ตรง ${result.matched_count || 0} รายการ, ฝากส่ง ${result.consignment_count || 0} รายการ, ต้องตรวจ ${result.issue_count || 0} รายการ`,
+        text: `นำเข้าสำเร็จ: ตรง ${result.matched_count || 0} รายการ, ฝากส่ง ${result.consignment_count || 0} รายการ, ต้องตรวจ ${finalCounts?.issue_count ?? result.issue_count ?? 0} รายการ`,
       })
     } catch (error) {
       setMessage({ tone: 'error', text: errorMessage(error) })
@@ -323,12 +336,11 @@ export default function DeliveryCheckPanel() {
   const filteredRows = useMemo(() => {
     const search = query.trim().toLowerCase()
     return rows.filter((row) => {
+      if (row.source_kind !== 'carrier') return false
       const isMatched = row.match_status === 'matched' || row.match_status === 'manual_match'
-      const isIssue = !isMatched && row.match_status !== 'consignment'
       if (filter === 'matched' && !isMatched) return false
-      if (filter === 'issues' && !isIssue && !row.has_duplicate && !row.has_previous_import) return false
+      if (filter === 'issues' && !isOpenIssue(row)) return false
       if (filter === 'consignment' && row.match_status !== 'consignment') return false
-      if (filter === 'system_only' && row.match_status !== 'system_only') return false
       if (!search) return true
       const order = linkedOrder(row)
       return [row.order_no, row.tracking_no, row.sender, row.consignee, row.consignee_phone, row.note, order?.bill_no]
@@ -338,21 +350,20 @@ export default function DeliveryCheckPanel() {
 
   const summary = useMemo(() => ({
     total: rows.filter((row) => row.source_kind === 'carrier').length,
-    matched: rows.filter((row) => row.match_status === 'matched' || row.match_status === 'manual_match').length,
-    consignment: rows.filter((row) => row.match_status === 'consignment').length,
-    issues: rows.filter((row) => !['matched', 'manual_match', 'consignment'].includes(row.match_status) || row.has_duplicate || row.has_previous_import).length,
-    systemOnly: rows.filter((row) => row.match_status === 'system_only').length,
+    matched: rows.filter((row) => row.source_kind === 'carrier' && (row.match_status === 'matched' || row.match_status === 'manual_match')).length,
+    consignment: rows.filter((row) => row.source_kind === 'carrier' && row.match_status === 'consignment').length,
+    issues: rows.filter(isOpenIssue).length,
   }), [rows])
 
   function exportResult() {
     const selected = imports.find((item) => item.id === selectedImportId)
     if (!selected || rows.length === 0) return
-    const output = rows.map((row) => {
+    const output = rows.filter((row) => row.source_kind === 'carrier').map((row) => {
       const order = linkedOrder(row)
       return {
         สถานะ: statusLabel(row),
         ตรวจแล้ว: row.review_status === 'resolved' ? 'ใช่' : 'ไม่',
-        เวลาเข้ารับ: formatDateTime(row.pickup_at),
+        สถานะงานรับ: pickupStatus(row),
         'Order No. จากไฟล์': row.order_no || '',
         'เลขบิลในระบบ': order?.bill_no || '',
         'Tracking จากไฟล์': row.tracking_no || '',
@@ -426,8 +437,8 @@ export default function DeliveryCheckPanel() {
               )}
               <div className="max-h-56 overflow-auto">
                 <table className="w-full text-xs">
-                  <thead className="sticky top-0 bg-white text-gray-500"><tr><th className="px-3 py-2 text-left">แถว</th><th className="px-3 py-2 text-left">Order No.</th><th className="px-3 py-2 text-left">Tracking</th><th className="px-3 py-2 text-left">ผู้ส่ง</th><th className="px-3 py-2 text-left">ประเภท</th><th className="px-3 py-2 text-left">หมายเหตุ</th></tr></thead>
-                  <tbody>{preview.rows.slice(0, 12).map((row) => <tr key={row.source_row_number} className="border-t border-gray-100"><td className="px-3 py-2">{row.source_row_number}</td><td className="px-3 py-2">{row.order_no || '-'}</td><td className="px-3 py-2 font-mono">{row.tracking_no || '-'}</td><td className="px-3 py-2">{row.sender}</td><td className="px-3 py-2">{row.is_consignment ? <span className="font-bold text-violet-700">ฝากส่ง</span> : 'บิลในระบบ'}</td><td className="px-3 py-2">{row.note || <span className="text-amber-600">รอกรอก</span>}</td></tr>)}</tbody>
+                  <thead className="sticky top-0 bg-white text-gray-500"><tr><th className="px-3 py-2 text-left">แถว</th><th className="px-3 py-2 text-left">Order No.</th><th className="px-3 py-2 text-left">Tracking</th><th className="px-3 py-2 text-left">สถานะงานรับ</th><th className="px-3 py-2 text-left">ผู้ส่ง</th><th className="px-3 py-2 text-left">ประเภท</th><th className="px-3 py-2 text-left">หมายเหตุ</th></tr></thead>
+                  <tbody>{preview.rows.slice(0, 12).map((row) => <tr key={row.source_row_number} className="border-t border-gray-100"><td className="px-3 py-2">{row.source_row_number}</td><td className="px-3 py-2">{row.order_no || '-'}</td><td className="px-3 py-2 font-mono">{row.tracking_no || '-'}</td><td className="px-3 py-2">{row.pickup_status || '-'}</td><td className="px-3 py-2">{row.sender}</td><td className="px-3 py-2">{row.is_consignment ? <span className="font-bold text-violet-700">ฝากส่ง</span> : 'บิลในระบบ'}</td><td className="px-3 py-2">{row.is_consignment ? (row.note || <span className="text-amber-600">รอกรอก</span>) : '-'}</td></tr>)}</tbody>
                 </table>
               </div>
             </div>
@@ -458,13 +469,12 @@ export default function DeliveryCheckPanel() {
 
       {selectedImportId && (
         <>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             {[
               ['รายการในไฟล์', summary.total, 'text-gray-900'],
               ['ตรงสมบูรณ์', summary.matched, 'text-emerald-600'],
               ['ฝากส่ง', summary.consignment, 'text-violet-600'],
               ['ต้องตรวจ', summary.issues, 'text-amber-600'],
-              ['ระบบมี แต่ไฟล์ไม่มี', summary.systemOnly, 'text-red-600'],
             ].map(([label, value, tone]) => <div key={String(label)} className="rounded-xl border border-gray-200 bg-white p-4"><div className="text-xs font-semibold text-gray-500">{label}</div><div className={`mt-1 text-2xl font-black ${tone}`}>{value}</div></div>)}
           </div>
 
@@ -472,14 +482,14 @@ export default function DeliveryCheckPanel() {
             <div className="flex flex-col gap-3 border-b border-gray-200 p-4 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex flex-wrap gap-2">
                 {([
-                  ['all', 'ทั้งหมด'], ['matched', 'ตรงแล้ว'], ['issues', 'ต้องตรวจ'], ['consignment', 'ฝากส่ง'], ['system_only', 'ไม่มีในไฟล์'],
+                  ['all', 'ทั้งหมด'], ['matched', 'ตรงแล้ว'], ['issues', 'ต้องตรวจ'], ['consignment', 'ฝากส่ง'],
                 ] as [RowFilter, string][]).map(([value, label]) => <button key={value} type="button" onClick={() => setFilter(value)} className={`rounded-lg border px-3 py-2 text-xs font-bold ${filter === value ? 'border-blue-600 bg-blue-600 text-white' : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'}`}>{label}</button>)}
               </div>
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ค้นหาเลขบิล Tracking ผู้รับ หรือหมายเหตุ" className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none lg:max-w-sm" />
             </div>
             <div className="overflow-x-auto">
               <table className="min-w-[1280px] w-full text-sm">
-                <thead><tr className="bg-slate-800 text-white"><th className="px-3 py-3 text-left">สถานะ</th><th className="px-3 py-3 text-left">เวลา PU</th><th className="px-3 py-3 text-left">Order No. / เลขบิล</th><th className="px-3 py-3 text-left">Tracking</th><th className="px-3 py-3 text-left">ผู้ส่ง / ผู้รับ</th><th className="px-3 py-3 text-left min-w-[260px]">หมายเหตุ</th><th className="px-3 py-3 text-center">ดำเนินการ</th></tr></thead>
+                <thead><tr className="bg-slate-800 text-white"><th className="px-3 py-3 text-left">สถานะ</th><th className="px-3 py-3 text-left">สถานะงานรับ</th><th className="px-3 py-3 text-left">Order No. / เลขบิล</th><th className="px-3 py-3 text-left">Tracking</th><th className="px-3 py-3 text-left">ผู้ส่ง / ผู้รับ</th><th className="px-3 py-3 text-left min-w-[260px]">หมายเหตุ</th><th className="px-3 py-3 text-center">ดำเนินการ</th></tr></thead>
                 <tbody>
                   {loading ? <tr><td colSpan={7} className="py-12 text-center text-gray-400">กำลังโหลดผลตรวจสอบ...</td></tr>
                     : filteredRows.length === 0 ? <tr><td colSpan={7} className="py-12 text-center text-gray-400">ไม่พบรายการตามตัวกรอง</td></tr>
@@ -487,12 +497,12 @@ export default function DeliveryCheckPanel() {
                         const order = linkedOrder(row)
                         return <tr key={row.id} className={`border-t border-gray-100 align-top ${row.review_status === 'resolved' ? 'bg-gray-50 opacity-75' : 'hover:bg-blue-50/40'}`}>
                           <td className="px-3 py-3"><span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-bold ${statusClass(row)}`}>{statusLabel(row)}</span>{row.review_status === 'resolved' && <div className="mt-1 text-[11px] text-gray-500">ตรวจแล้ว</div>}{row.match_detail && <div className="mt-1 max-w-[210px] text-xs text-gray-500">{row.match_detail}</div>}{row.has_previous_import && <div className="mt-1 max-w-[230px] rounded-md bg-orange-50 px-2 py-1 text-[11px] text-orange-700">เคยพบ: {row.previous_file_name || '-'} · {row.previous_carrier || '-'}<br />นำเข้า {formatDateTime(row.previous_imported_at)}{row.previous_pickup_at ? ` · PU ${formatDateTime(row.previous_pickup_at)}` : ''}</div>}</td>
-                          <td className="whitespace-nowrap px-3 py-3 text-gray-600">{formatDateTime(row.pickup_at)}</td>
+                          <td className="whitespace-nowrap px-3 py-3 text-gray-600">{pickupStatus(row)}</td>
                           <td className="px-3 py-3"><div className="font-semibold text-gray-900">{row.order_no || <span className="font-normal text-gray-400">ไม่มี Order No.</span>}</div>{order && <div className="mt-1 text-xs text-blue-700">ระบบ: {order.bill_no}</div>}</td>
                           <td className="px-3 py-3"><div className="font-mono text-gray-900">{row.tracking_no || '-'}</div>{order?.tracking_number && order.tracking_number !== row.tracking_no && <div className="mt-1 font-mono text-xs text-blue-700">ระบบ: {order.tracking_number}</div>}</td>
                           <td className="px-3 py-3"><div className="font-semibold text-gray-800">{row.sender || order?.channel_code || '-'}</div><div className="mt-1 max-w-[220px] text-xs text-gray-500">{row.consignee || order?.recipient_name || order?.customer_name || '-'}</div>{row.consignee_phone && <div className="mt-1 text-xs text-gray-500">{row.consignee_phone}</div>}</td>
-                          <td className="px-3 py-3"><textarea value={notes[row.id] ?? ''} onChange={(event) => setNotes((previous) => ({ ...previous, [row.id]: event.target.value }))} placeholder={row.is_consignment ? 'กรอกหมายเหตุสินค้าฝากส่ง' : 'เพิ่มหมายเหตุการตรวจสอบ'} rows={2} className="w-full resize-y rounded-lg border border-gray-300 px-2.5 py-2 text-sm focus:border-blue-500 focus:outline-none" /></td>
-                          <td className="px-3 py-3"><div className="flex min-w-[150px] flex-col gap-2"><button type="button" disabled={savingRowId === row.id} onClick={() => void saveReview(row, false)} className="rounded-lg border border-blue-300 px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-50 disabled:opacity-50">บันทึกหมายเหตุ</button>{row.review_status === 'open' && row.match_status !== 'matched' && <button type="button" disabled={savingRowId === row.id} onClick={() => void saveReview(row, true)} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50">ตรวจแล้ว</button>}</div></td>
+                          <td className="px-3 py-3">{row.is_consignment ? <textarea value={notes[row.id] ?? ''} onChange={(event) => setNotes((previous) => ({ ...previous, [row.id]: event.target.value }))} placeholder="กรอกหมายเหตุสินค้าฝากส่ง" rows={2} className="w-full resize-y rounded-lg border border-gray-300 px-2.5 py-2 text-sm focus:border-blue-500 focus:outline-none" /> : <span className="text-gray-400">-</span>}</td>
+                          <td className="px-3 py-3"><div className="flex min-w-[150px] flex-col gap-2">{row.is_consignment && <button type="button" disabled={savingRowId === row.id} onClick={() => void saveReview(row, false)} className="rounded-lg border border-blue-300 px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-50 disabled:opacity-50">บันทึกหมายเหตุ</button>}{isOpenIssue(row) && <button type="button" disabled={savingRowId === row.id} onClick={() => void saveReview(row, true)} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50">ตรวจแล้ว</button>}{!row.is_consignment && !isOpenIssue(row) && <span className="text-center text-xs text-gray-400">-</span>}</div></td>
                         </tr>
                       })}
                 </tbody>

@@ -85,7 +85,7 @@ export default function Settings() {
   const { hasAccess, refreshMenuAccess } = useMenuAccess()
   const [users, setUsers] = useState<User[]>([])
   const [showCreateUserModal, setShowCreateUserModal] = useState(false)
-  const [createUserForm, setCreateUserForm] = useState({ email: '', password: '', username: '', role: 'sales-tr' })
+  const [createUserForm, setCreateUserForm] = useState({ email: '', password: '', username: '', seller_name: '', role: 'sales-tr' })
   const [createUserLoading, setCreateUserLoading] = useState(false)
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
@@ -151,7 +151,9 @@ export default function Settings() {
 
   // Bill header settings state
   const [bankSubTab, setBankSubTab] = useState<'bank-info' | 'bill-header'>('bank-info')
-  const [billChannelSubTab, setBillChannelSubTab] = useState<'channels' | 'prefix'>('channels') // sub-tab จัดการช่องทาง/ตั้งค่าเลขบิล
+  const [billChannelSubTab, setBillChannelSubTab] = useState<'channels' | 'prefix' | 'prebill'>('channels') // sub-tab จัดการช่องทาง/ตั้งค่าเลขบิล/QT-PC
+  const [prebillSettings, setPrebillSettings] = useState<Record<string, { quotation: { prefix: string; header: string; days: number }; production_confirmation: { prefix: string; header: string; days: number } }>>({})
+  const [prebillSettingsSaving, setPrebillSettingsSaving] = useState(false)
   const [billHeaders, setBillHeaders] = useState<BillHeaderSetting[]>([])
   const [billHeaderLoading, setBillHeaderLoading] = useState(false)
   const [showBillHeaderForm, setShowBillHeaderForm] = useState(false)
@@ -332,6 +334,7 @@ export default function Settings() {
     }
     if (activeTab === 'bill-channel-map') {
       loadChannelOrderNoPrefixes()
+      loadPrebillChannelSettings()
       if (!selectedPrefixChannel && channels.length > 0) {
         setSelectedPrefixChannel(channels[0].channel_code)
       }
@@ -680,7 +683,7 @@ export default function Settings() {
   }
 
   async function handleCreateUser() {
-    const { email, password, username, role } = createUserForm
+    const { email, password, username, seller_name, role } = createUserForm
     if (!email.trim()) return showMessage({ title: 'แจ้งเตือน', message: 'กรุณากรอก Email' })
     if (!password || password.length < 6) return showMessage({ title: 'แจ้งเตือน', message: 'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร' })
 
@@ -695,7 +698,7 @@ export default function Settings() {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${session?.access_token}`,
           },
-          body: JSON.stringify({ email: email.trim(), password, username: username.trim(), role }),
+          body: JSON.stringify({ email: email.trim(), password, username: username.trim(), seller_name: seller_name.trim(), role }),
         }
       )
       const result = await res.json()
@@ -703,7 +706,7 @@ export default function Settings() {
 
       showMessage({ title: 'สำเร็จ', message: `สร้าง User "${username.trim() || email.trim()}" สำเร็จ` })
       setShowCreateUserModal(false)
-      setCreateUserForm({ email: '', password: '', username: '', role: 'sales-tr' })
+      setCreateUserForm({ email: '', password: '', username: '', seller_name: '', role: 'sales-tr' })
       loadUsers()
     } catch (err: any) {
       // ปิดฟอร์มก่อนแสดงข้อความ เพื่อไม่ให้ Modal สร้าง User บัง Popup แจ้งข้อผิดพลาด
@@ -732,6 +735,7 @@ export default function Settings() {
     // ── ออเดอร์ ──
     { key: 'orders', label: 'ออเดอร์', group: '' },
     { key: 'orders-all', label: 'ทั้งหมด', group: 'orders' },
+    { key: 'orders-prebill', label: 'QT/PC', group: 'orders' },
     { key: 'orders-create', label: 'สร้าง/แก้ไข', group: 'orders' },
     { key: 'orders-claim-req', label: 'บิลเคลม (REQ)', group: 'orders' },
     { key: 'orders-waiting', label: 'รอลงข้อมูล', group: 'orders' },
@@ -1618,6 +1622,44 @@ export default function Settings() {
     const empty: Record<string, ProductFieldOverrideValue> = {}
     for (const { key } of PRODUCT_FIELD_KEYS) empty[key] = null
     return empty as Record<ProductFieldKey, ProductFieldOverrideValue>
+  }
+
+  async function loadPrebillChannelSettings() {
+    const { data, error } = await supabase.from('or_prebill_channel_settings').select('*')
+    if (error) { console.warn('Load QT/PC settings:', error); return }
+    const map: typeof prebillSettings = {}
+    channels.forEach((channel) => {
+      map[channel.channel_code] = {
+        quotation: { prefix: `QT-${channel.channel_code}`, header: 'ใบเสนอราคา', days: 7 },
+        production_confirmation: { prefix: `PC-${channel.channel_code}`, header: 'ใบยืนยันรายละเอียดการผลิต', days: 7 },
+      }
+    })
+    ;(data || []).forEach((row: any) => {
+      if (!map[row.channel_code]) map[row.channel_code] = {
+        quotation: { prefix: `QT-${row.channel_code}`, header: 'ใบเสนอราคา', days: 7 },
+        production_confirmation: { prefix: `PC-${row.channel_code}`, header: 'ใบยืนยันรายละเอียดการผลิต', days: 7 },
+      }
+      const key = row.document_type as 'quotation' | 'production_confirmation'
+      map[row.channel_code][key] = { prefix: row.document_prefix, header: row.header_name, days: Number(row.default_valid_days || 7) }
+    })
+    setPrebillSettings(map)
+  }
+
+  async function savePrebillChannelSettings() {
+    setPrebillSettingsSaving(true)
+    try {
+      const rows = Object.entries(prebillSettings).flatMap(([channelCode, value]) => ([
+        { channel_code: channelCode, document_type: 'quotation', document_prefix: value.quotation.prefix.trim(), header_name: value.quotation.header.trim(), default_valid_days: value.quotation.days, updated_by: currentUser?.id },
+        { channel_code: channelCode, document_type: 'production_confirmation', document_prefix: value.production_confirmation.prefix.trim(), header_name: value.production_confirmation.header.trim(), default_valid_days: value.production_confirmation.days, updated_by: currentUser?.id },
+      ]))
+      if (rows.some(row => !row.document_prefix || !row.header_name)) throw new Error('กรุณากรอก Prefix และชื่อหัวเอกสารให้ครบ')
+      const { error } = await supabase.from('or_prebill_channel_settings').upsert(rows, { onConflict: 'channel_code,document_type' })
+      if (error) throw error
+      showMessage({ title: 'สำเร็จ', message: 'บันทึกการตั้งค่าเลขเอกสารและหัวเอกสาร QT/PC แล้ว' })
+      await loadPrebillChannelSettings()
+    } catch (error: any) {
+      showMessage({ title: 'ผิดพลาด', message: error.message || String(error) })
+    } finally { setPrebillSettingsSaving(false) }
   }
 
   function setProductOverrideField(productId: string, field: ProductFieldKey, value: ProductFieldOverrideValue) {
@@ -2561,6 +2603,22 @@ export default function Settings() {
     }
   }
 
+  async function updateSellerName(userId: string, sellerName: string) {
+    try {
+      const { error } = await supabase
+        .from('us_users')
+        .update({ seller_name: sellerName.trim() || null })
+        .eq('id', userId)
+
+      if (error) throw error
+      showMessage({ title: 'สำเร็จ', message: 'อัปเดตชื่อผู้ขายสำเร็จ' })
+      loadUsers()
+    } catch (error: any) {
+      console.error('Error updating seller name:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* เมนูย่อย — สไตล์เดียวกับเมนูออเดอร์ */}
@@ -2773,7 +2831,7 @@ export default function Settings() {
           : users.filter((u) => normalizeRole(u.role) === normalizeRole(userRoleFilter))
         )
           .filter((u) => !hideInactiveUsers || u.is_active !== false)
-          .filter((u) => !normalizedUserSearch || `${u.email || ''} ${u.username || ''}`.toLocaleLowerCase('th-TH').includes(normalizedUserSearch))
+          .filter((u) => !normalizedUserSearch || `${u.email || ''} ${u.username || ''} ${u.seller_name || ''}`.toLocaleLowerCase('th-TH').includes(normalizedUserSearch))
           .sort((a, b) => {
             const aRoleIndex = allRoles.indexOf(normalizeRole(a.role))
             const bRoleIndex = allRoles.indexOf(normalizeRole(b.role))
@@ -2808,7 +2866,7 @@ export default function Settings() {
                   type="search"
                   value={userSearch}
                   onChange={(e) => setUserSearch(e.target.value)}
-                  placeholder="ค้นหาอีเมล หรือ Username"
+                  placeholder="ค้นหาอีเมล Username หรือชื่อผู้ขาย"
                   className="w-full rounded-lg border border-gray-300 py-1.5 pl-9 pr-8 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
                 />
                 {userSearch && (
@@ -2883,6 +2941,7 @@ export default function Settings() {
                 <tr className="bg-blue-600 text-white">
                   <th className="p-3 text-left font-semibold rounded-tl-xl">อีเมล</th>
                   <th className="p-3 text-left font-semibold">Username</th>
+                  <th className="p-3 text-left font-semibold">ชื่อผู้ขาย</th>
                   <th className="p-3 text-left font-semibold">Role</th>
                   <th className="p-3 text-center font-semibold">สถานะ</th>
                   <th className="p-3 text-center font-semibold" title="เปิดให้ user นี้เข้าหน้า Employee ผ่านมือถือ โดยไม่ต้องเปลี่ยน role">
@@ -2922,6 +2981,22 @@ export default function Settings() {
                           if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
                         }}
                         className="px-3 py-1 border border-gray-300 rounded w-full max-w-[200px] focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none disabled:bg-gray-100"
+                      />
+                    </td>
+                    <td className="p-3">
+                      <input
+                        type="text"
+                        defaultValue={user.seller_name || ''}
+                        placeholder="ชื่อที่แสดงใน QT/PC"
+                        disabled={isInactive}
+                        onBlur={(e) => {
+                          const newValue = e.target.value.trim()
+                          if (newValue !== (user.seller_name || '')) updateSellerName(user.id, newValue)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                        }}
+                        className="w-full min-w-[160px] max-w-[220px] rounded border border-gray-300 px-3 py-1 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100"
                       />
                     </td>
                     <td className="p-3">
@@ -4078,6 +4153,13 @@ export default function Settings() {
             >
               ตั้งค่าเลขบิล
             </button>
+            {currentUser?.role === 'superadmin' && <button
+              type="button"
+              onClick={() => setBillChannelSubTab('prebill')}
+              className={`px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors ${billChannelSubTab === 'prebill' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
+            >
+              ตั้งค่า QT/PC
+            </button>}
           </div>
 
           {billChannelSubTab === 'channels' && (
@@ -4208,6 +4290,33 @@ export default function Settings() {
             </div>
           </div>
           </div>
+          )}
+
+          {billChannelSubTab === 'prebill' && currentUser?.role === 'superadmin' && (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-bold">ตั้งค่าเลขเอกสารและหัวเอกสาร QT/PC</h2>
+                  <p className="text-sm text-gray-600">กำหนด Prefix ชื่อหัวเอกสาร และจำนวนวันยืนราคาเริ่มต้นแยกตามช่องทาง</p>
+                </div>
+                <button type="button" disabled={prebillSettingsSaving} onClick={savePrebillChannelSettings} className="rounded-xl bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-50">
+                  {prebillSettingsSaving ? 'กำลังบันทึก...' : 'บันทึกการตั้งค่า'}
+                </button>
+              </div>
+              <div className="overflow-x-auto rounded-xl border">
+                <table className="w-full min-w-[1000px] text-sm">
+                  <thead><tr className="bg-slate-100 text-left"><th className="p-3">ช่องทาง</th><th className="p-3">Prefix QT</th><th className="p-3">ชื่อหัวใบเสนอราคา</th><th className="p-3">วันยืนราคา</th><th className="p-3">Prefix PC</th><th className="p-3">ชื่อหัวใบยืนยันผลิต</th><th className="p-3">วันหมดอายุ</th></tr></thead>
+                  <tbody>{channels.map(channel => {
+                    const value = prebillSettings[channel.channel_code] || {
+                      quotation: { prefix: `QT-${channel.channel_code}`, header: 'ใบเสนอราคา', days: 7 },
+                      production_confirmation: { prefix: `PC-${channel.channel_code}`, header: 'ใบยืนยันรายละเอียดการผลิต', days: 7 },
+                    }
+                    const update = (type: 'quotation' | 'production_confirmation', field: 'prefix' | 'header' | 'days', next: string | number) => setPrebillSettings(prev => ({ ...prev, [channel.channel_code]: { ...value, [type]: { ...value[type], [field]: next } } }))
+                    return <tr key={channel.channel_code} className="border-t"><td className="p-3 font-bold">{channel.channel_code}<div className="text-xs font-normal text-gray-500">{channel.channel_name}</div></td><td className="p-2"><input value={value.quotation.prefix} onChange={e => update('quotation','prefix',e.target.value)} className="w-full rounded-lg border p-2" /></td><td className="p-2"><input value={value.quotation.header} onChange={e => update('quotation','header',e.target.value)} className="w-full rounded-lg border p-2" /></td><td className="p-2"><input type="number" min="1" max="365" value={value.quotation.days} onChange={e => update('quotation','days',Number(e.target.value))} className="w-20 rounded-lg border p-2" /></td><td className="p-2"><input value={value.production_confirmation.prefix} onChange={e => update('production_confirmation','prefix',e.target.value)} className="w-full rounded-lg border p-2" /></td><td className="p-2"><input value={value.production_confirmation.header} onChange={e => update('production_confirmation','header',e.target.value)} className="w-full rounded-lg border p-2" /></td><td className="p-2"><input type="number" min="1" max="365" value={value.production_confirmation.days} onChange={e => update('production_confirmation','days',Number(e.target.value))} className="w-20 rounded-lg border p-2" /></td></tr>
+                  })}</tbody>
+                </table>
+              </div>
+            </div>
           )}
         </div>
       )}
@@ -4754,7 +4863,7 @@ export default function Settings() {
       {/* Modal สร้าง User ใหม่ */}
       <Modal
         open={showCreateUserModal}
-        onClose={() => { setShowCreateUserModal(false); setCreateUserForm({ email: '', password: '', username: '', role: 'sales-tr' }) }}
+        onClose={() => { setShowCreateUserModal(false); setCreateUserForm({ email: '', password: '', username: '', seller_name: '', role: 'sales-tr' }) }}
         closeOnBackdropClick
         contentClassName="max-w-md"
       >
@@ -4778,6 +4887,16 @@ export default function Settings() {
                 value={createUserForm.username}
                 onChange={(e) => setCreateUserForm((f) => ({ ...f, username: e.target.value }))}
                 placeholder="ชื่อที่แสดงในระบบ"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">ชื่อผู้ขาย</label>
+              <input
+                type="text"
+                value={createUserForm.seller_name}
+                onChange={(e) => setCreateUserForm((form) => ({ ...form, seller_name: e.target.value }))}
+                placeholder="ชื่อที่แสดงบนเอกสาร QT/PC"
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
               />
             </div>
