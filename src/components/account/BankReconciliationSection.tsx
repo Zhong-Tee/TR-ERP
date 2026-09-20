@@ -141,6 +141,23 @@ type UploadResult = {
   importId?: string
 }
 
+type GlobalReconciliationSummary = {
+  unmatched_count: number
+  ambiguous_count: number
+  missing_payment_count: number
+}
+
+type ImportIssueSummary = {
+  import_id: string
+  unmatched_count: number
+  ambiguous_count: number
+  missing_payment_count: number
+}
+
+type ImportIssueFilter = 'issues' | 'unmatched' | 'ambiguous' | 'missing' | 'resolved' | 'all'
+
+const IMPORT_PAGE_SIZE = 50
+
 type RetrySlipImage = {
   id: string
   storagePath: string | null
@@ -189,6 +206,11 @@ function money(value: number | null | undefined): string {
   return Number(value ?? 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+function importIssueTotal(summary?: ImportIssueSummary): number {
+  if (!summary) return 0
+  return summary.unmatched_count + summary.ambiguous_count + summary.missing_payment_count
+}
+
 function dateTime(value: string): string {
   return new Date(value).toLocaleString('th-TH', {
     year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
@@ -233,6 +255,7 @@ function durationLabel(minutes: number): string {
 
 export default function BankReconciliationSection() {
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const statementPickerRef = useRef<HTMLElement>(null)
   const unmatchedSectionRef = useRef<HTMLDivElement>(null)
   const missingPaymentsSectionRef = useRef<HTMLDivElement>(null)
   const [banks, setBanks] = useState<BankSettingRow[]>([])
@@ -241,12 +264,25 @@ export default function BankReconciliationSection() {
   const [transactions, setTransactions] = useState<TransactionRow[]>([])
   const [allocations, setAllocations] = useState<AllocationRow[]>([])
   const [missingPayments, setMissingPayments] = useState<MissingPaymentRow[]>([])
+  const [globalSummary, setGlobalSummary] = useState<GlobalReconciliationSummary>({
+    unmatched_count: 0,
+    ambiguous_count: 0,
+    missing_payment_count: 0,
+  })
+  const [importIssueById, setImportIssueById] = useState<Record<string, ImportIssueSummary>>({})
+  const [importIssueFilter, setImportIssueFilter] = useState<ImportIssueFilter>('issues')
+  const [importBankFilter, setImportBankFilter] = useState('all')
+  const [importMonthFilter, setImportMonthFilter] = useState('all')
+  const [importSearch, setImportSearch] = useState('')
+  const [hasMoreImports, setHasMoreImports] = useState(false)
+  const [loadingMoreImports, setLoadingMoreImports] = useState(false)
   const [matchDiagnostics, setMatchDiagnostics] = useState<MatchDiagnosticRow[]>([])
   const [expandedDiagnostics, setExpandedDiagnostics] = useState<Record<string, boolean>>({})
   const [expandedAllocatedDiagnostics, setExpandedAllocatedDiagnostics] = useState<Record<string, boolean>>({})
   const [manualBillNos, setManualBillNos] = useState<Record<string, string>>({})
   const [manualMatchErrors, setManualMatchErrors] = useState<Record<string, string>>({})
   const [showDebitTransactions, setShowDebitTransactions] = useState(false)
+  const [orderSummaryExpanded, setOrderSummaryExpanded] = useState(true)
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -270,6 +306,20 @@ export default function BankReconciliationSection() {
   const [ruleApplyExisting, setRuleApplyExisting] = useState(true)
   const [ruleSaving, setRuleSaving] = useState(false)
 
+  const loadImportIssueSummaries = useCallback(async (importIds: string[]) => {
+    if (importIds.length === 0) return [] as ImportIssueSummary[]
+    const { data, error: summaryError } = await supabase.rpc('bank_reconciliation_import_issue_summary', {
+      p_import_ids: importIds,
+    })
+    if (summaryError) throw summaryError
+    return ((data || []) as ImportIssueSummary[]).map((row) => ({
+      ...row,
+      unmatched_count: Number(row.unmatched_count || 0),
+      ambiguous_count: Number(row.ambiguous_count || 0),
+      missing_payment_count: Number(row.missing_payment_count || 0),
+    }))
+  }, [])
+
   const loadBaseData = useCallback(async (preferredImportId?: string) => {
     setLoading(true)
     setError('')
@@ -284,14 +334,17 @@ export default function BankReconciliationSection() {
           .from('ac_bank_statement_imports')
           .select('*, bank_settings(bank_name, account_number, account_name)')
           .order('uploaded_at', { ascending: false })
-          .limit(52),
+          .range(0, IMPORT_PAGE_SIZE - 1),
       ])
       if (bankResult.error) throw bankResult.error
       if (importResult.error) throw importResult.error
       const loadedBanks = (bankResult.data || []) as BankSettingRow[]
       const loadedImports = (importResult.data || []) as unknown as ImportRow[]
+      const loadedIssueSummaries = await loadImportIssueSummaries(loadedImports.map((row) => row.id))
       setBanks(loadedBanks)
       setImports(loadedImports)
+      setImportIssueById(Object.fromEntries(loadedIssueSummaries.map((row) => [row.import_id, row])))
+      setHasMoreImports(loadedImports.length === IMPORT_PAGE_SIZE)
       setSelectedImportId((current) => {
         if (preferredImportId && loadedImports.some((row) => row.id === preferredImportId)) return preferredImportId
         if (current && loadedImports.some((row) => row.id === current)) return current
@@ -302,7 +355,38 @@ export default function BankReconciliationSection() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [loadImportIssueSummaries])
+
+  async function loadOlderImports() {
+    if (loadingMoreImports || !hasMoreImports) return
+    setLoadingMoreImports(true)
+    setError('')
+    try {
+      const { data, error: importError } = await supabase
+        .from('ac_bank_statement_imports')
+        .select('*, bank_settings(bank_name, account_number, account_name)')
+        .order('uploaded_at', { ascending: false })
+        .range(imports.length, imports.length + IMPORT_PAGE_SIZE - 1)
+      if (importError) throw importError
+      const olderImports = (data || []) as unknown as ImportRow[]
+      const olderSummaries = await loadImportIssueSummaries(olderImports.map((row) => row.id))
+      setImports((current) => [...current, ...olderImports.filter((row) => !current.some((item) => item.id === row.id))])
+      setImportIssueById((current) => ({
+        ...current,
+        ...Object.fromEntries(olderSummaries.map((row) => [row.import_id, row])),
+      }))
+      setHasMoreImports(olderImports.length === IMPORT_PAGE_SIZE)
+    } catch (caught) {
+      setError(`โหลดรอบ Statement เก่าไม่สำเร็จ: ${readableError(caught)}`)
+    } finally {
+      setLoadingMoreImports(false)
+    }
+  }
+
+  function showIssueImports(filter: Extract<ImportIssueFilter, 'unmatched' | 'ambiguous' | 'missing'>) {
+    setImportIssueFilter(filter)
+    window.requestAnimationFrame(() => statementPickerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+  }
 
   const loadDetail = useCallback(async (importId: string) => {
     if (!importId) {
@@ -325,7 +409,7 @@ export default function BankReconciliationSection() {
       const loadedTransactions = (transactionResult.data || []) as TransactionRow[]
       setTransactions(loadedTransactions)
       const transactionIds = loadedTransactions.map((row) => row.id)
-      const [allocationResult, missingResult, diagnosticResult, candidateListsResult] = await Promise.all([
+      const [allocationResult, missingResult, diagnosticResult, candidateListsResult, globalSummaryResult] = await Promise.all([
         supabase
           .from('ac_bank_reconciliation_allocations')
           .select('id, transaction_id, order_id, allocated_amount, match_method, or_orders(bill_no, total_amount, status)')
@@ -333,6 +417,7 @@ export default function BankReconciliationSection() {
         supabase.rpc('bank_reconciliation_missing_payments', { p_import_id: importId }),
         supabase.rpc('bank_statement_match_diagnostics', { p_import_id: importId }),
         supabase.rpc('bank_statement_match_candidate_lists', { p_import_id: importId }),
+        supabase.rpc('bank_reconciliation_global_summary'),
       ])
       const detailErrors: string[] = []
       if (allocationResult.error) {
@@ -341,11 +426,31 @@ export default function BankReconciliationSection() {
       } else {
         setAllocations((allocationResult.data || []) as unknown as AllocationRow[])
       }
+      if (globalSummaryResult.error) {
+        detailErrors.push(`โหลดภาพรวมทุก Statement ไม่สำเร็จ: ${readableError(globalSummaryResult.error)}`)
+      } else {
+        const summary = (globalSummaryResult.data || {}) as Partial<GlobalReconciliationSummary>
+        setGlobalSummary({
+          unmatched_count: Number(summary.unmatched_count || 0),
+          ambiguous_count: Number(summary.ambiguous_count || 0),
+          missing_payment_count: Number(summary.missing_payment_count || 0),
+        })
+      }
       if (missingResult.error) {
         setMissingPayments([])
         detailErrors.push(`ตรวจสลิปที่ไม่พบในบัญชีไม่สำเร็จ: ${readableError(missingResult.error)}`)
       } else {
-        setMissingPayments((missingResult.data || []) as MissingPaymentRow[])
+        const loadedMissingPayments = (missingResult.data || []) as MissingPaymentRow[]
+        setMissingPayments(loadedMissingPayments)
+        setImportIssueById((current) => ({
+          ...current,
+          [importId]: {
+            import_id: importId,
+            unmatched_count: loadedTransactions.filter((row) => row.credit_amount > 0 && row.reconciliation_status === 'unmatched').length,
+            ambiguous_count: loadedTransactions.filter((row) => row.credit_amount > 0 && row.reconciliation_status === 'ambiguous').length,
+            missing_payment_count: loadedMissingPayments.length,
+          },
+        }))
       }
       if (diagnosticResult.error) {
         setMatchDiagnostics([])
@@ -428,6 +533,52 @@ export default function BankReconciliationSection() {
 
   useEffect(() => { void loadBaseData() }, [loadBaseData])
   useEffect(() => { void loadDetail(selectedImportId) }, [loadDetail, selectedImportId])
+
+  const importBankOptions = useMemo(() => {
+    const options = new Map<string, string>()
+    imports.forEach((row) => options.set(
+      row.bank_setting_id,
+      `${row.bank_settings?.bank_name || 'ธนาคาร'} ${maskedAccount(row.account_number_snapshot)}`,
+    ))
+    return [...options.entries()].sort((a, b) => a[1].localeCompare(b[1], 'th'))
+  }, [imports])
+
+  const importMonthOptions = useMemo(
+    () => [...new Set(imports.map((row) => row.period_start.slice(0, 7)))].sort().reverse(),
+    [imports],
+  )
+
+  const filteredImports = useMemo(() => {
+    const query = importSearch.trim().toLocaleLowerCase('th')
+    return imports.filter((row) => {
+      const summary = importIssueById[row.id]
+      const issueTotal = importIssueTotal(summary)
+      const matchesIssue = importIssueFilter === 'all'
+        || (importIssueFilter === 'issues' && issueTotal > 0)
+        || (importIssueFilter === 'resolved' && issueTotal === 0)
+        || (importIssueFilter === 'unmatched' && Number(summary?.unmatched_count || 0) > 0)
+        || (importIssueFilter === 'ambiguous' && Number(summary?.ambiguous_count || 0) > 0)
+        || (importIssueFilter === 'missing' && Number(summary?.missing_payment_count || 0) > 0)
+      if (!matchesIssue) return false
+      if (importBankFilter !== 'all' && row.bank_setting_id !== importBankFilter) return false
+      if (importMonthFilter !== 'all' && !row.period_start.startsWith(importMonthFilter)) return false
+      if (!query) return true
+      const searchable = [
+        row.file_name,
+        row.period_start,
+        row.period_end,
+        row.account_number_snapshot,
+        row.bank_settings?.bank_name,
+        row.bank_settings?.account_name,
+      ].filter(Boolean).join(' ').toLocaleLowerCase('th')
+      return searchable.includes(query)
+    })
+  }, [importBankFilter, importIssueById, importIssueFilter, importMonthFilter, importSearch, imports])
+
+  useEffect(() => {
+    if (filteredImports.some((row) => row.id === selectedImportId)) return
+    setSelectedImportId(filteredImports[0]?.id || '')
+  }, [filteredImports, selectedImportId])
 
   const selectedImport = imports.find((row) => row.id === selectedImportId) || null
   const allocationByTransaction = useMemo(() => {
@@ -965,9 +1116,17 @@ export default function BankReconciliationSection() {
             </button>
           </div>
         </div>
-        <div className="px-6 py-4 text-sm text-gray-600">
-          รองรับ CSV Statement บัญชีออมทรัพย์กสิกรในขณะนี้ ระบบจะอ่านเลขบัญชีจากไฟล์และจับคู่กับบัญชีที่เปิดใช้งานในหน้าตั้งค่าโดยอัตโนมัติ
-          {banks.length === 0 && <p className="mt-2 font-medium text-amber-700">ยังไม่มีบัญชีธนาคารที่เปิดใช้งาน กรุณาเพิ่มในหน้าตั้งค่าก่อนนำเข้า</p>}
+        <div className="space-y-3 px-6 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-gray-800">ภาพรวมทุก Statement ที่นำเข้า</h3>
+            <span className="text-xs text-gray-500">รวมทุกบัญชีและทุกไฟล์ โดยไม่นับธุรกรรมซ้ำ</span>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <SummaryCard label="เงินเข้าที่ยังจับคู่ไม่ได้" value={String(globalSummary.unmatched_count)} tone="red" onClick={() => showIssueImports('unmatched')} />
+            <SummaryCard label="รายการรอตรวจ" value={String(globalSummary.ambiguous_count)} tone="amber" onClick={() => showIssueImports('ambiguous')} />
+            <SummaryCard label="สลิปไม่พบในบัญชี" value={String(globalSummary.missing_payment_count)} tone="violet" onClick={() => showIssueImports('missing')} />
+          </div>
+          {banks.length === 0 && <p className="text-sm font-medium text-amber-700">ยังไม่มีบัญชีธนาคารที่เปิดใช้งาน กรุณาเพิ่มในหน้าตั้งค่าก่อนนำเข้า</p>}
         </div>
       </section>
 
@@ -982,31 +1141,78 @@ export default function BankReconciliationSection() {
         </div>
       )}
 
-      <section className="rounded-xl border border-gray-200 bg-white shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4">
-          <label className="flex min-w-0 flex-1 items-center gap-3 text-sm font-medium text-gray-700">
+      <section ref={statementPickerRef} className="scroll-mt-24 rounded-xl border border-gray-200 bg-white shadow-sm">
+        <div className="space-y-3 border-b border-gray-100 px-5 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="font-semibold text-gray-900">ติดตามรอบ Statement</h3>
+              <p className="text-xs text-gray-500">ค่าเริ่มต้นแสดงเฉพาะรอบที่ยังมีรายการต้องติดตาม</p>
+            </div>
+            <button
+              type="button"
+              disabled={!selectedImportId || actionId === 'auto'}
+              onClick={() => void rerunAutoMatch()}
+              className="rounded-lg border border-blue-200 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+            >
+              {actionId === 'auto' ? 'กำลังตรวจ...' : 'ตรวจจับคู่อีกครั้ง'}
+            </button>
+          </div>
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+            <label className="text-xs font-medium text-gray-600">
+              สถานะติดตาม
+              <select value={importIssueFilter} onChange={(event) => setImportIssueFilter(event.target.value as ImportIssueFilter)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800">
+                <option value="issues">มีปัญหาทุกประเภท</option>
+                <option value="unmatched">เงินเข้าที่ยังจับคู่ไม่ได้</option>
+                <option value="ambiguous">รายการรอตรวจ</option>
+                <option value="missing">สลิปไม่พบในบัญชี</option>
+                <option value="resolved">ไม่มีปัญหาแล้ว</option>
+                <option value="all">ทั้งหมด</option>
+              </select>
+            </label>
+            <label className="text-xs font-medium text-gray-600">
+              บัญชีธนาคาร
+              <select value={importBankFilter} onChange={(event) => setImportBankFilter(event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800">
+                <option value="all">ทุกบัญชี</option>
+                {importBankOptions.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+              </select>
+            </label>
+            <label className="text-xs font-medium text-gray-600">
+              เดือนใน Statement
+              <select value={importMonthFilter} onChange={(event) => setImportMonthFilter(event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800">
+                <option value="all">ทุกเดือน</option>
+                {importMonthOptions.map((month) => <option key={month} value={month}>{new Date(`${month}-01T00:00:00`).toLocaleDateString('th-TH', { month: 'long', year: 'numeric' })}</option>)}
+              </select>
+            </label>
+            <label className="text-xs font-medium text-gray-600">
+              ค้นหา
+              <input value={importSearch} onChange={(event) => setImportSearch(event.target.value)} placeholder="ชื่อไฟล์ เลขบัญชี หรือวันที่" className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800" />
+            </label>
+          </div>
+          <label className="flex min-w-0 items-center gap-3 text-sm font-medium text-gray-700">
             <span className="whitespace-nowrap">รอบ Statement</span>
             <select
               value={selectedImportId}
               onChange={(event) => setSelectedImportId(event.target.value)}
-              className="min-w-0 max-w-2xl flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2"
+              className="min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2"
             >
-              {imports.length === 0 && <option value="">ยังไม่มีข้อมูล</option>}
-              {imports.map((row) => (
+              {filteredImports.length === 0 && <option value="">ไม่พบรอบ Statement ตามตัวกรอง</option>}
+              {filteredImports.map((row) => {
+                const summary = importIssueById[row.id]
+                const issueTotal = importIssueTotal(summary)
+                return (
                 <option key={row.id} value={row.id}>
-                  {row.period_start} ถึง {row.period_end} · {row.bank_settings?.bank_name || 'ธนาคาร'} {maskedAccount(row.account_number_snapshot)} · {row.file_name}
+                  {issueTotal > 0 ? `⚠ ${issueTotal} รายการ` : '✓ ไม่มีปัญหา'} · {row.period_start} ถึง {row.period_end} · {row.bank_settings?.bank_name || 'ธนาคาร'} {maskedAccount(row.account_number_snapshot)} · {row.file_name}
                 </option>
-              ))}
+                )
+              })}
             </select>
           </label>
-          <button
-            type="button"
-            disabled={!selectedImportId || actionId === 'auto'}
-            onClick={() => void rerunAutoMatch()}
-            className="rounded-lg border border-blue-200 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
-          >
-            {actionId === 'auto' ? 'กำลังตรวจ...' : 'ตรวจจับคู่อีกครั้ง'}
-          </button>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
+            <span>แสดง {filteredImports.length} จาก {imports.length} รอบที่โหลดแล้ว</span>
+            {hasMoreImports && <button type="button" disabled={loadingMoreImports} onClick={() => void loadOlderImports()} className="rounded-md border border-gray-300 bg-white px-3 py-1.5 font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+              {loadingMoreImports ? 'กำลังโหลด...' : `โหลดรอบเก่าเพิ่ม ${IMPORT_PAGE_SIZE} รายการ`}
+            </button>}
+          </div>
         </div>
 
         {!selectedImport ? (
@@ -1035,8 +1241,19 @@ export default function BankReconciliationSection() {
             )}
 
             <div>
-              <h3 className="mb-2 font-semibold text-gray-900">สรุปยอดต่อบิล</h3>
-              <div className="overflow-x-auto rounded-lg border border-gray-200">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <h3 className="font-semibold text-gray-900">สรุปยอดต่อบิล <span className="text-sm font-normal text-gray-500">({orderSummaries.length} บิล)</span></h3>
+                <button
+                  type="button"
+                  onClick={() => setOrderSummaryExpanded((current) => !current)}
+                  className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                  aria-expanded={orderSummaryExpanded}
+                >
+                  <i className={`fas fa-chevron-${orderSummaryExpanded ? 'up' : 'down'}`} aria-hidden="true" />
+                  {orderSummaryExpanded ? 'ย่อตาราง' : 'ขยายตาราง'}
+                </button>
+              </div>
+              {orderSummaryExpanded && <div className="overflow-x-auto rounded-lg border border-gray-200">
                 <table className="min-w-full text-sm">
                   <thead className="bg-gray-50 text-gray-600">
                     <tr>
@@ -1057,7 +1274,7 @@ export default function BankReconciliationSection() {
                     })}
                   </tbody>
                 </table>
-              </div>
+              </div>}
             </div>
 
             <div ref={unmatchedSectionRef} className="scroll-mt-24">
