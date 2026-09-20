@@ -9,6 +9,7 @@ import UrgencyBadge from '../common/UrgencyBadge'
 import type { User } from '../../types'
 import type { MpOrder, MpOrderItem, MpSalesUser } from '../../types/marketplace'
 import { fetchAllSupabasePagesResult } from '../../lib/supabasePagination'
+import { buildMarketplaceOrderSummary } from '../../lib/marketplaceOrderSummary'
 import {
   findTubeGiftProduct,
   getMarketplaceTubeEligibleQuantity,
@@ -122,7 +123,8 @@ export default function MarketplaceOrderModal({
   const [expressReceiptNumber, setExpressReceiptNumber] = useState(mpOrder.express_receipt_number || '')
   const [assignedTo, setAssignedTo] = useState(mpOrder.assigned_to || '')
   const [savingAssignee, setSavingAssignee] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const [orderNoCopied, setOrderNoCopied] = useState(false)
+  const [summaryCopied, setSummaryCopied] = useState(false)
   const [showTaxInvoice, setShowTaxInvoice] = useState(false)
   const [taxInvoiceData, setTaxInvoiceData] = useState({ company_name: '', address: '', tax_id: '' })
   // id ของ item ที่มีอยู่จริงใน DB — ใช้ diff ตอนบันทึก (update เดิม / insert ใหม่ / delete ที่หายไป)
@@ -811,8 +813,35 @@ export default function MarketplaceOrderModal({
       document.execCommand('copy')
       document.body.removeChild(ta)
     }
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+    setOrderNoCopied(true)
+    setTimeout(() => setOrderNoCopied(false), 1500)
+  }
+
+  async function handleCopyOrderSummary() {
+    const summary = buildMarketplaceOrderSummary(
+      mpOrder.marketplace_order_no,
+      items.map((item) => ({
+        ...item,
+        product_name:
+          (item.product_id ? productById.get(item.product_id)?.product_name : null)
+          || productSearch[item.id]
+          || item.product_name_raw,
+      })),
+    )
+    try {
+      await navigator.clipboard.writeText(summary)
+    } catch {
+      const ta = document.createElement('textarea')
+      ta.value = summary
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    setSummaryCopied(true)
+    setTimeout(() => setSummaryCopied(false), 1800)
   }
 
   return (
@@ -837,7 +866,7 @@ export default function MarketplaceOrderModal({
                 {mpOrder.marketplace_order_no}
               </button>
             )}
-            {copied && (
+            {orderNoCopied && (
               <span className="text-xs text-green-600 font-medium animate-pulse">คัดลอกแล้ว</span>
             )}
             <UrgencyBadge order={mpOrder} />
@@ -1341,9 +1370,9 @@ export default function MarketplaceOrderModal({
         </div>
 
           {/* ปุ่มการทำงาน — ตรึงล่าง (แยกจากพื้นที่ scroll) */}
-          {!readOnly && (
+          {(!readOnly || mpOrder.status === 'assigned' || mpOrder.status === 'follow_up' || mpOrder.status === 'done') && (
             <div className="shrink-0 border-t border-surface-200 bg-white px-6 py-4 space-y-3">
-              {followUpMode && (
+              {!readOnly && followUpMode && (
                 <div className="flex gap-2 items-start">
                   <textarea
                     value={followUpNote}
@@ -1369,7 +1398,7 @@ export default function MarketplaceOrderModal({
                   </button>
                 </div>
               )}
-              {cancelMode && (
+              {!readOnly && cancelMode && (
                 <div className="flex gap-2 items-start">
                   <textarea
                     value={cancelNote}
@@ -1396,52 +1425,70 @@ export default function MarketplaceOrderModal({
                 </div>
               )}
               <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowTaxInvoice((v) => !v)}
-                  className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                    showTaxInvoice ? 'bg-blue-600 text-white' : 'bg-blue-100 text-blue-600 hover:bg-blue-200'
-                  }`}
-                >
-                  ขอใบกำกับภาษี
-                </button>
-                {!cancelMode && (
-                  <button
-                    type="button"
-                    disabled={saving || billing}
-                    onClick={() => setCancelMode(true)}
-                    className="px-4 py-2 rounded-lg border border-red-300 text-red-600 font-medium hover:bg-red-50 disabled:opacity-50"
-                  >
-                    ยกเลิกบิล
-                  </button>
+                {!readOnly && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setShowTaxInvoice((v) => !v)}
+                      className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                        showTaxInvoice ? 'bg-blue-600 text-white' : 'bg-blue-100 text-blue-600 hover:bg-blue-200'
+                      }`}
+                    >
+                      ขอใบกำกับภาษี
+                    </button>
+                    {!cancelMode && (
+                      <button
+                        type="button"
+                        disabled={saving || billing}
+                        onClick={() => setCancelMode(true)}
+                        className="px-4 py-2 rounded-lg border border-red-300 text-red-600 font-medium hover:bg-red-50 disabled:opacity-50"
+                      >
+                        ยกเลิกบิล
+                      </button>
+                    )}
+                  </>
                 )}
                 <div className="flex flex-wrap justify-end gap-2 ml-auto">
-                <button
-                  type="button"
-                  disabled={saving || billing}
-                  onClick={handleSaveDraft}
-                  className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-                >
-                  {saving ? 'กำลังบันทึก...' : 'บันทึกร่าง'}
-                </button>
-                {!followUpMode && (
-                  <button
-                    type="button"
-                    disabled={saving || billing}
-                    onClick={() => setFollowUpMode(true)}
-                    className="px-4 py-2 rounded-lg bg-purple-100 text-purple-700 font-bold hover:bg-purple-200 disabled:opacity-50"
-                  >
-                    รอติดตาม
-                  </button>
-                )}
-                <button
-                  type="button"
-                  disabled={saving || billing || loading}
-                  onClick={handleOpenBill}
-                  className="px-6 py-2 rounded-lg bg-green-600 text-white font-bold hover:bg-green-700 disabled:opacity-50"
-                >
-                  {billing ? 'กำลังเปิดบิล...' : 'เปิดบิล'}
-                </button>
+                  {(mpOrder.status === 'assigned' || mpOrder.status === 'follow_up' || mpOrder.status === 'done') && (
+                    <button
+                      type="button"
+                      disabled={loading || items.length === 0}
+                      onClick={handleCopyOrderSummary}
+                      className="px-4 py-2 rounded-lg border border-blue-300 bg-blue-50 text-blue-700 font-bold hover:bg-blue-100 disabled:opacity-50"
+                    >
+                      {summaryCopied ? 'คัดลอกแล้ว ✓' : 'คัดลอกข้อความ'}
+                    </button>
+                  )}
+                  {!readOnly && (
+                    <>
+                      <button
+                        type="button"
+                        disabled={saving || billing}
+                        onClick={handleSaveDraft}
+                        className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        {saving ? 'กำลังบันทึก...' : 'บันทึกร่าง'}
+                      </button>
+                      {!followUpMode && (
+                        <button
+                          type="button"
+                          disabled={saving || billing}
+                          onClick={() => setFollowUpMode(true)}
+                          className="px-4 py-2 rounded-lg bg-purple-100 text-purple-700 font-bold hover:bg-purple-200 disabled:opacity-50"
+                        >
+                          รอติดตาม
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={saving || billing || loading}
+                        onClick={handleOpenBill}
+                        className="px-6 py-2 rounded-lg bg-green-600 text-white font-bold hover:bg-green-700 disabled:opacity-50"
+                      >
+                        {billing ? 'กำลังเปิดบิล...' : 'เปิดบิล'}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
