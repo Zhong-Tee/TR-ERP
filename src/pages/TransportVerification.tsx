@@ -4,6 +4,7 @@ import { Order } from '../types'
 import { useAuthContext } from '../contexts/AuthContext'
 import Modal from '../components/ui/Modal'
 import DeliveryCheckPanel from '../components/transport/DeliveryCheckPanel'
+import OrderDetailView from '../components/order/OrderDetailView'
 import { listVerificationCarriers, resolveVerificationCarrier } from '../lib/transportVerificationCarrier'
 
 type ChannelRow = { channel_code: string; channel_name: string; default_carrier?: string | null; is_self_pickup?: boolean }
@@ -93,6 +94,8 @@ export default function TransportVerification() {
   const [exportingPng, setExportingPng] = useState(false)
   const [lastExportSize, setLastExportSize] = useState<{ width: number; height: number } | null>(null)
   const [pickupActionId, setPickupActionId] = useState<string | null>(null)
+  const [detailOrder, setDetailOrder] = useState<Order | null>(null)
+  const [detailOrderLoadingId, setDetailOrderLoadingId] = useState<string | null>(null)
   const [pickupStatusFilter, setPickupStatusFilter] = useState<PickupStatusFilter>('all')
   const [pickupReceiptModal, setPickupReceiptModal] = useState<{
     open: boolean
@@ -138,6 +141,32 @@ export default function TransportVerification() {
     setChannels((data || []) as ChannelRow[])
   }
 
+  async function openOrderDetail(orderId: string) {
+    if (!orderId || detailOrderLoadingId) return
+    setDetailOrderLoadingId(orderId)
+    try {
+      const { data, error } = await supabase
+        .from('or_orders')
+        .select('*, or_order_items(*)')
+        .eq('id', orderId)
+        .single()
+      if (error) throw error
+      const loadedOrder = data as Order & { or_order_items?: Order['order_items'] }
+      setDetailOrder({
+        ...loadedOrder,
+        order_items: loadedOrder.or_order_items || loadedOrder.order_items || [],
+      })
+    } catch (error: any) {
+      setMessageModal({
+        open: true,
+        title: 'เปิดรายละเอียดบิลไม่สำเร็จ',
+        message: error?.message || String(error),
+      })
+    } finally {
+      setDetailOrderLoadingId(null)
+    }
+  }
+
   function getCarrierName(order: Order) {
     return resolveVerificationCarrier(order.channel_code, channels)
   }
@@ -160,12 +189,14 @@ export default function TransportVerification() {
       const shippedRes = await supabase
         .from('or_orders')
         .select(baseSelect)
+        .neq('status', 'ยกเลิก')
         .gte('shipped_time', start)
         .lte('shipped_time', end)
       let verifiedData: Order[] = []
       const verifiedRes = await supabase
         .from('or_orders')
         .select(baseSelect)
+        .neq('status', 'ยกเลิก')
         .filter('transport_meta->>verified_at', 'gte', start)
         .filter('transport_meta->>verified_at', 'lte', end)
       if (verifiedRes.error) {
@@ -181,16 +212,19 @@ export default function TransportVerification() {
       const pickupScheduledRes = await supabase
         .from('or_orders')
         .select(baseSelect)
+        .neq('status', 'ยกเลิก')
         .gte('scheduled_pickup_at', pickupStart)
         .lte('scheduled_pickup_at', pickupEnd)
       const pickupPackedRes = await supabase
         .from('or_orders')
         .select(baseSelect)
+        .neq('status', 'ยกเลิก')
         .gte('shipped_time', pickupStart)
         .lte('shipped_time', pickupEnd)
       const pickupReceivedRes = await supabase
         .from('or_orders')
         .select(baseSelect)
+        .neq('status', 'ยกเลิก')
         .filter('transport_meta->>customer_received_at', 'gte', pickupStart)
         .filter('transport_meta->>customer_received_at', 'lte', pickupEnd)
       const merged = new Map<string, Order>()
@@ -222,6 +256,7 @@ export default function TransportVerification() {
 
   const pickupOrders = useMemo(() => {
     return orders
+      .filter((order) => order.status !== 'ยกเลิก')
       .filter((order) => isSelfPickupOrder(order))
       .filter((order) => {
         return isInDateRange(order.scheduled_pickup_at, pickupDateFrom, pickupDateTo)
@@ -964,7 +999,18 @@ export default function TransportVerification() {
                     const ready = order.status === 'จัดส่งแล้ว'
                     return (
                       <tr key={order.id} className={`border-b border-gray-100 ${received ? 'bg-emerald-50/60' : 'hover:bg-violet-50/50'}`}>
-                        <td className="p-3 font-bold text-blue-700">{order.bill_no}</td>
+                        <td className="p-3 font-bold">
+                          <button
+                            type="button"
+                            onClick={() => void openOrderDetail(order.id)}
+                            disabled={detailOrderLoadingId !== null}
+                            title="ดูรายละเอียดบิล"
+                            className="inline-flex items-center gap-1.5 text-blue-700 underline-offset-2 hover:text-blue-900 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 disabled:cursor-wait disabled:opacity-50"
+                          >
+                            {order.bill_no}
+                            {detailOrderLoadingId === order.id && <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />}
+                          </button>
+                        </td>
                         <td className="p-3">{order.channel_code}</td>
                         <td className="p-3">{order.customer_name || '-'}</td>
                         <td className="p-3 whitespace-nowrap">{formatDateTime(order.scheduled_pickup_at)}</td>
@@ -1056,6 +1102,14 @@ export default function TransportVerification() {
             </button>
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        open={detailOrder !== null}
+        onClose={() => setDetailOrder(null)}
+        contentClassName="max-w-[96vw] w-full"
+      >
+        {detailOrder && <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} readOnly />}
       </Modal>
 
       <Modal

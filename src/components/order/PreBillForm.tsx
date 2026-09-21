@@ -782,8 +782,12 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
     if (!deliveryTerm) return 'กรุณาระบุระยะเวลาจัดส่ง'
     if (!form.valid_until) return 'กรุณาระบุวันที่ยืนราคา'
     if (!items.length || items.some(item => !item.product_id || !item.product_name.trim())) return 'กรุณาเลือกสินค้าให้ครบทุกรายการ'
+    const requiredItemFields = documentType === 'production_confirmation'
+      ? ['ink_color','product_type','cartoon_pattern','font','line_1','line_2','line_3','notes']
+      : ['notes']
     for (let i = 0; i < items.length; i++) {
-      for (const key of ['ink_color','product_type','cartoon_pattern','font','line_1','line_2','line_3','notes']) {
+      for (const key of requiredItemFields) {
+        if (items[i].no_name_line && ['line_1','line_2','line_3'].includes(key)) continue
         if (fieldState(i, key) === 'required' && !String((items[i] as any)[key] || '').trim()) return `รายการ ${i + 1}: กรุณากรอก ${key}`
       }
     }

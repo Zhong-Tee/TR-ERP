@@ -30,21 +30,24 @@ const reviewScopeFromRow = (row: any): string => {
   return orderId.startsWith('REQ-') ? `${REQUISITION_SCOPE_PREFIX}${orderId}` : ''
 }
 
-/** บันทึกเวลาเสร็จแผนก "เบิก" ใน plan_jobs.tracks (atomic merge) */
+/** ตรวจสอบ/ซิงค์เวลาเสร็จแผนก "เบิก" หลัง WMS ตรวจครบ */
 const ensurePlanDeptEnd = async (workOrderId: string) => {
   if (!workOrderId) return
-  const now = new Date().toISOString()
-  const patch: Record<string, Record<string, string>> = {}
-  const procNames = ['หยิบของ', 'ส่งมอบ']
-  procNames.forEach((p) => {
-    patch[p] = { start_if_null: now, end: now }
-  })
-  const { error } = await supabase.rpc('merge_plan_tracks_by_work_order_id', {
+  const { data, error } = await supabase.rpc('rpc_sync_plan_pick_end_from_wms', {
     p_work_order_id: workOrderId,
-    p_dept: 'เบิก',
-    p_patch: patch,
   })
-  if (error) console.error('ensurePlanDeptEnd error:', error.message)
+  if (error) throw new Error(error.message)
+
+  const result = data as { success?: boolean; reason?: string } | null
+  if (!result?.success) {
+    const reasonLabels: Record<string, string> = {
+      missing_work_order_id: 'ไม่พบรหัสใบงาน',
+      no_wms_review_rows: 'ไม่พบรายการตรวจสินค้า',
+      inspect_not_complete: 'ยังมีรายการตรวจสินค้าไม่ครบ',
+      plan_job_not_found: 'ไม่พบใบงานที่เชื่อมกับ Plan',
+    }
+    throw new Error(reasonLabels[result?.reason || ''] || result?.reason || 'ไม่ทราบสาเหตุ')
+  }
 }
 
 const displayPickingDepartmentLabel = (dept: string): string => {
@@ -432,7 +435,14 @@ export default function ReviewSection() {
         // Plan "เบิก" finish (⚡): ต้องสอดคล้องกับ isFullyChecked — รวมคืนคลัง/ไม่เจอ/หยิบผิด
         // เดิมเรียกเฉพาะเมื่อทุกแถว correct ทำให้กรณีย้ายบิลแล้วคืนเข้าคลังไม่ประทับเวลา
         if (!isRequisitionScope(currentWorkOrderId)) {
-          await ensurePlanDeptEnd(currentWorkOrderId)
+          try {
+            await ensurePlanDeptEnd(currentWorkOrderId)
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'ไม่ทราบสาเหตุ'
+            showMessage({
+              message: `ตรวจสินค้าครบแล้ว แต่ซิงค์เวลาเสร็จไป Plan ไม่สำเร็จ: ${message}\nกรุณาแจ้งผู้ดูแลระบบ`,
+            })
+          }
         }
       }
     }
