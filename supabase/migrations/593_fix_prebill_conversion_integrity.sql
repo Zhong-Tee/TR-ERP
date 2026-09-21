@@ -150,13 +150,14 @@ BEGIN
   INSERT INTO public.or_orders(
     channel_code, bill_no, status, price, shipping_cost, discount, total_amount,
     payment_method, promotion, customer_name, customer_address, recipient_name, admin_user,
-    entry_date, billing_details, source_prebill_document_id, prebill_price_locked
+    entry_date, billing_details, source_prebill_document_id, prebill_price_locked,
+    requires_confirm_design
   ) VALUES (
     v_doc.channel_code, v_bill_no, 'รอลงข้อมูล', v_doc.subtotal, v_doc.shipping_cost,
     v_doc.promotion_discount + v_doc.special_discount, v_doc.total_amount,
     v_doc.payment_method, v_promotion_names, v_doc.customer_name, COALESCE(v_doc.customer_address, ''),
     v_doc.recipient_name, v_owner_admin, timezone('Asia/Bangkok', now())::DATE, v_billing_details,
-    v_doc.id, true
+    v_doc.id, true, false
   ) RETURNING id INTO v_order_id;
 
   INSERT INTO public.or_order_items(

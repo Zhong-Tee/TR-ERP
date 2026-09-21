@@ -5212,8 +5212,20 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
   return (
     <>
-    <form ref={formElementRef} onSubmit={handleSubmit} className="space-y-6">
-      <div className="bg-white p-6 rounded-lg shadow">
+    <form ref={formElementRef} onSubmit={handleSubmit} className="relative space-y-6">
+      {order && <button
+        type="button"
+        onClick={onCancel}
+        disabled={loading}
+        aria-label="ปิดหน้าต่างบิล"
+        title="ปิดหน้าต่าง"
+        className="absolute right-3 top-3 z-20 flex h-10 w-10 items-center justify-center rounded-full bg-red-600 text-white shadow-md transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" className="block h-5 w-5" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+          <path d="M6 6l12 12M18 6L6 18" />
+        </svg>
+      </button>}
+      <div className={`bg-white p-6 rounded-lg shadow ${order ? 'pr-16' : ''}`}>
         {reviewRemarks && (
           <div className="mb-4 p-4 bg-red-50 border-2 border-red-300 rounded-lg">
             <p className="text-sm font-semibold text-red-800 mb-1">หมายเหตุ (รายการที่ต้องแก้ไข):</p>
@@ -6340,10 +6352,13 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     <button
                       type="button"
                       onClick={() => removeItem(index)}
-                      className="px-2 py-0.5 bg-red-500 text-white rounded hover:bg-red-600 text-lg leading-tight"
+                      className="flex h-8 w-8 items-center justify-center rounded bg-red-500 text-white hover:bg-red-600"
+                      aria-label="ลบรายการสินค้า"
                       title="ลบ"
                     >
-                      ×
+                      <svg viewBox="0 0 24 24" aria-hidden="true" className="block h-4 w-4" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+                        <path d="M6 6l12 12M18 6L6 18" />
+                      </svg>
                     </button>
                     )}
                     {!formDisabled && isSystemAutoGift && (
@@ -7230,21 +7245,17 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         >
           {loading ? 'กำลังบันทึก...' : 'บันทึก (ข้อมูลครบ)'}
         </button>
-        <button
+        {order && <button
           type="button"
           onClick={(e) => {
             e.preventDefault()
-            if (!order) {
-              onCancel()
-              return
-            }
             setCancelOrderModal({ open: true })
           }}
           disabled={loading}
-          className="px-6 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 disabled:opacity-50"
+          className="px-6 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
         >
-          ยกเลิก
-        </button>
+          ยกเลิกบิล
+        </button>}
         </>
         )}
       </div>
