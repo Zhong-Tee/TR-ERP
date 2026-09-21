@@ -4,9 +4,9 @@ import { Order } from '../types'
 import { useAuthContext } from '../contexts/AuthContext'
 import Modal from '../components/ui/Modal'
 import DeliveryCheckPanel from '../components/transport/DeliveryCheckPanel'
+import { listVerificationCarriers, resolveVerificationCarrier } from '../lib/transportVerificationCarrier'
 
 type ChannelRow = { channel_code: string; channel_name: string; default_carrier?: string | null; is_self_pickup?: boolean }
-type CarrierRow = { code: string; name: string }
 type MessageModal = { open: boolean; title: string; message: string }
 type ConfirmModal = { open: boolean; title: string; message: string; onConfirm: () => void; tone?: 'danger' | 'success' }
 type TransportTab = 'verification' | 'self-pickup' | 'delivery-check'
@@ -84,7 +84,6 @@ export default function TransportVerification() {
   const [pickupDateFrom, setPickupDateFrom] = useState(monthStartISO())
   const [pickupDateTo, setPickupDateTo] = useState(todayISO())
   const [channels, setChannels] = useState<ChannelRow[]>([])
-  const [transportCarriers, setTransportCarriers] = useState<CarrierRow[]>([])
   const [orders, setOrders] = useState<Order[]>([])
   const [activeCarrier, setActiveCarrier] = useState<string | null>(null)
   const [activeParcelType, setActiveParcelType] = useState<(typeof PARCEL_TYPES)[number]>('กล่อง')
@@ -115,7 +114,6 @@ export default function TransportVerification() {
 
   useEffect(() => {
     loadChannels().catch(() => null)
-    loadTransportCarriers().catch(() => null)
   }, [])
 
   useEffect(() => {
@@ -140,23 +138,8 @@ export default function TransportVerification() {
     setChannels((data || []) as ChannelRow[])
   }
 
-  async function loadTransportCarriers() {
-    const { data, error } = await supabase
-      .from('tr_shipping_carriers')
-      .select('code,name')
-      .eq('is_active', true)
-      .order('sort_order')
-      .order('code')
-    if (error) {
-      console.error('loadTransportCarriers:', error)
-      setTransportCarriers([])
-      return
-    }
-    setTransportCarriers((data || []) as CarrierRow[])
-  }
-
   function getCarrierName(order: Order) {
-    return String(order.transport_meta?.carrier || '').trim().toUpperCase()
+    return resolveVerificationCarrier(order.channel_code, channels)
   }
 
   function isSelfPickupOrder(order: Order) {
@@ -226,8 +209,8 @@ export default function TransportVerification() {
   }
 
   const carriersList = useMemo(() => {
-    return transportCarriers.map((carrier) => carrier.code.trim().toUpperCase())
-  }, [transportCarriers])
+    return listVerificationCarriers(channels)
+  }, [channels])
 
   const relevantOrders = useMemo(() => {
     return orders.filter((o) => {
