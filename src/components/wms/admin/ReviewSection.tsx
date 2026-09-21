@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { supabase } from '../../../lib/supabase'
 import {
   getProductImageUrl,
@@ -59,6 +59,7 @@ const displayPickingDepartmentLabel = (dept: string): string => {
 export default function ReviewSection() {
   const [reviewDate, setReviewDate] = useState('')
   const [reviewOrderSelect, setReviewOrderSelect] = useState('') // work_order_id
+  const [reviewOrderSearch, setReviewOrderSearch] = useState('')
   const [reviewOrderActualId, setReviewOrderActualId] = useState('') // work_order_id
   const [orderOptions, setOrderOptions] = useState<Array<{ value: string; label: string; hasUnchecked?: boolean }>>([])
   const [rowsByWorkOrder, setRowsByWorkOrder] = useState<Record<string, any[]>>({})
@@ -72,6 +73,25 @@ export default function ReviewSection() {
   const [reviewDropdownLoading, setReviewDropdownLoading] = useState(false)
   const { showMessage, MessageModal } = useWmsModal({ showCancelButton: false })
   const reviewLoadRequestRef = useRef(0)
+  const filteredOrderOptions = useMemo(() => {
+    const term = reviewOrderSearch.trim().toLocaleLowerCase('th-TH')
+    if (!term) return orderOptions
+    return orderOptions.filter((option) => {
+      if (!option.value) return false
+      if (option.label.toLocaleLowerCase('th-TH').includes(term)) return true
+      return (rowsByWorkOrder[option.value] || []).some((row) =>
+        [row.bill_no, row.source_bill_no, row.order_id, row.work_order_name]
+          .some((value) => String(value || '').toLocaleLowerCase('th-TH').includes(term)),
+      )
+    })
+  }, [orderOptions, reviewOrderSearch, rowsByWorkOrder])
+  const effectiveReviewOrderSelect = useMemo(() => {
+    if (filteredOrderOptions.some((option) => option.value === reviewOrderSelect)) {
+      return reviewOrderSelect
+    }
+    const matches = filteredOrderOptions.filter((option) => option.value)
+    return matches.length === 1 ? matches[0].value : ''
+  }, [filteredOrderOptions, reviewOrderSelect])
   useEffect(() => {
     const today = new Date().toISOString().split('T')[0]
     setReviewDate(today)
@@ -102,17 +122,22 @@ export default function ReviewSection() {
 
     const { data: releasedOrders } = await supabase
       .from('or_orders')
-      .select('id, plan_released_from_work_order')
+      .select('id, bill_no, work_order_name, plan_released_from_work_order')
       .in('id', sourceIds as string[])
 
-    const releasedMap = Object.fromEntries(
-      (releasedOrders || []).map((o: any) => [o.id, !!o.plan_released_from_work_order])
+    const sourceOrderMap = new Map(
+      (releasedOrders || []).map((order: any) => [String(order.id), order])
     )
 
-    return rows.map((r) => ({
-      ...r,
-      source_order_released: !!(r.source_order_id && releasedMap[r.source_order_id]),
-    }))
+    return rows.map((row) => {
+      const sourceOrder = sourceOrderMap.get(String(row.source_order_id || '')) as any
+      return {
+        ...row,
+        source_order_released: !!sourceOrder?.plan_released_from_work_order,
+        source_bill_no: String(sourceOrder?.bill_no || '').trim(),
+        work_order_name: String(sourceOrder?.work_order_name || row.work_order_name || '').trim(),
+      }
+    })
   }
 
   const enrichRequisitionReviewRows = async (rows: any[]): Promise<any[]> => {
@@ -430,6 +455,10 @@ export default function ReviewSection() {
           await saveFirstCheckSummary(String(sortedData[0]?.order_id || ''), sortedData)
         } catch (e) {
           console.error('saveFirstCheckSummary error:', e)
+          const message = e instanceof Error ? e.message : 'ไม่ทราบสาเหตุ'
+          showMessage({
+            message: `ตรวจสินค้าครบแล้ว แต่บันทึกสรุปเวลาตรวจไม่สำเร็จ: ${message}\nระบบจะใช้เวลาปิด WMS จากฐานข้อมูลสำหรับรายงานคลังย่อย`,
+          })
         }
 
         // Plan "เบิก" finish (⚡): ต้องสอดคล้องกับ isFullyChecked — รวมคืนคลัง/ไม่เจอ/หยิบผิด
@@ -453,11 +482,15 @@ export default function ReviewSection() {
   }
 
   const saveFirstCheckSummary = async (oid: string, items: any[]) => {
-    const { data: existing } = await supabase
+    if (!oid.trim()) throw new Error('ไม่พบเลขอ้างอิงใบงาน')
+
+    const { data: existing, error: lookupError } = await supabase
       .from('wms_order_summaries')
       .select('id')
       .eq('order_id', oid)
-      .single()
+      .maybeSingle()
+
+    if (lookupError) throw lookupError
 
     if (existing) return
 
@@ -468,7 +501,7 @@ export default function ReviewSection() {
     const notFind = items.reduce((s, i) => s + (i.status === 'not_find' ? lineCount(i) : 0), 0)
     const accuracy = total > 0 ? ((correct / total) * 100).toFixed(2) : 0
 
-    await supabase.from('wms_order_summaries').insert([
+    const { error: insertError } = await supabase.from('wms_order_summaries').insert([
       {
         order_id: oid,
         picker_id: items[0]?.assigned_to || null,
@@ -480,6 +513,7 @@ export default function ReviewSection() {
         checked_at: new Date().toISOString(),
       },
     ])
+    if (insertError) throw insertError
   }
 
   const counts = {
@@ -518,9 +552,9 @@ export default function ReviewSection() {
   return (
     <section>
       <div className="flex justify-between items-end mb-6 flex-wrap gap-4">
-        <div>
-          <div className="flex gap-2 items-end flex-wrap">
-            <div>
+        <div className="w-full">
+          <div className="flex w-full flex-wrap items-end gap-3">
+            <div className="w-full sm:w-auto">
               <label className="text-sm font-bold text-gray-700 uppercase block mb-1">1. เลือกวันที่</label>
               <input
                 type="date"
@@ -530,27 +564,42 @@ export default function ReviewSection() {
                   reviewLoadRequestRef.current += 1
                   setReviewDate(e.target.value)
                   setReviewOrderSelect('')
+                  setReviewOrderSearch('')
                   setReviewDropdownLoading(true)
                   setRowsByWorkOrder({})
                   setOrderOptions([{ value: '', label: 'กำลังโหลดรายการ...' }])
                   setReviewPendingOrders([])
                   resetReviewUI()
                 }}
-                className="border px-2 rounded-lg text-sm shadow-sm outline-none h-[42px]"
+                className="h-[42px] w-full rounded-lg border px-3 text-sm shadow-sm outline-none sm:w-[132px]"
               />
             </div>
-            <div>
-              <label className="text-sm font-bold text-gray-700 uppercase block mb-1">2. เลือกใบงาน / ใบเบิก</label>
+            <div className="w-full sm:w-72 lg:w-80">
+              <label className="text-sm font-bold text-gray-700 uppercase block mb-1">2. ค้นหาใบงาน / เลขบิล</label>
+              <input
+                type="search"
+                value={reviewOrderSearch}
+                disabled={reviewDropdownLoading}
+                onChange={(e) => setReviewOrderSearch(e.target.value)}
+                placeholder="ค้นหาชื่อใบงานหรือเลขบิล"
+                className="h-[42px] w-full rounded-lg border px-3 text-sm shadow-sm outline-none focus:border-blue-500 disabled:bg-gray-100"
+              />
+            </div>
+            <div className="w-full sm:w-80 lg:w-96">
+              <label className="text-sm font-bold text-gray-700 uppercase block mb-1">3. เลือกใบงาน / ใบเบิก</label>
               <select
-                value={reviewOrderSelect}
+                value={effectiveReviewOrderSelect}
                 disabled={reviewDropdownLoading}
                 onChange={(e) => {
                   setReviewOrderSelect(e.target.value)
                   resetReviewUI()
                 }}
-                className="border px-2.5 rounded-lg w-96 text-sm shadow-sm outline-none h-[42px] disabled:bg-gray-100 disabled:text-gray-400"
+                className="h-[42px] w-full rounded-lg border px-2.5 text-sm shadow-sm outline-none disabled:bg-gray-100 disabled:text-gray-400"
               >
-                {orderOptions.map((opt, idx) => (
+                {filteredOrderOptions.length === 0 && (
+                  <option value="">ไม่พบใบงานหรือเลขบิลที่ค้นหา</option>
+                )}
+                {filteredOrderOptions.map((opt, idx) => (
                   <option key={idx} value={opt.value} style={opt.hasUnchecked ? { color: 'red', fontWeight: 'bold' } : {}}>
                     {opt.label}
                   </option>
@@ -558,16 +607,16 @@ export default function ReviewSection() {
               </select>
             </div>
             <button
-              onClick={() => startInspection()}
-              disabled={reviewDropdownLoading || !reviewOrderSelect}
-              className="bg-blue-600 text-white px-6 h-[42px] rounded-lg font-bold shadow-md hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => startInspection(effectiveReviewOrderSelect)}
+              disabled={reviewDropdownLoading || !effectiveReviewOrderSelect}
+              className="h-[42px] w-full rounded-lg bg-blue-600 px-6 font-bold text-white shadow-md hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
             >
               {reviewDropdownLoading ? 'กำลังโหลด...' : 'เริ่มเช็คสินค้า'}
             </button>
             {showTabs && inspectItems.length > 0 && reviewPlanSettings && (
               <div>
                 <label className="text-sm font-bold text-gray-700 uppercase block mb-1">
-                  3. มุมมองแผนก <span className="normal-case text-gray-500 font-semibold text-xs">(กรองแสดงอย่างเดียว)</span>
+                  4. มุมมองแผนก <span className="normal-case text-gray-500 font-semibold text-xs">(กรองแสดงอย่างเดียว)</span>
                 </label>
                 <select
                   value={reviewDeptFilter}

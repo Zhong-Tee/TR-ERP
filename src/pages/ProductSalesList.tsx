@@ -56,6 +56,7 @@ function toLocalDate(d: Date) {
 interface SalesBillRow {
   order_id: string
   bill_no: string
+  work_order_name: string | null
   entry_date: string
   order_status: string
   total_qty: number
@@ -437,7 +438,7 @@ export default function ProductSalesList() {
         open={!!selectedProduct}
         onClose={() => setSelectedProduct(null)}
         closeOnBackdropClick
-        contentClassName="max-w-4xl"
+        contentClassName="max-w-5xl"
         ariaLabelledby="product-sales-bills-title"
       >
         {selectedProduct && (
@@ -497,6 +498,7 @@ export default function ProductSalesList() {
                         <tr>
                           <th className="px-4 py-2.5 text-center">#</th>
                           <th className="px-4 py-2.5 text-left">เลขบิล</th>
+                          <th className="px-4 py-2.5 text-left">ชื่อใบงาน</th>
                           <th className="px-4 py-2.5 text-left">วันที่</th>
                           <th className="px-4 py-2.5 text-left">สถานะ</th>
                           <th className="px-4 py-2.5 text-right">จำนวน</th>
@@ -508,6 +510,9 @@ export default function ProductSalesList() {
                           <tr key={bill.order_id} className="hover:bg-gray-50">
                             <td className="px-4 py-2.5 text-center text-gray-400">{index + 1}</td>
                             <td className="px-4 py-2.5 font-semibold text-blue-700 select-all">{bill.bill_no}</td>
+                            <td className="px-4 py-2.5 font-semibold text-indigo-700 select-all whitespace-nowrap">
+                              {bill.work_order_name || '-'}
+                            </td>
                             <td className="px-4 py-2.5 whitespace-nowrap text-gray-600">{formatThaiDate(bill.entry_date)}</td>
                             <td className="px-4 py-2.5 text-gray-600">{bill.order_status || '-'}</td>
                             <td className="px-4 py-2.5 text-right font-semibold">{fmtInt(Number(bill.total_qty))}</td>
