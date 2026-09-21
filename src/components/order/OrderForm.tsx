@@ -1271,14 +1271,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
   // บิลเก่าที่เก็บชื่อโปรโมชั่นเป็น TEXT: จับคู่กลับเป็น id เพื่อแก้ไขต่อได้
   useEffect(() => {
-    if (order?.prebill_price_locked || !order?.promotion || selectedPromotionIds.length > 0 || promotions.length === 0) return
+    if (!order?.promotion || selectedPromotionIds.length > 0 || promotions.length === 0) return
     const names = String(order.promotion).split(',').map((name) => name.trim()).filter(Boolean)
     const matched = promotions.filter((promotion) => names.includes(promotion.name)).map((promotion) => promotion.id)
     if (matched.length) {
       setSelectedPromotionIds(matched)
       setPromotionApplicationCounts(Object.fromEntries(matched.map((id) => [id, 1])))
     }
-  }, [order?.promotion, order?.prebill_price_locked, promotions, selectedPromotionIds.length])
+  }, [order?.promotion, promotions, selectedPromotionIds.length])
 
   // โหลด review (error_fields + rejection_reason) เมื่อออเดอร์สถานะ "ลงข้อมูลผิด"
   useEffect(() => {
@@ -1639,7 +1639,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         supabase.from('ink_types').select('id, ink_name').order('ink_name'),
         supabase.from('fonts').select('font_code, font_name').eq('is_active', true).order('font_code', { ascending: true }),
         supabase.from('pr_category_field_settings').select('*'),
-        supabase.from('promotion').select('*').eq('is_active', true),
+        // Include inactive promotions so historical/QT-PC selections can still be
+        // rendered and preserved; the picker filters them unless already selected.
+        supabase.from('promotion').select('*'),
         supabase.from('pr_product_field_overrides').select('*'),
         fetchAllSupabasePagesResult((from, to) => supabase.from('inv_stock_balances').select('product_id, on_hand, reserved, safety_stock').order('product_id').range(from, to)),
         supabase.from('or_channel_order_no_prefixes').select('channel_code, prefix, is_active').eq('is_active', true),
@@ -1897,6 +1899,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   }
 
   function updateSelectedPromotions(nextIds: string[], requestedCounts = promotionApplicationCounts) {
+    if (order?.prebill_price_locked) return
     const nextCounts = Object.fromEntries(nextIds.map((id) => {
       const promotion = promotions.find((item) => item.id === id)
       const limit = promotion ? promotionApplicationLimit(promotion) : 1
@@ -1934,11 +1937,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     const applicationLimit = promotionApplicationLimit(promotion)
     return (
       <div key={promotion.id} className={`flex items-start gap-2 rounded-md px-2 py-1.5 text-sm ${formDisabled ? '' : 'hover:bg-blue-50'}`}>
-        <label className={`flex min-w-0 flex-1 items-start gap-2 ${formDisabled ? '' : 'cursor-pointer'}`}>
+        <label className={`flex min-w-0 flex-1 items-start gap-2 ${formDisabled || order?.prebill_price_locked ? '' : 'cursor-pointer'}`}>
           <input
             type="checkbox"
             checked={checked}
-            disabled={formDisabled}
+            disabled={formDisabled || order?.prebill_price_locked}
             onChange={(event) => updateSelectedPromotions(event.target.checked
               ? [...selectedPromotionIds, promotion.id]
               : selectedPromotionIds.filter((id) => id !== promotion.id))}
@@ -1961,7 +1964,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             max={applicationLimit}
             step="1"
             value={promotionApplicationCounts[promotion.id] || 1}
-            disabled={formDisabled || !checked}
+            disabled={formDisabled || order?.prebill_price_locked || !checked}
             onWheel={(event) => event.currentTarget.blur()}
             onChange={(event) => updateSelectedPromotions(selectedPromotionIds, {
               ...promotionApplicationCounts,
@@ -1981,7 +1984,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [items, products, promotions, selectedPromotionIds, promotionApplicationCounts, formData.channel_code, formData.price],
   )
-  const promotionDiscountLocked = selectedPromotionIds.some((id) => {
+  const approvedPrebillPriceLocked = order?.prebill_price_locked === true
+  const promotionDiscountLocked = approvedPrebillPriceLocked || selectedPromotionIds.some((id) => {
     const promotion = promotions.find((item) => item.id === id)
     return !!promotion && promotion.rule_type !== 'legacy'
   })
@@ -2021,7 +2025,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const promotionsForSelection = useMemo(
     () => promotions
       .filter((promotion) => {
-        return promotionMatchesChannel(promotion, formData.channel_code || '')
+        return (promotion.is_active || selectedPromotionIds.includes(promotion.id))
+          && promotionMatchesChannel(promotion, formData.channel_code || '')
       })
       .sort((a, b) => Number(selectedPromotionIds.includes(b.id)) - Number(selectedPromotionIds.includes(a.id))),
     [promotions, selectedPromotionIds, formData.channel_code],
@@ -2032,13 +2037,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   )
 
   useEffect(() => {
+    if (order?.prebill_price_locked) return
     if (!selectedPromotionIds.length) return
     const selected = selectedPromotionIds.map((id) => promotions.find((promotion) => promotion.id === id)).filter(Boolean) as PromotionDefinition[]
     if (!selected.some((promotion) => promotion.rule_type !== 'legacy')) return
     const expected = totalPromotionDiscount(livePromotionResults)
     setDiscountType('baht')
     setFormData((current) => current.discount === expected ? current : { ...current, discount: expected })
-  }, [livePromotionResults, promotions, selectedPromotionIds])
+  }, [livePromotionResults, promotions, selectedPromotionIds, order?.prebill_price_locked])
 
   useEffect(() => {
     if (order?.prebill_price_locked) return
@@ -2403,7 +2409,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       return
     }
 
-    if (targetStatus === 'ลงข้อมูลเสร็จสิ้น' && selectedPromotionIds.length > 0 && !skipPromotionValidation) {
+    if (targetStatus === 'ลงข้อมูลเสร็จสิ้น' && selectedPromotionIds.length > 0 && !skipPromotionValidation && !order?.prebill_price_locked) {
       const promotionResults = getPromotionEvaluations(itemsToSave)
       const failedResults = promotionResults.filter((result) => result.checked && !result.passed)
       if (failedResults.length > 0) {
@@ -2546,7 +2552,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         promotion: selectedPromotionIds
           .map((id) => promotions.find((promotion) => promotion.id === id)?.name)
           .filter(Boolean)
-          .join(', ') || null,
+          .join(', ') || (order?.prebill_price_locked ? order.promotion : null),
         fulfillment_method: order?.fulfillment_method || (isSelfPickupChannel(channelCodeForSave, channelMeta) ? 'self_pickup' : 'shipping'),
         // ช่องทางรับสินค้าเองต้องไม่มีเลขพัสดุ แม้บิลเก่าจะเคยมีค่าค้างอยู่
         tracking_number: isCurrentBillSelfPickup(channelCodeForSave) ? null : formDataForDb.tracking_number,
@@ -5351,8 +5357,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               placeholder="วางที่อยู่พร้อมเบอร์โทรทั้งหมด แล้วแยกข้อมูลให้อัตโนมัติ"
               required={!isCustomerAddressDisabled()}
               disabled={isCustomerAddressDisabled() || formDisabled}
-              rows={3}
-              className={`w-full px-3 py-2 border rounded-lg ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.address ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+              rows={5}
+              className={`min-h-36 w-full resize-y px-3 py-2 border rounded-lg ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.address ? 'ring-2 ring-red-500 border-red-500' : ''}`}
             />
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {(shouldShowChannelName() || CHANNELS_SHOW_ORDER_NO.includes(formData.channel_code)) && (
@@ -6545,7 +6551,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   formData.discount === 0 ? 'text-gray-400' : ''
                 }`}
               />
-              {promotionDiscountLocked && <p className="mt-1 text-xs font-medium text-blue-600">คำนวณอัตโนมัติจากโปรโมชั่นที่เลือก</p>}
+              {promotionDiscountLocked && <p className="mt-1 text-xs font-medium text-blue-600">{approvedPrebillPriceLocked ? 'คงส่วนลดโปรโมชั่นและส่วนลดพิเศษตามเอกสาร QT/PC ที่อนุมัติแล้ว' : 'คำนวณอัตโนมัติจากโปรโมชั่นที่เลือก'}</p>}
               {discountType === 'percent' && formData.discount > 0 && (
                 <p className="text-xs text-gray-500 mt-1">
                   = {getDiscountInBaht(formData.price || 0, formData.discount, 'percent').toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท
@@ -6560,7 +6566,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   เลือกแล้ว {selectedPromotionIds.length} โปรฯ
                 </span>
               </div>
-              <div className={`rounded-xl border p-3 ${formDisabled ? 'bg-gray-100 text-gray-500' : 'bg-white'}`}>
+              <div className={`rounded-xl border p-3 ${formDisabled || approvedPrebillPriceLocked ? 'bg-gray-100 text-gray-500' : 'bg-white'}`}>
                 <div className="mb-3">
                   <p className="mb-1.5 text-xs font-semibold text-gray-500">โปรโมชั่นที่เลือก</p>
                   {selectedPromotionDefinitions.length === 0 ? (
@@ -6572,7 +6578,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         return (
                           <span key={promotion.id} className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold ${result?.checked && !result.passed ? 'border-red-200 bg-red-50 text-red-700' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>
                             {promotion.name}{promotionApplicationLimit(promotion) > 1 && ` ×${promotionApplicationCounts[promotion.id] || 1}`}
-                            {!formDisabled && (
+                            {!formDisabled && !approvedPrebillPriceLocked && (
                               <button
                                 type="button"
                                 onClick={() => updateSelectedPromotions(selectedPromotionIds.filter((id) => id !== promotion.id))}
@@ -6613,6 +6619,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     </div>
                   </div>
                 </div>
+                {approvedPrebillPriceLocked && <p className="mt-2 text-xs font-medium text-blue-600">โปรโมชั่นถูกคัดลอกจาก QT/PC และล็อกไว้เพื่อรักษายอดที่อนุมัติแล้ว</p>}
               </div>
               {selectedPromotionIds.length > 0 && (
                 <div className="mt-2 space-y-1">

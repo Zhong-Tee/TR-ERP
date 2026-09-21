@@ -5,7 +5,7 @@ import type { PreBillDocument, PreBillDocumentType } from '../../types/prebill'
 import { PREBILL_STATUS_LABEL, PREBILL_TYPE_LABEL } from '../../types/prebill'
 import PreBillForm from './PreBillForm'
 
-type View = 'mine' | 'pending' | 'approved' | 'expired'
+type View = 'mine' | 'pending' | 'approved' | 'converted' | 'expired'
 type Props = { onOpenBill: (document: PreBillDocument) => void }
 
 const firstDayOfMonth = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01` }
@@ -64,6 +64,7 @@ export default function PreBillWorkspace({ onOpenBill }: Props) {
     mine: documents.filter(d => d.valid_until >= today() && ['draft','active','rejected'].includes(d.status)).length,
     pending: documents.filter(d => d.valid_until >= today() && d.status === 'pending_discount').length,
     approved: documents.filter(d => d.valid_until >= today() && d.status === 'approved').length,
+    converted: documents.filter(d => d.status === 'converted').length,
     expired: documents.filter(d => d.valid_until < today() && !['converted','cancelled'].includes(d.status)).length,
   }), [documents])
 
@@ -73,7 +74,8 @@ export default function PreBillWorkspace({ onOpenBill }: Props) {
     if (view !== 'expired' && isExpired) return false
     if (view === 'mine' && !['draft','active','rejected'].includes(doc.status)) return false
     if (view === 'pending' && doc.status !== 'pending_discount') return false
-    if (view === 'approved' && !['approved','converted'].includes(doc.status)) return false
+    if (view === 'approved' && doc.status !== 'approved') return false
+    if (view === 'converted' && doc.status !== 'converted') return false
     const q = search.trim().toLowerCase()
     return !q || [doc.document_no, doc.customer_name, doc.channel_code, doc.owner_name, ...(doc.or_prebill_items || []).map(i => i.product_name)].some(v => String(v || '').toLowerCase().includes(q))
   }), [documents, search, view])
@@ -120,7 +122,7 @@ export default function PreBillWorkspace({ onOpenBill }: Props) {
         <div className="flex flex-wrap gap-2">
           {([
             ['mine', `${user?.role === 'superadmin' ? 'รายการทั้งหมด' : 'รายการของฉัน'} (${counts.mine})`], ['pending', `รออนุมัติส่วนลด (${counts.pending})`],
-            ['approved', `อนุมัติแล้ว (${counts.approved})`], ['expired', `หมดอายุ (${counts.expired})`],
+            ['approved', `อนุมัติแล้ว (${counts.approved})`], ['converted', `เปิดบิลแล้ว (${counts.converted})`], ['expired', `หมดอายุ (${counts.expired})`],
           ] as [View,string][]).map(([key,label]) => <button key={key} onClick={() => setView(key)} className={`rounded-xl border px-4 py-2 text-sm font-bold ${view === key ? 'border-blue-600 bg-blue-50 text-blue-700' : 'bg-white text-slate-600'}`}>{label}</button>)}
         </div>
         <button onClick={() => setEditing('new')} className="rounded-xl bg-blue-600 px-5 py-2.5 font-bold text-white">+ สร้าง{PREBILL_TYPE_LABEL[documentType]}</button>
@@ -141,7 +143,7 @@ export default function PreBillWorkspace({ onOpenBill }: Props) {
             {loading ? <tr><td colSpan={9} className="p-10 text-center text-slate-500">กำลังโหลด...</td></tr> : filtered.length === 0 ? <tr><td colSpan={9} className="p-10 text-center text-slate-500">ไม่พบเอกสาร</td></tr> : filtered.map(doc => {
               const displayStatus = doc.valid_until < today() && !['converted','cancelled'].includes(doc.status) ? 'expired' : doc.status
               const canDelete = doc.status !== 'converted' && (user?.role === 'superadmin' || ['draft','active','rejected'].includes(doc.status))
-              return <tr key={doc.id} className="border-t hover:bg-slate-50"><td className="p-3 font-bold text-blue-700">{doc.document_no}</td><td className="p-3">{new Date(doc.created_at).toLocaleDateString('th-TH')}</td><td className="p-3">{doc.owner_name}</td><td className="p-3"><div className="font-semibold">{doc.customer_name}</div><div className="text-xs text-slate-500">{doc.or_prebill_items?.length || 0} รายการ</div></td><td className="p-3">{doc.channel_code}</td><td className="p-3 text-right font-bold">{money(doc.total_amount)}</td><td className="p-3">{new Date(`${doc.valid_until}T00:00:00`).toLocaleDateString('th-TH')}</td><td className="p-3"><span className={`rounded-full px-3 py-1 text-xs font-bold ${statusClass[displayStatus]}`}>{PREBILL_STATUS_LABEL[displayStatus as keyof typeof PREBILL_STATUS_LABEL]}</span></td><td className="p-3"><div className="flex flex-wrap gap-2"><button onClick={() => setEditing(doc)} className="rounded-lg bg-blue-600 px-3 py-1.5 font-semibold text-white hover:bg-blue-700">แก้ไข</button>{displayStatus === 'expired' && <button onClick={() => setRenewing(doc)} className="rounded-lg bg-orange-500 px-3 py-1.5 font-semibold text-white hover:bg-orange-600">สร้างใหม่</button>}{user?.role === 'superadmin' && doc.status === 'pending_discount' && <button onClick={() => { setReviewing(doc); setReview({ approve: true, amount: String(doc.special_discount), note: '' }) }} className="rounded-lg bg-emerald-600 px-3 py-1.5 font-semibold text-white hover:bg-emerald-700">อนุมัติ</button>}{!['converted','cancelled'].includes(doc.status) && displayStatus !== 'expired' && ['active','approved'].includes(doc.status) && <button onClick={() => onOpenBill(doc)} className="rounded-lg bg-violet-600 px-3 py-1.5 font-semibold text-white hover:bg-violet-700">เปิดบิล</button>}{canDelete && <button onClick={() => setDeleting(doc)} className="rounded-lg bg-red-600 px-3 py-1.5 font-semibold text-white hover:bg-red-700">ลบ</button>}</div></td></tr>
+              return <tr key={doc.id} className="border-t hover:bg-slate-50"><td className="p-3 font-bold text-blue-700">{doc.document_no}</td><td className="p-3">{new Date(doc.created_at).toLocaleDateString('th-TH')}</td><td className="p-3">{doc.owner_name}</td><td className="p-3"><div className="font-semibold">{doc.customer_name}</div><div className="text-xs text-slate-500">{doc.or_prebill_items?.length || 0} รายการ</div></td><td className="p-3">{doc.channel_code}</td><td className="p-3 text-right font-bold">{money(doc.total_amount)}</td><td className="p-3">{new Date(`${doc.valid_until}T00:00:00`).toLocaleDateString('th-TH')}</td><td className="p-3"><span className={`rounded-full px-3 py-1 text-xs font-bold ${statusClass[displayStatus]}`}>{PREBILL_STATUS_LABEL[displayStatus as keyof typeof PREBILL_STATUS_LABEL]}</span></td><td className="p-3"><div className="flex flex-wrap gap-2"><button onClick={() => setEditing(doc)} className="rounded-lg bg-blue-600 px-3 py-1.5 font-semibold text-white hover:bg-blue-700">{doc.status === 'converted' ? 'ดู' : 'แก้ไข'}</button>{displayStatus === 'expired' && <button onClick={() => setRenewing(doc)} className="rounded-lg bg-orange-500 px-3 py-1.5 font-semibold text-white hover:bg-orange-600">สร้างใหม่</button>}{user?.role === 'superadmin' && doc.status === 'pending_discount' && <button onClick={() => { setReviewing(doc); setReview({ approve: true, amount: String(doc.special_discount), note: '' }) }} className="rounded-lg bg-emerald-600 px-3 py-1.5 font-semibold text-white hover:bg-emerald-700">อนุมัติ</button>}{!['converted','cancelled'].includes(doc.status) && displayStatus !== 'expired' && ['active','approved'].includes(doc.status) && <button onClick={() => onOpenBill(doc)} className="rounded-lg bg-violet-600 px-3 py-1.5 font-semibold text-white hover:bg-violet-700">เปิดบิล</button>}{canDelete && <button onClick={() => setDeleting(doc)} className="rounded-lg bg-red-600 px-3 py-1.5 font-semibold text-white hover:bg-red-700">ลบ</button>}</div></td></tr>
             })}
           </tbody>
         </table>

@@ -269,7 +269,9 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
   const toastTimerRef = useRef<number | null>(null)
   const priceRefreshChannelRef = useRef<string | null>(isRenewal && seed?.channel_code ? seed.channel_code : null)
 
-  const locked = !!document && ['pending_discount', 'approved', 'converted', 'cancelled'].includes(document.status) && user?.role !== 'superadmin'
+  const permanentlyLocked = !!document && ['converted', 'cancelled'].includes(document.status)
+  const approvalLocked = !!document && ['pending_discount', 'approved'].includes(document.status) && user?.role !== 'superadmin'
+  const locked = permanentlyLocked || approvalLocked
   const expired = !!document && document.valid_until < today() && document.status !== 'converted'
 
   useEffect(() => {
@@ -809,7 +811,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
         channel_code: form.channel_code, header_name: headerName, customer_name: form.customer_name.trim(),
         customer_address: form.customer_address.trim() || [address.address_line, address.sub_district, address.district, address.province, address.postal_code].filter(Boolean).join(' ') || null,
         recipient_name: form.recipient_name.trim() || null, customer_phone: form.customer_phone.trim() || null,
-        billing_details: address, delivery_term: deliveryTerm, valid_until: form.valid_until,
+        billing_details: { ...address, mobile_phone: form.customer_phone.trim() || null }, delivery_term: deliveryTerm, valid_until: form.valid_until,
         payment_method: form.payment_method || null, subtotal, shipping_cost: shippingCost,
         promotion_discount: promotionDiscount, special_discount: document?.special_discount || 0,
         total_amount: totalAmount, promotion_ids: selectedPromotionIds,
@@ -920,9 +922,9 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
       {toast && <div role="status" className="fixed bottom-6 left-1/2 z-[400] -translate-x-1/2 rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white shadow-2xl">{toast}</div>}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-bold">{document ? `แก้ไข ${document.document_no}` : `สร้าง${PREBILL_TYPE_LABEL[documentType]}`}</h2>
+          <h2 className="text-2xl font-bold">{document ? `${permanentlyLocked ? 'ดู' : 'แก้ไข'} ${document.document_no}` : `สร้าง${PREBILL_TYPE_LABEL[documentType]}`}</h2>
           {isRenewal && <p className="text-sm text-blue-600">สร้างใหม่จาก {sourceDocument?.document_no} โดยใช้ราคาและโปรโมชั่นปัจจุบัน</p>}
-          {(locked || expired) && <p className="mt-1 text-sm font-semibold text-amber-700">{expired ? 'เอกสารหมดอายุแล้ว กรุณาสร้างใหม่จากข้อมูลเดิม' : 'เอกสารถูกล็อกระหว่าง/หลังการอนุมัติ'}</p>}
+          {(locked || expired) && <p className="mt-1 text-sm font-semibold text-amber-700">{expired ? 'เอกสารหมดอายุแล้ว กรุณาสร้างใหม่จากข้อมูลเดิม' : permanentlyLocked ? 'เอกสารที่เปิดบิลหรือยกเลิกแล้วเป็นแบบอ่านอย่างเดียว' : 'เอกสารถูกล็อกระหว่าง/หลังการอนุมัติ'}</p>}
         </div>
         <button type="button" onClick={onCancel} className="rounded-xl border px-4 py-2 font-semibold">กลับรายการ</button>
       </div>
@@ -939,7 +941,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
           <label className="text-sm font-semibold">ชื่อลูกค้า *<input value={form.customer_name} onChange={e => setForm(v => ({ ...v, customer_name: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5" /></label>
           <label className="text-sm font-semibold">ชื่อผู้รับ<input value={form.recipient_name} onChange={e => setForm(v => ({ ...v, recipient_name: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5" /></label>
           <label className="text-sm font-semibold">เบอร์โทร<input value={form.customer_phone} onChange={e => setForm(v => ({ ...v, customer_phone: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5" /></label>
-          <div className="text-sm font-semibold lg:col-span-2"><div className="flex items-center justify-between gap-2"><span>ที่อยู่ (ไม่บังคับ)</span><button type="button" disabled={autoFillAddressLoading || !form.customer_address.trim()} onClick={() => void handleAutoFillAddress()} className="rounded-lg bg-blue-100 px-2.5 py-1 text-xs text-blue-700 disabled:opacity-50">{autoFillAddressLoading ? 'กำลังแยก...' : 'Auto fill'}</button></div><textarea value={form.customer_address} onChange={e => setForm(v => ({ ...v, customer_address: e.target.value }))} onPaste={e => { const pasted = e.clipboardData.getData('text'); if (!pasted.trim()) return; const target = e.currentTarget; const next = target.value.slice(0, target.selectionStart ?? target.value.length) + pasted + target.value.slice(target.selectionEnd ?? target.value.length); window.setTimeout(() => void handleAutoFillAddress(next), 0) }} className="mt-1 min-h-28 w-full resize-y rounded-xl border p-2.5 font-normal" rows={4} placeholder="วางที่อยู่พร้อมรหัสไปรษณีย์ แล้วกด Auto fill" /></div>
+          <div className="text-sm font-semibold lg:col-span-2"><div className="flex items-center justify-between gap-2"><span>ที่อยู่ (ไม่บังคับ)</span><button type="button" disabled={autoFillAddressLoading || !form.customer_address.trim()} onClick={() => void handleAutoFillAddress()} className="rounded-lg bg-blue-100 px-2.5 py-1 text-xs text-blue-700 disabled:opacity-50">{autoFillAddressLoading ? 'กำลังแยก...' : 'Auto fill'}</button></div><textarea value={form.customer_address} onChange={e => setForm(v => ({ ...v, customer_address: e.target.value }))} onPaste={e => { const pasted = e.clipboardData.getData('text'); if (!pasted.trim()) return; const target = e.currentTarget; const next = target.value.slice(0, target.selectionStart ?? target.value.length) + pasted + target.value.slice(target.selectionEnd ?? target.value.length); window.setTimeout(() => void handleAutoFillAddress(next), 0) }} className="mt-1 min-h-36 w-full resize-y rounded-xl border p-2.5 font-normal" rows={5} placeholder="วางที่อยู่พร้อมรหัสไปรษณีย์ แล้วกด Auto fill" /></div>
           <label className="text-sm font-semibold">ระยะเวลาจัดส่ง *
             <select value={form.delivery_term} onChange={e => setForm(v => ({ ...v, delivery_term: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5 bg-white">
               {['1-3 วัน','7 วัน','14 วัน','30 วัน'].map(v => <option key={v}>{v}</option>)}<option value="custom">ระบุเอง</option>
