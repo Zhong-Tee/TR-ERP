@@ -72,6 +72,8 @@ interface PlanJob {
   created_at?: string
   /** ใบงานถูกยกเลิกการผลิต (บิลถูกย้ายหมดแต่มี timestamp ในแผนแล้ว) */
   is_production_voided?: boolean
+  /** เวลาที่หยุดงานจริงจากการยกเลิก ใช้แสดงแทนการประทับว่า QC/PACK เสร็จ */
+  production_voided_at?: string | null
   /** โน้ตติดตามของหัวหน้างานต่อแผนก: ใกล้เสร็จ (almost) / อาจจะช้า (slow) */
   follow_notes?: Record<string, 'almost' | 'slow'>
   manpower_locked_at?: string | null
@@ -600,11 +602,20 @@ function getActualTimesForDept(job: PlanJob, dept: string, _settings: PlanSettin
     }
   }
   if (automaticFinish) lastEnd = new Date(automaticFinish)
+  const voidedEnd = (dept === 'QC' || dept === 'PACK')
+    && !allFinished
+    && job.is_production_voided
+    && job.production_voided_at
+    && firstStart
+    ? new Date(job.production_voided_at)
+    : null
+  if (voidedEnd) lastEnd = voidedEnd
   const planDateStart = new Date(`${job.date}T00:00:00`)
   const dayDiffStart = firstStart ? Math.floor((firstStart.getTime() - planDateStart.getTime()) / 86400000) : 0
-  const dayDiffEnd = (allFinished && lastEnd) ? Math.floor((lastEnd.getTime() - planDateStart.getTime()) / 86400000) : 0
+  const hasDisplayEnd = allFinished || Boolean(voidedEnd)
+  const dayDiffEnd = (hasDisplayEnd && lastEnd) ? Math.floor((lastEnd.getTime() - planDateStart.getTime()) / 86400000) : 0
   const actualStart = firstStart ? `${pad(firstStart.getHours())}:${pad(firstStart.getMinutes())}` : '-'
-  const actualEnd = allFinished && lastEnd ? `${pad(lastEnd.getHours())}:${pad(lastEnd.getMinutes())}` : '-'
+  const actualEnd = hasDisplayEnd && lastEnd ? `${pad(lastEnd.getHours())}:${pad(lastEnd.getMinutes())}` : '-'
   return { actualStart, actualEnd, startDayOffset: dayDiffStart, endDayOffset: dayDiffEnd }
 }
 
@@ -1691,23 +1702,18 @@ export default function Plan({ tvMode = false }: PlanProps) {
     }
   }, [loadStopProductionByWorkOrder, debouncedLoadStopProd])
 
-  const handleStockAction = useCallback(async (wmsOrderId: string, action: 'recall' | 'waste') => {
+  const handleStockAction = useCallback(async (wmsOrderId: string, action: 'not_picked' | 'recall' | 'waste') => {
     if (!canManageCancelledStock) {
       alert('ไม่มีสิทธิ์ปรับสต๊อค รายการนี้อนุญาตเฉพาะ superadmin, admin และ store')
       return
     }
     setStockActionLoading(wmsOrderId)
     try {
-      if (action === 'recall') {
-        const { error } = await supabase.rpc('fn_reverse_wms_stock', { p_wms_order_id: wmsOrderId })
-        if (error) throw error
-      } else {
-        const { error } = await supabase.rpc('rpc_record_cancellation_waste', {
-          p_wms_order_id: wmsOrderId,
-          p_user_id: user?.id,
-        })
-        if (error) throw error
-      }
+      const { error } = await supabase.rpc('rpc_resolve_cancelled_wms', {
+        p_wms_order_id: wmsOrderId,
+        p_action: action,
+      })
+      if (error) throw error
       if (cancelledDetailWO && selectedCancelledOrderId) loadCancelledWmsLines(cancelledDetailWO, selectedCancelledOrderId)
       loadCancelledOrders()
     } catch (e: any) {
@@ -1715,7 +1721,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
     } finally {
       setStockActionLoading(null)
     }
-  }, [canManageCancelledStock, cancelledDetailWO, selectedCancelledOrderId, loadCancelledWmsLines, loadCancelledOrders, user?.id])
+  }, [canManageCancelledStock, cancelledDetailWO, selectedCancelledOrderId, loadCancelledWmsLines, loadCancelledOrders])
 
   // ฟัง event จาก TopBar เพื่อเปลี่ยนไป view Issue
   useEffect(() => {
@@ -4980,7 +4986,9 @@ export default function Plan({ tvMode = false }: PlanProps) {
                           <td className="px-3 py-2">{line.product_name || '-'}</td>
                           <td className="px-3 py-2">{line.qty}</td>
                           <td className="px-3 py-2">
-                            {line.stock_action === 'recalled' ? (
+                            {line.stock_action === 'not_picked' ? (
+                              <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700">ไม่ได้หยิบ · ไม่ปรับสต๊อก</span>
+                            ) : line.stock_action === 'recalled' ? (
                               <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700">เรียกคืนแล้ว</span>
                             ) : line.stock_action === 'waste' ? (
                               <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-orange-100 text-orange-700">ของเสีย</span>
@@ -4990,7 +4998,14 @@ export default function Plan({ tvMode = false }: PlanProps) {
                           </td>
                           <td className="px-3 py-2 text-center">
                             {!line.stock_action && canManageCancelledStock ? (
-                              <div className="flex gap-2 justify-center">
+                              <div className="flex flex-wrap gap-2 justify-center">
+                                <button
+                                  onClick={() => handleStockAction(line.id, 'not_picked')}
+                                  disabled={stockActionLoading === line.id}
+                                  className="px-3 py-1.5 bg-slate-600 text-white rounded-lg text-xs font-bold hover:bg-slate-700 disabled:opacity-50 transition"
+                                >
+                                  {stockActionLoading === line.id ? '...' : 'ไม่ได้หยิบ'}
+                                </button>
                                 <button
                                   onClick={() => handleStockAction(line.id, 'recall')}
                                   disabled={stockActionLoading === line.id}

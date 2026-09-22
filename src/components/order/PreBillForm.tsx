@@ -20,6 +20,7 @@ import { parseAddressText, type SubDistrictOption } from '../../lib/thaiAddress'
 import type { CartoonPattern, Product } from '../../types'
 import type { PreBillChannelSetting, PreBillDocument, PreBillDocumentType, PreBillItem } from '../../types/prebill'
 import { PREBILL_TYPE_LABEL } from '../../types/prebill'
+import Modal from '../ui/Modal'
 import PreBillPreview, { buildPreBillCustomerText } from './PreBillPreview'
 
 type Props = {
@@ -261,6 +262,9 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
     note: seed?.discount_request_note || '',
   })
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [savedIdentity, setSavedIdentity] = useState<Pick<PreBillDocument, 'id' | 'document_no' | 'created_at'> | null>(
+    document ? { id: document.id, document_no: document.document_no, created_at: document.created_at } : null,
+  )
   const [openProductIndex, setOpenProductIndex] = useState<number | null>(null)
   const [productSearchTerms, setProductSearchTerms] = useState<Record<number, string>>({})
   const [productDropdownPosition, setProductDropdownPosition] = useState<{ left: number; top: number; width: number; maxHeight: number } | null>(null)
@@ -802,8 +806,8 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
     if (error) { setMessage(error); return null }
     setSaving(true); setMessage('')
     try {
-      let id = document?.id
-      let documentNo = document?.document_no
+      let id = document?.id || savedIdentity?.id
+      let documentNo = document?.document_no || savedIdentity?.document_no
       if (!id) {
         const noResult = await supabase.rpc('rpc_next_prebill_document_no', { p_channel_code: form.channel_code, p_document_type: documentType })
         if (noResult.error) throw noResult.error
@@ -834,13 +838,16 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
         internal_note: form.internal_note.trim() || null, owner_id: document?.owner_id || user!.id,
         owner_name: ownerName, source_document_id: isRenewal ? sourceDocument!.id : document?.source_document_id || null,
       }
+      let savedCreatedAt = document?.created_at || savedIdentity?.created_at || new Date().toISOString()
       if (id) {
         const result = await supabase.from('or_prebill_documents').update(payload).eq('id', id).select().single()
         if (result.error) throw result.error
+        savedCreatedAt = String(result.data.created_at || savedCreatedAt)
       } else {
         const result = await supabase.from('or_prebill_documents').insert(payload).select().single()
         if (result.error) throw result.error
         id = result.data.id
+        savedCreatedAt = String(result.data.created_at || savedCreatedAt)
       }
       const del = await supabase.from('or_prebill_items').delete().eq('document_id', id)
       if (del.error) throw del.error
@@ -856,9 +863,10 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
       }))
       const itemResult = await supabase.from('or_prebill_items').insert(rows)
       if (itemResult.error) throw itemResult.error
-      setMessage(status === 'draft' ? 'บันทึกร่างแล้ว' : 'บันทึกเอกสารแล้ว')
+      setSavedIdentity({ id: id!, document_no: documentNo!, created_at: savedCreatedAt })
+      if (closeAfterSave) setMessage(status === 'draft' ? 'บันทึกร่างแล้ว' : 'บันทึกเอกสารแล้ว')
       if (closeAfterSave) onSaved()
-      return { ...payload, id, document_no: documentNo!, created_at: document?.created_at || new Date().toISOString(), updated_at: new Date().toISOString(), or_prebill_items: rows } as unknown as PreBillDocument
+      return { ...payload, id, document_no: documentNo!, created_at: savedCreatedAt, updated_at: new Date().toISOString(), or_prebill_items: rows } as unknown as PreBillDocument
     } catch (error: any) {
       setMessage(error.message || String(error)); return null
     } finally { setSaving(false) }
@@ -876,7 +884,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
   }
 
   const previewDocument: Partial<PreBillDocument> = {
-    ...document, document_type: documentType, document_no: document?.document_no || '', channel_code: form.channel_code,
+    ...document, document_type: documentType, document_no: document?.document_no || savedIdentity?.document_no || '', channel_code: form.channel_code,
     owner_name: document?.owner_name || sellerName || user?.username || user?.email || '-',
     header_name: headerName, customer_name: form.customer_name,
     customer_address: form.customer_address || [address.address_line, address.sub_district, address.district, address.province, address.postal_code].filter(Boolean).join(' '),
@@ -897,24 +905,48 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
     if (!previewRef.current) throw new Error('ไม่พบตัวอย่างเอกสาร')
     return html2canvas(previewRef.current, { scale: 2, backgroundColor: '#ffffff', logging: false })
   }
+  async function ensureDocumentNumber() {
+    const currentNumber = document?.document_no || savedIdentity?.document_no
+    if (currentNumber) return currentNumber
+    const saved = await save('draft', false)
+    return saved?.document_no || null
+  }
+  async function waitForPreviewRender() {
+    await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()))
+    await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()))
+  }
+  async function openPreview() {
+    if (!await ensureDocumentNumber()) return
+    setPreviewOpen(true)
+  }
   async function copyImage() {
     try {
+      if (!await ensureDocumentNumber()) return
+      await waitForPreviewRender()
       const canvas = await captureCanvas(); const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'))
       if (!blob) throw new Error('สร้างรูปไม่สำเร็จ')
       await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); showToast('คัดลอกรูปสำเร็จ')
     } catch (error: any) { setMessage(`คัดลอกรูปไม่สำเร็จ: ${error.message || error}`) }
   }
   async function downloadImage() {
+    const documentNumber = await ensureDocumentNumber()
+    if (!documentNumber) return
+    await waitForPreviewRender()
     const canvas = await captureCanvas(); const link = window.document.createElement('a')
-    link.download = `${document?.document_no || documentType}.png`; link.href = canvas.toDataURL('image/png'); link.click()
+    link.download = `${documentNumber}.png`; link.href = canvas.toDataURL('image/png'); link.click()
   }
   async function downloadPdf() {
+    const documentNumber = await ensureDocumentNumber()
+    if (!documentNumber) return
+    await waitForPreviewRender()
     const html2pdf = (await import('html2pdf.js')).default
-    await html2pdf().set({ margin: 0, filename: `${document?.document_no || documentType}.pdf`, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'px', format: [794, 1123], orientation: 'portrait' } }).from(previewRef.current!).save()
+    await html2pdf().set({ margin: 0, filename: `${documentNumber}.pdf`, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'px', format: [794, 1123], orientation: 'portrait' } }).from(previewRef.current!).save()
   }
   async function copyText() {
     try {
-      await navigator.clipboard.writeText(buildPreBillCustomerText(previewDocument, items))
+      const documentNumber = await ensureDocumentNumber()
+      if (!documentNumber) return
+      await navigator.clipboard.writeText(buildPreBillCustomerText({ ...previewDocument, document_no: documentNumber }, items))
       showToast('คัดลอกข้อความสำเร็จ')
     } catch (error: any) {
       setMessage(`คัดลอกข้อความไม่สำเร็จ: ${error.message || error}`)
@@ -926,6 +958,22 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
   return (
     <div className="space-y-5 pb-12">
       {toast && <div role="status" className="fixed bottom-6 left-1/2 z-[400] -translate-x-1/2 rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white shadow-2xl">{toast}</div>}
+      <Modal
+        open={!!message}
+        onClose={() => setMessage('')}
+        closeOnBackdropClick
+        stackClassName="z-[450]"
+        contentClassName="max-w-md w-full"
+        ariaLabelledby="prebill-alert-title"
+      >
+        <div className="p-6">
+          <h3 id="prebill-alert-title" className="pr-10 text-lg font-bold text-slate-900">แจ้งเตือน</h3>
+          <p className="mt-3 whitespace-pre-wrap text-slate-700">{message}</p>
+          <div className="mt-6 flex justify-end">
+            <button type="button" onClick={() => setMessage('')} className="rounded-xl bg-blue-600 px-5 py-2 font-bold text-white hover:bg-blue-700">ตกลง</button>
+          </div>
+        </div>
+      </Modal>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-2xl font-bold">{document ? `${permanentlyLocked ? 'ดู' : 'แก้ไข'} ${document.document_no}` : `สร้าง${PREBILL_TYPE_LABEL[documentType]}`}</h2>
@@ -934,8 +982,6 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
         </div>
         <button type="button" onClick={onCancel} className="rounded-xl border border-blue-600 bg-blue-600 px-4 py-2 font-semibold text-white shadow-sm transition-colors hover:border-blue-700 hover:bg-blue-700">กลับรายการ</button>
       </div>
-
-      {message && <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-blue-800">{message}</div>}
 
       <fieldset disabled={locked || expired || saving} className="space-y-5 disabled:opacity-75">
         <section className="grid grid-cols-1 gap-4 rounded-2xl bg-white p-5 shadow-sm md:grid-cols-2 lg:grid-cols-4">
@@ -1042,11 +1088,11 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
 
       <div className="flex flex-wrap gap-2 rounded-2xl bg-white p-4 shadow-sm">
         {!locked && !expired && <><button disabled={saving} onClick={() => save('draft')} className="rounded-xl border px-4 py-2 font-bold">บันทึกร่าง</button><button disabled={saving} onClick={() => save('active')} className="rounded-xl bg-blue-600 px-4 py-2 font-bold text-white">บันทึก</button><button disabled={saving} onClick={() => setDiscountModal(true)} className="rounded-xl bg-amber-500 px-4 py-2 font-bold text-white">ขอส่วนลด</button></>}
-        <button onClick={() => setPreviewOpen(true)} className="rounded-xl border px-4 py-2 font-bold">ตัวอย่าง</button>
-        <button onClick={copyImage} className="rounded-xl border px-4 py-2 font-bold">คัดลอกรูป</button>
-        <button onClick={downloadImage} className="rounded-xl border px-4 py-2 font-bold">ดาวน์โหลดรูป</button>
-        <button onClick={downloadPdf} className="rounded-xl border px-4 py-2 font-bold">ดาวน์โหลด PDF</button>
-        {documentType === 'production_confirmation' && <button onClick={copyText} className="rounded-xl border px-4 py-2 font-bold">คัดลอกข้อความ</button>}
+        <button disabled={saving} onClick={openPreview} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">ตัวอย่าง</button>
+        <button disabled={saving} onClick={copyImage} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">คัดลอกรูป</button>
+        <button disabled={saving} onClick={downloadImage} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">ดาวน์โหลดรูป</button>
+        <button disabled={saving} onClick={downloadPdf} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">ดาวน์โหลด PDF</button>
+        {documentType === 'production_confirmation' && <button disabled={saving} onClick={copyText} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">คัดลอกข้อความ</button>}
         {document && !expired && ['active','approved'].includes(document.status) && !document.converted_order_id && <button onClick={() => onOpenBill(document)} className="ml-auto rounded-xl bg-emerald-600 px-5 py-2 font-bold text-white">เปิดบิล</button>}
       </div>
 

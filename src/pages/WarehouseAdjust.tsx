@@ -78,6 +78,7 @@ function parseImportNumber(value: unknown): number | null {
 export default function WarehouseAdjust() {
   const { user } = useAuthContext()
   const canSeeCost = ['superadmin', 'account'].includes(user?.role || '')
+  const canCreateAdjustment = ['superadmin', 'admin', 'manager', 'account', 'store'].includes(user?.role || '')
   const canApproveAdjustment = ['superadmin', 'admin', 'manager', 'account'].includes(user?.role || '')
   const [adjustments, setAdjustments] = useState<InventoryAdjustment[]>([])
   const [products, setProducts] = useState<Product[]>([])
@@ -729,14 +730,14 @@ export default function WarehouseAdjust() {
         >
           ดาวน์โหลดสินค้าปัจจุบัน
         </button>
-        <button
+        {canCreateAdjustment && <button
           type="button"
           onClick={() => importInputRef.current?.click()}
           disabled={importing || loading}
           className="px-4 py-2 bg-green-600 text-white rounded-xl hover:bg-green-700 font-semibold text-sm disabled:cursor-not-allowed disabled:opacity-60"
         >
           {importing ? 'กำลัง Import...' : 'Import ยอดตรวจนับ'}
-        </button>
+        </button>}
         <input
           ref={importInputRef}
           type="file"
@@ -747,7 +748,7 @@ export default function WarehouseAdjust() {
             if (file) void handleImport(file)
           }}
         />
-        <button
+        {canCreateAdjustment && <button
           type="button"
           onClick={() => {
             setAdjustmentType('audit_adjustment')
@@ -757,7 +758,7 @@ export default function WarehouseAdjust() {
           className="px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold"
         >
           + สร้างใบปรับสต๊อค
-        </button>
+        </button>}
       </div>
 
       <div className="bg-white p-6 rounded-lg shadow">

@@ -101,7 +101,7 @@ export async function enrichWmsNotificationsWithOrderDetails(
   return normalizedRows.map((n: any) => {
     const rows = (oDetails || []).filter((o: any) => o.order_id === n.order_id)
     const cancelledRows = rows.filter((o: any) =>
-      o.status === 'cancelled' || o.stock_action === 'recalled' || o.stock_action === 'waste'
+      o.status === 'cancelled' || o.stock_action === 'not_picked' || o.stock_action === 'recalled' || o.stock_action === 'waste'
     )
     const cancelledOrdersForRow = cancelledByWorkOrder[String(n.order_id || '')] || []
     const cancelledOrderIdSet = new Set(cancelledOrdersForRow.map((order) => String(order.id)))
@@ -123,6 +123,7 @@ export async function enrichWmsNotificationsWithOrderDetails(
     const awaitingShelf = filteredCancelledRows.filter((o: any) => o.stock_action === 'recalled' && o.status !== 'returned').length
     const returnedToShelf = filteredCancelledRows.filter((o: any) => o.stock_action === 'recalled' && o.status === 'returned').length
     const wasteCount = filteredCancelledRows.filter((o: any) => o.stock_action === 'waste').length
+    const notPickedCount = filteredCancelledRows.filter((o: any) => o.stock_action === 'not_picked').length
     const uniqueNames = (values: unknown[]) => [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))]
     const awaitingShelfActors = uniqueNames(filteredCancelledRows
       .filter((o: any) => o.stock_action === 'recalled' && o.status !== 'returned')
@@ -132,6 +133,9 @@ export async function enrichWmsNotificationsWithOrderDetails(
       .map((o: any) => o.shelf_return_user?.username || o.stock_action_user?.username))
     const wasteActors = uniqueNames(filteredCancelledRows
       .filter((o: any) => o.stock_action === 'waste')
+      .map((o: any) => o.stock_action_user?.username))
+    const notPickedActors = uniqueNames(filteredCancelledRows
+      .filter((o: any) => o.stock_action === 'not_picked')
       .map((o: any) => o.stock_action_user?.username))
     const first = rows[0] || { product_name: '---', location: '---' }
     const productName =
@@ -151,9 +155,11 @@ export async function enrichWmsNotificationsWithOrderDetails(
       awaitingShelf,
       returnedToShelf,
       wasteCount,
+      notPickedCount,
       awaitingShelfActors,
       returnedToShelfActors,
       wasteActors,
+      notPickedActors,
       work_order_id: workOrderByName.get(String(n.order_id || ''))?.id || rows[0]?.work_order_id || null,
       cancellation_state: workOrderByName.get(String(n.order_id || ''))?.cancellation_state || null,
       cancelled_orders: cancelledOrdersForRow,

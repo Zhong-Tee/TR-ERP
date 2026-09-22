@@ -76,7 +76,7 @@ function getDefaultStatusFilterForTab(tab: Tab): OrderStatus | '' {
 export default function Orders() {
   const { hasAccess, menuAccessLoading } = useMenuAccess()
   const { user } = useAuthContext()
-  const [activeTab, setActiveTab] = useState<Tab>('create')
+  const [activeTab, setActiveTab] = useState<Tab>('prebill')
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
   const [prebillDetailOrder, setPrebillDetailOrder] = useState<Order | null>(null)
   const [createFormKey, setCreateFormKey] = useState(0)
@@ -96,7 +96,10 @@ export default function Orders() {
   const [shippedFilteredCount, setShippedFilteredCount] = useState(0)
   const [issueCount, setIssueCount] = useState(0)
   const [claimReqNeedShippingCount, setClaimReqNeedShippingCount] = useState(0)
-  const [prebillPendingCount, setPrebillPendingCount] = useState(0)
+  const [prebillPendingCounts, setPrebillPendingCounts] = useState<Record<'quotation' | 'production_confirmation', number>>({
+    quotation: 0,
+    production_confirmation: 0,
+  })
   const [allCount, setAllCount] = useState(0)
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [adminUsers, setAdminUsers] = useState<string[]>([])
@@ -104,13 +107,25 @@ export default function Orders() {
   const realtimeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const prebillAllowed = user?.role === 'superadmin' || user?.role === 'sales-tr' || user?.role === 'sales-pump'
+  const prebillPendingCount = prebillPendingCounts.quotation + prebillPendingCounts.production_confirmation
 
   useEffect(() => {
-    if (!prebillAllowed) { setPrebillPendingCount(0); return }
+    if (!prebillAllowed) {
+      setPrebillPendingCounts({ quotation: 0, production_confirmation: 0 })
+      return
+    }
     let cancelled = false
     const refresh = async () => {
-      const { count, error } = await supabase.from('or_prebill_documents').select('id', { count: 'exact', head: true }).eq('status', 'pending_discount')
-      if (!cancelled && !error) setPrebillPendingCount(count || 0)
+      const [quotation, productionConfirmation] = await Promise.all([
+        supabase.from('or_prebill_documents').select('id', { count: 'exact', head: true }).eq('status', 'pending_discount').eq('document_type', 'quotation'),
+        supabase.from('or_prebill_documents').select('id', { count: 'exact', head: true }).eq('status', 'pending_discount').eq('document_type', 'production_confirmation'),
+      ])
+      if (!cancelled && !quotation.error && !productionConfirmation.error) {
+        setPrebillPendingCounts({
+          quotation: quotation.count || 0,
+          production_confirmation: productionConfirmation.count || 0,
+        })
+      }
     }
     void refresh()
     const channel = supabase.channel('prebill-menu-badge').on('postgres_changes', { event: '*', schema: 'public', table: 'or_prebill_documents' }, refresh).subscribe()
@@ -923,7 +938,11 @@ export default function Orders() {
         aria-label="เนื้อหาออเดอร์"
       >
         {activeTab === 'prebill' ? (
-          <PreBillWorkspace onOpenBill={handleOpenPreBill} onViewConvertedOrder={handleViewConvertedPreBillOrder} />
+          <PreBillWorkspace
+            onOpenBill={handleOpenPreBill}
+            onViewConvertedOrder={handleViewConvertedPreBillOrder}
+            pendingCounts={prebillPendingCounts}
+          />
         ) : selectedOrder ? (
           <OrderForm
             order={selectedOrder}

@@ -5,21 +5,32 @@ import { fetchAllSupabasePages } from '../../../lib/supabasePagination'
 import CancelledBillStockModal, { type CancelledBillSummary } from './CancelledBillStockModal'
 
 const PAGE_SIZE = 50
-type Tab = 'unread' | 'fixed' | 'cancel_pending' | 'cancel_shelf' | 'cancel_recalled' | 'cancel_waste'
+type Tab = 'unread' | 'fixed' | 'cancel_pending' | 'cancel_not_picked' | 'cancel_shelf' | 'cancel_recalled' | 'cancel_waste'
 
 const TAB_LABELS: Array<{ key: Tab; label: string }> = [
   { key: 'unread', label: 'รายการใหม่' },
   { key: 'fixed', label: 'แก้ไขแล้ว' },
   { key: 'cancel_pending', label: 'รอเลือกวิธีจัดการ' },
+  { key: 'cancel_not_picked', label: 'ไม่ได้หยิบ' },
   { key: 'cancel_shelf', label: 'รอคืนเข้าชั้น' },
   { key: 'cancel_recalled', label: 'คืนคลังแล้ว' },
   { key: 'cancel_waste', label: 'ของเสีย' },
 ]
 
 const isCancellationTab = (tab: Tab) => tab.startsWith('cancel_')
+const emptyTabCounts = (): Record<Tab, number> => ({
+  unread: 0,
+  fixed: 0,
+  cancel_pending: 0,
+  cancel_not_picked: 0,
+  cancel_shelf: 0,
+  cancel_recalled: 0,
+  cancel_waste: 0,
+})
 
 function matchesCancellationTab(row: any, tab: Tab): boolean {
   if (tab === 'cancel_pending') return Number(row.pendingCancelled || 0) > 0
+  if (tab === 'cancel_not_picked') return Number(row.notPickedCount || 0) > 0
   if (tab === 'cancel_shelf') return Number(row.awaitingShelf || 0) > 0
   if (tab === 'cancel_recalled') return Number(row.returnedToShelf || 0) > 0
   if (tab === 'cancel_waste') return Number(row.wasteCount || 0) > 0
@@ -28,13 +39,16 @@ function matchesCancellationTab(row: any, tab: Tab): boolean {
 
 function cancellationStatus(row: any, tab: Tab): { label: string; cls: string } {
   if (tab === 'cancel_pending') return { label: `รอตัดสินใจ ${row.pendingCancelled || 0} รายการ`, cls: 'bg-amber-100 text-amber-700' }
+  if (tab === 'cancel_not_picked') return { label: `ไม่ได้หยิบ · ไม่ปรับสต๊อก ${row.notPickedCount || 0} รายการ`, cls: 'bg-slate-100 text-slate-700' }
   if (tab === 'cancel_shelf') return { label: `คืนยอดแล้ว · รอเข้าชั้น ${row.awaitingShelf || 0} รายการ`, cls: 'bg-blue-100 text-blue-700' }
   if (tab === 'cancel_recalled') return { label: `คืนเข้าชั้นแล้ว ${row.returnedToShelf || 0} รายการ`, cls: 'bg-green-100 text-green-700' }
   return { label: `ของเสีย ${row.wasteCount || 0} รายการ`, cls: 'bg-orange-100 text-orange-700' }
 }
 
 function cancellationActors(row: any, tab: Tab): string {
-  const names = tab === 'cancel_shelf'
+  const names = tab === 'cancel_not_picked'
+    ? row.notPickedActors
+    : tab === 'cancel_shelf'
     ? row.awaitingShelfActors
     : tab === 'cancel_recalled'
       ? row.returnedToShelfActors
@@ -50,6 +64,7 @@ export default function NotificationSection() {
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
   const [totalCount, setTotalCount] = useState(0)
+  const [tabCounts, setTabCounts] = useState<Record<Tab, number>>(emptyTabCounts)
   const [stockModal, setStockModal] = useState<{
     workOrderId: string
     displayName: string
@@ -57,6 +72,48 @@ export default function NotificationSection() {
   } | null>(null)
   const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const loadRequestRef = useRef(0)
+  const countRequestRef = useRef(0)
+
+  const loadTabCounts = useCallback(async () => {
+    const requestId = ++countRequestRef.current
+    try {
+      const [unreadResult, fixedResult, cancellationRows] = await Promise.all([
+        supabase
+          .from('wms_notifications')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'unread')
+          .neq('type', 'ยกเลิกบิล'),
+        supabase
+          .from('wms_notifications')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'fixed')
+          .neq('type', 'ยกเลิกบิล'),
+        fetchAllSupabasePages<any>((from, to) => supabase
+          .from('wms_notifications')
+          .select('id, order_id, picker_id, type, status, is_read, created_at, us_users!picker_id(username)')
+          .eq('type', 'ยกเลิกบิล')
+          .order('created_at', { ascending: false })
+          .range(from, to)),
+      ])
+      if (unreadResult.error) throw unreadResult.error
+      if (fixedResult.error) throw fixedResult.error
+
+      const enriched = await enrichWmsNotificationsWithOrderDetails(supabase, cancellationRows)
+      if (requestId !== countRequestRef.current) return
+      setTabCounts({
+        unread: unreadResult.count || 0,
+        fixed: fixedResult.count || 0,
+        cancel_pending: enriched.filter((row) => matchesCancellationTab(row, 'cancel_pending')).length,
+        cancel_not_picked: enriched.filter((row) => matchesCancellationTab(row, 'cancel_not_picked')).length,
+        cancel_shelf: enriched.filter((row) => matchesCancellationTab(row, 'cancel_shelf')).length,
+        cancel_recalled: enriched.filter((row) => matchesCancellationTab(row, 'cancel_recalled')).length,
+        cancel_waste: enriched.filter((row) => matchesCancellationTab(row, 'cancel_waste')).length,
+      })
+    } catch (error) {
+      console.error('loadNotificationTabCounts:', error)
+      if (requestId === countRequestRef.current) setTabCounts(emptyTabCounts())
+    }
+  }, [])
 
   const loadNotifications = useCallback(async (tabOverride?: Tab) => {
     const requestId = ++loadRequestRef.current
@@ -102,10 +159,12 @@ export default function NotificationSection() {
 
   useEffect(() => {
     void loadNotifications()
+    void loadTabCounts()
     const scheduleReload = () => {
       if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
       reloadTimerRef.current = setTimeout(() => {
         void loadNotifications()
+        void loadTabCounts()
         window.dispatchEvent(new Event('wms-data-changed'))
       }, 300)
     }
@@ -118,12 +177,13 @@ export default function NotificationSection() {
       if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
       supabase.removeChannel(channel)
     }
-  }, [loadNotifications])
+  }, [loadNotifications, loadTabCounts])
 
   const markNotifRead = async (id: string) => {
     const { error } = await supabase.from('wms_notifications').update({ is_read: true }).eq('id', id)
     if (error) return alert(`อัปเดตไม่สำเร็จ: ${error.message}`)
     await loadNotifications()
+    await loadTabCounts()
     window.dispatchEvent(new Event('wms-data-changed'))
   }
 
@@ -131,6 +191,7 @@ export default function NotificationSection() {
     const { error } = await supabase.from('wms_notifications').update({ status: 'fixed', is_read: true }).eq('id', id)
     if (error) return alert(`อัปเดตไม่สำเร็จ: ${error.message}`)
     await loadNotifications()
+    await loadTabCounts()
     window.dispatchEvent(new Event('wms-data-changed'))
   }
 
@@ -159,7 +220,7 @@ export default function NotificationSection() {
             onClick={() => { setPage(1); setCurrentTab(tab.key) }}
             className={`rounded-lg px-5 py-2 text-sm font-bold transition ${currentTab === tab.key ? 'tab-active' : ''}`}
           >
-            {tab.label}
+            {tab.label} ({tabCounts[tab.key]})
           </button>
         ))}
       </div>
@@ -235,7 +296,10 @@ export default function NotificationSection() {
         displayName={stockModal?.displayName || ''}
         cancelledBills={stockModal?.cancelledBills || []}
         onClose={() => setStockModal(null)}
-        onChanged={() => void loadNotifications()}
+        onChanged={() => {
+          void loadNotifications()
+          void loadTabCounts()
+        }}
       />
     </section>
   )

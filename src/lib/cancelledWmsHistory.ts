@@ -1,7 +1,7 @@
 import { supabase } from './supabase'
 
 const WMS_HISTORY_SELECT =
-  'id, work_order_id, order_id, source_order_id, source_order_item_id, product_code, product_name, location, qty, status, stock_action, stock_action_at, stock_action_by, returned_to_shelf_at, returned_to_shelf_by, assigned_to, created_at, end_time, us_users!assigned_to(username), stock_action_user:us_users!stock_action_by(username), shelf_return_user:us_users!returned_to_shelf_by(username)'
+  'id, work_order_id, order_id, source_order_id, source_order_item_id, product_code, product_name, location, qty, status, status_before_cancel, cancelled_at, stock_action, stock_action_at, stock_action_by, returned_to_shelf_at, returned_to_shelf_by, assigned_to, created_at, end_time, us_users!assigned_to(username), stock_action_user:us_users!stock_action_by(username), shelf_return_user:us_users!returned_to_shelf_by(username)'
 
 /**
  * โหลดประวัติ WMS ของรายการยกเลิกให้รองรับทั้งข้อมูลใหม่และ legacy:
@@ -42,7 +42,7 @@ export async function fetchCancelledWmsHistory(params: {
     (products || []).map((p: any) => String(p.product_code || '').trim().toUpperCase()).filter(Boolean)
   )
 
-  const historyStatusFilter = 'status.eq.cancelled,stock_action.in.(recalled,waste)'
+  const historyStatusFilter = 'status.eq.cancelled,stock_action.in.(not_picked,recalled,waste)'
   const requests: any[] = [
     supabase
       .from('wms_orders')

@@ -3,12 +3,14 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import { supabase } from '../../lib/supabase'
 import type { PreBillDocument, PreBillDocumentType } from '../../types/prebill'
 import { PREBILL_STATUS_LABEL, PREBILL_TYPE_LABEL } from '../../types/prebill'
+import Modal from '../ui/Modal'
 import PreBillForm from './PreBillForm'
 
 type View = 'mine' | 'pending' | 'approved' | 'converted' | 'expired' | 'cancelled'
 type Props = {
   onOpenBill: (document: PreBillDocument) => void
   onViewConvertedOrder: (document: PreBillDocument) => void
+  pendingCounts: Record<PreBillDocumentType, number>
 }
 
 const firstDayOfMonth = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01` }
@@ -21,7 +23,7 @@ const statusClass: Record<string, string> = {
   converted: 'bg-violet-100 text-violet-700', cancelled: 'bg-slate-200 text-slate-500',
 }
 
-export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder }: Props) {
+export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder, pendingCounts }: Props) {
   const { user } = useAuthContext()
   const [documentType, setDocumentType] = useState<PreBillDocumentType>('quotation')
   const [view, setView] = useState<View>('mine')
@@ -145,9 +147,25 @@ export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder }: P
 
   return (
     <div className="space-y-4 pb-10">
+      <Modal
+        open={!!message}
+        onClose={() => setMessage('')}
+        closeOnBackdropClick
+        stackClassName="z-[80]"
+        contentClassName="max-w-md w-full"
+        ariaLabelledby="prebill-workspace-alert-title"
+      >
+        <div className="p-6">
+          <h3 id="prebill-workspace-alert-title" className="pr-10 text-lg font-bold text-slate-900">แจ้งเตือน</h3>
+          <p className="mt-3 whitespace-pre-wrap text-slate-700">{message}</p>
+          <div className="mt-6 flex justify-end">
+            <button type="button" onClick={() => setMessage('')} className="rounded-xl bg-blue-600 px-5 py-2 font-bold text-white hover:bg-blue-700">ตกลง</button>
+          </div>
+        </div>
+      </Modal>
       <div className="rounded-2xl bg-white p-2 shadow-sm">
         <div className="flex flex-wrap gap-2">
-          {(['quotation','production_confirmation'] as PreBillDocumentType[]).map(type => <button key={type} onClick={() => { setDocumentType(type); setView('mine') }} className={`rounded-xl px-5 py-3 font-bold ${documentType === type ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{PREBILL_TYPE_LABEL[type]}</button>)}
+          {(['quotation','production_confirmation'] as PreBillDocumentType[]).map(type => <button key={type} onClick={() => { setDocumentType(type); setView('mine') }} className={`rounded-xl px-5 py-3 font-bold ${documentType === type ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{PREBILL_TYPE_LABEL[type]}{pendingCounts[type] > 0 ? ` (${pendingCounts[type]})` : ''}</button>)}
         </div>
       </div>
 
@@ -169,7 +187,6 @@ export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder }: P
         <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="rounded-xl border p-2.5" />
       </div>
 
-      {message && <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-red-700">{message}</div>}
       {view === 'cancelled' && user?.role === 'superadmin' && (
         <div className="flex items-center justify-between gap-3 rounded-2xl border border-red-100 bg-red-50 p-4">
           <span className="text-sm font-semibold text-red-800">เลือกแล้ว {selectedVisibleCancelledIds.length} รายการ</span>
