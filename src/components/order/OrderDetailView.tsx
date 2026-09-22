@@ -742,6 +742,10 @@ export default function OrderDetailView({
             <InfoRow label="จังหวัด" value={displayProvince} />
             <InfoRow label="รหัสไปรษณีย์" value={displayPostalCode} />
             <InfoRow label="โปรโมชั่น" value={order.promotion} />
+            <InfoRow
+              label={order.source_prebill_document_type === 'production_confirmation' ? 'ผู้เปิดใบยืนยันผลิต' : 'ผู้เปิดใบเสนอราคา'}
+              value={order.source_prebill_document_type ? order.source_prebill_owner_name : null}
+            />
             <InfoRow label="ผู้สร้างบิล" value={order.admin_user} />
             <InfoRow label="ผู้แก้ไขล่าสุด" value={order.last_edited_by ?? null} />
             <InfoRow label="ผู้ QC" value={workflowActors.qc.length ? workflowActors.qc.join(', ') : '-'} />

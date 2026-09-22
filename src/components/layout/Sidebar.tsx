@@ -141,7 +141,7 @@ const menuItems: MenuItem[] = [
     label: 'คลัง',
     icon: <LuWarehouse className="w-6 h-6" />,
     path: '/warehouse',
-    roles: ['superadmin', 'admin', 'sales-tr', 'store'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'store', 'account'],
   },
   {
     key: 'purchase',

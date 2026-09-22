@@ -474,10 +474,16 @@ export async function completeAudit(auditId: string, reviewedBy: string) {
   if (error) throw error
 }
 
-export async function closeAudit(auditId: string) {
+export async function closeAudit(auditId: string, reviewedBy: string) {
+  const now = new Date().toISOString()
   const { error } = await supabase
     .from('inv_audits')
-    .update({ status: 'closed' })
+    .update({
+      status: 'closed',
+      completed_at: now,
+      reviewed_by: reviewedBy,
+      reviewed_at: now,
+    })
     .eq('id', auditId)
   if (error) throw error
 }

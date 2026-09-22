@@ -131,6 +131,10 @@ export interface Order {
   updated_at: string
   /** เอกสาร QT/PC ต้นทาง; มีค่าเมื่อเปิดบิลจากเอกสารก่อนเปิดบิล */
   source_prebill_document_id?: string | null
+  /** ชนิดเอกสารต้นทางที่บันทึกไว้ตอนเปิดบิล */
+  source_prebill_document_type?: 'quotation' | 'production_confirmation' | null
+  /** ชื่อผู้เปิด QT/PC ต้นทาง (ไม่เปลี่ยนตามผู้แก้ไขหรือผู้สร้างบิล) */
+  source_prebill_owner_name?: string | null
   /** คงราคาตามเอกสาร QT/PC ที่ยังไม่หมดอายุ ไม่ปรับราคาสินค้า/โปรโมชั่นอัตโนมัติเมื่อเปิดฟอร์ม */
   prebill_price_locked?: boolean
   /** การเก็บรายการตรวจสอบไม่ผ่านเข้าประวัติ (ไม่ลบบิล/สลิป) */

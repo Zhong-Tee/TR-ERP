@@ -602,6 +602,17 @@ export type OrderFormLimitedEditPayload = {
   channel_order_no: string | null
   tracking_number: string | null
   express_receipt_number: string | null
+  shipping: {
+    customer_name: string | null
+    recipient_name: string | null
+    customer_address: string | null
+    address_line: string | null
+    sub_district: string | null
+    district: string | null
+    province: string | null
+    postal_code: string | null
+    mobile_phone: string | null
+  }
   lines: OrderFormLimitedItemPayload[]
 }
 
@@ -2219,6 +2230,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         .from('or_orders')
         .select('id')
         .eq('tracking_number', formData.tracking_number.trim())
+        .neq('status', 'ยกเลิก')
         .neq('id', order?.id || '00000000-0000-0000-0000-000000000000')
         .limit(1)
       if (error) {
@@ -5166,6 +5178,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const formDisabled = readOnly || viewOnly || nameLinesOnlyMode
   const limitedReferenceFieldsEnabled = nameLinesOnlyMode && !readOnly && !viewOnly
   const limitedProductionFieldsEnabled = nameLinesOnlyMode && !readOnly && !viewOnly
+  const limitedShippingFieldsEnabled = nameLinesOnlyMode && !readOnly && !viewOnly
+  const shippingFieldDisabled = isCustomerAddressDisabled() || (formDisabled && !limitedShippingFieldsEnabled)
   const showExpressReceiptField = Boolean(
     order?.requires_express_receipt_number ||
     formData.express_receipt_number.trim() ||
@@ -5192,6 +5206,17 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         channel_order_no: formData.channel_order_no.trim() || null,
         tracking_number: isCurrentBillSelfPickup() ? null : formData.tracking_number.trim() || null,
         express_receipt_number: formData.express_receipt_number.trim() || null,
+        shipping: {
+          customer_name: formData.customer_name.trim() || null,
+          recipient_name: formData.recipient_name.trim() || null,
+          customer_address: formData.customer_address.trim() || null,
+          address_line: formData.address_line.trim() || null,
+          sub_district: formData.sub_district.trim() || null,
+          district: formData.district.trim() || null,
+          province: formData.province.trim() || null,
+          postal_code: formData.postal_code.trim() || null,
+          mobile_phone: formData.mobile_phone.trim() || null,
+        },
         lines: items
           .filter((it) => it.item_uid != null && String(it.item_uid).trim() !== '')
           .map((it) => ({
@@ -5234,7 +5259,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         )}
         {nameLinesOnlyMode && order && (
           <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
-            <strong>แก้ไขข้อมูลผลิตและข้อมูลจัดส่ง</strong> — แก้สีหมึก ลาย ฟอนต์ ไม่รับชื่อ บรรทัด 1–3 และชั้นสำหรับตรายางคอนโดได้จนกว่าจะจัดส่ง
+            <strong>แก้ไขข้อมูลผลิตและข้อมูลจัดส่ง</strong> — แก้ชื่อผู้รับ เบอร์โทร ที่อยู่ เลขอ้างอิง สีหมึก ลาย ฟอนต์ ไม่รับชื่อ บรรทัด 1–3 และชั้นสำหรับตรายางคอนโดได้จนกว่าจะจัดส่ง
           </div>
         )}
         <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
@@ -5348,7 +5373,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               <button
                 type="button"
                 onClick={() => handleAutoFillAddress()}
-                disabled={isCustomerAddressDisabled() || formDisabled || autoFillAddressLoading}
+                disabled={shippingFieldDisabled || autoFillAddressLoading}
                 className="text-sm px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {autoFillAddressLoading ? 'กำลังแยก...' : 'Auto fill'}
@@ -5368,9 +5393,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               }}
               placeholder="วางที่อยู่พร้อมเบอร์โทรทั้งหมด แล้วแยกข้อมูลให้อัตโนมัติ"
               required={!isCustomerAddressDisabled()}
-              disabled={isCustomerAddressDisabled() || formDisabled}
+              disabled={shippingFieldDisabled}
               rows={5}
-              className={`min-h-36 w-full resize-y px-3 py-2 border rounded-lg ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.address ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+              className={`min-h-36 w-full resize-y px-3 py-2 border rounded-lg ${shippingFieldDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.address ? 'ring-2 ring-red-500 border-red-500' : ''}`}
             />
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {(shouldShowChannelName() || CHANNELS_SHOW_ORDER_NO.includes(formData.channel_code)) && (
@@ -5387,8 +5412,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       }
                     }}
                     required={CHANNELS_SHOW_ORDER_NO.includes(formData.channel_code) && !CHANNELS_COMPLETE_TO_VERIFIED.includes(formData.channel_code)}
-                    disabled={isCustomerAddressDisabled() || formDisabled}
-                    className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.customer_name ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                    disabled={shippingFieldDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${shippingFieldDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.customer_name ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                   />
                 </div>
               )}
@@ -5398,8 +5423,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   type="text"
                   value={formData.address_line}
                   onChange={(e) => setFormData({ ...formData, address_line: e.target.value })}
-                  disabled={isCustomerAddressDisabled() || formDisabled}
-                  className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
+                  disabled={shippingFieldDisabled}
+                  className={`w-full px-2 py-1.5 text-sm border rounded ${shippingFieldDisabled ? 'bg-gray-100' : ''}`}
                 />
               </div>
               <div>
@@ -5417,8 +5442,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       const o = subDistrictOptions[i]
                       if (o) setFormData((prev) => ({ ...prev, sub_district: o.subDistrict, district: o.district }))
                     }}
-                    disabled={isCustomerAddressDisabled() || formDisabled}
-                    className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
+                    disabled={shippingFieldDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${shippingFieldDisabled ? 'bg-gray-100' : ''}`}
                   >
                     <option value="">-- เลือกแขวง/ตำบล --</option>
                     {subDistrictOptions.map((o, i) => (
@@ -5430,8 +5455,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     type="text"
                     value={formData.sub_district}
                     onChange={(e) => setFormData({ ...formData, sub_district: e.target.value })}
-                    disabled={isCustomerAddressDisabled() || formDisabled}
-                    className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
+                    disabled={shippingFieldDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${shippingFieldDisabled ? 'bg-gray-100' : ''}`}
                   />
                 )}
               </div>
@@ -5441,8 +5466,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   <select
                     value={formData.district}
                     onChange={(e) => setFormData({ ...formData, district: e.target.value })}
-                    disabled={isCustomerAddressDisabled() || formDisabled}
-                    className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
+                    disabled={shippingFieldDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${shippingFieldDisabled ? 'bg-gray-100' : ''}`}
                   >
                     <option value="">-- เลือกเขต/อำเภอ --</option>
                     {Array.from(new Set(
@@ -5459,8 +5484,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     type="text"
                     value={formData.district}
                     onChange={(e) => setFormData({ ...formData, district: e.target.value })}
-                    disabled={isCustomerAddressDisabled() || formDisabled}
-                    className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
+                    disabled={shippingFieldDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${shippingFieldDisabled ? 'bg-gray-100' : ''}`}
                   />
                 )}
               </div>
@@ -5470,8 +5495,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   type="text"
                   value={formData.province}
                   onChange={(e) => setFormData({ ...formData, province: e.target.value })}
-                  disabled={isCustomerAddressDisabled() || formDisabled}
-                  className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
+                  disabled={shippingFieldDisabled}
+                  className={`w-full px-2 py-1.5 text-sm border rounded ${shippingFieldDisabled ? 'bg-gray-100' : ''}`}
                 />
               </div>
               <div>
@@ -5480,8 +5505,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   type="text"
                   value={formData.postal_code}
                   onChange={(e) => setFormData({ ...formData, postal_code: e.target.value })}
-                  disabled={isCustomerAddressDisabled() || formDisabled}
-                  className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
+                  disabled={shippingFieldDisabled}
+                  className={`w-full px-2 py-1.5 text-sm border rounded ${shippingFieldDisabled ? 'bg-gray-100' : ''}`}
                 />
               </div>
               <div>
@@ -5490,8 +5515,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   <select
                     value={formData.mobile_phone}
                     onChange={(e) => setFormData({ ...formData, mobile_phone: e.target.value })}
-                    disabled={isCustomerAddressDisabled() || formDisabled}
-                    className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
+                    disabled={shippingFieldDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${shippingFieldDisabled ? 'bg-gray-100' : ''}`}
                   >
                     {mobilePhoneCandidates.map((p) => (
                       <option key={p} value={p}>{p}</option>
@@ -5506,8 +5531,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       if (mobilePhoneCandidates.length > 0) setMobilePhoneCandidates([])
                     }}
                     placeholder="0 ตามด้วย 9 หลัก (06-09)"
-                    disabled={isCustomerAddressDisabled() || formDisabled}
-                    className={`w-full px-2 py-1.5 text-sm border rounded ${(isCustomerAddressDisabled() || formDisabled) ? 'bg-gray-100' : ''}`}
+                    disabled={shippingFieldDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${shippingFieldDisabled ? 'bg-gray-100' : ''}`}
                   />
                 )}
               </div>
@@ -6933,6 +6958,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   .from('or_orders')
                   .select('id')
                   .eq('tracking_number', formData.tracking_number.trim())
+                  .neq('status', 'ยกเลิก')
                   .neq('id', order?.id || '00000000-0000-0000-0000-000000000000')
                   .limit(1)
                 if (error) {

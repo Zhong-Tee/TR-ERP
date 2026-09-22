@@ -8,6 +8,8 @@ import IssueBoard from '../components/order/IssueBoard'
 import ClaimReqOrdersTab from '../components/order/ClaimReqOrdersTab'
 import RefundReturnList from '../components/order/RefundReturnList'
 import PreBillWorkspace from '../components/order/PreBillWorkspace'
+import OrderDetailView from '../components/order/OrderDetailView'
+import Modal from '../components/ui/Modal'
 import { Order, OrderStatus } from '../types'
 import type { PreBillDocument } from '../types/prebill'
 import { supabase } from '../lib/supabase'
@@ -76,6 +78,7 @@ export default function Orders() {
   const { user } = useAuthContext()
   const [activeTab, setActiveTab] = useState<Tab>('create')
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
+  const [prebillDetailOrder, setPrebillDetailOrder] = useState<Order | null>(null)
   const [createFormKey, setCreateFormKey] = useState(0)
   const [searchTerm, setSearchTerm] = useState('')
   const [channelFilter, setChannelFilter] = useState('')
@@ -255,6 +258,25 @@ export default function Orders() {
     } catch (error) {
       console.error('Open bill from QT/PC:', error)
       alert(`เปิดบิลไม่สำเร็จ: ${(error as Error).message || String(error)}`)
+    }
+  }
+
+  async function handleViewConvertedPreBillOrder(document: PreBillDocument) {
+    if (!document.converted_order_id) {
+      alert('ไม่พบข้อมูลบิลที่เชื่อมกับเอกสารนี้')
+      return
+    }
+    try {
+      const { data, error } = await supabase
+        .from('or_orders')
+        .select('*, order_items:or_order_items(*)')
+        .eq('id', document.converted_order_id)
+        .single()
+      if (error) throw error
+      setPrebillDetailOrder({ ...data, order_items: data.order_items || [] } as Order)
+    } catch (error) {
+      console.error('View converted bill from QT/PC:', error)
+      alert(`เปิดรายละเอียดบิลไม่สำเร็จ: ${(error as Error).message || String(error)}`)
     }
   }
 
@@ -901,7 +923,7 @@ export default function Orders() {
         aria-label="เนื้อหาออเดอร์"
       >
         {activeTab === 'prebill' ? (
-          <PreBillWorkspace onOpenBill={handleOpenPreBill} />
+          <PreBillWorkspace onOpenBill={handleOpenPreBill} onViewConvertedOrder={handleViewConvertedPreBillOrder} />
         ) : selectedOrder ? (
           <OrderForm
             order={selectedOrder}
@@ -1053,6 +1075,20 @@ export default function Orders() {
           />
         )}
       </main>
+      <Modal
+        open={prebillDetailOrder !== null}
+        onClose={() => setPrebillDetailOrder(null)}
+        contentClassName="max-w-[96vw] w-full"
+        showCloseButton={false}
+      >
+        {prebillDetailOrder && (
+          <OrderDetailView
+            order={prebillDetailOrder}
+            onClose={() => setPrebillDetailOrder(null)}
+            readOnly
+          />
+        )}
+      </Modal>
     </div>
   )
 }

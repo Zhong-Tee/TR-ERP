@@ -800,7 +800,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
           </div>
         </div>
       )}
-      {canSeeChat && (
+      {canSeeChat && (issueOnCount > 0 || newChatCount > 0) && (
         <div data-html2canvas-ignore="true" className="fixed right-6 z-50" style={{ bottom: notifyBottom }}>
           {notifyCollapsed ? (
             <button

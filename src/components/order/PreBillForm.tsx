@@ -809,7 +809,9 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
         if (noResult.error) throw noResult.error
         documentNo = String(noResult.data)
       }
-      const ownerName = sellerName || document?.owner_name || user?.username || user?.email || '-'
+      // The opener is immutable; a teammate editing the document must not
+      // replace the original owner display name.
+      const ownerName = document?.owner_name || sellerName || user?.username || user?.email || '-'
       const payload = {
         document_type: documentType, document_no: documentNo!, status,
         channel_code: form.channel_code, header_name: headerName, customer_name: form.customer_name.trim(),
@@ -875,7 +877,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
 
   const previewDocument: Partial<PreBillDocument> = {
     ...document, document_type: documentType, document_no: document?.document_no || '', channel_code: form.channel_code,
-    owner_name: sellerName || document?.owner_name || user?.username || user?.email || '-',
+    owner_name: document?.owner_name || sellerName || user?.username || user?.email || '-',
     header_name: headerName, customer_name: form.customer_name,
     customer_address: form.customer_address || [address.address_line, address.sub_district, address.district, address.province, address.postal_code].filter(Boolean).join(' '),
     recipient_name: form.recipient_name, customer_phone: form.customer_phone, delivery_term: deliveryTerm, valid_until: form.valid_until,
@@ -930,7 +932,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
           {isRenewal && <p className="text-sm text-blue-600">สร้างใหม่จาก {sourceDocument?.document_no} โดยใช้ราคาและโปรโมชั่นปัจจุบัน</p>}
           {(locked || expired) && <p className="mt-1 text-sm font-semibold text-amber-700">{expired ? 'เอกสารหมดอายุแล้ว กรุณาสร้างใหม่จากข้อมูลเดิม' : permanentlyLocked ? 'เอกสารที่เปิดบิลหรือยกเลิกแล้วเป็นแบบอ่านอย่างเดียว' : 'เอกสารถูกล็อกระหว่าง/หลังการอนุมัติ'}</p>}
         </div>
-        <button type="button" onClick={onCancel} className="rounded-xl border px-4 py-2 font-semibold">กลับรายการ</button>
+        <button type="button" onClick={onCancel} className="rounded-xl border border-blue-600 bg-blue-600 px-4 py-2 font-semibold text-white shadow-sm transition-colors hover:border-blue-700 hover:bg-blue-700">กลับรายการ</button>
       </div>
 
       {message && <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-blue-800">{message}</div>}

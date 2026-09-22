@@ -73,6 +73,12 @@ export interface MpOrder {
   cancel_note: string | null
   cancelled_at: string | null
   cancelled_by: string | null
+  /** รอบนำเข้าปัจจุบันต่อช่องทาง + เลขคำสั่งซื้อ */
+  is_current: boolean
+  /** ลำดับรอบนำเข้าของเลขคำสั่งซื้อเดียวกัน */
+  import_version: number
+  /** งาน Marketplace รอบเดิมที่รายการนี้นำเข้าใหม่มาแทน */
+  supersedes_mp_order_id: string | null
   created_at: string
   mp_order_items?: MpOrderItem[]
 }

@@ -813,7 +813,9 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const [jChannelFilter, setJChannelFilter] = useState('')
   const [manageDateFrom, setManageDateFrom] = useState(() => localISODate())
   const [manageDateTo, setManageDateTo] = useState(() => localISODate())
-  /** ค้นหาใน จัดการใบงาน — ใช้ร่วมทั้งแท็บ ใบงานใหม่ / ใบงานทั้งหมด */
+  /** ค่าที่กำลังพิมพ์จะยังไม่ยิง query จนกว่าจะกดค้นหาหรือ Enter */
+  const [manageWorkOrderSearchInput, setManageWorkOrderSearchInput] = useState('')
+  /** คำค้นที่นำไปใช้จริงร่วมกันทั้งแท็บ ใบงานใหม่ / ใบงานทั้งหมด */
   const [manageWorkOrderSearch, setManageWorkOrderSearch] = useState('')
   const [jStatusFilter, setJStatusFilter] = useState('')
   const [jChannels, setJChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
@@ -2816,35 +2818,52 @@ export default function Plan({ tvMode = false }: PlanProps) {
                   ใบงานทั้งหมด ({workOrdersManageCount})
                 </button>
               </div>
-              <div className="flex w-full min-w-0 flex-col gap-1 sm:w-[440px] lg:w-[560px]">
+              <form
+                className="flex w-full min-w-0 flex-col gap-1 sm:w-[520px] lg:w-[660px]"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  setManageWorkOrderSearch(manageWorkOrderSearchInput.trim())
+                }}
+              >
                 <label htmlFor="plan-manage-wo-search" className="text-xs font-semibold text-gray-600">
                   ค้นหา
                 </label>
-                <div className="relative">
-                  <input
-                    id="plan-manage-wo-search"
-                    type="search"
-                    value={manageWorkOrderSearch}
-                    onChange={(e) => setManageWorkOrderSearch(e.target.value)}
-                    placeholder="ชื่อใบงาน, เลขบิล, ชื่อลูกค้า, รหัส/ชื่อสินค้า, เลขพัสดุ…"
-                    autoComplete="off"
-                    className="w-full px-3 py-2 pr-11 border border-gray-300 rounded-lg bg-white text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 [&::-webkit-search-cancel-button]:hidden"
-                  />
-                  {manageWorkOrderSearch && (
-                    <button
-                      type="button"
-                      onClick={() => setManageWorkOrderSearch('')}
-                      aria-label="ล้างคำค้นหาใบงาน"
-                      title="ล้างคำค้นหา"
-                      className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4" fill="none">
-                        <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                      </svg>
-                    </button>
-                  )}
+                <div className="flex min-w-0 gap-2">
+                  <div className="relative min-w-0 flex-1">
+                    <input
+                      id="plan-manage-wo-search"
+                      type="search"
+                      value={manageWorkOrderSearchInput}
+                      onChange={(e) => setManageWorkOrderSearchInput(e.target.value)}
+                      placeholder="ชื่อใบงาน, เลขบิล, ชื่อลูกค้า, รหัส/ชื่อสินค้า, เลขพัสดุ…"
+                      autoComplete="off"
+                      className="w-full px-3 py-2 pr-11 border border-gray-300 rounded-lg bg-white text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 [&::-webkit-search-cancel-button]:hidden"
+                    />
+                    {manageWorkOrderSearchInput && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setManageWorkOrderSearchInput('')
+                          setManageWorkOrderSearch('')
+                        }}
+                        aria-label="ล้างคำค้นหาใบงาน"
+                        title="ล้างคำค้นหา"
+                        className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4" fill="none">
+                          <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    type="submit"
+                    className="shrink-0 rounded-lg bg-blue-600 px-5 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1"
+                  >
+                    ค้นหา
+                  </button>
                 </div>
-              </div>
+              </form>
             </div>
 
             {manageSubView === 'all' && (

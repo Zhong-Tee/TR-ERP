@@ -15,7 +15,7 @@ const STATUS_OPTIONS = [
   { value: 'in_progress', label: 'กำลังนับ' },
   { value: 'review', label: 'รอรีวิว' },
   { value: 'completed', label: 'สร้างใบปรับสต๊อค' },
-  { value: 'closed', label: 'ปิดแล้ว' },
+  { value: 'closed', label: 'ปิด (ไม่ปรับสต๊อค)' },
 ]
 
 function statusBadge(status: AuditStatus) {
@@ -24,7 +24,7 @@ function statusBadge(status: AuditStatus) {
     in_progress: { bg: 'bg-blue-500', label: 'กำลังนับ' },
     review: { bg: 'bg-amber-500', label: 'รอรีวิว' },
     completed: { bg: 'bg-green-500', label: 'สร้างใบปรับสต๊อค' },
-    closed: { bg: 'bg-gray-600', label: 'ปิดแล้ว' },
+    closed: { bg: 'bg-gray-600', label: 'ปิด (ไม่ปรับสต๊อค)' },
   }
   const s = map[status] || { bg: 'bg-gray-400', label: status }
   return (
@@ -107,6 +107,7 @@ export default function AuditList({
                 <th className="p-3 text-center font-semibold">รายการ</th>
                 <th className="p-3 text-center font-semibold">แสดงสต๊อค</th>
                 <th className="p-3 text-left font-semibold">Auditor</th>
+                <th className="p-3 text-left font-semibold">ผู้ตรวจสอบ</th>
                 <th className="p-3 text-left font-semibold">ผู้สร้าง</th>
                 <th className="p-3 text-left font-semibold">วันที่</th>
                 <th className="p-3 text-right font-semibold">การจัดการ</th>
@@ -156,6 +157,9 @@ export default function AuditList({
                     {audit.assigned_to && audit.assigned_to.length > 0
                       ? audit.assigned_to.map((uid) => userMap[uid] || uid).join(', ')
                       : '-'}
+                  </td>
+                  <td className="p-3 text-xs text-gray-600">
+                    {audit.reviewed_by ? (userMap[audit.reviewed_by] || audit.reviewed_by) : '-'}
                   </td>
                   <td className="p-3 text-xs text-gray-600">
                     {audit.created_by ? (userMap[audit.created_by] || '-') : '-'}

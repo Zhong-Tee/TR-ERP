@@ -73,6 +73,7 @@ export interface PreBillDocument {
   approved_by: string | null
   rejection_note: string | null
   converted_order_id: string | null
+  converted_order?: { bill_no: string | null } | null
   converted_at: string | null
   source_document_id: string | null
   owner_id: string

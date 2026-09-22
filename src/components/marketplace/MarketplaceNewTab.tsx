@@ -143,62 +143,28 @@ export default function MarketplaceNewTab({
         return
       }
 
-      // เช็คซ้ำแยกตามช่องทางขาย (กฎตัวเลือกการจัดส่งอาจเปลี่ยนช่องทางอัตโนมัติ)
-      const existing = new Set<string>()
-      const ordersByChannel = new Map<string, string[]>()
-      result.orders.forEach((o) => {
-        const channel = o.channel_code || config.channel_code
-        ordersByChannel.set(channel, [...(ordersByChannel.get(channel) || []), o.marketplace_order_no])
-      })
-      for (const [channel, orderNos] of ordersByChannel) for (const chunk of chunked(orderNos, CHUNK)) {
-        const { data } = await supabase
-          .from('mp_orders')
-          .select('marketplace_order_no, channel_code')
-          .eq('channel_code', channel)
-          .in('marketplace_order_no', chunk)
-        ;(data || []).forEach((r: { marketplace_order_no: string; channel_code: string }) => existing.add(`${r.channel_code}\u0000${r.marketplace_order_no}`))
-      }
-      const freshOrders = result.orders.filter((o) => !existing.has(`${o.channel_code || config.channel_code}\u0000${o.marketplace_order_no}`))
-      const duplicateCount = result.orders.length - freshOrders.length
-
-      if (freshOrders.length === 0) {
-        showMessage({
-          title: 'ไม่มีรายการใหม่',
-          message: `ออเดอร์ทั้ง ${result.orders.length} รายการในไฟล์ถูกนำเข้าไปแล้ว`,
-        })
-        return
-      }
-
-      // ป้องกันนำเข้าออเดอร์ที่มีเลขพัสดุปนมา (มักเป็นงานที่จัดส่งไปแล้ว) — "-" ถือว่าไม่มีเลขพัสดุ
+      // รายการซ้ำและเลขพัสดุต้องตรวจใน RPC ใต้ RLS และใน transaction เดียวกัน
+      // เพื่อให้เห็นงานของผู้ใช้อื่นครบและกันการอัปโหลดพร้อมกันหลายเครื่อง
       const hasTrackingNo = (o: MpParsedOrder) => {
         const t = (o.tracking_no || '').trim()
         return t !== '' && t !== '-'
       }
-      const withTracking = freshOrders.filter(hasTrackingNo)
-      let importOrders = freshOrders
-      let trackingSkipped = 0
+      const withTracking = result.orders.filter(hasTrackingNo)
       if (withTracking.length > 0) {
         const proceed = await showConfirm({
           title: 'พบรายการที่มีเลขพัสดุ',
           message:
             `ไฟล์นี้มีออเดอร์ที่มีเลขพัสดุแล้ว ${withTracking.length} รายการ ` +
-            `(จากรายการใหม่ทั้งหมด ${freshOrders.length} รายการ)\n\n` +
-            `กด "นำเข้า" ระบบจะนำเข้าเฉพาะรายการที่ไม่มีเลขพัสดุ ${freshOrders.length - withTracking.length} รายการ\n` +
+            `(จากทั้งหมด ${result.orders.length} รายการ)\n\n` +
+            `ระบบจะนำเข้ารายการที่เลขพัสดุไม่ชนกับบิลที่ยังใช้งาน ` +
+            `และอนุญาตให้ใช้เลขเดิมได้เมื่อบิลเดิมถูกยกเลิก\n` +
             `กด "ยกเลิก" เพื่อยกเลิกการนำเข้าทั้งหมด`,
           confirmText: 'นำเข้า',
           cancelText: 'ยกเลิก',
         })
         if (!proceed) return
-        importOrders = freshOrders.filter((o) => !hasTrackingNo(o))
-        trackingSkipped = withTracking.length
-        if (importOrders.length === 0) {
-          showMessage({
-            title: 'ไม่มีรายการนำเข้า',
-            message: 'ออเดอร์ใหม่ทั้งหมดในไฟล์มีเลขพัสดุแล้ว — ไม่มีรายการให้นำเข้า',
-          })
-          return
-        }
       }
+      const importOrders = result.orders
 
       // auto-match SKU → pr_products.product_code
       const importedSkus = Array.from(
@@ -270,7 +236,7 @@ export default function MarketplaceNewTab({
         p_config_id: config.id,
         p_file_name: file.name,
         p_row_count: result.rowCount,
-        p_known_duplicate_count: duplicateCount,
+        p_known_duplicate_count: 0,
         p_orders: payload,
       })
       if (importError) throw importError
@@ -278,12 +244,16 @@ export default function MarketplaceNewTab({
       const summary = (Array.isArray(importResult) ? importResult[0] : importResult) as {
         imported_count?: number
         duplicate_count?: number
+        reimported_count?: number
+        tracking_conflict_count?: number
         imported_order_keys?: Array<{ channel_code: string; marketplace_order_no: string }>
       } | null
       if (!summary) throw new Error('Marketplace import returned no summary')
 
       const insertedOrders = Number(summary.imported_count) || 0
       const totalDuplicateCount = Number(summary.duplicate_count) || 0
+      const reimportedCount = Number(summary.reimported_count) || 0
+      const trackingConflictCount = Number(summary.tracking_conflict_count) || 0
       const unmatchedSku = (summary.imported_order_keys || []).reduce(
         (total, order) => total + (unmatchedSkuByOrder.get(`${order.channel_code}\u0000${order.marketplace_order_no}`) || 0),
         0,
@@ -293,10 +263,13 @@ export default function MarketplaceNewTab({
         ? `\n\nคำเตือน:\n${result.warnings.slice(0, 8).join('\n')}${result.warnings.length > 8 ? '\n...' : ''}`
         : ''
       const skuText = unmatchedSku > 0 ? `\nรายการที่จับคู่ SKU ไม่ได้ (ให้ sales เลือกเอง): ${unmatchedSku}` : ''
-      const trackingText = trackingSkipped > 0 ? `\nข้ามรายการที่มีเลขพัสดุ ${trackingSkipped} ออเดอร์` : ''
+      const reimportText = reimportedCount > 0 ? `\nนำเข้าใหม่แทนบิลที่ยกเลิก ${reimportedCount} ออเดอร์` : ''
+      const trackingText = trackingConflictCount > 0
+        ? `\nข้ามรายการที่เลขพัสดุชนกับบิลที่ยังใช้งาน ${trackingConflictCount} ออเดอร์`
+        : ''
       showMessage({
         title: 'นำเข้าสำเร็จ',
-        message: `นำเข้า ${insertedOrders} ออเดอร์ (${result.rowCount} แถว)\nข้ามรายการซ้ำ ${totalDuplicateCount} ออเดอร์${trackingText}${skuText}${warningText}`,
+        message: `นำเข้า ${insertedOrders} ออเดอร์ (${result.rowCount} แถว)\nข้ามรายการซ้ำที่ยังใช้งาน ${totalDuplicateCount} ออเดอร์${reimportText}${trackingText}${skuText}${warningText}`,
       })
       window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
       onChanged()
@@ -430,7 +403,7 @@ export default function MarketplaceNewTab({
       <div className="bg-white rounded-xl border border-surface-200 shadow-soft p-6">
         <h2 className="text-xl font-bold text-slate-800 mb-1">อัปโหลดไฟล์ Order</h2>
         <p className="text-sm text-slate-500 mb-4">
-          เลือกช่องทางนำเข้า แล้วอัปโหลดไฟล์ Excel — ระบบจะข้ามออเดอร์ที่นำเข้าไปแล้วโดยอัตโนมัติ
+          เลือกช่องทางนำเข้า แล้วอัปโหลดไฟล์ Excel — ระบบจะข้ามออเดอร์ที่ยังใช้งาน และนำเข้ารอบใหม่ได้เมื่อบิลเดิมถูกยกเลิก
         </p>
         <div className="flex flex-wrap items-end gap-3">
           <div>

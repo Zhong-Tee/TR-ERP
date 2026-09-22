@@ -5,11 +5,14 @@ import { buildIlikeOr } from '../../lib/searchFilter'
 import { Order, OrderStatus } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { formatDateTime } from '../../lib/utils'
+import { getMissingCustomerShippingFields } from '../../lib/orderCustomerValidation'
 import OrderForm, { type OrderFormRef } from '../order/OrderForm'
 import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import Modal from '../ui/Modal'
 
 const CLAIM_REQ_FILTER = '__CLAIM_REQ__'
+const CHANNELS_WITHOUT_EDITABLE_SHIPPING_ADDRESS = new Set(['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP', 'OFFICE'])
+const CHANNELS_WITH_SEPARATE_RECIPIENT = new Set(['FBTR', 'PUMP', 'OATR', 'SHOP', 'INFU', 'PN', 'WY'])
 
 const ALL_STATUSES: OrderStatus[] = [
   'รอลงข้อมูล',
@@ -347,14 +350,29 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
     if (!selectedOrder || editScope !== 'nameLinesOnly') return
     const payload = orderFormRef.current?.getLimitedEditPayload()
     if (!payload) return
+    const channelCode = String(selectedOrder.channel_code || '').trim()
+    if (!CHANNELS_WITHOUT_EDITABLE_SHIPPING_ADDRESS.has(channelCode)) {
+      const missingShippingFields = getMissingCustomerShippingFields(payload.shipping, {
+        requireRecipientName: CHANNELS_WITH_SEPARATE_RECIPIENT.has(channelCode),
+      })
+      if (missingShippingFields.length > 0) {
+        setSaveResultModal({
+          open: true,
+          success: false,
+          message: `กรุณากรอกข้อมูลจัดส่งให้ครบก่อนบันทึก: ${missingShippingFields.join(', ')}`,
+        })
+        return
+      }
+    }
     setNameLinesSaving(true)
     try {
-      const { data, error } = await supabase.rpc('rpc_update_order_limited_fields', {
+      const { data, error } = await supabase.rpc('rpc_update_order_limited_fields_with_shipping', {
         p_order_id: selectedOrder.id,
         p_lines: payload.lines as unknown as Record<string, unknown>[],
         p_channel_order_no: payload.channel_order_no,
         p_tracking_number: payload.tracking_number,
         p_express_receipt_number: payload.express_receipt_number,
+        p_shipping_details: payload.shipping,
         p_edited_by: user?.username || user?.email || 'unknown',
       })
       if (error) throw error
@@ -512,7 +530,7 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
   function getEditZoneBadge(order: SearchResult): { label: string; color: string } {
     if (order.status === 'จัดส่งแล้ว' || order.shipped_time) return { label: 'เคลม', color: 'bg-red-100 text-red-700' }
     if (order.status === 'ยกเลิก') return { label: 'ปิด', color: 'bg-gray-200 text-gray-500' }
-    if (order.work_order_id || order.work_order_name?.trim()) return { label: 'ขอยกเลิก/แก้ข้อมูลผลิตได้', color: 'bg-amber-100 text-amber-700' }
+    if (order.work_order_id || order.work_order_name?.trim()) return { label: 'แก้ข้อมูลผลิต/จัดส่งได้', color: 'bg-amber-100 text-amber-700' }
     return { label: 'แก้ไขได้', color: 'bg-green-100 text-green-700' }
   }
 

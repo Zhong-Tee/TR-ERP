@@ -17,6 +17,14 @@ import SafetyStockTable from './SafetyStockTable'
 
 type Tab = 'qty' | 'location' | 'safety'
 
+const AUDIT_STATUS_LABELS: Record<string, string> = {
+  draft: 'ร่าง',
+  in_progress: 'กำลังนับ',
+  review: 'รอรีวิว',
+  completed: 'สร้างใบปรับสต๊อค',
+  closed: 'ปิด (ไม่ปรับสต๊อค)',
+}
+
 export default function AuditReviewView() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -118,8 +126,8 @@ export default function AuditReviewView() {
     setConfirmModal(null)
     setCompleting(true)
     try {
-      await closeAudit(id)
-      showModal('success', 'ปิดการตรวจนับสำเร็จ', 'สถานะ Audit เปลี่ยนเป็น "ปิดแล้ว"')
+      await closeAudit(id, user.id)
+      showModal('success', 'ปิดการตรวจนับสำเร็จ', 'สถานะ Audit เปลี่ยนเป็น "ปิด (ไม่ปรับสต๊อค)"')
       await loadData()
     } catch (e: any) {
       showModal('error', 'ไม่สำเร็จ', e?.message || String(e))
@@ -146,7 +154,7 @@ export default function AuditReviewView() {
       showModal(
         'success',
         adj ? 'สร้างใบปรับสต๊อคสำเร็จ' : 'อัปเดตจุดจัดเก็บสำเร็จ',
-        adj ? `เลขที่ ${adj.adjust_no}\nรอการอนุมัติจากผู้จัดการ` : 'ไม่มีผลต่างจำนวนที่ต้องสร้างใบปรับสต๊อค',
+        adj ? `เลขที่ ${adj.adjust_no}\nรอการอนุมัติ` : 'ไม่มีผลต่างจำนวนที่ต้องสร้างใบปรับสต๊อค',
       )
       await loadData()
     } catch (e: any) {
@@ -197,7 +205,7 @@ export default function AuditReviewView() {
                 : audit.status === 'completed' ? 'bg-green-500 text-white'
                   : 'bg-gray-400 text-white'
             }`}>
-              {audit.status}
+              {AUDIT_STATUS_LABELS[audit.status] || audit.status}
             </span>
             {audit.note && <span className="ml-3 text-gray-400">| {audit.note}</span>}
           </div>

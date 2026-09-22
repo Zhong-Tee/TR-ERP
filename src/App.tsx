@@ -466,7 +466,7 @@ function AppRoutes() {
       <Route
         path="/warehouse/audit"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store', 'auditor']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store', 'auditor', 'account']}>
             <AuditRouteSwitch />
           </ProtectedRoute>
         }
@@ -492,7 +492,7 @@ function AppRoutes() {
       <Route
         path="/warehouse/audit/:id/review"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store', 'manager']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store', 'manager', 'account']}>
             <Layout>
               <AuditReviewView />
             </Layout>
@@ -502,7 +502,7 @@ function AppRoutes() {
       <Route
         path="/warehouse/adjust"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store', 'account']}>
             <Layout>
               <WarehouseAdjust />
             </Layout>
