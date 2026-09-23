@@ -309,7 +309,7 @@ export default function TransportVerification() {
       const isV = o.transport_meta?.verified && isInDateRange(o.transport_meta?.verified_at, dateFilter, dateFilter)
       if (isV) gVer += 1
       if (activeCarrier && getCarrierName(o) === activeCarrier) {
-        if (isV) cTotal += 1
+        if (o.status === 'จัดส่งแล้ว') cTotal += 1
         if (isV) cVer += 1
       }
     })

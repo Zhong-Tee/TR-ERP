@@ -9,11 +9,24 @@ export type WaybillBillingDetails = {
   mobilePhone?: string | null
 }
 
+/** PostgreSQL JSON null || object produces an array; later confirmations append objects. */
+export function normalizeWaybillBillingDetails(value: unknown): WaybillBillingDetails {
+  const parts = Array.isArray(value) ? value : [value]
+  return Object.assign({}, ...parts.filter(
+    (part) => part !== null && typeof part === 'object' && !Array.isArray(part),
+  )) as WaybillBillingDetails
+}
+
+export function waybillMobilePhone(value: unknown): string {
+  const billing = normalizeWaybillBillingDetails(value)
+  return String(billing.mobile_phone || '').trim() || String(billing.mobilePhone || '').trim()
+}
+
 type WaybillCustomerInput = {
   customerAddress?: string | null
   recipientName?: string | null
   customerName?: string | null
-  billingDetails?: WaybillBillingDetails | null
+  billingDetails?: WaybillBillingDetails | Array<WaybillBillingDetails | null> | null
   parsedAddress: string
   parsedPostalCode: string
   parsedPhones: string[]
@@ -26,12 +39,10 @@ type WaybillCustomerInput = {
  * presentation-only raw text; structured fields always win for shipment data.
  */
 export function resolveWaybillCustomer(input: WaybillCustomerInput) {
-  const billing = input.billingDetails
+  const billing = normalizeWaybillBillingDetails(input.billingDetails)
   const structuredAddress = [billing?.address_line, billing?.sub_district, billing?.district, billing?.province]
     .filter(Boolean).join(' ').trim()
-  const billingPhone = String(
-    billing?.mobile_phone || billing?.mobilePhone || '',
-  ).trim()
+  const billingPhone = waybillMobilePhone(billing)
   const phones: string[] = []
   for (const phone of [billingPhone, ...input.parsedPhones]) {
     if (phone && !phones.includes(phone)) phones.push(phone)

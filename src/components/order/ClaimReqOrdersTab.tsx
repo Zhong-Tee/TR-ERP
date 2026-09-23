@@ -10,6 +10,7 @@ import VerificationResultModal, { type AmountStatus } from './VerificationResult
 import { verifyAndSaveClaimSlips, type ClaimSlipVerifyResult } from '../../lib/claimSlipVerification'
 import { requiresClaimPaymentSlip } from '../../lib/claimPayment'
 import { parseAddressText } from '../../lib/thaiAddress'
+import { waybillMobilePhone } from '../../lib/waybillCustomer'
 import type { ClaimCompareDetail, RefOrderDetail } from '../claim/claimCompareShared'
 import { fmtMoney, mobilePhoneFromBillingDetails } from '../claim/claimCompareShared'
 
@@ -776,8 +777,7 @@ export default function ClaimReqOrdersTab({
     setModalOrder(o)
     const refName = (o.recipient_name || '').trim()
     const refAddress = (o.customer_address || '').trim()
-    const mp = (o.billing_details as { mobile_phone?: string } | null)?.mobile_phone
-    const refPhone = (mp || '').trim()
+    const refPhone = waybillMobilePhone(o.billing_details)
     setRecipientName(refName)
     setCustomerAddress(refAddress)
     setMobilePhone(refPhone)

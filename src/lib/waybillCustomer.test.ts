@@ -1,7 +1,39 @@
 import { describe, expect, it } from 'vitest'
-import { resolveWaybillCustomer } from './waybillCustomer'
+import { normalizeWaybillBillingDetails, resolveWaybillCustomer, waybillMobilePhone } from './waybillCustomer'
+
+describe('claim billing details compatibility', () => {
+  it.each([null, undefined, '', 123, [null]])('treats absent/non-object billing as empty: %j', (value) => {
+    expect(normalizeWaybillBillingDetails(value)).toEqual({})
+    expect(waybillMobilePhone(value)).toBe('')
+  })
+
+  it('preserves address fields while using the latest confirmed phone in both consumers', () => {
+    const value = [null, { postal_code: '40000', mobile_phone: '0812345678' }, { mobile_phone: '0891234567' }]
+    expect(normalizeWaybillBillingDetails(value)).toEqual({ postal_code: '40000', mobile_phone: '0891234567' })
+    expect(waybillMobilePhone(value)).toBe('0891234567')
+  })
+
+  it('supports legacy camelCase when the current field is blank', () => {
+    expect(waybillMobilePhone({ mobile_phone: ' ', mobilePhone: '0812345678' })).toBe('0812345678')
+  })
+})
 
 describe('resolveWaybillCustomer', () => {
+  it('recovers the latest confirmed phone from a JSON-null claim concatenation', () => {
+    const result = resolveWaybillCustomer({
+      customerAddress: '99/9 ขอนแก่น 40000',
+      recipientName: 'ผู้รับเคลม',
+      billingDetails: [null, { mobile_phone: '0812345678' }, { mobile_phone: '0891234567' }],
+      parsedAddress: '99/9 ขอนแก่น',
+      parsedPostalCode: '40000',
+      parsedPhones: [],
+      preferParsedAddress: true,
+    })
+    expect(result.phone1).toBe('0891234567')
+    expect(result.phone2).toBe('')
+    expect(result.address).toBe('99/9 ขอนแก่น')
+  })
+
   it('uses the latest raw text for preview and reviewed fields for shipment', () => {
     const legacyBilling = {
       original_customer_address: 'น.ส.ณัสนันท์ บัวแจ้ง ที่อยู่เก่าจากการวางครั้งแรก 86000 โทร. 0825385140',
