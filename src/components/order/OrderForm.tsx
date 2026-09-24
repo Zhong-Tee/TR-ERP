@@ -1,3 +1,4 @@
+import { parseWebOrderRows } from '../../lib/webOrderImport'
 import React, { useState, useEffect, useRef, useMemo, forwardRef, useImperativeHandle } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from '../../lib/supabase'
@@ -4230,6 +4231,20 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         const sheet = workbook.Sheets[workbook.SheetNames[0]]
         const json = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { raw: false, defval: '' })
         if (json.length === 0) throw new Error('ไฟล์ไม่มีข้อมูล')
+        // Versioned web exports must be detected before PGTR's order-number heuristic.
+        if (Object.prototype.hasOwnProperty.call(json[0], 'schema_version')) {
+          const orders = parseWebOrderRows(json)
+          const summary: string[] = []
+          for (const order of orders) {
+            const { data, error } = await supabase.rpc('import_web_order', { payload: order })
+            if (error) summary.push(`${order.channel_order_no}: ไม่สำเร็จ — ${error.message}`)
+            else summary.push(`${order.channel_order_no}: ${data.status === 'exists' ? 'มีแล้ว' : 'นำเข้าแล้ว'} (${data.bill_no})`)
+          }
+          setImportSummary(summary.join('\n'))
+          window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+          setImportBusy(false)
+          return
+        }
         const headers = Object.keys(json[0])
         const orderH = findHeader(headers, ['เลขออร์เดอร์', 'เลขที่ออเดอร์', 'Order Number'])
         if (orderH) {
@@ -7529,7 +7544,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         {importMode === 'standard-pgtr' ? (
           <div className="space-y-3">
             <p className="text-sm text-gray-600">
-              รองรับเฉพาะ Template Standard / PGTR (Excel หรือ CSV)
+              รองรับ Template Standard / PGTR และ TRKIDS Web (.xlsx)
             </p>
             <input
               type="file"

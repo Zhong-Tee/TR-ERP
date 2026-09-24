@@ -22,6 +22,16 @@ export function isCondoStampProductName(productName: string | null | undefined):
   return String(productName ?? '').trim().startsWith('ตรายางคอนโด')
 }
 
+/** Physical stock uses the main row's quantity, never the number of printed floors. */
+export function isPhysicalOrderItem(item: CondoStampItemLike & {
+  product_type?: string | null
+  product_category?: string | null
+}): boolean {
+  if (item.is_detail_row || item.parent_item_id) return false
+  const isCondo = isCondoStampCategory(item.product_category) || isCondoStampProductName(item.product_name)
+  return !(isCondo && /^ชั้น\s*[2-5]$/.test(String(item.product_type ?? '').trim()))
+}
+
 /**
  * ระบุรายการตรายางคอนโดทั้งแถวหลักและแถวรายละเอียด โดยยึดโครงสร้างรายการ
  * และหมวดสินค้าเป็นหลัก พร้อม fallback จากชื่อสำหรับข้อมูลเก่า

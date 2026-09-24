@@ -1,3 +1,4 @@
+import { renderPickingSlipCanvas } from '../../lib/pickingSlipCanvas'
 import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import { buildIlikeOr } from '../../lib/searchFilter'
@@ -28,13 +29,9 @@ import {
 } from '../../lib/planPickingDepartments'
 import { downloadFlashWaybillXlsx } from '../../lib/flashWaybillExport'
 import { resolveWaybillCustomer } from '../../lib/waybillCustomer'
+import { isPhysicalOrderItem } from '../../lib/condoStamp'
 
 export const CLAIM_WORK_ORDER_FILTER = '(Claim)'
-
-function pickSpareQtyForLine(lineQty: number, rawCategory: string): number {
-  if (String(rawCategory || '').toUpperCase().includes('CONDO STAMP')) return Math.ceil(lineQty / 5)
-  return lineQty
-}
 
 function formatThaiBuddhistDate(d: Date = new Date()): string {
   return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear() + 543}`
@@ -64,170 +61,15 @@ function formatTrackingImportError(error: unknown): string {
   return String(error)
 }
 
-/** สร้าง DOM สำหรับถ่าย PNG ใบเบิก (เลย์เอาต์เดียวกับเอกสารอ้างอิง) */
-function buildPickingSlipPrintDom(opts: {
-  workOrderName: string
-  deptTitle: string
-  buddhistDateStr: string
-  rows: PickingMainRow[]
-  spareItems: PickingSpareRow[]
-  showSpareSummary: boolean
-}): HTMLDivElement {
-  const { workOrderName, deptTitle, buddhistDateStr, rows, spareItems, showSpareSummary } = opts
-  const wrap = document.createElement('div')
-  wrap.style.cssText =
-    'box-sizing:border-box;width:820px;padding:28px 32px;background:#fff;color:#111;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14px;line-height:1.35;'
-
-  const header = document.createElement('div')
-  header.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;gap:16px;'
-  const title = document.createElement('div')
-  title.style.cssText = 'font-size:17px;font-weight:700;'
-  title.textContent = `ใบเบิกใบงาน: ${workOrderName}`
-  const dateEl = document.createElement('div')
-  dateEl.style.cssText = 'font-size:14px;font-weight:600;white-space:nowrap;'
-  dateEl.textContent = `วันที่: ${buddhistDateStr}`
-  header.appendChild(title)
-  header.appendChild(dateEl)
-  wrap.appendChild(header)
-
-  const deptBar = document.createElement('div')
-  deptBar.style.cssText =
-    'font-size:15px;font-weight:700;background:#e8e8e8;border:1px solid #000;padding:8px 10px;margin-bottom:4px;'
-  deptBar.textContent = `แผนก ${deptTitle}`
-  wrap.appendChild(deptBar)
-
-  const table = document.createElement('table')
-  table.style.cssText = 'width:100%;border-collapse:collapse;font-size:13px;margin:0 0 16px 0;'
-  const thead = document.createElement('thead')
-  const trh = document.createElement('tr')
-  const thBase = 'border:1px solid #000;padding:7px 8px;font-weight:700;background:#f4f4f4;'
-  const headers: [string, string][] = [
-    ['จุดเก็บ', `${thBase}text-align:left;width:20%;`],
-    ['รหัส', `${thBase}text-align:center;width:16%;`],
-    ['รายการ', `${thBase}text-align:left;width:49%;`],
-    ['จำนวน', `${thBase}text-align:center;width:15%;`],
-  ]
-  for (const [label, st] of headers) {
-    const th = document.createElement('th')
-    th.setAttribute('style', st)
-    th.textContent = label
-    trh.appendChild(th)
-  }
-  thead.appendChild(trh)
-  table.appendChild(thead)
-  const tbody = document.createElement('tbody')
-  const tdL = 'border:1px solid #000;padding:6px 8px;vertical-align:top;text-align:left;'
-  const tdC = 'border:1px solid #000;padding:6px 8px;vertical-align:top;text-align:center;'
-  for (const row of rows) {
-    const tr = document.createElement('tr')
-    const c1 = document.createElement('td')
-    c1.setAttribute('style', tdL)
-    c1.textContent = row.location
-    const c2 = document.createElement('td')
-    c2.setAttribute('style', tdC)
-    c2.textContent = row.code
-    const c3 = document.createElement('td')
-    c3.setAttribute('style', tdL)
-    c3.textContent = row.name
-    const c4 = document.createElement('td')
-    c4.setAttribute('style', tdC)
-    c4.textContent = String(row.finalQty)
-    tr.appendChild(c1)
-    tr.appendChild(c2)
-    tr.appendChild(c3)
-    tr.appendChild(c4)
-    tbody.appendChild(tr)
-  }
-  table.appendChild(tbody)
-  wrap.appendChild(table)
-
-  if (showSpareSummary && spareItems.length > 0) {
-    const spareHead = document.createElement('div')
-    spareHead.style.cssText = 'font-size:14px;font-weight:700;margin:12px 0 6px 0;display:flex;align-items:center;gap:6px;'
-    const ic = document.createElement('span')
-    ic.textContent = '✎'
-    ic.setAttribute('style', 'font-size:16px;')
-    spareHead.appendChild(ic)
-    const st = document.createElement('span')
-    st.textContent = 'รายการอะไหล่รวม'
-    spareHead.appendChild(st)
-    wrap.appendChild(spareHead)
-
-    const stbl = document.createElement('table')
-    stbl.style.cssText = 'width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px;'
-    const stHead = document.createElement('thead')
-    const strh = document.createElement('tr')
-    const sth = `${thBase}`
-    const h1 = document.createElement('th')
-    h1.setAttribute('style', `${sth}text-align:left;width:85%;`)
-    h1.textContent = 'รายการอะไหล่'
-    const h2 = document.createElement('th')
-    h2.setAttribute('style', `${sth}text-align:center;width:15%;`)
-    h2.textContent = 'จำนวน'
-    strh.appendChild(h1)
-    strh.appendChild(h2)
-    stHead.appendChild(strh)
-    stbl.appendChild(stHead)
-    const stBody = document.createElement('tbody')
-    for (const s of spareItems) {
-      const tr = document.createElement('tr')
-      const d1 = document.createElement('td')
-      d1.setAttribute('style', tdL)
-      d1.textContent = s.label
-      const d2 = document.createElement('td')
-      d2.setAttribute('style', tdC)
-      d2.textContent = String(s.qty)
-      tr.appendChild(d1)
-      tr.appendChild(d2)
-      stBody.appendChild(tr)
-    }
-    stbl.appendChild(stBody)
-    wrap.appendChild(stbl)
-  }
-
-  const foot = document.createElement('div')
-  foot.style.cssText = 'display:flex;justify-content:space-between;gap:32px;margin-top:28px;padding-top:8px;'
-  const mkSign = (label: string) => {
-    const box = document.createElement('div')
-    box.style.cssText = 'flex:1;min-width:0;'
-    const lb = document.createElement('div')
-    lb.style.cssText = 'font-size:13px;font-weight:600;margin-bottom:28px;'
-    lb.textContent = label
-    const line = document.createElement('div')
-    line.style.cssText = 'border-bottom:1px dotted #333;height:1px;'
-    box.appendChild(lb)
-    box.appendChild(line)
-    return box
-  }
-  foot.appendChild(mkSign('ผู้เบิก'))
-  foot.appendChild(mkSign('ผู้จ่าย'))
-  wrap.appendChild(foot)
-
-  return wrap
-}
-
 async function downloadPickingSlipPng(
-  opts: Parameters<typeof buildPickingSlipPrintDom>[0],
+  opts: Parameters<typeof renderPickingSlipCanvas>[0],
   fileBase: string
 ): Promise<void> {
-  const html2canvas = (await import('html2canvas')).default
-  const node = buildPickingSlipPrintDom(opts)
-  node.style.position = 'fixed'
-  node.style.left = '-9999px'
-  node.style.top = '0'
-  document.body.appendChild(node)
-  try {
-    const canvas = await html2canvas(node, { scale: 2, backgroundColor: '#ffffff', logging: false })
-    const link = document.createElement('a')
-    link.download = `${fileBase}.png`
-    link.href = canvas.toDataURL('image/png')
-    link.style.display = 'none'
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-  } finally {
-    document.body.removeChild(node)
-  }
+  const canvas = await renderPickingSlipCanvas(opts)
+  const link = document.createElement('a')
+  link.download = `${fileBase}.png`
+  link.href = canvas.toDataURL('image/png')
+  link.click()
 }
 
 /** ช่องทางที่ใช้ปุ่ม "เรียงใบปะหน้า" (อ้างอิง file/index.html) */
@@ -1396,7 +1238,7 @@ export default function WorkOrderManageList({
   async function openPickingSlipModal(workOrderId: string, workOrderName: string) {
     try {
       const orders = await fetchOrdersWithItems(workOrderId)
-      const itemList: Array<{ product_id: string; product_name: string; product_category?: string; product_code?: string; storage_location?: string; rubber_code?: string }> = []
+      const itemList: Array<{ product_id: string; product_name: string; quantity?: number; product_type?: string | null; is_detail_row?: boolean | null; parent_item_id?: string | null; product_category?: string; product_code?: string; storage_location?: string; rubber_code?: string }> = []
       orders.forEach((order) => {
         const list = order.or_order_items || (order as any).order_items || []
         list.forEach((item: any) => itemList.push({ ...item, product_id: item.product_id }))
@@ -1422,7 +1264,7 @@ export default function WorkOrderManageList({
         storage_location: productMap[item.product_id]?.storage_location ?? 'N/A',
         product_category: productMap[item.product_id]?.product_category ?? '',
         rubber_code: productMap[item.product_id]?.rubber_code,
-      }))
+      })).filter(isPhysicalOrderItem)
 
       type MainRowWithCat = {
         woName: string
@@ -1442,18 +1284,14 @@ export default function WorkOrderManageList({
           const name = item.product_name || 'N/A'
           const location = item.storage_location || 'N/A'
           const rawCategory = String(item.product_category || '').trim()
-          const lineQty = normalizedLineQuantity((item as any).quantity)
+          const lineQty = normalizedLineQuantity(item.quantity)
           if (existing) {
             existing.finalQty += lineQty
           } else {
             mainMap.set(key, { woName: workOrderName, code, name, location, finalQty: lineQty, _category: rawCategory })
           }
         })
-      const withCatList = Array.from(mainMap.values()).map((item) => {
-        let finalQty = item.finalQty
-        if (item._category.toUpperCase().includes('CONDO STAMP')) finalQty = Math.ceil(item.finalQty / 5)
-        return { ...item, finalQty }
-      })
+      const withCatList = Array.from(mainMap.values())
       const planDeptSettings = await fetchPlanDeptSettings()
       const finalMainList: PickingMainRow[] = withCatList
         .map((item) => ({
@@ -1468,9 +1306,8 @@ export default function WorkOrderManageList({
 
       const spareMap = new Map<string, PickingSpareRow>()
       itemsInWorkOrder.forEach((item) => {
-        const rawCat = String(item.product_category || '').trim()
-        const lineQty = normalizedLineQuantity((item as any).quantity)
-        const spareQty = pickSpareQtyForLine(lineQty, rawCat)
+        const lineQty = normalizedLineQuantity(item.quantity)
+        const spareQty = lineQty
         const rc = item.rubber_code != null ? String(item.rubber_code).trim() : ''
         if (!rc) return
         const existing = spareMap.get(rc)
@@ -1491,7 +1328,7 @@ export default function WorkOrderManageList({
     }
   }
 
-  async function exportAllPickingFinal() {
+  async function exportAllPickingFinal(format: 'all' | 'png' = 'all') {
     const { workOrderName, mainItems, spareItems } = pickingSlipModal
     if (!workOrderName) return
     try {
@@ -1527,11 +1364,14 @@ export default function WorkOrderManageList({
             },
             `ใบเบิก_${safeFilePart(workOrderName)}_${safeFilePart(d)}`
           )
-        } catch (_) {
+        } catch (error) {
+          if (format === 'png') throw error
           /* PNG รายแผนกล้มเหลว — ข้าม */
         }
         if (i < ordered.length - 1) await new Promise((r) => setTimeout(r, 750))
       }
+
+      if (format === 'png') return
 
       const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`
       const csvRows: string[] = []
@@ -2133,7 +1973,7 @@ export default function WorkOrderManageList({
       </Modal>
 
       {/* Modal ใบเบิก — ตามต้นฉบับ: สินค้าหลัก + อะไหล่ (หน้ายาง/โฟม) */}
-      <Modal open={pickingSlipModal.open} onClose={() => setPickingSlipModal({ open: false, workOrderName: null, mainItems: [], spareItems: [] })} contentClassName="max-w-2xl w-full">
+      <Modal open={pickingSlipModal.open} onClose={() => setPickingSlipModal({ open: false, workOrderName: null, mainItems: [], spareItems: [] })} contentClassName="max-w-6xl w-full">
         <div className="p-5">
           <h2 className="text-lg font-bold text-gray-900 mb-4">ใบเบิก: {pickingSlipModal.workOrderName}</h2>
 
@@ -2199,21 +2039,21 @@ export default function WorkOrderManageList({
             )}
           </div>
 
-          <div className="flex gap-2 justify-end mt-4">
+          <div className="flex flex-wrap gap-2 justify-end mt-4">
             <button
               type="button"
-              onClick={exportAllPickingFinal}
+              onClick={() => exportAllPickingFinal('png')}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-white font-medium bg-blue-600 hover:bg-blue-700"
+            >
+              ดาวน์โหลด PNG
+            </button>
+            <button
+              type="button"
+              onClick={() => exportAllPickingFinal('all')}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-white font-medium bg-[#6610f2] hover:bg-[#5a0dd9]"
             >
               <span role="img" aria-label="export">🚀</span>
               Export All (PNG, CSV)
-            </button>
-            <button
-              type="button"
-              onClick={() => setPickingSlipModal({ open: false, workOrderName: null, mainItems: [], spareItems: [] })}
-              className="px-4 py-2 rounded-lg bg-gray-600 text-white hover:bg-gray-700"
-            >
-              ปิด
             </button>
           </div>
         </div>
