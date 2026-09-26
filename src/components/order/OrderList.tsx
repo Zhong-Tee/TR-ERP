@@ -802,9 +802,6 @@ export default function OrderList({
       )}
       {visibleOrders.map((order, orderIdx) => {
         const channelCode = (order.channel_code || '').toUpperCase()
-        const cancelledByDisplay = order.status === 'ยกเลิก'
-          ? order.cancelled_by_name?.trim() || order.last_edited_by?.trim() || order.admin_user?.trim() || '-'
-          : ''
         const channelColor =
           channelCode.startsWith('TTTR') ? 'bg-blue-100 text-blue-700 border border-blue-200'
           : channelCode.startsWith('LZTR') ? 'bg-purple-100 text-purple-700 border border-purple-200'
@@ -1084,9 +1081,9 @@ export default function OrderList({
                       ผู้แก้ไขล่าสุด: {order.last_edited_by}
                     </span>
                   )}
-                  {cancelledByDisplay && (
+                  {order.cancelled_by_name?.trim() && (
                     <span className="ml-4 font-medium text-red-600">
-                      ผู้ยกเลิกบิล: {cancelledByDisplay}
+                      ผู้ยกเลิกบิล: {order.cancelled_by_name.trim()}
                     </span>
                   )}
                 </p>
