@@ -402,6 +402,8 @@ export interface InventoryPO {
   grand_total?: number | null
   expected_arrival_date?: string | null
   tracking_number?: string | null
+  shipment_entries?: POShipmentEntry[] | null
+  receiving_note?: string | null
   note?: string | null
   created_at: string
   updated_at: string
@@ -409,6 +411,12 @@ export interface InventoryPO {
   inv_po_items?: InventoryPOItem[]
   inv_pr?: { pr_no: string; note?: string | null } | null
   pr_sellers?: { seller_type?: string | null } | null
+}
+
+export interface POShipmentEntry {
+  vehicle_number: string
+  tracking_number: string
+  box_count: number
 }
 
 export interface InventoryPOItem {
@@ -450,6 +458,7 @@ export interface InventoryGR {
   inv_po?: {
     po_no: string
     tracking_number?: string | null
+    shipment_entries?: POShipmentEntry[] | null
     note?: string | null
     status?: string | null
     expected_arrival_date?: string | null

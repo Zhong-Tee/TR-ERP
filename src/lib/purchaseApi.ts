@@ -525,6 +525,31 @@ export async function updatePOTrackingNumber(input: {
   if (error) throw error
 }
 
+export async function updatePOShipmentEntries(input: {
+  poId: string
+  entries: Array<{
+    vehicle_number: string
+    tracking_number: string
+    box_count: number
+  }>
+  userId?: string
+}) {
+  const { error } = await supabase.rpc('rpc_update_po_shipment_entries', {
+    p_po_id: input.poId,
+    p_entries: input.entries,
+    p_user_id: input.userId || null,
+  })
+  if (error) throw error
+}
+
+export async function updatePOReceivingNote(poId: string, note: string) {
+  const { error } = await supabase.rpc('rpc_update_po_receiving_note', {
+    p_po_id: poId,
+    p_note: note,
+  })
+  if (error) throw error
+}
+
 /* ──────────────── GR (Goods Receipt) ──────────────── */
 
 export interface GRListFilters {
@@ -538,8 +563,8 @@ export async function loadGRList(filters: GRListFilters = {}, includeCost = fals
   let q = supabase
     .from('inv_gr')
     .select(includeCost
-      ? '*, inv_po(po_no, tracking_number, status, expected_arrival_date, intl_shipping_cost_thb, inv_pr(pr_type), inv_po_items(resolution_type, qty_received_total)), inv_gr_items(id, qty_ordered, qty_received)'
-      : 'id, gr_no, po_id, status, received_by, received_at, dom_shipping_company, note, shortage_note, created_at, updated_at, inv_po(po_no, tracking_number, status, expected_arrival_date, inv_pr(pr_type), inv_po_items(resolution_type, qty_received_total)), inv_gr_items(id, qty_ordered, qty_received)')
+      ? '*, inv_po(po_no, tracking_number, shipment_entries, status, expected_arrival_date, intl_shipping_cost_thb, inv_pr(pr_type), inv_po_items(resolution_type, qty_received_total)), inv_gr_items(id, qty_ordered, qty_received)'
+      : 'id, gr_no, po_id, status, received_by, received_at, dom_shipping_company, note, shortage_note, created_at, updated_at, inv_po(po_no, tracking_number, shipment_entries, status, expected_arrival_date, inv_pr(pr_type), inv_po_items(resolution_type, qty_received_total)), inv_gr_items(id, qty_ordered, qty_received)')
     .order('created_at', { ascending: false })
 
   if (filters.status && filters.status !== 'all') {
@@ -568,6 +593,7 @@ export async function loadGRDetail(grId: string, includeCost = false) {
       inv_po(
         po_no,
         tracking_number,
+        shipment_entries,
         note,
         expected_arrival_date,
         intl_shipping_cost_thb,
@@ -581,7 +607,7 @@ export async function loadGRDetail(grId: string, includeCost = false) {
       )
     ` : `
       id, gr_no, po_id, status, received_by, received_at, dom_shipping_company, note, shortage_note, created_at, updated_at,
-      inv_po(po_no, tracking_number, note, expected_arrival_date, inv_pr(pr_no, note), inv_po_items(product_id, qty, qty_received_total)),
+      inv_po(po_no, tracking_number, shipment_entries, note, expected_arrival_date, inv_pr(pr_no, note), inv_po_items(product_id, qty, qty_received_total)),
       inv_gr_items(id, gr_id, product_id, qty_ordered, qty_received, shortage_note, created_at,
         pr_products(id, product_code, product_name, product_name_cn, seller_name, unit_name), inv_gr_item_images(*))
     `)
