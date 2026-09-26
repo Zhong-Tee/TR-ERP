@@ -287,7 +287,7 @@ export default function PromotionSettingsPanel() {
       return
     }
     const config = editor.rule_config || {}
-    const requiredGroups = editor.rule_type === 'bundle_fixed_price' || editor.rule_type === 'buy_get' || editor.rule_type === 'quantity_get' || editor.rule_type === 'quantity_fixed'
+    const requiredGroups = editor.rule_type === 'bundle_fixed_price' || editor.rule_type === 'buy_get' || editor.rule_type === 'quantity_get' || editor.rule_type === 'quantity_fixed' || editor.rule_type === 'quantity_percent'
     const requiredRewards = editor.rule_type === 'buy_get' || editor.rule_type === 'spend_get' || editor.rule_type === 'quantity_get'
     if (requiredGroups && !(config.condition_groups || []).length) {
       setError('กรุณาเพิ่มกลุ่มสินค้าฝั่งซื้ออย่างน้อย 1 กลุ่ม')
@@ -308,14 +308,14 @@ export default function PromotionSettingsPanel() {
       return
     }
     if (
-      ['spend_percent', 'spend_fixed', 'quantity_fixed'].includes(editor.rule_type)
+      ['spend_percent', 'spend_fixed', 'quantity_fixed', 'quantity_percent'].includes(editor.rule_type)
       && Number(config.discount_value || 0) <= 0
       && editor.free_shipping !== true
     ) {
       setError('กรุณากำหนดส่วนลดให้มากกว่า 0 หรือเลือก “ฟรีค่าส่ง”')
       return
     }
-    if (editor.rule_type === 'spend_percent' && Number(config.discount_value || 0) > 100) {
+    if (['spend_percent', 'quantity_percent'].includes(editor.rule_type) && Number(config.discount_value || 0) > 100) {
       setError('ส่วนลดเปอร์เซ็นต์ต้องไม่เกิน 100%')
       return
     }
@@ -425,8 +425,8 @@ export default function PromotionSettingsPanel() {
   const updateConfig = (updates: Partial<PromotionRuleConfig>) => setEditor((current) => current ? ({ ...current, rule_config: { ...(current.rule_config || {}), ...updates } }) : current)
   const config = editor?.rule_config || {}
   const needsThreshold = editor && ['spend_percent', 'spend_fixed', 'spend_get'].includes(editor.rule_type)
-  const needsDiscount = editor && ['spend_percent', 'spend_fixed', 'quantity_fixed'].includes(editor.rule_type)
-  const needsConditions = editor && ['bundle_fixed_price', 'buy_get', 'quantity_get', 'quantity_fixed'].includes(editor.rule_type)
+  const needsDiscount = editor && ['spend_percent', 'spend_fixed', 'quantity_fixed', 'quantity_percent'].includes(editor.rule_type)
+  const needsConditions = editor && ['bundle_fixed_price', 'buy_get', 'quantity_get', 'quantity_fixed', 'quantity_percent'].includes(editor.rule_type)
   const needsRewards = editor && ['buy_get', 'spend_get', 'quantity_get'].includes(editor.rule_type)
 
   return (
@@ -507,7 +507,7 @@ export default function PromotionSettingsPanel() {
           <div><h4 className="mb-2 font-bold text-gray-800">ช่องทางที่ร่วมรายการ</h4><p className="mb-2 text-xs text-gray-500">ไม่เลือกช่องทาง = ใช้ได้ทุกช่องทาง</p><div className="grid gap-2 sm:grid-cols-2 md:grid-cols-4">{channels.map((channel) => <label key={channel.channel_code} className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm"><input type="checkbox" checked={(editor.channel_codes || []).includes(channel.channel_code)} onChange={(e) => setEditor({ ...editor, channel_codes: e.target.checked ? [...(editor.channel_codes || []), channel.channel_code] : (editor.channel_codes || []).filter((code) => code !== channel.channel_code) })} />{channel.channel_code} · {channel.channel_name}</label>)}</div></div>
           <div className="grid gap-4 md:grid-cols-3">
             {needsThreshold && <label className="text-sm font-semibold text-gray-700">ยอดซื้อขั้นต่ำ (บาท)<input type="number" min="0" value={config.threshold_amount ?? ''} onChange={(e) => updateConfig({ threshold_amount: Number(e.target.value) || 0 })} className="mt-1 w-full rounded-xl border px-3 py-2" /></label>}
-            {needsDiscount && <label className="text-sm font-semibold text-gray-700">{editor.rule_type === 'spend_percent' ? 'ส่วนลด (%)' : 'ส่วนลด (บาท)'}<input type="number" min="0" max={editor.rule_type === 'spend_percent' ? 100 : undefined} value={config.discount_value ?? ''} onChange={(e) => updateConfig({ discount_value: Number(e.target.value) || 0 })} className="mt-1 w-full rounded-xl border px-3 py-2" /><span className="mt-1 block text-xs font-normal text-gray-500">ใส่ 0 ได้เมื่อเลือก “ฟรีค่าส่ง”</span></label>}
+            {needsDiscount && <label className="text-sm font-semibold text-gray-700">{['spend_percent', 'quantity_percent'].includes(editor.rule_type) ? 'ส่วนลด (%)' : 'ส่วนลด (บาท)'}<input type="number" min="0" max={['spend_percent', 'quantity_percent'].includes(editor.rule_type) ? 100 : undefined} value={config.discount_value ?? ''} onChange={(e) => updateConfig({ discount_value: Number(e.target.value) || 0 })} className="mt-1 w-full rounded-xl border px-3 py-2" /><span className="mt-1 block text-xs font-normal text-gray-500">ใส่ 0 ได้เมื่อเลือก “ฟรีค่าส่ง”</span>{editor.rule_type === 'quantity_percent' && <span className="mt-1 block text-xs font-normal text-gray-500">คิดส่วนลดจากมูลค่าสินค้าที่ครบชุดตามเงื่อนไข ตามจำนวนครั้งที่ใช้โปรโมชั่น</span>}</label>}
             {editor.rule_type === 'bundle_fixed_price' && <label className="text-sm font-semibold text-gray-700">ราคาเซ็ต (บาท)<input type="text" inputMode="decimal" value={formatAmount(config.set_price)} onChange={(e) => updateConfig({ set_price: parseAmount(e.target.value) })} placeholder="0" className="mt-1 w-full rounded-xl border px-3 py-2 text-right tabular-nums" /></label>}
             <label className="text-sm font-semibold text-gray-700">จำนวนโปรโมชั่นต่อบิล<input type="number" inputMode="numeric" min="1" step="1" value={config.max_applications ?? 1} onWheel={(event) => event.currentTarget.blur()} onChange={(e) => updateConfig({ max_applications: Math.max(1, Math.floor(Number(e.target.value) || 1)) })} className="mt-1 w-full appearance-none rounded-xl border px-3 py-2 text-right tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" /></label>
           </div>

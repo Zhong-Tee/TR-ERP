@@ -23,6 +23,7 @@ import {
 import { fetchSalesTrTeamAdminValues, fetchSalesTrTeamRows, flattenSalesTrAdminIdentifiers } from '../lib/salesTrTeam'
 import { fetchLatestRejectedOverpayOrderIds, fetchLatestRejectedManualSlipOrderIds } from '../lib/rejectedOverpayRefunds'
 import { getBangkokCalendarDayUtcBoundsISO } from '../lib/utils'
+import { cancelOrderWithAudit, isZeroValueOrder } from '../lib/orderCancellation'
 
 type Tab =
   | 'all'
@@ -524,6 +525,16 @@ export default function Orders() {
   /** ลบบิล (รอลงข้อมูล): ลบรูปใน bucket slip-images/slip{bill_no} แล้วลบ or_orders (cascade ลบ items, reviews, slips, refunds) */
   async function handleDeleteOrder(order: Order) {
     try {
+      const { data: currentOrder, error: currentOrderError } = await supabase
+        .from('or_orders')
+        .select('total_amount')
+        .eq('id', order.id)
+        .single()
+      if (currentOrderError) throw currentOrderError
+      if (!isZeroValueOrder(currentOrder?.total_amount)) {
+        throw new Error('ลบบิลได้เฉพาะบิลที่มียอดรวม 0 บาทเท่านั้น')
+      }
+
       const billNo = order.bill_no
       if (billNo) {
         const folderName = `slip${billNo}`
@@ -554,6 +565,20 @@ export default function Orders() {
       console.error('Error deleting order:', err)
       alert('เกิดข้อผิดพลาดในการลบบิล: ' + (err?.message || err))
       throw err
+    }
+  }
+
+  /** ยกเลิกบิลที่มียอดเงิน พร้อมเก็บผู้ดำเนินการสำหรับ audit */
+  async function handleCancelOrder(order: Order) {
+    if (!user) throw new Error('ไม่พบข้อมูลผู้ใช้งาน')
+    try {
+      await cancelOrderWithAudit(order.id, user)
+      if (selectedOrder?.id === order.id) setSelectedOrder(null)
+      refreshCounts()
+      setListRefreshKey((key) => key + 1)
+    } catch (error: any) {
+      console.error('Error cancelling order:', error)
+      throw new Error(error?.message || 'เกิดข้อผิดพลาดในการยกเลิกบิล')
     }
   }
 
@@ -980,6 +1005,7 @@ export default function Orders() {
             onCountChange={suppressSalesTrListCountSync ? undefined : setWaitingCount}
             showDeleteButton={true}
             onDelete={handleDeleteOrder}
+            onCancelOrder={handleCancelOrder}
             excludeClaimBills={true}
             refreshTrigger={listRefreshKey}
             {...salesTrOrderListProps}

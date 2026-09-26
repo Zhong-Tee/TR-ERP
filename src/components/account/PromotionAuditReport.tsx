@@ -134,7 +134,7 @@ function PromotionSnapshotSummary({ audit }: { audit: PromotionAudit }) {
       {(config.threshold_amount != null || config.discount_value != null || config.set_price != null || config.max_applications != null || rule.free_shipping === true) && (
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           {config.threshold_amount != null && <SnapshotInfo label="ยอดซื้อขั้นต่ำ" value={money(config.threshold_amount)} />}
-          {config.discount_value != null && <SnapshotInfo label={ruleType === 'spend_percent' ? 'ส่วนลด' : 'ส่วนลดต่อรอบ'} value={ruleType === 'spend_percent' ? `${Number(config.discount_value)}%` : money(config.discount_value)} />}
+          {config.discount_value != null && <SnapshotInfo label={['spend_percent', 'quantity_percent'].includes(ruleType) ? 'ส่วนลด' : 'ส่วนลดต่อรอบ'} value={['spend_percent', 'quantity_percent'].includes(ruleType) ? `${Number(config.discount_value)}%` : money(config.discount_value)} />}
           {config.set_price != null && <SnapshotInfo label="ราคาเซ็ต" value={money(config.set_price)} />}
           {config.max_applications != null && <SnapshotInfo label="ใช้ได้สูงสุด" value={`${Number(config.max_applications)} รอบ`} />}
           {rule.free_shipping === true && <SnapshotInfo label="ค่าจัดส่ง" value="ส่งฟรี" />}

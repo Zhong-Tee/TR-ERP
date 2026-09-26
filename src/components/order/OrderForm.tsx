@@ -37,6 +37,8 @@ import {
 import { buildIlikeOr } from '../../lib/searchFilter'
 import { isSelfPickupBill, isSelfPickupChannel } from '../../lib/channelBehavior'
 import { getMissingCustomerShippingFields } from '../../lib/orderCustomerValidation'
+import { cancelOrderWithAudit } from '../../lib/orderCancellation'
+import CancelOrderModal from './CancelOrderModal'
 import {
   evaluatePromotions,
   promotionApplicationLimit,
@@ -846,13 +848,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     orderId?: string
   } | null>(null)
   const [confirmingOverpay, setConfirmingOverpay] = useState(false)
-  /** Popup ยกเลิกออเดอร์ (ถามยืนยัน → แสดงผลสำเร็จ/ผิดพลาด ใน popup เดียว) */
-  const [cancelOrderModal, setCancelOrderModal] = useState<{
-    open: boolean
-    success?: boolean
-    error?: string
-    submitting?: boolean
-  }>({ open: false })
+  /** Popup ยกเลิกบิลแบบยืนยันข้อความสองชั้น */
+  const [cancelOrderModalOpen, setCancelOrderModalOpen] = useState(false)
   /** Modal แจ้งเตือนทั่วไป (แทน alert เช่น กรุณาอัพโหลดสลิปโอนเงิน) */
   const [messageModal, setMessageModal] = useState<{ open: boolean; title: string; message: string }>({
     open: false,
@@ -7290,7 +7287,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           type="button"
           onClick={(e) => {
             e.preventDefault()
-            setCancelOrderModal({ open: true })
+            setCancelOrderModalOpen(true)
           }}
           disabled={loading}
           className="px-6 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
@@ -7302,112 +7299,16 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       </div>
     </form>
 
-    {/* Popup ยกเลิกออเดอร์ (ถามยืนยัน → แสดงผลสำเร็จ/ผิดพลาด ใน popup เดียว) */}
-    {cancelOrderModal.open && order && (
-      <Modal
-        open
-        onClose={() => setCancelOrderModal({ open: false })}
-        contentClassName="max-w-md"
-        role="dialog"
-        ariaModal
-        ariaLabelledby="cancel-order-modal-title"
-      >
-          <div
-            className={`shrink-0 px-6 py-4 ${
-              cancelOrderModal.success
-                ? 'bg-green-500'
-                : cancelOrderModal.error
-                  ? 'bg-red-500'
-                  : 'bg-gray-600'
-            } text-white`}
-          >
-            <h2 id="cancel-order-modal-title" className="text-lg font-semibold">
-              {cancelOrderModal.success
-                ? 'ยกเลิกออเดอร์สำเร็จ'
-                : cancelOrderModal.error
-                  ? 'เกิดข้อผิดพลาด'
-                  : 'ยืนยันยกเลิกออเดอร์'}
-            </h2>
-          </div>
-          <div className="flex-1 px-6 py-4 text-gray-700">
-            {cancelOrderModal.success ? (
-              <p className="text-sm">ออเดอร์ {order.bill_no} ถูกยกเลิกแล้ว</p>
-            ) : cancelOrderModal.error ? (
-              <p className="text-sm">{cancelOrderModal.error}</p>
-            ) : (
-              <p className="text-sm">
-                ต้องการยกเลิกออเดอร์ {order.bill_no} หรือไม่?
-              </p>
-            )}
-          </div>
-          <div className="shrink-0 px-6 py-4 bg-gray-50 border-t border-gray-200 flex gap-2 justify-end">
-            {cancelOrderModal.success ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setCancelOrderModal({ open: false })
-                  onSave()
-                }}
-                className="px-4 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600 text-sm font-medium"
-              >
-                ตกลง
-              </button>
-            ) : cancelOrderModal.error ? (
-              <button
-                type="button"
-                onClick={() => setCancelOrderModal({ open: false })}
-                className="px-4 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600 text-sm font-medium"
-              >
-                ตกลง
-              </button>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setCancelOrderModal({ open: false })}
-                  disabled={cancelOrderModal.submitting}
-                  className="px-4 py-2 rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 text-sm font-medium"
-                >
-                  ไม่ยืนยัน
-                </button>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    setCancelOrderModal((prev) => ({ ...prev, submitting: true }))
-                    try {
-                      const { error } = await supabase
-                        .from('or_orders')
-                        .update({ status: 'ยกเลิก' })
-                        .eq('id', order.id)
-                      if (error) throw error
-                      setCancelOrderModal((prev) => ({ ...prev, success: true, submitting: false }))
-                    } catch (err: any) {
-                      console.error('Error cancelling order:', err)
-                      setCancelOrderModal((prev) => ({
-                        ...prev,
-                        success: false,
-                        error: err?.message || 'เกิดข้อผิดพลาดในการยกเลิกออเดอร์',
-                        submitting: false,
-                      }))
-                    }
-                  }}
-                  disabled={cancelOrderModal.submitting}
-                  className="px-4 py-2 rounded-lg bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 text-sm font-medium flex items-center justify-center gap-2"
-                >
-                  {cancelOrderModal.submitting ? (
-                    <>
-                      <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
-                      กำลังยกเลิก...
-                    </>
-                  ) : (
-                    'ยืนยันยกเลิก'
-                  )}
-                </button>
-              </>
-            )}
-          </div>
-      </Modal>
-    )}
+    <CancelOrderModal
+      open={cancelOrderModalOpen}
+      order={order || null}
+      onClose={() => setCancelOrderModalOpen(false)}
+      onConfirm={async (targetOrder) => {
+        if (!user) throw new Error('ไม่พบข้อมูลผู้ใช้งาน')
+        await cancelOrderWithAudit(targetOrder.id, user)
+      }}
+      onDone={onSave}
+    />
 
     {verificationModal && (
       <VerificationResultModal

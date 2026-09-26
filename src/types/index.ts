@@ -79,6 +79,10 @@ export interface Order {
   admin_user: string
   /** ผู้แก้ไขบิลล่าสุด — แสดงผลเท่านั้น ไม่มีผลต่อการมองเห็น (การมองเห็นใช้ admin_user = ผู้สร้างบิล) */
   last_edited_by?: string | null
+  /** ผู้ยกเลิกบิลและเวลาที่ยกเลิก — เก็บ audit สำหรับแสดงในหน้ารายการ */
+  cancelled_by?: string | null
+  cancelled_by_name?: string | null
+  cancelled_at?: string | null
   entry_date: string
   work_order_name: string | null
   /** อ้างอิงใบงานด้วย UUID (รองรับ reuse เลขใบงาน) */

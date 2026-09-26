@@ -7,6 +7,7 @@ export type PromotionRuleType =
   | 'spend_get'
   | 'quantity_get'
   | 'quantity_fixed'
+  | 'quantity_percent'
 
 export type PromotionSelector =
   | { selector_type: 'category'; category: string; product_id?: never }
@@ -244,15 +245,19 @@ export function evaluatePromotion(
           messages.push('ยังไม่ได้กำหนดส่วนลดหรือสิทธิ์ฟรีค่าส่ง')
         }
       }
-    } else if (promotion.rule_type === 'quantity_fixed') {
+    } else if (promotion.rule_type === 'quantity_fixed' || promotion.rule_type === 'quantity_percent') {
       if (!conditionGroups.length) messages.push('ยังไม่ได้กำหนดกลุ่มสินค้าฝั่งซื้อ')
       const allocation = allocateGroups(paidItems, conditionGroups)
       if (conditionGroups.length && !allocation.passed) messages.push(...allocation.missing)
       else {
         const discountValue = Math.max(0, Number(config.discount_value) || 0)
-        if (conditionGroups.length && (discountValue > 0 || promotion.free_shipping === true)) {
+        if (promotion.rule_type === 'quantity_percent' && discountValue > 100) {
+          messages.push('ส่วนลดเปอร์เซ็นต์ต้องไม่เกิน 100%')
+        } else if (conditionGroups.length && (discountValue > 0 || promotion.free_shipping === true)) {
           applicationCount = requestedApplications
-          expectedDiscount = discountValue * requestedApplications
+          expectedDiscount = promotion.rule_type === 'quantity_percent'
+            ? allocation.subtotal * (discountValue / 100)
+            : discountValue * requestedApplications
         } else if (discountValue <= 0) {
           messages.push('ยังไม่ได้กำหนดส่วนลดหรือสิทธิ์ฟรีค่าส่ง')
         }
@@ -324,4 +329,5 @@ export const PROMOTION_RULE_LABELS: Record<PromotionRuleType, string> = {
   spend_get: 'ซื้อครบ X บาท รับของแถม',
   quantity_get: 'ซื้อสินค้าที่กำหนด X ชิ้น รับของแถม',
   quantity_fixed: 'ซื้อ X สินค้า ลด X บาท',
+  quantity_percent: 'ซื้อ X สินค้า ลด X %',
 }

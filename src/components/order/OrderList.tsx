@@ -11,6 +11,8 @@ import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import UrgencyBadge from '../common/UrgencyBadge'
 import OrderDetailView from './OrderDetailView'
 import FailedClaimEditModal from '../claim/FailedClaimEditModal'
+import CancelOrderModal from './CancelOrderModal'
+import { isZeroValueOrder } from '../../lib/orderCancellation'
 import {
   isSalesPumpOwnerScopedRole,
   isSalesTrTeamRole,
@@ -46,9 +48,10 @@ interface OrderListProps {
   filterByRejectedOverpayRefund?: boolean
   /** แสดงบิลที่รายการโอนคืนล่าสุดถูกปฏิเสธ รวมเข้ากับรายการตาม status (ใช้กับแท็บตรวจสอบไม่ผ่าน) */
   includeRejectedOverpayRefundOrders?: boolean
-  /** แสดงปุ่ม "ลบบิล" (สำหรับเมนูรอลงข้อมูล) */
+  /** แสดงปุ่ม "ลบบิล" เมื่อยอดเป็นศูนย์ หรือ "ยกเลิกบิล" เมื่อมียอด (สำหรับเมนูรอลงข้อมูล) */
   showDeleteButton?: boolean
   onDelete?: (order: Order) => Promise<void>
+  onCancelOrder?: (order: Order) => Promise<void>
   /** กรองวันที่สร้าง (สำหรับเมนูจัดส่งแล้ว) */
   dateFrom?: string
   dateTo?: string
@@ -92,6 +95,7 @@ export default function OrderList({
   includeRejectedOverpayRefundOrders = false,
   showDeleteButton = false,
   onDelete,
+  onCancelOrder,
   dateFrom = '',
   dateTo = '',
   useDetailViewOnClick = false,
@@ -112,6 +116,7 @@ export default function OrderList({
   const [movingOrderId, setMovingOrderId] = useState<string | null>(null)
   const [deleteConfirmOrder, setDeleteConfirmOrder] = useState<Order | null>(null)
   const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null)
+  const [cancelConfirmOrder, setCancelConfirmOrder] = useState<Order | null>(null)
   const [detailOrder, setDetailOrder] = useState<Order | null>(null)
   const [failedClaimEditOrder, setFailedClaimEditOrder] = useState<Order | null>(null)
   const [archiveConfirmOrder, setArchiveConfirmOrder] = useState<Order | null>(null)
@@ -797,6 +802,9 @@ export default function OrderList({
       )}
       {visibleOrders.map((order, orderIdx) => {
         const channelCode = (order.channel_code || '').toUpperCase()
+        const cancelledByDisplay = order.status === 'ยกเลิก'
+          ? order.cancelled_by_name?.trim() || order.last_edited_by?.trim() || order.admin_user?.trim() || '-'
+          : ''
         const channelColor =
           channelCode.startsWith('TTTR') ? 'bg-blue-100 text-blue-700 border border-blue-200'
           : channelCode.startsWith('LZTR') ? 'bg-purple-100 text-purple-700 border border-purple-200'
@@ -1076,6 +1084,11 @@ export default function OrderList({
                       ผู้แก้ไขล่าสุด: {order.last_edited_by}
                     </span>
                   )}
+                  {cancelledByDisplay && (
+                    <span className="ml-4 font-medium text-red-600">
+                      ผู้ยกเลิกบิล: {cancelledByDisplay}
+                    </span>
+                  )}
                 </p>
               </div>
             </div>
@@ -1266,17 +1279,18 @@ export default function OrderList({
                   {movingOrderId === order.id ? 'กำลังย้าย...' : 'ย้ายไปรอลงข้อมูล'}
                 </button>
               )}
-              {!hideActionButtons && showDeleteButton && onDelete && (
+              {!hideActionButtons && showDeleteButton && (isZeroValueOrder(order.total_amount) ? onDelete : onCancelOrder) && (
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation()
-                    setDeleteConfirmOrder(order)
+                    if (isZeroValueOrder(order.total_amount)) setDeleteConfirmOrder(order)
+                    else setCancelConfirmOrder(order)
                   }}
                   disabled={!!deletingOrderId}
                   className="px-3 py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-semibold rounded-xl whitespace-nowrap"
                 >
-                  ลบบิล
+                  {isZeroValueOrder(order.total_amount) ? 'ลบบิล' : 'ยกเลิกบิล'}
                 </button>
               )}
             </div>
@@ -1395,6 +1409,15 @@ export default function OrderList({
           </div>
         )}
       </Modal>
+      <CancelOrderModal
+        open={!!cancelConfirmOrder}
+        order={cancelConfirmOrder}
+        onClose={() => setCancelConfirmOrder(null)}
+        onConfirm={async (order) => {
+          if (!onCancelOrder) return
+          await onCancelOrder(order)
+        }}
+      />
 
       {/* Detail Modal */}
       <Modal open={!!detailOrder} onClose={() => setDetailOrder(null)} contentClassName="max-w-[96vw] w-full">

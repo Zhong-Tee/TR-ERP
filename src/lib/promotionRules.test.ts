@@ -12,6 +12,72 @@ const items = [
 ]
 
 describe('promotion rules', () => {
+  const quantityPercent: PromotionDefinition = {
+    ...base,
+    rule_type: 'quantity_percent',
+    rule_config: {
+      discount_value: 10,
+      max_applications: 2,
+      condition_groups: [{ id: 'ซื้อ', quantity: 2, options: [{ selector_type: 'category', category: 'แก้ว' }] }],
+    },
+  }
+
+  it('ลดเปอร์เซ็นต์เฉพาะสินค้าที่จัดเข้าชุด ไม่รวมชิ้นเกิน สินค้าอื่น และของแถม', () => {
+    const result = evaluatePromotion(quantityPercent, [
+      { ...items[0], quantity: 3 },
+      { product_id: 'other', product_category: 'อื่น', quantity: 1, unit_price: 1000 },
+      { ...items[0], quantity: 1, unit_price: 2000, is_free: true },
+    ], { channel_code: 'FBTR' })
+    expect(result.passed).toBe(true)
+    expect(result.expected_discount).toBe(60)
+    expect(result.application_count).toBe(1)
+  })
+
+  it('คำนวณเปอร์เซ็นต์จากชุดที่ใช้จริงโดยไม่คูณจำนวนครั้งซ้ำ', () => {
+    const result = evaluatePromotion(quantityPercent, [{ ...items[0], quantity: 4 }], {
+      channel_code: 'FBTR', application_counts: { p1: 2 },
+    })
+    expect(result.passed).toBe(true)
+    expect(result.expected_discount).toBe(120)
+    expect(result.application_count).toBe(2)
+  })
+
+  it('ไม่ให้ส่วนลดเมื่อสินค้าซื้อไม่ครบ แม้รวมของแถมแล้วครบ', () => {
+    const result = evaluatePromotion(quantityPercent, [
+      { ...items[0], quantity: 1 }, { ...items[0], quantity: 1, is_free: true },
+    ], { channel_code: 'FBTR' })
+    expect(result.passed).toBe(false)
+    expect(result.expected_discount).toBe(0)
+  })
+
+  it('ไม่ใช้สินค้าชิ้นเดียวซ้ำระหว่างกลุ่มของโปรเปอร์เซ็นต์', () => {
+    const result = evaluatePromotion({ ...quantityPercent, rule_config: {
+      discount_value: 10,
+      condition_groups: [
+        { id: 'A', quantity: 2, options: [{ selector_type: 'category', category: 'แก้ว' }] },
+        { id: 'B', quantity: 1, options: [{ selector_type: 'sku', product_id: 'a' }] },
+      ],
+    } }, items, { channel_code: 'FBTR' })
+    expect(result.passed).toBe(false)
+    expect(result.expected_discount).toBe(0)
+  })
+
+  it.each([
+    [0, false, false, 0], [0, true, true, 0], [100, false, true, 600], [101, false, false, 0],
+  ])('ตรวจส่วนลด %s และฟรีค่าส่ง %s', (discount, shipping, passed, expected) => {
+    const result = evaluatePromotion({ ...quantityPercent, free_shipping: shipping as boolean,
+      rule_config: { ...quantityPercent.rule_config, discount_value: discount as number },
+    }, items, { channel_code: 'FBTR' })
+    expect(result.passed).toBe(passed)
+    expect(result.expected_discount).toBe(expected)
+  })
+
+  it('ไม่ให้ส่วนลดเปอร์เซ็นต์หากไม่กำหนดกลุ่มซื้อ', () => {
+    const result = evaluatePromotion({ ...quantityPercent, rule_config: { discount_value: 10 } }, items, { channel_code: 'FBTR' })
+    expect(result.passed).toBe(false)
+    expect(result.expected_discount).toBe(0)
+  })
+
   it('คำนวณส่วนลดเปอร์เซ็นต์เมื่อยอดและช่องทางผ่าน', () => {
     const result = evaluatePromotion(base, items, { channel_code: 'FBTR', order_date: '2026-09-09' })
     expect(result.passed).toBe(true)
