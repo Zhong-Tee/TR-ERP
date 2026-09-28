@@ -1,5 +1,7 @@
 import { supabase } from './supabase'
 import type { HRCompany, HREmployee } from '../types'
+import { fetchAllSupabasePages } from './supabasePagination'
+import { calculateLeaveDeductionAmount, calculateMonthlyLeaveOverage, type LeaveDeductionRequest, type LeaveDeductionType, type LeaveDeductionOpening } from './payrollLeaveDeduction'
 
 export interface PayrollItem {
   id?: string
@@ -588,14 +590,37 @@ export async function fetchPayrollEmployees(companyId: string): Promise<HREmploy
   return (data || []) as HREmployee[]
 }
 
-export async function fetchConfirmedLeaveDeductions(month: string): Promise<Record<string, number>> {
-  const { data, error } = await supabase
-    .from('hr_leave_payroll_deductions')
-    .select('employee_id, deduction_amount, status')
-    .eq('payroll_month', `${month}-01`)
-    .in('status', ['confirmed', 'sent'])
-  throwIfError(error)
-  return Object.fromEntries((data || []).map((row) => [row.employee_id, Number(row.deduction_amount) || 0]))
+export async function fetchPayrollLeaveDeductions(month: string, employees: HREmployee[]): Promise<Record<string, number>> {
+  if (!employees.length) return {}
+  const year = Number(month.slice(0, 4))
+  const lastDate = `${month}-${new Date(year, Number(month.slice(5, 7)), 0).getDate()}`
+  const types = await fetchAllSupabasePages<LeaveDeductionType>((from, to) => supabase.from('hr_leave_types')
+    .select('id, name, max_days_per_year, is_paid').order('id').range(from, to))
+  const result: Record<string, number> = {}
+  // Bound URL length and page all records so annual entitlement is never truncated.
+  for (let offset = 0; offset < employees.length; offset += 100) {
+    const batch = employees.slice(offset, offset + 100)
+    const ids = batch.map((employee) => employee.id)
+    const [requests, openings, salaries] = await Promise.all([
+      fetchAllSupabasePages<LeaveDeductionRequest>((from, to) => supabase.from('hr_leave_requests')
+        .select('id, employee_id, leave_type_id, start_date, total_days, status, created_at')
+        .in('employee_id', ids).eq('status', 'approved').gte('start_date', `${year}-01-01`).lte('start_date', lastDate)
+        .order('start_date').order('id').range(from, to)),
+      fetchAllSupabasePages<LeaveDeductionOpening>((from, to) => supabase.from('hr_employee_opening_leave_balances')
+        .select('employee_id, leave_type_id, year, effective_date, opening_remaining_days')
+        .in('employee_id', ids).eq('year', year).order('id').range(from, to)),
+      fetchAllSupabasePages<{ employee_id: string; salary: number; pay_type: string }>((from, to) => supabase.from('hr_salary_history')
+        .select('employee_id, salary, pay_type').in('employee_id', ids).lte('effective_date', lastDate)
+        .order('effective_date', { ascending: false }).order('created_at', { ascending: false }).order('id').range(from, to)),
+    ])
+    const overage = calculateMonthlyLeaveOverage(month, requests, types, openings)
+    for (const employee of batch) {
+      const days = [...(overage.get(employee.id)?.values() || [])].reduce((sum, value) => sum + value, 0)
+      const salary = salaries.find((row) => row.employee_id === employee.id)
+      result[employee.id] = calculateLeaveDeductionAmount(Number(salary?.salary ?? employee.salary ?? 0), days, salary?.pay_type ?? employee.contract_type)
+    }
+  }
+  return result
 }
 
 export async function fetchPayrollRun(month: string, companyId: string, payrollType: 'permanent' | 'daily' = 'permanent'): Promise<PayrollRun | null> {

@@ -2,13 +2,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { fetchAllOpeningLeaveBalances, fetchEmployees, fetchLeaveRequests, fetchLeaveTypes } from '../../lib/hrApi'
 import { supabase } from '../../lib/supabase'
 import type { HREmployee, HRLeaveRequest, HRSalaryHistory } from '../../types'
+import { calculateLeaveDeductionAmount, calculateMonthlyLeaveOverage } from '../../lib/payrollLeaveDeduction'
 
 const MINUTES_PER_DAY = 480
 type PayType = 'permanent' | 'daily'
 type Workflow = { id?: string; employee_id: string; payroll_month: string; excess_days: number; salary_base: number; pay_type?: PayType; deduction_amount: number; status: 'pending' | 'confirmed' | 'sent'; note?: string }
 type ReportRow = { employee: HREmployee; excessDays: number; salaryBase: number; payType: PayType; dailyRate: number; deductionAmount: number; details: { name: string; days: number }[]; workflow?: Workflow }
 
-function monthKey(date: string) { return `${date.slice(0, 7)}-01` }
 function fmt(days: number) {
   const mins = Math.max(0, Math.round(days * MINUTES_PER_DAY)); const d = Math.floor(mins / MINUTES_PER_DAY); const h = Math.floor((mins % MINUTES_PER_DAY) / 60); const m = mins % 60
   return [d ? `${d} วัน` : '', h ? `${h} ชม.` : '', m ? `${m} นาที` : ''].filter(Boolean).join(' ') || '0 วัน'
@@ -28,10 +28,11 @@ export default function LeaveOverageReport() {
 
   async function load() {
     setLoading(true)
+    const lastDate = `${month}-${new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate()}`
     const [emps, reqs, leaveTypes, openingRows, saved, history] = await Promise.all([
       fetchEmployees(), fetchLeaveRequests(), fetchLeaveTypes(), fetchAllOpeningLeaveBalances(),
       supabase.from('hr_leave_payroll_deductions').select('*').eq('payroll_month', `${month}-01`),
-      supabase.from('hr_salary_history').select('*').lte('effective_date', `${month}-31`).order('effective_date', { ascending: false }).order('created_at', { ascending: false }),
+      supabase.from('hr_salary_history').select('*').lte('effective_date', lastDate).order('effective_date', { ascending: false }).order('created_at', { ascending: false }),
     ])
     if (saved.error) throw saved.error
     if (history.error) throw history.error
@@ -47,19 +48,7 @@ export default function LeaveOverageReport() {
   }, [month]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const rows = useMemo<ReportRow[]>(() => {
-    const targetMonth = `${month}-01`; const details = new Map<string, Map<string, number>>()
-    for (const type of types) {
-      for (const emp of employees) {
-        const opening = openings.find(o => o.employee_id === emp.id && o.leave_type_id === type.id && o.year === Number(month.slice(0, 4)))
-        const entitled = opening ? Number(opening.opening_remaining_days) : Number(type.max_days_per_year || 0)
-        let cumulative = 0
-        const approved = requests.filter(r => r.employee_id === emp.id && r.leave_type_id === type.id && r.status === 'approved' && r.start_date.startsWith(month.slice(0, 4)) && (!opening || r.start_date >= opening.effective_date)).sort((a, b) => a.start_date.localeCompare(b.start_date) || a.created_at.localeCompare(b.created_at))
-        for (const req of approved) {
-          const amount = Number(req.total_days || 0); const before = Math.max(0, cumulative - entitled); cumulative += amount; const excess = Math.max(0, cumulative - entitled) - before
-          if (excess > 0 && monthKey(req.start_date) === targetMonth) { const byType = details.get(emp.id) || new Map(); byType.set(type.name, (byType.get(type.name) || 0) + excess); details.set(emp.id, byType) }
-        }
-      }
-    }
+    const details = calculateMonthlyLeaveOverage(month, requests, types, openings)
     return employees.flatMap(employee => {
       const d = details.get(employee.id); if (!d) return []
       const itemDetails = [...d].map(([name, days]) => ({ name, days })); const excessDays = itemDetails.reduce((s, x) => s + x.days, 0)
@@ -67,7 +56,7 @@ export default function LeaveOverageReport() {
       const salaryBase = Number(applicableSalary?.salary ?? employee.salary ?? 0)
       const payType: PayType = applicableSalary?.pay_type === 'daily' || (!applicableSalary && employee.contract_type === 'daily') ? 'daily' : 'permanent'
       const dailyRate = payType === 'daily' ? salaryBase : salaryBase / 30
-      const deductionAmount = Math.round(dailyRate * excessDays * 100) / 100
+      const deductionAmount = calculateLeaveDeductionAmount(salaryBase, excessDays, payType)
       return [{ employee, excessDays, salaryBase, payType, dailyRate, deductionAmount, details: itemDetails, workflow: workflows.find(w => w.employee_id === employee.id) }]
     })
   }, [employees, month, openings, requests, salaryHistory, types, workflows])

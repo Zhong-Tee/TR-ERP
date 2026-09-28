@@ -31,7 +31,7 @@ type AmendmentRow = {
   executed_at: string | null
   requested_by_user?: { username: string | null; email: string | null } | null
   approved_by_user?: { username: string | null; email: string | null } | null
-  order?: { channel_order_no: string | null } | null
+  order?: { channel_order_no: string | null; cancelled_by_name: string | null } | null
 }
 
 const REASON_OPTIONS: { value: string; label: string }[] = [
@@ -82,7 +82,7 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
     try {
       const { data, error } = await supabase
         .from('or_order_amendments')
-        .select('*, requested_by_user:us_users!requested_by(username, email), approved_by_user:us_users!approved_by(username, email), order:or_orders(channel_order_no)')
+        .select('*, requested_by_user:us_users!requested_by(username, email), approved_by_user:us_users!approved_by(username, email), order:or_orders(channel_order_no, cancelled_by_name)')
         .order('created_at', { ascending: false })
         .limit(50)
       if (error) throw error
@@ -266,8 +266,8 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
       : Number.POSITIVE_INFINITY
     const statusLabels: Record<string, string> = {
       pending: 'รออนุมัติ',
-      executed: 'ยกเลิกแล้ว',
-      approved: 'อนุมัติแล้ว',
+      executed: 'อนุมัติยกเลิกแล้ว',
+      approved: 'อนุมัติยกเลิกแล้ว',
       rejected: 'ปฏิเสธ',
     }
 
@@ -293,6 +293,7 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
         statusLabels[row.status] || row.status,
         requester,
         approver,
+        row.order?.cancelled_by_name,
       ].filter(Boolean).join(' ').toLocaleLowerCase('th-TH')
       return searchableText.includes(search)
     })
@@ -307,8 +308,8 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
     }
     const labels: Record<string, string> = {
       pending: 'รออนุมัติ',
-      executed: 'ยกเลิกแล้ว',
-      approved: 'อนุมัติแล้ว',
+      executed: 'อนุมัติยกเลิกแล้ว',
+      approved: 'อนุมัติยกเลิกแล้ว',
       rejected: 'ปฏิเสธ',
     }
     return (
@@ -483,7 +484,7 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
                   type="search"
                   value={amendmentSearch}
                   onChange={(event) => setAmendmentSearch(event.target.value)}
-                  placeholder="เลขคำขอ / เลขบิล / เลขคำสั่งซื้อ / เหตุผล / ผู้ขอ / ผู้อนุมัติ"
+                  placeholder="เลขคำขอ / เลขบิล / เลขคำสั่งซื้อ / เหตุผล / ผู้ขอ / ผู้อนุมัติ / ผู้ยกเลิก"
                   className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                 />
               </div>
@@ -553,6 +554,7 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
                   <th className="px-4 py-3 font-semibold">สถานะ</th>
                   <th className="px-4 py-3 font-semibold">ผู้ขอ</th>
                   <th className="px-4 py-3 font-semibold">ผู้อนุมัติ</th>
+                  <th className="px-4 py-3 font-semibold">ผู้ยกเลิก</th>
                   <th className="px-4 py-3 font-semibold">วันที่ขอ</th>
                 </tr>
               </thead>
@@ -570,6 +572,7 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
                     <td className="px-4 py-3">{statusBadge(row.status)}</td>
                     <td className="px-4 py-3">{(row.requested_by_user?.username || row.requested_by_user?.email || row.requested_by) ?? '-'}</td>
                     <td className="px-4 py-3">{(row.approved_by_user?.username || row.approved_by_user?.email || row.approved_by) ?? '-'}</td>
+                    <td className="px-4 py-3">{row.order?.cancelled_by_name || '-'}</td>
                     <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{formatDateTime(row.created_at)}</td>
                   </tr>
                 ))}
@@ -614,6 +617,10 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
                 <div>
                   <span className="text-gray-500 block">ผู้อนุมัติ</span>
                   <span>{(detailAmendment.approved_by_user?.username || detailAmendment.approved_by_user?.email || detailAmendment.approved_by) ?? '-'}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500 block">ผู้ยกเลิก</span>
+                  <span>{detailOrder?.cancelled_by_name || detailAmendment.order?.cancelled_by_name || '-'}</span>
                 </div>
                 <div>
                   <span className="text-gray-500 block">วันที่ขอ</span>

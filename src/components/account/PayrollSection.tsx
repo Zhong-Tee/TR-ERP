@@ -5,13 +5,14 @@ import JSZip from 'jszip'
 import { useAuthContext } from '../../contexts/AuthContext'
 import type { HRCompany, HREmployee } from '../../types'
 import {
-  fetchConfirmedLeaveDeductions, fetchHRCompanies, fetchPayrollEmployees, fetchPayrollHistory,
+  fetchPayrollLeaveDeductions, fetchHRCompanies, fetchPayrollEmployees, fetchPayrollHistory,
   fetchPayrollRun, fetchSocialSecuritySettings, fetchPayrollOvertime, calculateSocialSecurity, calculateCappedSavings, calculateEmployeeEwf, savePayrollRun,
   type PayrollItem, type PayrollRun,
 } from '../../lib/payrollApi'
 import PayrollSlipPDF, { type PayrollYtd } from './pdf/PayrollSlipPDF'
 import DailyPayrollSection from './DailyPayrollSection'
 import Modal from '../ui/Modal'
+import { resolvePayrollLeaveDeduction } from '../../lib/payrollLeaveDeduction'
 
 const currentMonth = () => new Date().toISOString().slice(0, 7)
 const fmt = (value: number) => Number(value || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -97,7 +98,7 @@ export default function PayrollSection() {
         .map((employee) => employee.id))
       const employees = payrollEmployees.filter((employee) => employee.contract_type !== 'daily')
       const [leaveMap, savedRun, historyRows, socialSecuritySettings, overtimeByEmployee] = await Promise.all([
-        fetchConfirmedLeaveDeductions(month), fetchPayrollRun(month, companyId), fetchPayrollHistory(companyId), fetchSocialSecuritySettings(), fetchPayrollOvertime(month, employees),
+        fetchPayrollLeaveDeductions(month, employees), fetchPayrollRun(month, companyId), fetchPayrollHistory(companyId), fetchSocialSecuritySettings(), fetchPayrollOvertime(month, employees),
       ])
       setHistory(historyRows)
       setRun(savedRun)
@@ -147,7 +148,8 @@ export default function PayrollSection() {
               overtimePay: Number(item.overtime_pay) || 0,
             }
             : overtimeByEmployee[item.employee_id] || { normalHours: 0, holidayHours: 0, overtimePay: 0 }
-          const payrollInputsChanged = openingBalancesChanged
+          const leaveDeduction = resolvePayrollLeaveDeduction(savedRun.status, item.leave_deduction, leaveMap[item.employee_id])
+          const payrollInputsChanged = openingBalancesChanged || leaveDeduction.changed
             || (savedRun.status !== 'confirmed' && (
               baseSalary !== savedBaseSalary
               || positionAllowance !== savedPositionAllowance
@@ -157,7 +159,7 @@ export default function PayrollSection() {
               || overtime.holidayHours !== Number(item.ot_holiday_hours || 0)
               || overtime.overtimePay !== Number(item.overtime_pay || 0)
             ))
-          return { ...item, employee_name: employee ? employeeFullName(employee) : item.employee_name, employee_nickname: item.employee_nickname || employee?.nickname || null, base_salary: baseSalary, position_allowance: positionAllowance, ot_normal_hours: overtime.normalHours, ot_holiday_hours: overtime.holidayHours, overtime_pay: overtime.overtimePay, personal_tax: Number(item.personal_tax), social_security: savedRun.status === 'confirmed' ? Number(item.social_security) : employeeSocialSecurity(item.employee_code, baseSalary, socialSecuritySettings), ewf, savings, student_loan: Number(item.student_loan), company_loan: Number(item.company_loan), leave_deduction: Number(item.leave_deduction), other_income: Number(item.other_income), other_deduction: Number(item.other_deduction), ...openingBalances, reviewed_at: payrollInputsChanged ? null : item.reviewed_at, reviewed_by: payrollInputsChanged ? null : item.reviewed_by }
+          return { ...item, employee_name: employee ? employeeFullName(employee) : item.employee_name, employee_nickname: item.employee_nickname || employee?.nickname || null, base_salary: baseSalary, position_allowance: positionAllowance, ot_normal_hours: overtime.normalHours, ot_holiday_hours: overtime.holidayHours, overtime_pay: overtime.overtimePay, personal_tax: Number(item.personal_tax), social_security: savedRun.status === 'confirmed' ? Number(item.social_security) : employeeSocialSecurity(item.employee_code, baseSalary, socialSecuritySettings), ewf, savings, student_loan: Number(item.student_loan), company_loan: Number(item.company_loan), leave_deduction: leaveDeduction.amount, other_income: Number(item.other_income), other_deduction: Number(item.other_deduction), ...openingBalances, reviewed_at: payrollInputsChanged ? null : item.reviewed_at, reviewed_by: payrollInputsChanged ? null : item.reviewed_by }
           })))
       }
       else if ((!savedRun || savedRun.status === 'draft') && month === currentMonth()) setItems(sortPayrollItems(employees.map((employee) => ({
@@ -225,7 +227,28 @@ export default function PayrollSection() {
     }
     if (confirm && !window.confirm(`ยืนยันยอดเงินเดือน ${monthLabel(month)} ของ ${company.name_th}? หลังยืนยันจะล็อกยอดสำหรับรายงานย้อนหลัง`)) return
     setSaving(true)
-    try { const saved = await savePayrollRun({ month, company, paymentDate, items, confirm, userId: user?.id }); setRun(saved); setItems(sortPayrollItems(saved.items || items)); setMessage(confirm ? 'ยืนยันยอดเงินเดือนเรียบร้อย' : 'บันทึกร่างเรียบร้อย'); setHistory(await fetchPayrollHistory(companyId)) }
+    try {
+      if (confirm) {
+        const employees = (await fetchPayrollEmployees(companyId)).filter((employee) => employee.contract_type !== 'daily')
+        const currentLeave = await fetchPayrollLeaveDeductions(month, employees)
+        let changed = false
+        const refreshed = items.map((item) => {
+          const deduction = resolvePayrollLeaveDeduction('draft', item.leave_deduction, currentLeave[item.employee_id])
+          if (!deduction.changed) return item
+          changed = true
+          return { ...item, leave_deduction: deduction.amount, reviewed_at: null, reviewed_by: null }
+        })
+        if (changed) {
+          setItems(refreshed)
+          setMessage('ยอดหักจากการลาเปลี่ยนแปลง อัปเดตยอดล่าสุดแล้ว กรุณาตรวจสอบสลิปที่เปลี่ยนแปลงก่อนยืนยันอีกครั้ง')
+          return
+        }
+      }
+      const saved = await savePayrollRun({ month, company, paymentDate, items, confirm, userId: user?.id })
+      setRun(saved); setItems(sortPayrollItems(saved.items || items))
+      setMessage(confirm ? 'ยืนยันยอดเงินเดือนเรียบร้อย' : 'บันทึกร่างเรียบร้อย')
+      setHistory(await fetchPayrollHistory(companyId))
+    }
     catch (e) { setMessage(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ') }
     finally { setSaving(false) }
   }

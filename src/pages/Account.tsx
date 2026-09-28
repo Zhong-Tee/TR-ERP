@@ -19,11 +19,13 @@ import PayrollSection from '../components/account/PayrollSection'
 import BankReconciliationSection from '../components/account/BankReconciliationSection'
 import { fetchAllSupabasePages, fetchAllSupabasePagesResult } from '../lib/supabasePagination'
 import AmendmentSection from '../components/account/AmendmentSection'
+import CancelledBillsSection from '../components/account/CancelledBillsSection'
+import OrderDetailView from '../components/order/OrderDetailView'
 import ClaimApprovalSection from '../components/account/ClaimApprovalSection'
 import { SLIP_BANK_APPS_30D, SLIP_BANK_APPS_7D, bankLogoUrl } from '../config/thaiBanks'
 import * as XLSX from 'xlsx'
 
-type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bank-reconciliation' | 'bill-edit' | 'amendment' | 'claim-approval' | 'slip-age' | 'ecommerce' | 'promotion-audit' | 'payroll' | 'trial-balance'
+type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bank-reconciliation' | 'bill-edit' | 'cancelled-bills' | 'amendment' | 'claim-approval' | 'slip-age' | 'ecommerce' | 'promotion-audit' | 'payroll' | 'trial-balance'
 type AccountTab = 'refunds' | 'claim-approval' | 'tax-invoice' | 'approvals'
 type ApprovalFilter = 'refund' | 'claim' | 'tax-invoice'
 
@@ -175,7 +177,7 @@ async function fetchSlipImageUrlsForOrder(orderId: string): Promise<string[]> {
 
 const ALL_ACCOUNT_SECTIONS: AccountSection[] = [
   'dashboard', 'slip-verification', 'manual-slip-check', 'bank-reconciliation',
-  'bill-edit', 'amendment', 'claim-approval', 'slip-age', 'ecommerce', 'promotion-audit', 'payroll', 'trial-balance',
+  'bill-edit', 'cancelled-bills', 'amendment', 'claim-approval', 'slip-age', 'ecommerce', 'promotion-audit', 'payroll', 'trial-balance',
 ]
 
 /** แถบเมนูหลักบัญชี — รวมลิงก์เข้า Dashboard แยกแท็บโอนคืน / ใบกำกับภาษี */
@@ -193,7 +195,8 @@ const ACCOUNT_TOP_NAV_ITEMS: Array<{
   { id: 'nav-manual-slip', section: 'manual-slip-check', label: 'ตรวจสลิปมือ', count: 'manualSlip' },
   { id: 'nav-bank-reconciliation', section: 'bank-reconciliation', label: 'กระทบยอดธนาคาร' },
   { id: 'nav-bill-edit', section: 'bill-edit', label: 'แก้ไขบิล' },
-  { id: 'nav-amendment', section: 'amendment', label: 'ขอยกเลิกบิล', count: 'amendment' },
+  { id: 'nav-cancelled-bills', section: 'cancelled-bills', label: 'รายการยกเลิก', accessKey: 'account-amendment' },
+  { id: 'nav-amendment', section: 'amendment', label: 'คำขอยกเลิกบิล', count: 'amendment' },
   { id: 'nav-slip-age', section: 'slip-age', label: 'อายุสลิป' },
   { id: 'nav-ecommerce', section: 'ecommerce', label: 'Ecommerce', accessKey: 'account-ecommerce' },
   { id: 'nav-promotion-audit', section: 'promotion-audit', label: 'ตรวจโปรโมชั่น', accessKey: 'account-promotion-audit' },
@@ -214,8 +217,9 @@ export default function Account() {
 
   useEffect(() => {
     if (menuAccessLoading) return
-    if (!visibleAccountSections.includes(accountSection) || !hasAccess(`account-${accountSection}`)) {
-      const first = visibleAccountSections.find((s) => hasAccess(`account-${s}`))
+    const sectionAccessKey = (section: AccountSection) => section === 'cancelled-bills' ? 'account-amendment' : `account-${section}`
+    if (!visibleAccountSections.includes(accountSection) || !hasAccess(sectionAccessKey(accountSection))) {
+      const first = visibleAccountSections.find((s) => hasAccess(sectionAccessKey(s)))
       if (first) setAccountSection(first)
     }
   }, [accountSection, hasAccess, menuAccessLoading, visibleAccountSections])
@@ -296,6 +300,9 @@ export default function Account() {
   /** ตัวกรองรายการตรวจสลิป */
   const [slipFilterOrderTaker, setSlipFilterOrderTaker] = useState<string>('')
   const [slipFilterChannel, setSlipFilterChannel] = useState<string>('')
+  const [slipSearch, setSlipSearch] = useState('')
+  const [slipFilterAmountStatus, setSlipFilterAmountStatus] = useState('')
+  const [slipFilterValidation, setSlipFilterValidation] = useState('')
   const [slipFilterDateFrom, setSlipFilterDateFrom] = useState<string>(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
@@ -393,12 +400,13 @@ export default function Account() {
         .range(from, to))
       const orderIds = [...new Set(slips.map((s) => s.order_id).filter(Boolean))]
       const orderMap: Record<string, { bill_no: string | null; channel_code: string | null; admin_user: string | null }> = {}
-      if (orderIds.length > 0) {
+      for (let offset = 0; offset < orderIds.length; offset += 200) {
         const { data: ordersData, error: ordersError } = await supabase
           .from('or_orders')
           .select('id, bill_no, channel_code, admin_user')
-          .in('id', orderIds)
-        if (!ordersError && ordersData) {
+          .in('id', orderIds.slice(offset, offset + 200))
+        if (ordersError) throw ordersError
+        if (ordersData) {
           ordersData.forEach((o: { id: string; bill_no: string | null; channel_code: string | null; admin_user: string | null }) => {
             orderMap[o.id] = { bill_no: o.bill_no ?? null, channel_code: o.channel_code ?? null, admin_user: o.admin_user ?? null }
           })
@@ -421,7 +429,7 @@ export default function Account() {
     if (accountSection === 'slip-verification') loadVerifiedSlipsList()
   }, [accountSection])
 
-  /** รายการตรวจสลิปหลังกรอง (ผู้ลงออเดอร์, ช่องทาง, ช่วงวันที่) */
+  /** ใช้รายการหลังค้นหาและกรองร่วมกันทั้งตารางและ Excel */
   const filteredSlipsList = useMemo(() => {
     let list = verifiedSlipsList
     if (slipFilterOrderTaker.trim()) {
@@ -446,8 +454,33 @@ export default function Account() {
         return true
       })
     }
+    if (slipFilterAmountStatus) {
+      list = list.filter((row) => getTagLogic(row).split(', ').includes(slipFilterAmountStatus))
+    }
+    if (slipFilterValidation) {
+      list = list.filter((row) => (row.validation_status || 'none') === slipFilterValidation)
+    }
+    const search = slipSearch.trim().toLocaleLowerCase('th-TH')
+    if (search) {
+      list = list.filter((row) => [
+        row.or_orders?.bill_no,
+        row.or_orders?.channel_code,
+        row.or_orders?.admin_user,
+        getPayerName(row.easyslip_response),
+        getPayerAccountNumber(row.easyslip_response),
+        getReceiverName(row.easyslip_response, row.easyslip_receiver_account),
+        row.easyslip_receiver_account,
+        String(row.verified_amount),
+        Number(row.verified_amount).toLocaleString(),
+        row.deletion_reason,
+      ].filter(Boolean).join(' ').toLocaleLowerCase('th-TH').includes(search))
+    }
     return list
-  }, [verifiedSlipsList, slipFilterOrderTaker, slipFilterChannel, slipFilterDateFrom, slipFilterDateTo])
+  }, [verifiedSlipsList, slipFilterOrderTaker, slipFilterChannel, slipFilterDateFrom, slipFilterDateTo, slipFilterAmountStatus, slipFilterValidation, slipSearch])
+
+  const slipValidationOptions = useMemo(() => Array.from(new Set([
+    'passed', 'failed', ...verifiedSlipsList.map((row) => row.validation_status || 'none'),
+  ])), [verifiedSlipsList])
 
   /** ค่าที่ใช้ใน dropdown ตัวกรอง (ผู้ลงออเดอร์, ช่องทาง) */
   const slipFilterOrderTakerOptions = useMemo(() => {
@@ -1104,8 +1137,18 @@ export default function Account() {
               ดาวน์โหลด Excel
             </button>
           </div>
-          {/* ตัวกรอง: ผู้ลงออเดอร์, ช่องทาง, ช่วงวันที่ */}
+          {/* ค้นหาและตัวกรองรายการตรวจสลิป */}
           <div className="px-6 py-3 border-b border-gray-100 bg-gray-50/30 flex flex-wrap items-center gap-3">
+            <label className="flex w-full items-center gap-2 text-sm text-gray-700">
+              <span className="whitespace-nowrap">ค้นหา</span>
+              <input
+                type="search"
+                value={slipSearch}
+                onChange={(event) => setSlipSearch(event.target.value)}
+                placeholder="เลขบิล / ชื่อบัญชี / เลขบัญชี / ผู้ขาย / ช่องทาง / ยอดเงิน / เหตุผลการลบ"
+                className="min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm bg-white focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+              />
+            </label>
             <label className="flex items-center gap-2 text-sm text-gray-700">
               <span className="whitespace-nowrap">ผู้ลงออเดอร์</span>
               <select
@@ -1133,6 +1176,23 @@ export default function Account() {
               </select>
             </label>
             <label className="flex items-center gap-2 text-sm text-gray-700">
+              <span className="whitespace-nowrap">สถานะยอด</span>
+              <select value={slipFilterAmountStatus} onChange={(event) => setSlipFilterAmountStatus(event.target.value)} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm min-w-[120px] bg-white">
+                <option value="">ทั้งหมด</option>
+                <option value="ซ้ำ">ซ้ำ</option>
+                <option value="โอนเกิน">โอนเกิน</option>
+                <option value="ยอดไม่พอ">ยอดไม่พอ</option>
+                <option value="–">ไม่ระบุ (–)</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              <span className="whitespace-nowrap">ผลตรวจ</span>
+              <select value={slipFilterValidation} onChange={(event) => setSlipFilterValidation(event.target.value)} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm min-w-[120px] bg-white">
+                <option value="">ทั้งหมด</option>
+                {slipValidationOptions.map((status) => <option key={status} value={status}>{status === 'passed' ? 'ผ่าน' : status === 'failed' ? 'ไม่ผ่าน' : status === 'none' ? 'ไม่ระบุ (–)' : status}</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-700">
               <span className="whitespace-nowrap">วันที่</span>
               <input
                 type="date"
@@ -1150,13 +1210,16 @@ export default function Account() {
                 className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm bg-white"
               />
             </label>
-            {(slipFilterOrderTaker || slipFilterChannel || slipFilterDateFrom || slipFilterDateTo) && (
+            {(slipSearch || slipFilterAmountStatus || slipFilterValidation || slipFilterOrderTaker || slipFilterChannel || slipFilterDateFrom || slipFilterDateTo) && (
               <button
                 type="button"
                 onClick={() => {
                   const now = new Date()
                   setSlipFilterOrderTaker('')
                   setSlipFilterChannel('')
+                  setSlipSearch('')
+                  setSlipFilterAmountStatus('')
+                  setSlipFilterValidation('')
                   setSlipFilterDateFrom(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`)
                   setSlipFilterDateTo(now.toISOString().split('T')[0])
                 }}
@@ -1165,6 +1228,7 @@ export default function Account() {
                 ล้างตัวกรอง
               </button>
             )}
+            {!verifiedSlipsLoading && <p className="w-full text-xs text-gray-500" aria-live="polite">แสดง {filteredSlipsList.length.toLocaleString('th-TH')} จาก {verifiedSlipsList.length.toLocaleString('th-TH')} รายการ</p>}
           </div>
           {verifiedSlipsLoading ? (
             <div className="flex justify-center items-center py-14">
@@ -1249,6 +1313,8 @@ export default function Account() {
             setAccountSection('amendment')
           }}
         />
+      ) : accountSection === 'cancelled-bills' ? (
+        <CancelledBillsSection onViewOrder={(id) => { setViewOrder(null); setViewOrderLoading(true); setViewOrderId(id); setViewBillRefund(null) }} />
       ) : accountSection === 'amendment' ? (
         <AmendmentSection
           orderToAmend={orderToAmend || undefined}
@@ -2072,197 +2138,6 @@ export default function Account() {
         </Modal>
       )}
 
-      {/* Modal ดูข้อมูลบิล (อ่านอย่างเดียว) */}
-      {viewOrderId && (
-        <Modal
-          open
-          onClose={() => { setViewOrderId(null); setViewBillRefund(null) }}
-          closeOnBackdropClick
-          contentClassName="max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col"
-        >
-            <div className="px-6 py-4 border-b border-gray-200">
-              <h3 className="text-lg font-semibold text-gray-800">ข้อมูลบิล (ดูอย่างเดียว)</h3>
-            </div>
-            <div className="p-6 overflow-y-auto flex-1 text-base">
-              {viewOrderLoading ? (
-                <div className="flex justify-center py-12">
-                  <div className="animate-spin rounded-full h-8 w-8 border-2 border-sky-500 border-t-transparent" />
-                </div>
-              ) : viewOrder ? (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-3">
-                    <p className="flex items-center gap-2">
-                      <span className="font-medium text-gray-600">เลขบิล:</span>
-                      <span>{viewOrder.bill_no}</span>
-                      {((viewOrder as any).claim_type != null || (viewOrder.bill_no || '').startsWith('REQ')) && (
-                        <span className="px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
-                      )}
-                    </p>
-                    <p><span className="font-medium text-gray-600">สถานะ:</span> {viewOrder.status}</p>
-                    <p className="col-span-2"><span className="font-medium text-gray-600">ลูกค้า:</span> {viewOrder.customer_name}</p>
-                    {(() => {
-                      const parts = splitAddressParts(viewOrder.customer_address, (viewOrder as any).recipient_name)
-                      const recipient = ((viewOrder as any).recipient_name || '').trim() || parts.recipientName
-                      const phone = (viewOrder.billing_details?.mobile_phone || '').trim() || parts.phone
-                      const addr = parts.address || viewOrder.customer_address || '–'
-                      return (
-                        <>
-                          {recipient && <p className="col-span-2"><span className="font-medium text-gray-600">ชื่อผู้รับ:</span> {recipient}</p>}
-                          <p className="col-span-2"><span className="font-medium text-gray-600">ที่อยู่:</span> {addr}</p>
-                          {phone && <p className="col-span-2"><span className="font-medium text-gray-600">เบอร์โทร:</span> {phone}</p>}
-                        </>
-                      )
-                    })()}
-                    <p className="col-span-2"><span className="font-medium text-gray-600">วันที่สร้าง:</span> {formatDateTime(viewOrder.created_at)}</p>
-                  </div>
-                  {viewBillRefund && (
-                    <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-4 space-y-3">
-                      <h4 className="font-semibold text-gray-800">รายละเอียดการโอนเกิน</h4>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
-                        <p className="sm:col-span-2">
-                          <span className="font-medium text-gray-600">ชื่อบัญชีรับคืน:</span>{' '}
-                          <span className="text-gray-800">{viewBillRefund.refund_recipient_account_name?.trim() || '–'}</span>
-                        </p>
-                        <p>
-                          <span className="font-medium text-gray-600">ธนาคาร:</span>{' '}
-                          <span className="text-gray-800">{viewBillRefund.refund_recipient_bank?.trim() || '–'}</span>
-                        </p>
-                        <p>
-                          <span className="font-medium text-gray-600">เลขบัญชี:</span>{' '}
-                          <span className="text-gray-800 font-mono tabular-nums">{viewBillRefund.refund_recipient_account_number?.trim() || '–'}</span>
-                        </p>
-                        <p className="sm:col-span-2">
-                          <span className="font-medium text-gray-600">จำนวนเงินคืน:</span>{' '}
-                          <span className="text-emerald-700 font-semibold tabular-nums">฿{viewBillRefund.amount.toLocaleString()}</span>
-                        </p>
-                        <p className="sm:col-span-2">
-                          <span className="font-medium text-gray-600">เหตุผลโอนเกิน:</span>{' '}
-                          <span className="text-gray-800">{formatRefundReason(viewBillRefund.reason)}</span>
-                        </p>
-                        {viewBillRefund.refund_recipient_reason?.trim() && (
-                          <p className="sm:col-span-2">
-                            <span className="font-medium text-gray-600">เหตุผลโอนคืน:</span>{' '}
-                            <span className="text-gray-800">{viewBillRefund.refund_recipient_reason.trim()}</span>
-                          </p>
-                        )}
-                      </div>
-                      <div>
-                        <p className="font-medium text-gray-600 text-sm mb-2">รูปสลิปโอน</p>
-                        {billViewSlipLoading ? (
-                          <div className="flex justify-center py-6">
-                            <div className="animate-spin rounded-full h-8 w-8 border-2 border-amber-500 border-t-transparent" />
-                          </div>
-                        ) : billViewSlipUrls.length === 0 ? (
-                          <p className="text-sm text-gray-500">ไม่พบภาพสลิปของบิลนี้</p>
-                        ) : (
-                          <div className="space-y-3">
-                            {billViewSlipUrls.map((url, idx) => (
-                              <div key={idx} className="flex justify-center">
-                                {billViewSlipFailed.has(idx) ? (
-                                  <div className="flex flex-col items-center justify-center py-6 px-4 rounded-lg border border-amber-200 bg-white text-amber-800 w-full max-w-md">
-                                    <p className="font-medium text-sm">โหลดรูปไม่สำเร็จ</p>
-                                    <a href={url} target="_blank" rel="noopener noreferrer" className="mt-2 text-xs text-sky-600 hover:underline">
-                                      เปิดในแท็บใหม่
-                                    </a>
-                                  </div>
-                                ) : (
-                                  <img
-                                    src={url}
-                                    alt={`สลิปโอน ${idx + 1}`}
-                                    className="max-w-full max-h-[min(28rem,55vh)] w-auto h-auto rounded-lg border border-gray-200 shadow-sm object-contain"
-                                    referrerPolicy="no-referrer"
-                                    onError={() => setBillViewSlipFailed((prev) => new Set(prev).add(idx))}
-                                  />
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  <div>
-                    <h4 className="font-semibold text-gray-700 mb-2">รายการสินค้า</h4>
-                    <div className="border border-gray-200 rounded-lg overflow-hidden">
-                      <table className="w-full text-sm">
-                        <thead className="bg-gray-50">
-                          <tr>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-700">ชื่อสินค้า</th>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-700">จำนวน</th>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-700">ราคา/หน่วย</th>
-                            <th className="px-3 py-2 text-right font-semibold text-gray-700">รวม</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {((viewOrder as any).or_order_items || (viewOrder as any).order_items || []).map((item: any) => (
-                            <tr key={item.id} className="border-t border-gray-100">
-                              <td className="px-3 py-2 text-gray-800">{item.product_name || '–'}</td>
-                              <td className="px-3 py-2 text-gray-700">{item.quantity ?? '–'}</td>
-                              <td className="px-3 py-2 text-gray-700">฿{Number(item.unit_price || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                              <td className="px-3 py-2 text-right font-medium text-gray-800">฿{Number((item.quantity || 0) * (item.unit_price || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                  <div className="flex justify-end">
-                    <div className="w-64 space-y-1">
-                      <div className="flex justify-between py-1 border-b border-gray-100">
-                        <span className="font-medium text-gray-600">ส่วนลด</span>
-                        <span className={`tabular-nums ${Number((viewOrder as any).discount || 0) > 0 ? 'text-red-600' : 'text-gray-800'}`}>
-                          {Number((viewOrder as any).discount || 0) > 0 ? '-' : ''}฿{Number((viewOrder as any).discount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                        </span>
-                      </div>
-                      <div className="flex justify-between py-1 border-b border-gray-100">
-                        <span className="font-medium text-gray-600">ค่าขนส่ง</span>
-                        <span className="tabular-nums text-gray-800">฿{Number((viewOrder as any).shipping_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                      </div>
-                      <div className="flex justify-between py-2 px-3 rounded-lg bg-sky-50">
-                        <span className="font-semibold text-gray-700">ยอดรวม</span>
-                        <span className="font-bold tabular-nums text-emerald-600">฿{Number(viewOrder.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                      </div>
-                    </div>
-                  </div>
-                  {(() => {
-                    const bd: any = viewOrder.billing_details || {}
-                    const hasTaxInvoice = bd.request_tax_invoice || bd.tax_customer_name || bd.tax_id || bd.tax_customer_address
-                    if (!hasTaxInvoice) return null
-                    return (
-                      <div className="rounded-xl border border-sky-200 bg-sky-50/60 p-4 space-y-3">
-                        <div className="flex items-center gap-2">
-                          <svg className="w-4 h-4 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                          <h4 className="font-semibold text-gray-800">ข้อมูลใบกำกับภาษี</h4>
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
-                          <p className="sm:col-span-2">
-                            <span className="font-medium text-gray-600">ชื่อบริษัท/ผู้เสียภาษี:</span>{' '}
-                            <span className="text-gray-800">{bd.tax_customer_name || '–'}</span>
-                          </p>
-                          <p>
-                            <span className="font-medium text-gray-600">เลขประจำตัวผู้เสียภาษี:</span>{' '}
-                            <span className="text-gray-800 tabular-nums">{bd.tax_id || '–'}</span>
-                          </p>
-                          <p>
-                            <span className="font-medium text-gray-600">เบอร์โทร:</span>{' '}
-                            <span className="text-gray-800">{bd.tax_customer_phone || '–'}</span>
-                          </p>
-                          <p className="sm:col-span-2">
-                            <span className="font-medium text-gray-600">ที่อยู่:</span>{' '}
-                            <span className="text-gray-800">{bd.tax_customer_address || '–'}</span>
-                          </p>
-                        </div>
-                      </div>
-                    )
-                  })()}
-                </div>
-              ) : (
-                <p className="text-gray-500">ไม่พบข้อมูลบิล</p>
-              )}
-            </div>
-        </Modal>
-      )}
-
       {/* Modal แจ้งผลหลังอนุมัติ/ปฏิเสธโอนคืน */}
       <Modal
         open={refundResultModal.open}
@@ -2504,6 +2379,227 @@ export default function Account() {
       )}
 
         </>
+      )}
+
+      {/* รายการยกเลิกใช้รายละเอียดบิลมาตรฐานเดียวกับหน้าออเดอร์ */}
+      {viewOrderId && accountSection === 'cancelled-bills' && (
+        <Modal
+          open
+          onClose={() => { setViewOrderId(null); setViewBillRefund(null) }}
+          closeOnBackdropClick
+          contentClassName="max-w-[96vw] w-full"
+          showCloseButton={viewOrderLoading || !viewOrder}
+        >
+          {viewOrderLoading ? (
+            <div className="flex items-center justify-center gap-3 p-12 text-gray-500" role="status">
+              <span className="h-8 w-8 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+              กำลังโหลดรายละเอียดบิล...
+            </div>
+          ) : viewOrder ? (
+            <OrderDetailView
+              key={viewOrder.id}
+              order={viewOrder}
+              onClose={() => { setViewOrderId(null); setViewBillRefund(null) }}
+              readOnly
+            />
+          ) : (
+            <div className="p-8 text-center" role="alert">
+              <p className="text-gray-600">ไม่สามารถโหลดรายละเอียดบิลได้</p>
+              <button type="button" onClick={() => void fetchOrderForView(viewOrderId)} className="mt-3 text-blue-600 hover:underline">ลองอีกครั้ง</button>
+            </div>
+          )}
+        </Modal>
+      )}
+
+      {/* Modal ดูข้อมูลบิลสำหรับรายการบัญชีอื่น */}
+      {viewOrderId && accountSection !== 'cancelled-bills' && (
+        <Modal
+          open
+          onClose={() => { setViewOrderId(null); setViewBillRefund(null) }}
+          closeOnBackdropClick
+          contentClassName="max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col"
+        >
+            <div className="px-6 py-4 border-b border-gray-200">
+              <h3 className="text-lg font-semibold text-gray-800">ข้อมูลบิล (ดูอย่างเดียว)</h3>
+            </div>
+            <div className="p-6 overflow-y-auto flex-1 text-base">
+              {viewOrderLoading ? (
+                <div className="flex justify-center py-12">
+                  <div className="animate-spin rounded-full h-8 w-8 border-2 border-sky-500 border-t-transparent" />
+                </div>
+              ) : viewOrder ? (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <p className="flex items-center gap-2">
+                      <span className="font-medium text-gray-600">เลขบิล:</span>
+                      <span>{viewOrder.bill_no}</span>
+                      {((viewOrder as any).claim_type != null || (viewOrder.bill_no || '').startsWith('REQ')) && (
+                        <span className="px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
+                      )}
+                    </p>
+                    <p><span className="font-medium text-gray-600">สถานะ:</span> {viewOrder.status}</p>
+                    <p className="col-span-2"><span className="font-medium text-gray-600">ลูกค้า:</span> {viewOrder.customer_name}</p>
+                    {(() => {
+                      const parts = splitAddressParts(viewOrder.customer_address, (viewOrder as any).recipient_name)
+                      const recipient = ((viewOrder as any).recipient_name || '').trim() || parts.recipientName
+                      const phone = (viewOrder.billing_details?.mobile_phone || '').trim() || parts.phone
+                      const addr = parts.address || viewOrder.customer_address || '–'
+                      return (
+                        <>
+                          {recipient && <p className="col-span-2"><span className="font-medium text-gray-600">ชื่อผู้รับ:</span> {recipient}</p>}
+                          <p className="col-span-2"><span className="font-medium text-gray-600">ที่อยู่:</span> {addr}</p>
+                          {phone && <p className="col-span-2"><span className="font-medium text-gray-600">เบอร์โทร:</span> {phone}</p>}
+                        </>
+                      )
+                    })()}
+                    <p className="col-span-2"><span className="font-medium text-gray-600">วันที่สร้าง:</span> {formatDateTime(viewOrder.created_at)}</p>
+                  </div>
+                  {viewBillRefund && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-4 space-y-3">
+                      <h4 className="font-semibold text-gray-800">รายละเอียดการโอนเกิน</h4>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+                        <p className="sm:col-span-2">
+                          <span className="font-medium text-gray-600">ชื่อบัญชีรับคืน:</span>{' '}
+                          <span className="text-gray-800">{viewBillRefund.refund_recipient_account_name?.trim() || '–'}</span>
+                        </p>
+                        <p>
+                          <span className="font-medium text-gray-600">ธนาคาร:</span>{' '}
+                          <span className="text-gray-800">{viewBillRefund.refund_recipient_bank?.trim() || '–'}</span>
+                        </p>
+                        <p>
+                          <span className="font-medium text-gray-600">เลขบัญชี:</span>{' '}
+                          <span className="text-gray-800 font-mono tabular-nums">{viewBillRefund.refund_recipient_account_number?.trim() || '–'}</span>
+                        </p>
+                        <p className="sm:col-span-2">
+                          <span className="font-medium text-gray-600">จำนวนเงินคืน:</span>{' '}
+                          <span className="text-emerald-700 font-semibold tabular-nums">฿{viewBillRefund.amount.toLocaleString()}</span>
+                        </p>
+                        <p className="sm:col-span-2">
+                          <span className="font-medium text-gray-600">เหตุผลโอนเกิน:</span>{' '}
+                          <span className="text-gray-800">{formatRefundReason(viewBillRefund.reason)}</span>
+                        </p>
+                        {viewBillRefund.refund_recipient_reason?.trim() && (
+                          <p className="sm:col-span-2">
+                            <span className="font-medium text-gray-600">เหตุผลโอนคืน:</span>{' '}
+                            <span className="text-gray-800">{viewBillRefund.refund_recipient_reason.trim()}</span>
+                          </p>
+                        )}
+                      </div>
+                      <div>
+                        <p className="font-medium text-gray-600 text-sm mb-2">รูปสลิปโอน</p>
+                        {billViewSlipLoading ? (
+                          <div className="flex justify-center py-6">
+                            <div className="animate-spin rounded-full h-8 w-8 border-2 border-amber-500 border-t-transparent" />
+                          </div>
+                        ) : billViewSlipUrls.length === 0 ? (
+                          <p className="text-sm text-gray-500">ไม่พบภาพสลิปของบิลนี้</p>
+                        ) : (
+                          <div className="space-y-3">
+                            {billViewSlipUrls.map((url, idx) => (
+                              <div key={idx} className="flex justify-center">
+                                {billViewSlipFailed.has(idx) ? (
+                                  <div className="flex flex-col items-center justify-center py-6 px-4 rounded-lg border border-amber-200 bg-white text-amber-800 w-full max-w-md">
+                                    <p className="font-medium text-sm">โหลดรูปไม่สำเร็จ</p>
+                                    <a href={url} target="_blank" rel="noopener noreferrer" className="mt-2 text-xs text-sky-600 hover:underline">
+                                      เปิดในแท็บใหม่
+                                    </a>
+                                  </div>
+                                ) : (
+                                  <img
+                                    src={url}
+                                    alt={`สลิปโอน ${idx + 1}`}
+                                    className="max-w-full max-h-[min(28rem,55vh)] w-auto h-auto rounded-lg border border-gray-200 shadow-sm object-contain"
+                                    referrerPolicy="no-referrer"
+                                    onError={() => setBillViewSlipFailed((prev) => new Set(prev).add(idx))}
+                                  />
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  <div>
+                    <h4 className="font-semibold text-gray-700 mb-2">รายการสินค้า</h4>
+                    <div className="border border-gray-200 rounded-lg overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th className="px-3 py-2 text-left font-semibold text-gray-700">ชื่อสินค้า</th>
+                            <th className="px-3 py-2 text-left font-semibold text-gray-700">จำนวน</th>
+                            <th className="px-3 py-2 text-left font-semibold text-gray-700">ราคา/หน่วย</th>
+                            <th className="px-3 py-2 text-right font-semibold text-gray-700">รวม</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {((viewOrder as any).or_order_items || (viewOrder as any).order_items || []).map((item: any) => (
+                            <tr key={item.id} className="border-t border-gray-100">
+                              <td className="px-3 py-2 text-gray-800">{item.product_name || '–'}</td>
+                              <td className="px-3 py-2 text-gray-700">{item.quantity ?? '–'}</td>
+                              <td className="px-3 py-2 text-gray-700">฿{Number(item.unit_price || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                              <td className="px-3 py-2 text-right font-medium text-gray-800">฿{Number((item.quantity || 0) * (item.unit_price || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <div className="w-64 space-y-1">
+                      <div className="flex justify-between py-1 border-b border-gray-100">
+                        <span className="font-medium text-gray-600">ส่วนลด</span>
+                        <span className={`tabular-nums ${Number((viewOrder as any).discount || 0) > 0 ? 'text-red-600' : 'text-gray-800'}`}>
+                          {Number((viewOrder as any).discount || 0) > 0 ? '-' : ''}฿{Number((viewOrder as any).discount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                      <div className="flex justify-between py-1 border-b border-gray-100">
+                        <span className="font-medium text-gray-600">ค่าขนส่ง</span>
+                        <span className="tabular-nums text-gray-800">฿{Number((viewOrder as any).shipping_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      </div>
+                      <div className="flex justify-between py-2 px-3 rounded-lg bg-sky-50">
+                        <span className="font-semibold text-gray-700">ยอดรวม</span>
+                        <span className="font-bold tabular-nums text-emerald-600">฿{Number(viewOrder.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      </div>
+                    </div>
+                  </div>
+                  {(() => {
+                    const bd: any = viewOrder.billing_details || {}
+                    const hasTaxInvoice = bd.request_tax_invoice || bd.tax_customer_name || bd.tax_id || bd.tax_customer_address
+                    if (!hasTaxInvoice) return null
+                    return (
+                      <div className="rounded-xl border border-sky-200 bg-sky-50/60 p-4 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <svg className="w-4 h-4 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                          <h4 className="font-semibold text-gray-800">ข้อมูลใบกำกับภาษี</h4>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+                          <p className="sm:col-span-2">
+                            <span className="font-medium text-gray-600">ชื่อบริษัท/ผู้เสียภาษี:</span>{' '}
+                            <span className="text-gray-800">{bd.tax_customer_name || '–'}</span>
+                          </p>
+                          <p>
+                            <span className="font-medium text-gray-600">เลขประจำตัวผู้เสียภาษี:</span>{' '}
+                            <span className="text-gray-800 tabular-nums">{bd.tax_id || '–'}</span>
+                          </p>
+                          <p>
+                            <span className="font-medium text-gray-600">เบอร์โทร:</span>{' '}
+                            <span className="text-gray-800">{bd.tax_customer_phone || '–'}</span>
+                          </p>
+                          <p className="sm:col-span-2">
+                            <span className="font-medium text-gray-600">ที่อยู่:</span>{' '}
+                            <span className="text-gray-800">{bd.tax_customer_address || '–'}</span>
+                          </p>
+                        </div>
+                      </div>
+                    )
+                  })()}
+                </div>
+              ) : (
+                <p className="text-gray-500">ไม่พบข้อมูลบิล</p>
+              )}
+            </div>
+        </Modal>
       )}
 
     </div>
