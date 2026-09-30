@@ -1,4 +1,7 @@
-import { renderPickingSlipCanvas } from '../../lib/pickingSlipCanvas'
+import type { PickingSlipStatus } from '../../lib/pickingSlipStatus'
+import { fetchPickingRouting, fetchPickingSlipStatuses, recordPickingSlipPrint } from '../../lib/pickingSlipApi'
+import PickingSlipPreview from './PickingSlipPreview'
+import { pickingDestination, type PickingSlipData, type PickingMainRow, type PickingSpareRow, type PickingSubRow } from '../../lib/pickingSlipData'
 import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import { buildIlikeOr } from '../../lib/searchFilter'
@@ -9,7 +12,7 @@ import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import OrderDetailView from './OrderDetailView'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
-import { FiChevronLeft, FiChevronRight } from 'react-icons/fi'
+import { FiChevronLeft, FiChevronRight, FiStar, FiPrinter, FiInbox } from 'react-icons/fi'
 import { extractPhonesFromText, e164ToLocal } from '../../lib/thaiPhone'
 import { isRoleInAllowedList } from '../../config/accessPolicy'
 import {
@@ -24,7 +27,6 @@ import { EXPORT_ITEM_COLUMNS, buildProductionExportRows as buildProductionExport
 import {
   fetchPlanDeptSettings,
   resolvePickingDepartment,
-  deptExportOrder,
   isStampDepartmentName,
 } from '../../lib/planPickingDepartments'
 import { downloadFlashWaybillXlsx } from '../../lib/flashWaybillExport'
@@ -32,15 +34,6 @@ import { resolveWaybillCustomer } from '../../lib/waybillCustomer'
 import { isPhysicalOrderItem } from '../../lib/condoStamp'
 
 export const CLAIM_WORK_ORDER_FILTER = '(Claim)'
-
-function formatThaiBuddhistDate(d: Date = new Date()): string {
-  return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear() + 543}`
-}
-
-function safeFilePart(s: string): string {
-  const t = String(s || '').trim().replace(/[/\\?%*:|"<>]/g, '_')
-  return t || 'export'
-}
 
 /** PostgREST errors are plain objects, so String(error) would hide the real cause. */
 function formatTrackingImportError(error: unknown): string {
@@ -61,23 +54,10 @@ function formatTrackingImportError(error: unknown): string {
   return String(error)
 }
 
-async function downloadPickingSlipPng(
-  opts: Parameters<typeof renderPickingSlipCanvas>[0],
-  fileBase: string
-): Promise<void> {
-  const canvas = await renderPickingSlipCanvas(opts)
-  const link = document.createElement('a')
-  link.download = `${fileBase}.png`
-  link.href = canvas.toDataURL('image/png')
-  link.click()
-}
-
 /** ช่องทางที่ใช้ปุ่ม "เรียงใบปะหน้า" (อ้างอิง file/index.html) */
 const WAYBILL_SORT_CHANNELS = ['FSPTR', 'SPTR', 'TTTR', 'LZTR']
 /** ช่องทางที่ที่อยู่ไม่ส่งไปใบปะหน้า (SHOP แสดงที่อยู่เหมือน FBTR) */
 // const ECOMMERCE_CHANNELS = ['LZTR']
-/** หมวดสินค้าที่ไม่นับเป็นสินค้าหลัก (นับเป็นอะไหล่เท่านั้น) */
-const PICKING_EXCLUDED_CATEGORIES = ['UV', 'STK', 'TUBE']
 
 /** ใบงานที่ยกเลิก / ไม่มีบิลในใบงาน (รองรับข้อมูลเก่าที่ order_count=0 แต่ status ยังไม่เป็น ยกเลิก) — ไม่แสดงกับใบงานจัดส่งแล้ว */
 function isWorkOrderCancelledRecord(wo: WorkOrder): boolean {
@@ -127,8 +107,6 @@ interface WorkOrderManageListProps {
 type MessageModal = { open: boolean; message: string }
 /** Modal ยืนยัน พร้อม callback */
 type ConfirmModal = { open: boolean; title: string; message: string; onConfirm: () => void }
-/** Modal ใบเบิก — สินค้าหลัก + อะไหล่ (หน้ายาง/โฟม) ตามต้นฉบับ */
-type PickingSlipModal = { open: boolean; workOrderName: string | null; mainItems: PickingMainRow[]; spareItems: PickingSpareRow[] }
 /** Modal นำเข้าเลขพัสดุ */
 type ImportTrackingModal = { open: boolean; workOrderName: string | null }
 type TrackingImportPhase = 'idle' | 'reading' | 'conflict' | 'importing' | 'refreshing' | 'completed' | 'error'
@@ -173,11 +151,6 @@ type WaybillSorterModal = { open: boolean; workOrderName: string | null; trackin
 interface WaybillPreviewRow { billNo: string; addressRaw: string; consigneeName: string; address: string; postalCode: string; phone1: string; phone2: string; cod: string }
 /** Modal Preview ใบปะหน้า */
 type WaybillPreviewModal = { open: boolean; workOrderName: string | null; rows: WaybillPreviewRow[] }
-/** สินค้าหลัก: จุดเก็บ, รหัส, รายการ, จำนวนเบิก, แผนก (จากตั้งค่า Plan) */
-interface PickingMainRow { woName: string; code: string; name: string; location: string; finalQty: number; dept: string }
-/** อะไหล่ — ข้อความตาม รหัสหน้ายาง (rubber_code) ในสินค้า */
-interface PickingSpareRow { label: string; qty: number }
-
 const TRACKING_IMPORT_BATCH_SIZE = 100
 const TRACKING_IMPORT_STATUS_LABELS: Record<TrackingImportDetail['status'], string> = {
   updated: 'สำเร็จ',
@@ -214,6 +187,21 @@ export default function WorkOrderManageList({
 }: WorkOrderManageListProps) {
   const { user } = useAuthContext()
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([])
+  const [pickingStatuses, setPickingStatuses] = useState<Record<string, PickingSlipStatus>>({})
+  const [pickingStatusError, setPickingStatusError] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    setPickingStatuses({})
+    setPickingStatusError(false)
+    fetchPickingSlipStatuses(workOrders.map((order) => order.id)).then((statuses) => {
+      if (!cancelled) setPickingStatuses(statuses)
+    }).catch((error) => {
+      console.error('Load picking slip statuses:', error)
+      if (!cancelled) setPickingStatusError(true)
+    })
+    return () => { cancelled = true }
+  }, [workOrders])
+
   const [channelByWo, setChannelByWo] = useState<Record<string, string>>({}) // key = work_order_id
   /** ใบงานที่มีบิลเคลม (REQ) — ใช้ปุ่มชุดเดียวกับ FBTR (Export ใบปะหน้า + นำเข้าเลขพัสดุ) */
   const [claimByWo, setClaimByWo] = useState<Record<string, boolean>>({})
@@ -234,12 +222,7 @@ export default function WorkOrderManageList({
   /** Modal แสดงสถานะกำลัง Export — กันกดซ้ำระหว่างสร้างไฟล์ */
   const [exportLoading, setExportLoading] = useState<{ open: boolean; message: string }>({ open: false, message: '' })
   const [confirmModal, setConfirmModal] = useState<ConfirmModal>({ open: false, title: '', message: '', onConfirm: () => {} })
-  const [pickingSlipModal, setPickingSlipModal] = useState<PickingSlipModal>({
-    open: false,
-    workOrderName: null,
-    mainItems: [],
-    spareItems: [],
-  })
+  const [pickingSlipModal, setPickingSlipModal] = useState<(PickingSlipData & { workOrderId: string }) | null>(null)
   const [importTrackingModal, setImportTrackingModal] = useState<ImportTrackingModal>({ open: false, workOrderName: null })
   const [trackingImportProgress, setTrackingImportProgress] = useState<TrackingImportProgress>(EMPTY_TRACKING_IMPORT_PROGRESS)
   const [pendingTrackingRows, setPendingTrackingRows] = useState<TrackingImportRow[]>([])
@@ -1236,6 +1219,7 @@ export default function WorkOrderManageList({
   }
 
   async function openPickingSlipModal(workOrderId: string, workOrderName: string) {
+    setUpdating(true)
     try {
       const orders = await fetchOrdersWithItems(workOrderId)
       const itemList: Array<{ product_id: string; product_name: string; quantity?: number; product_type?: string | null; is_detail_row?: boolean | null; parent_item_id?: string | null; product_category?: string; product_code?: string; storage_location?: string; rubber_code?: string }> = []
@@ -1248,13 +1232,15 @@ export default function WorkOrderManageList({
         return
       }
       const productIds = [...new Set(itemList.map((i) => i.product_id).filter(Boolean))]
+      const routing = await fetchPickingRouting(productIds)
       const productMap: Record<string, { product_code?: string; storage_location?: string; product_category?: string; rubber_code?: string }> = {}
-      if (productIds.length > 0) {
-        const { data: products } = await supabase
+      for (let offset = 0; offset < productIds.length; offset += 200) {
+        const { data: products, error: productsError } = await supabase
           .from('pr_products')
           .select('id, product_code, storage_location, product_category, rubber_code')
-          .in('id', productIds)
-        ;(products || []).forEach((p: any) => {
+          .in('id', productIds.slice(offset, offset + 200))
+        if (productsError) throw productsError
+        ;(products || []).forEach((p) => {
           productMap[p.id] = { product_code: p.product_code, storage_location: p.storage_location, product_category: p.product_category, rubber_code: p.rubber_code }
         })
       }
@@ -1267,6 +1253,7 @@ export default function WorkOrderManageList({
       })).filter(isPhysicalOrderItem)
 
       type MainRowWithCat = {
+        productId: string
         woName: string
         code: string
         name: string
@@ -1276,7 +1263,6 @@ export default function WorkOrderManageList({
       }
       const mainMap = new Map<string, MainRowWithCat>()
       itemsInWorkOrder
-        .filter((item) => !PICKING_EXCLUDED_CATEGORIES.some((ex) => (item.product_category || '').toUpperCase().includes(ex)))
         .forEach((item) => {
           const key = item.product_id
           const existing = mainMap.get(key)
@@ -1288,21 +1274,28 @@ export default function WorkOrderManageList({
           if (existing) {
             existing.finalQty += lineQty
           } else {
-            mainMap.set(key, { woName: workOrderName, code, name, location, finalQty: lineQty, _category: rawCategory })
+            mainMap.set(key, { productId: key, woName: workOrderName, code, name, location, finalQty: lineQty, _category: rawCategory })
           }
         })
       const withCatList = Array.from(mainMap.values())
       const planDeptSettings = await fetchPlanDeptSettings()
-      const finalMainList: PickingMainRow[] = withCatList
-        .map((item) => ({
-          woName: item.woName,
-          code: item.code,
-          name: item.name,
-          location: item.location,
-          finalQty: item.finalQty,
-          dept: resolvePickingDepartment(item._category, planDeptSettings, item.name),
-        }))
-        .sort((a, b) => a.location.localeCompare(b.location))
+      const finalMainList: PickingMainRow[] = []
+      const finalSubList: PickingSubRow[] = []
+      const finalNonPickList: PickingMainRow[] = []
+      for (const item of withCatList) {
+        const warehouses = routing.warehouses.get(item.productId) ?? []
+        const destination = pickingDestination(item._category, warehouses, routing.excluded)
+        const row: PickingMainRow = {
+          woName: item.woName, code: item.code, name: item.name, location: item.location,
+          finalQty: item.finalQty, dept: resolvePickingDepartment(item._category, planDeptSettings, item.name),
+        }
+        if (destination === 'main') finalMainList.push(row)
+        else if (destination === 'sub') finalSubList.push({ ...row, warehouse: warehouses.join(' / ') })
+        else finalNonPickList.push(row)
+      }
+      finalMainList.sort((a, b) => a.location.localeCompare(b.location) || a.code.localeCompare(b.code))
+      finalNonPickList.sort((a, b) => a.code.localeCompare(b.code))
+      finalSubList.sort((a, b) => a.warehouse.localeCompare(b.warehouse, 'th') || a.code.localeCompare(b.code))
 
       const spareMap = new Map<string, PickingSpareRow>()
       itemsInWorkOrder.forEach((item) => {
@@ -1318,87 +1311,15 @@ export default function WorkOrderManageList({
         (a.label || '').localeCompare(b.label || '', 'th')
       )
 
-      if (finalMainList.length === 0 && finalSpareList.length === 0) {
+      if (finalMainList.length === 0 && finalSpareList.length === 0 && finalSubList.length === 0 && finalNonPickList.length === 0) {
         setMessageModal({ open: true, message: 'ไม่พบสินค้าในใบงานนี้' })
         return
       }
-      setPickingSlipModal({ open: true, workOrderName, mainItems: finalMainList, spareItems: finalSpareList })
+      setPickingSlipModal({ workOrderId, workOrderName, mainItems: finalMainList, spareItems: finalSpareList, subItems: finalSubList, nonPickItems: finalNonPickList, spareDept: planDeptSettings.departments.find(isStampDepartmentName) ?? 'STAMP', departments: planDeptSettings.departments })
     } catch (err: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + (err?.message ?? err) })
-    }
-  }
-
-  async function exportAllPickingFinal(format: 'all' | 'png' = 'all') {
-    const { workOrderName, mainItems, spareItems } = pickingSlipModal
-    if (!workOrderName) return
-    try {
-      const deptSettings = await fetchPlanDeptSettings()
-      const stampLabel = deptSettings.departments.find((d) => isStampDepartmentName(d)) ?? 'STAMP'
-      const byDept: Record<string, PickingMainRow[]> = {}
-      for (const row of mainItems) {
-        if (!byDept[row.dept]) byDept[row.dept] = []
-        byDept[row.dept].push(row)
-      }
-      if (spareItems.length > 0 && !byDept[stampLabel]) {
-        byDept[stampLabel] = []
-      }
-      const candidateKeys = Object.keys(byDept).filter((d) => {
-        const n = byDept[d]?.length ?? 0
-        if (n > 0) return true
-        return spareItems.length > 0 && d === stampLabel
-      })
-      const ordered = deptExportOrder(deptSettings, candidateKeys)
-      const dateStr = formatThaiBuddhistDate()
-      for (let i = 0; i < ordered.length; i++) {
-        const d = ordered[i]
-        const rows = (byDept[d] || []).slice().sort((a, b) => a.location.localeCompare(b.location))
-        try {
-          await downloadPickingSlipPng(
-            {
-              workOrderName,
-              deptTitle: d,
-              buddhistDateStr: dateStr,
-              rows,
-              spareItems,
-              showSpareSummary: isStampDepartmentName(d) && spareItems.length > 0,
-            },
-            `ใบเบิก_${safeFilePart(workOrderName)}_${safeFilePart(d)}`
-          )
-        } catch (error) {
-          if (format === 'png') throw error
-          /* PNG รายแผนกล้มเหลว — ข้าม */
-        }
-        if (i < ordered.length - 1) await new Promise((r) => setTimeout(r, 750))
-      }
-
-      if (format === 'png') return
-
-      const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`
-      const csvRows: string[] = []
-      csvRows.push(['รหัสทำรายการ', 'แผนก', 'รหัสสินค้า', 'รายการสินค้า', 'จุดเก็บ', 'จำนวนเบิก'].join(','))
-      mainItems.forEach((item) => {
-        csvRows.push(
-          [esc(item.woName), esc(item.dept), esc(item.code), esc(item.name), esc(item.location), item.finalQty].join(',')
-        )
-      })
-      if (spareItems.length > 0) {
-        csvRows.push('')
-        csvRows.push(esc('อะไหล่ (หน้ายาง/โฟม) — รวมทั้งใบงาน'))
-        csvRows.push(['รายการอะไหล่ (รหัสหน้ายาง)', 'จำนวนรวม'].join(','))
-        spareItems.forEach((item) => {
-          csvRows.push([esc(item.label), item.qty].join(','))
-        })
-      }
-      const csvContent = '\uFEFF' + csvRows.join('\n')
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = `ใบเบิก_${safeFilePart(workOrderName)}.csv`
-      link.click()
-      URL.revokeObjectURL(url)
-    } catch (err: any) {
-      setMessageModal({ open: true, message: 'เกิดข้อผิดพลาดในการ Export: ' + (err?.message ?? err) })
+    } finally {
+      setUpdating(false)
     }
   }
 
@@ -1763,6 +1684,12 @@ export default function WorkOrderManageList({
                     >
                       ทำใบเบิก
                     </button>
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-semibold ${pickingStatuses[wo.id] === 'printed' ? 'bg-green-50 text-green-700' : pickingStatuses[wo.id] === 'new' ? 'bg-blue-50 text-blue-700' : 'bg-gray-100 text-gray-500'}`}
+                      title={pickingStatusError ? 'ตรวจสอบสถานะไม่ได้ กรุณาลองรีเฟรช' : pickingStatuses[wo.id] === 'printed' ? 'เคยเปิดหน้าต่างพิมพ์แล้ว ไม่ได้ยืนยันว่าพิมพ์สำเร็จ' : pickingStatuses[wo.id] === 'empty' ? 'ไม่มีสินค้าเบิกหรืออะไหล่ที่ต้องหยิบ' : undefined}
+                    >
+                      {pickingStatuses[wo.id] === 'printed' ? <><FiPrinter aria-hidden="true" /> ปริ้นแล้ว</> : pickingStatuses[wo.id] === 'new' ? <><FiStar aria-hidden="true" /> ใหม่</> : pickingStatuses[wo.id] === 'empty' ? <><FiInbox aria-hidden="true" /> ไม่มีรายการ</> : pickingStatusError ? 'ตรวจสอบไม่ได้' : 'กำลังตรวจสอบ...'}
+                    </span>
                     <button
                       type="button"
                       onClick={(e) => onHeaderButtonClick(e, () => exportProduction(wo.id, displayWorkOrderName))}
@@ -1972,92 +1899,12 @@ export default function WorkOrderManageList({
         </div>
       </Modal>
 
-      {/* Modal ใบเบิก — ตามต้นฉบับ: สินค้าหลัก + อะไหล่ (หน้ายาง/โฟม) */}
-      <Modal open={pickingSlipModal.open} onClose={() => setPickingSlipModal({ open: false, workOrderName: null, mainItems: [], spareItems: [] })} contentClassName="max-w-6xl w-full">
-        <div className="p-5">
-          <h2 className="text-lg font-bold text-gray-900 mb-4">ใบเบิก: {pickingSlipModal.workOrderName}</h2>
-
-          <div className="space-y-4">
-            {/* สินค้าหลัก */}
-            <div>
-              <h3 className="text-base font-semibold text-gray-900 mb-2 flex items-center gap-2">
-                <span className="text-xl" role="img" aria-label="สินค้าหลัก">📦</span>
-                สินค้าหลัก
-              </h3>
-              <div className="overflow-x-auto max-h-64 border border-gray-200 rounded-lg">
-                <table className="w-full text-sm border-collapse">
-                  <thead className="bg-gray-100">
-                    <tr>
-                      <th className="p-2 text-left border-b border-gray-200 w-[20%]">จุดเก็บ</th>
-                      <th className="p-2 text-left border-b border-gray-200 w-[16%]">รหัส</th>
-                      <th className="p-2 text-left border-b border-gray-200 w-[14%]">แผนก</th>
-                      <th className="p-2 text-left border-b border-gray-200 min-w-[36%]">รายการ</th>
-                      <th className="p-2 text-center border-b border-gray-200 w-[10%]">จำนวน</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pickingSlipModal.mainItems.map((row, i) => (
-                      <tr key={i} className="border-b border-gray-100">
-                        <td className="p-2">{row.location}</td>
-                        <td className="p-2">{row.code}</td>
-                        <td className="p-2 text-gray-700">{row.dept}</td>
-                        <td className="p-2">{row.name}</td>
-                        <td className="p-2 text-center">{row.finalQty}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* อะไหล่ (หน้ายาง/โฟม) */}
-            {pickingSlipModal.spareItems.length > 0 && (
-              <div>
-                <h3 className="text-base font-semibold text-gray-900 mb-2 flex items-center gap-2">
-                  <span className="text-xl" role="img" aria-label="อะไหล่">🔧</span>
-                  อะไหล่ (หน้ายาง/โฟม)
-                </h3>
-                <div className="overflow-x-auto border border-gray-200 rounded-lg">
-                  <table className="w-full text-sm border-collapse">
-                    <thead className="bg-gray-100">
-                      <tr>
-                        <th className="p-2 text-left border-b border-gray-200">รายการอะไหล่</th>
-                        <th className="p-2 text-center border-b border-gray-200 w-24">จำนวน</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pickingSlipModal.spareItems.map((row, i) => (
-                        <tr key={i} className="border-b border-gray-100">
-                          <td className="p-2">{row.label}</td>
-                          <td className="p-2 text-center tabular-nums">{row.qty}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="flex flex-wrap gap-2 justify-end mt-4">
-            <button
-              type="button"
-              onClick={() => exportAllPickingFinal('png')}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-white font-medium bg-blue-600 hover:bg-blue-700"
-            >
-              ดาวน์โหลด PNG
-            </button>
-            <button
-              type="button"
-              onClick={() => exportAllPickingFinal('all')}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-white font-medium bg-[#6610f2] hover:bg-[#5a0dd9]"
-            >
-              <span role="img" aria-label="export">🚀</span>
-              Export All (PNG, CSV)
-            </button>
-          </div>
-        </div>
-      </Modal>
+      {pickingSlipModal && <PickingSlipPreview data={pickingSlipModal} onClose={() => setPickingSlipModal(null)} onPrintOpened={async () => {
+        const id = pickingSlipModal.workOrderId
+        await recordPickingSlipPrint(id)
+        const hasItems = pickingSlipModal.mainItems.length > 0 || pickingSlipModal.spareItems.length > 0
+        setPickingStatuses((prev) => ({ ...prev, [id]: hasItems ? 'printed' : 'empty' }))
+      }} />}
 
       {/* Modal นำเข้าเลขพัสดุ */}
       <Modal open={importTrackingModal.open} onClose={closeImportTrackingModal} contentClassName="max-w-2xl w-full">

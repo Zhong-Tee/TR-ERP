@@ -417,6 +417,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         '/purchase/pr',
         '/purchase/po',
         '/purchase/gr',
+        '/purchase/receiving-cases',
       ].includes(location.pathname)
     ) {
       loadCounts()

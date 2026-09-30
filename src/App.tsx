@@ -39,6 +39,7 @@ import InventoryBalanceHistory from './pages/InventoryBalanceHistory'
 import PurchasePR from './pages/PurchasePR'
 import PurchasePO from './pages/PurchasePO'
 import PurchaseGR from './pages/PurchaseGR'
+import PurchaseReceivingCases from './pages/PurchaseReceivingCases'
 import PurchaseSample from './pages/PurchaseSample'
 import DashboardPage from './pages/Dashboard'
 import Marketplace from './pages/Marketplace'
@@ -589,6 +590,7 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
+      <Route path="/purchase/receiving-cases" element={<ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store', 'account']}><Layout><PurchaseReceivingCases /></Layout></ProtectedRoute>} />
       <Route
         path="/purchase/sample"
         element={

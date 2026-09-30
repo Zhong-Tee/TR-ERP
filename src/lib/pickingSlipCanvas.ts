@@ -1,120 +1,137 @@
-type PickingSlipOptions = {
-  workOrderName: string
-  deptTitle: string
-  buddhistDateStr: string
-  rows: { location: string; code: string; name: string; finalQty: number }[]
-  spareItems: { label: string; qty: number }[]
-  showSpareSummary: boolean
-}
+import { PAPER_MM, type PaperSize, type PickingSlipData } from './pickingSlipData'
 
-/** Draw text directly: HTML screenshot font baselines can shift Thai text down. */
-export async function renderPickingSlipCanvas(opts: PickingSlipOptions): Promise<HTMLCanvasElement> {
-  await document.fonts.load('13px "Tahoma"', 'ตรายางคอนโด')
+/** Preview, PNG and print all use these exact paginated pages. */
+export async function renderPickingSlipPages(data: PickingSlipData, paper: PaperSize, department: string): Promise<HTMLCanvasElement[]> {
+  const fontSize = paper === 'A5' ? 10 : 14
+  await document.fonts.load(`${fontSize}px Tahoma`, 'ใบเบิกสินค้า')
   await document.fonts.ready
-  const canvas = document.createElement('canvas')
-  const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('ไม่สามารถสร้างภาพใบเบิกได้')
-  const width = 820
+  const [mmWidth, mmHeight] = PAPER_MM[paper]
+  const width = mmWidth * 4
+  const height = mmHeight * 4
   const margin = 32
   const contentWidth = width - margin * 2
-  const font = (bold = false, size = 13) => `${bold ? 700 : 400} ${size}px Tahoma, sans-serif`
-  const commands: (() => void)[] = []
-  let y = 28
-
-  // Wrap by grapheme so Thai combining marks stay with their base character.
+  const bottom = height - 110
+  const lineHeight = paper === 'A5' ? 18 : 21
+  const minRowHeight = paper === 'A5' ? 28 : 32
+  const pages: HTMLCanvasElement[] = []
+  let ctx: CanvasRenderingContext2D
+  let y = 0
+  let pageBodyStart = 0
+  const font = (bold = false, size = fontSize) => `${bold ? 700 : 400} ${size}px Tahoma, sans-serif`
   const segmenter = new Intl.Segmenter('th', { granularity: 'grapheme' })
-  function wrapText(text: string, maxWidth: number): string[] {
+  function wrap(text: string, maxWidth: number, bold = false): string[] {
+    ctx.font = font(bold)
     const lines: string[] = []
     for (const paragraph of text.split('\n')) {
       let line = ''
       for (const { segment } of segmenter.segment(paragraph)) {
-        if (line && ctx!.measureText(line + segment).width > maxWidth) {
-          lines.push(line)
-          line = segment
-        } else line += segment
+        if (line && ctx.measureText(line + segment).width > maxWidth) { lines.push(line); line = segment }
+        else line += segment
       }
       lines.push(line)
     }
     return lines
   }
-
-  function textBox(text: string, x: number, top: number, w: number, h: number, bold = false, align: CanvasTextAlign = 'left', size = 13) {
-    ctx!.font = font(bold, size)
-    const lines = wrapText(text, w - 16)
-    const metrics = lines.map(line => ctx!.measureText(line))
-    const ascent = Math.max(size * 0.7, ...metrics.map(m => m.actualBoundingBoxAscent))
-    const descent = Math.max(0, ...metrics.map(m => m.actualBoundingBoxDescent))
-    const step = Math.max(size * 1.5, ascent + descent + 3)
-    const blockHeight = ascent + descent + (lines.length - 1) * step
-    commands.push(() => {
-      ctx!.font = font(bold, size)
-      ctx!.fillStyle = '#111'
-      ctx!.textBaseline = 'alphabetic'
-      ctx!.textAlign = align
-      const tx = align === 'center' ? x + w / 2 : align === 'right' ? x + w - 8 : x + 8
-      lines.forEach((line, index) => ctx!.fillText(line, tx, top + (h - blockHeight) / 2 + ascent + index * step))
-    })
+  function text(value: string, x: number, top: number, bold = false, size = fontSize) {
+    ctx.font = font(bold, size)
+    ctx.fillStyle = '#111'
+    ctx.textBaseline = 'top'
+    ctx.fillText(value, x, top)
   }
-
-  function tableRow(values: string[], fractions: number[], centered: number[], bold = false, fill?: string) {
-    ctx!.font = font(bold)
-    const lineCount = Math.max(...values.map((value, index) => wrapText(value, contentWidth * fractions[index] - 16).length))
-    const height = Math.max(34, lineCount * 23 + 16)
+  function newPage() {
+    const canvas = document.createElement('canvas')
+    canvas.width = width * 2
+    canvas.height = height * 2
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('ไม่สามารถสร้างหน้ากระดาษได้')
+    ctx = context
+    ctx.scale(2, 2)
+    ctx.fillStyle = '#fff'
+    ctx.fillRect(0, 0, width, height)
+    pages.push(canvas)
+    y = margin
+    for (const line of wrap(`ใบเบิก: ${data.workOrderName}`, contentWidth, true)) {
+      text(line, margin, y, true); y += lineHeight
+    }
+    const date = new Date().toLocaleDateString('th-TH')
+    for (const line of wrap(`แผนก: ${department}     วันที่: ${date}`, contentWidth)) {
+      text(line, margin, y); y += lineHeight
+    }
+    y += 12
+    pageBodyStart = y
+  }
+  function row(lines: string[][], fractions: number[], bold = false) {
+    const rowHeight = Math.max(minRowHeight, Math.max(...lines.map((cell) => cell.length)) * lineHeight + 12)
     let x = margin
-    const top = y
-    values.forEach((value, index) => {
-      const cellX = x
+    lines.forEach((cell, index) => {
       const cellWidth = contentWidth * fractions[index]
-      commands.push(() => {
-        if (fill) {
-          ctx!.fillStyle = fill
-          ctx!.fillRect(cellX, top, cellWidth, height)
-        }
-        ctx!.strokeStyle = '#000'
-        ctx!.lineWidth = 1
-        ctx!.strokeRect(cellX, top, cellWidth, height)
-      })
-      textBox(value, x, top, cellWidth, height, bold, centered.includes(index) ? 'center' : 'left')
+      if (bold) { ctx.fillStyle = '#ededed'; ctx.fillRect(x, y, cellWidth, rowHeight) }
+      ctx.strokeStyle = '#aaa'; ctx.lineWidth = 0.7
+      ctx.strokeRect(x, y, cellWidth, rowHeight)
+      cell.forEach((line, lineIndex) => text(line, x + 5, y + 6 + lineIndex * lineHeight, bold))
       x += cellWidth
     })
-    y += height
+    y += rowHeight
   }
-
-  textBox(`ใบเบิกใบงาน: ${opts.workOrderName}`, margin - 8, y, contentWidth * 0.72, 40, true, 'left', 17)
-  textBox(`วันที่: ${opts.buddhistDateStr}`, margin + contentWidth * 0.72, y, contentWidth * 0.28, 40, true, 'right', 14)
-  y += 52
-  tableRow([`แผนก ${opts.deptTitle}`], [1], [], true, '#e8e8e8')
-  y += 5
-  const columns = [0.20, 0.16, 0.49, 0.15]
-  tableRow(['จุดเก็บ', 'รหัส', 'รายการ', 'จำนวน'], columns, [1, 3], true, '#f4f4f4')
-  opts.rows.forEach(row => tableRow([row.location, row.code, row.name, String(row.finalQty)], columns, [1, 3]))
-  if (opts.showSpareSummary && opts.spareItems.length) {
-    y += 20
-    textBox('รายการอะไหล่รวม', margin - 8, y, contentWidth, 32, true, 'left', 14)
-    y += 32
-    tableRow(['รายการอะไหล่', 'จำนวน'], [0.85, 0.15], [1], true, '#f4f4f4')
-    opts.spareItems.forEach(row => tableRow([row.label, String(row.qty)], [0.85, 0.15], [1]))
+  const sections = [
+    { title: 'สินค้าเบิก', headers: ['#', 'จุดเก็บ', 'รหัส', 'แผนก', 'รายการ', 'จำนวน'], widths: [0.06, 0.20, 0.14, 0.12, 0.40, 0.08],
+      values: data.mainItems.map((r, i) => [String(i + 1), r.location, r.code, r.dept, r.name, String(r.finalQty)]) },
+    { title: 'อะไหล่ (หน้ายาง/โฟม)', startFreshOnOverflow: true, headers: ['#', 'รายการอะไหล่', 'จำนวน'], widths: [0.06, 0.86, 0.08],
+      values: data.spareItems.map((r, i) => [String(i + 1), r.label, String(r.qty)]) },
+    { title: 'สินค้าคลังย่อย', headers: ['#', 'คลังย่อย', 'รหัส', 'รายการ', 'จำนวน'], widths: [0.06, 0.24, 0.14, 0.48, 0.08],
+      values: data.subItems.map((r, i) => [String(i + 1), r.warehouse, r.code, r.name, String(r.finalQty)]) },
+  ]
+  newPage()
+  for (const section of sections) {
+    if (section.values.length === 0) continue
+    const headers = section.headers.map((v, i) => wrap(v, contentWidth * section.widths[i] - 10, true))
+    const headerHeight = Math.max(minRowHeight, Math.max(...headers.map((c) => c.length)) * lineHeight + 12)
+    const values = section.values
+    const measured = values.map((values) => values.map((v, i) => wrap(v, contentWidth * section.widths[i] - 10)))
+    const rowHeight = (cells: string[][]) => Math.max(minRowHeight, Math.max(...cells.map((cell) => cell.length)) * lineHeight + 12)
+    let sectionBodyStart = 0
+    const sectionHeader = (continued: boolean) => {
+      text(section.title + (continued ? ' (ต่อ)' : ''), margin, y, true)
+      y += 30
+      row(headers, section.widths, true)
+      sectionBodyStart = y
+    }
+    // Start spares on a fresh page if the complete table does not fit below
+    // previous content. Tables longer than a page still paginate normally.
+    const sectionHeight = 30 + headerHeight + measured.reduce((sum, cells) => sum + rowHeight(cells), 0)
+    if (section.startFreshOnOverflow && y > pageBodyStart && y + sectionHeight > bottom) newPage()
+    // Keep the section title and header with at least its first row (or row fragment).
+    const firstHeight = Math.min(rowHeight(measured[0]), bottom - pageBodyStart - 30 - headerHeight)
+    if (y + 30 + headerHeight + firstHeight > bottom) newPage()
+    sectionHeader(false)
+    for (const cells of measured) {
+      let remaining = cells.map((cell) => [...cell])
+      if (y + rowHeight(remaining) > bottom && y > sectionBodyStart) {
+        newPage(); sectionHeader(true)
+      }
+      // Exceptionally long descriptions span pages without dropping text.
+      while (remaining.some((cell) => cell.length > 0)) {
+        const availableLines = Math.floor((bottom - y - 12) / lineHeight)
+        if (availableLines < 1) { newPage(); sectionHeader(true); continue }
+        const segment = remaining.map((cell) => cell.slice(0, availableLines))
+        row(segment, section.widths)
+        remaining = remaining.map((cell) => cell.slice(availableLines))
+        if (remaining.some((cell) => cell.length > 0)) {
+          newPage(); sectionHeader(true)
+          // Repeat the original sequence number so a split row remains identifiable.
+          if (!remaining[0].length) remaining[0] = [...cells[0]]
+        }
+      }
+    }
+    y += 18
   }
-  y += 30
-  const signatureTop = y
-  ;['ผู้เบิก', 'ผู้จ่าย'].forEach((label, index) => {
-    const x = margin + index * (contentWidth / 2 + 16)
-    const w = contentWidth / 2 - 16
-    textBox(label, x - 8, signatureTop, w, 28, true)
-    commands.push(() => {
-      ctx!.setLineDash([1, 3])
-      ctx!.beginPath()
-      ctx!.moveTo(x, signatureTop + 56)
-      ctx!.lineTo(x + w, signatureTop + 56)
-      ctx!.stroke()
-      ctx!.setLineDash([])
-    })
+  text('ผู้เบิก ____________________', margin, height - 72)
+  text('ผู้จ่าย ____________________', margin + contentWidth / 2, height - 72)
+  pages.forEach((canvas, index) => {
+    ctx = canvas.getContext('2d')!
+    ctx.textAlign = 'right'
+    text(`หน้า ${index + 1}/${pages.length}`, width - margin, height - 32)
+    ctx.textAlign = 'left'
   })
-  canvas.width = width * 2
-  canvas.height = Math.ceil(y + 84) * 2
-  ctx.scale(2, 2)
-  ctx.fillStyle = '#fff'
-  ctx.fillRect(0, 0, width, canvas.height / 2)
-  commands.forEach(draw => draw())
-  return canvas
+  return pages
 }

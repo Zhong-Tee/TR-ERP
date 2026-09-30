@@ -35,7 +35,7 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
 
 const PR_ALLOWED_ROLES = ['superadmin', 'admin', 'account', 'store']
 const APPROVE_ROLES = ['superadmin', 'admin', 'account']
-const PRICE_VISIBLE_ROLES = ['superadmin', 'account']
+const PRICE_VISIBLE_ROLES = ['superadmin', 'admin', 'account']
 
 function getOpenPRStatusLabel(status: string): string {
   return status === 'pending' ? 'เปิด PR แล้ว (รออนุมัติ)' : 'เปิด PR แล้ว (อนุมัติแล้ว)'

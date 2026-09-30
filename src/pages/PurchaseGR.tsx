@@ -1,3 +1,6 @@
+import { useSearchParams } from 'react-router-dom'
+import { useMenuAccess } from '../contexts/MenuAccessContext'
+import ReceivingCaseForm from '../components/purchase/ReceivingCaseForm'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import Modal from '../components/ui/Modal'
 import { useWmsModal } from '../components/wms/useWmsModal'
@@ -26,10 +29,11 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
 const CLOSED_PO_RESOLUTION_MAP: Record<string, { label: string; color: string }> = {
   refund: { label: 'คืนเงิน', color: 'bg-blue-100 text-blue-800' },
   wrong_item: { label: 'สินค้าผิด', color: 'bg-amber-100 text-amber-800' },
+  vendor_refused: { label: 'ผู้ขายไม่รับผิดชอบ', color: 'bg-red-100 text-red-800' },
   cancelled: { label: 'ยกเลิก', color: 'bg-red-100 text-red-800' },
 }
 
-const FINANCIAL_VISIBLE_ROLES = ['superadmin', 'account']
+const FINANCIAL_VISIBLE_ROLES = ['superadmin', 'admin', 'account']
 
 function getGRDisplayStatus(gr: InventoryGR) {
   const poStatus = (gr.inv_po as any)?.status
@@ -168,9 +172,12 @@ function getStoragePublicUrl(bucket: string | undefined, path: string | undefine
 }
 
 export default function PurchaseGR() {
+  const [searchParams] = useSearchParams()
+  const { hasAccess } = useMenuAccess()
   const { user } = useAuthContext()
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
   const canSeeFinancial = FINANCIAL_VISIBLE_ROLES.includes(user?.role || '')
+  const canSeeShipping = Boolean(user)
   /** role มือถือที่รับสินค้า (picker/manager/auditor) ให้กรอกค่าขนส่งในประเทศตอน GR ได้ด้วย */
   const canEnterGrShipping = canSeeFinancial || ['picker', 'manager', 'auditor'].includes(user?.role || '')
   /** ฝังใน Manager mobile (พื้นหลัง slate-900) — โทนมืด; picker ใช้ธีมสว่างตามแอป (bg-gray-50) */
@@ -180,14 +187,15 @@ export default function PurchaseGR() {
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState('all')
   const [typeFilter, setTypeFilter] = useState('all')
-  const [search, setSearch] = useState('')
-  const [dateFrom, setDateFrom] = useState(() => new Date().toISOString().split('T')[0])
-  const [dateTo, setDateTo] = useState(() => new Date().toISOString().split('T')[0])
+  const [search, setSearch] = useState(() => searchParams.get('search') || '')
+  const [dateFrom, setDateFrom] = useState(() => searchParams.has('search') ? '' : new Date().toISOString().split('T')[0])
+  const [dateTo, setDateTo] = useState(() => searchParams.has('search') ? '' : new Date().toISOString().split('T')[0])
 
   const [newPOs, setNewPOs] = useState<InventoryPO[]>([])
   const [partialPOs, setPartialPOs] = useState<InventoryPO[]>([])
 
   const [receiveOpen, setReceiveOpen] = useState(false)
+  const [casePO, setCasePO] = useState<InventoryPO | null>(null)
   const [selectedPO, setSelectedPO] = useState<InventoryPO | null>(null)
   const [isFollowUp, setIsFollowUp] = useState(false)
   const [receiveItems, setReceiveItems] = useState<ReceiveItem[]>([])
@@ -964,7 +972,7 @@ export default function PurchaseGR() {
               const items = (po.inv_po_items || []) as any[]
               const totalQty = items.reduce((s: number, i: any) => s + (Number(i.qty) || 0), 0)
               const totalRecv = items.reduce((s: number, i: any) => s + (Number(i.qty_received_total) || 0), 0)
-              const outstanding = totalQty - totalRecv
+              const outstanding = Math.max(0, totalQty - totalRecv - items.reduce((sum: number, item: { resolution_qty?: number | null }) => sum + Number(item.resolution_qty || 0), 0))
               const isThailand = getPOSellerType(po) === 'thailand'
               return (
                 <div
@@ -1019,7 +1027,7 @@ export default function PurchaseGR() {
               const items = (po.inv_po_items || []) as any[]
               const totalQty = items.reduce((s: number, i: any) => s + (Number(i.qty) || 0), 0)
               const totalRecv = items.reduce((s: number, i: any) => s + (Number(i.qty_received_total) || 0), 0)
-              const outstanding = totalQty - totalRecv
+              const outstanding = Math.max(0, totalQty - totalRecv - items.reduce((sum: number, item: { resolution_qty?: number | null }) => sum + Number(item.resolution_qty || 0), 0))
               const isThailand = getPOSellerType(po) === 'thailand'
               return (
                 <div
@@ -1335,7 +1343,7 @@ export default function PurchaseGR() {
             })}
           </div>
           <div className="hidden md:block overflow-x-auto">
-            <table className={`w-full ${canSeeFinancial ? 'min-w-[1480px]' : 'min-w-[1200px]'} table-fixed text-xs leading-relaxed [&_td]:px-3 [&_th]:px-3 [&_td]:[overflow-wrap:anywhere]`}>
+            <table className={`w-full min-w-[1480px] table-fixed text-xs leading-relaxed [&_td]:px-3 [&_th]:px-3 [&_td]:[overflow-wrap:anywhere]`}>
               <colgroup>
                 <col className="w-[140px]" />
                 <col className="w-[140px]" />
@@ -1345,7 +1353,7 @@ export default function PurchaseGR() {
                 <col className="w-[116px]" />
                 <col className="w-[106px]" />
                 <col className="w-[100px]" />
-                {canSeeFinancial && <><col className="w-[176px]" /><col className="w-[124px]" /></>}
+                {canSeeShipping && <><col className="w-[176px]" /><col className="w-[124px]" /></>}
                 <col className="w-[64px]" />
               </colgroup>
               <thead>
@@ -1358,7 +1366,7 @@ export default function PurchaseGR() {
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">วันที่รับ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้สร้าง</th>
                   <th className="px-4 py-3 text-center font-semibold text-gray-600">จำนวน</th>
-                  {canSeeFinancial && (
+                  {canSeeShipping && (
                     <>
                       <th className="px-4 py-3 text-right font-semibold text-gray-600">ค่าขนส่ง(ตปท)/ชิ้น</th>
                       <th className="px-4 py-3 text-right font-semibold text-gray-600">ค่าขนส่ง(ไทย)/ชิ้น</th>
@@ -1416,7 +1424,7 @@ export default function PurchaseGR() {
                           {grTotalReceived}/{grTotalOrdered}
                         </span>
                       </td>
-                      {canSeeFinancial && (
+                      {canSeeShipping && (
                         <>
                           <td className="break-words px-4 py-3 align-top text-right text-gray-600">
                             {formatTotalPerPiece(intlShippingTotal, intlShippingPerPiece)}
@@ -1449,6 +1457,7 @@ export default function PurchaseGR() {
         )}
       </div>
 
+      {casePO && <ReceivingCaseForm po={casePO} onClose={() => setCasePO(null)} onSaved={() => { clearReceiveDraft(); posCacheRef.current = null; void loadAll(); showMessage({ title: 'บันทึกแล้ว', message: 'ติดตามคำขอได้ที่เมนู ติดตามยอดค้างรับ' }) }} />}
       {/* ── Receive GR Modal ── */}
       <Modal open={receiveOpen} onClose={() => { if (!noteSaving) clearReceiveDraft() }} closeOnBackdropClick={false} contentClassName="max-w-[1400px]">
         <div className="p-4 md:p-6 space-y-5 text-gray-900">
@@ -1464,6 +1473,7 @@ export default function PurchaseGR() {
                     {selectedPO.supplier_name && <span className="text-gray-600">ผู้ขาย: {selectedPO.supplier_name}</span>}
                     <span className="text-gray-600">กำหนดเข้า: {formatDateThai(selectedPO.expected_arrival_date)}</span>
                     {isFollowUp && <span className="text-red-600 font-medium">รับรอบถัดไป (แสดงเฉพาะยอดค้างรับ)</span>}
+                    {hasAccess('purchase-gr') && <button type="button" disabled={saving || noteSaving || trackingSaving} onClick={() => setCasePO(selectedPO)} className="ml-auto rounded-lg border border-amber-400 bg-white px-3 py-2 font-semibold text-amber-800 disabled:opacity-50">ปิดยอดค้างรับ</button>}
                   </div>
                   <div className="rounded-lg border border-orange-200 bg-white/70 p-3">
                     <div className="mb-2 flex items-center justify-between gap-3">
@@ -2102,7 +2112,7 @@ export default function PurchaseGR() {
                   </div>
                 )}
               </div>
-              {canSeeFinancial && (
+              {(
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
                   <div className="bg-blue-50 rounded-lg p-3">
                     <div className="text-blue-600 text-xs">ค่าขนส่งต่างประเทศ/ชิ้น</div>

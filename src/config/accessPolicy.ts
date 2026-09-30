@@ -77,6 +77,7 @@ const PATH_MENU_PREFIX_MAP: Array<{ prefix: string; key: string }> = [
   { prefix: '/purchase/pr', key: 'purchase-pr' },
   { prefix: '/purchase/po', key: 'purchase-po' },
   { prefix: '/purchase/gr', key: 'purchase-gr' },
+  { prefix: '/purchase/receiving-cases', key: 'purchase-gr' },
   { prefix: '/purchase/sample', key: 'purchase-sample' },
   { prefix: '/products/inactive', key: 'products-inactive' },
   { prefix: '/products/information', key: 'product-information' },

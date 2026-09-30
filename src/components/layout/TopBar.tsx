@@ -368,6 +368,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     { path: '/purchase/pr', label: 'PR (ใบขอซื้อ)' },
     { path: '/purchase/po', label: 'PO (ใบสั่งซื้อ)' },
     { path: '/purchase/gr', label: 'GR (ใบรับสินค้า)' },
+    { path: '/purchase/receiving-cases', label: 'ติดตามยอดค้างรับ' },
     { path: '/purchase/sample', label: 'สินค้าตัวอย่าง' },
   ].filter((tab) => {
     const menuKey = resolveMenuKeyFromPath(tab.path)

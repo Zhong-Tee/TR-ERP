@@ -21,6 +21,7 @@ import type { Product, PpProductionOrder, PpProductionOrderItem } from '../../ty
 import ProductImageHover from '../ui/ProductImageHover'
 import Modal from '../ui/Modal'
 import ModalCloseButton from '../ui/ModalCloseButton'
+import PPProductPicker from './PPProductPicker'
 
 type TabKey = 'pp' | 'pending' | 'approved' | 'processing' | 'completed' | 'rejected'
 
@@ -56,6 +57,7 @@ export default function ProductionCreate() {
   const { user } = useAuthContext()
   const [activeTab, setActiveTab] = useState<TabKey>('pp')
   const [loading, setLoading] = useState(false)
+  const [productLoadError, setProductLoadError] = useState(false)
 
   // PP products tab
   const [ppProducts, setPpProducts] = useState<PPProductRow[]>([])
@@ -71,11 +73,10 @@ export default function ProductionCreate() {
   const [docNo, setDocNo] = useState('')
   const [title, setTitle] = useState('')
   const [note, setNote] = useState('')
-  const [productSearch, setProductSearch] = useState('')
   const [draftItems, setDraftItems] = useState<DraftItem[]>([])
   const [saving, setSaving] = useState(false)
 
-  // PP products for add-to-draft dropdown
+  // PP products for add-to-draft picker
   const [allPPProducts, setAllPPProducts] = useState<PPProductRow[]>([])
   const [fgRmProducts, setFgRmProducts] = useState<Product[]>([])
   const [recipeProductIds, setRecipeProductIds] = useState<Set<string>>(new Set())
@@ -120,6 +121,7 @@ export default function ProductionCreate() {
 
   const loadPPProducts = useCallback(async () => {
     setLoading(true)
+    setProductLoadError(false)
     try {
       const [data, recipeIds] = await Promise.all([
         fetchPPProducts(),
@@ -133,6 +135,7 @@ export default function ProductionCreate() {
       setProducibleMap(qtyMap)
     } catch (err) {
       console.error('loadPPProducts error:', err)
+      setProductLoadError(true)
     } finally {
       setLoading(false)
     }
@@ -190,9 +193,9 @@ export default function ProductionCreate() {
     setDocNo(generateDocNo())
     setTitle('')
     setNote('')
-    setProductSearch('')
     setDraftItems([])
     setCreateOpen(true)
+    void loadPPProducts()
   }
 
   const getRequirements = async (productId: string, qty: number) => {
@@ -222,17 +225,19 @@ export default function ProductionCreate() {
     if (!product) return
     if (draftItems.some((d) => d.product_id === productId)) return
 
-    const requirementData = await getRequirements(product.id, 1)
+    const maxQty = maxCreatableQty(product)
+    if (maxQty <= 0) return
+    const requirementData = await getRequirements(product.id, maxQty)
 
-    setDraftItems((prev) => [
+    setDraftItems((prev) => prev.some((item) => item.product_id === productId) ? prev : [
       ...prev,
       {
         key: crypto.randomUUID(),
         product_id: product.id,
         product_code: product.product_code,
         product_name: product.product_name,
-        qty: 1,
-        max_qty: maxCreatableQty(product),
+        qty: maxQty,
+        max_qty: maxQty,
         warnings: requirementData.warnings,
         requirements: requirementData.requirements,
       },
@@ -243,7 +248,7 @@ export default function ProductionCreate() {
     const item = draftItems.find((d) => d.key === key)
     if (!item) return
 
-    const qty = item.max_qty > 0 ? Math.min(rawQty, item.max_qty) : rawQty
+    const qty = Math.min(item.max_qty, Math.max(1, Number.isFinite(rawQty) ? rawQty : 1))
 
     setDraftItems((prev) =>
       prev.map((d) => {
@@ -255,7 +260,7 @@ export default function ProductionCreate() {
     try {
       const requirementData = await getRequirements(item.product_id, qty)
       setDraftItems((prev) =>
-        prev.map((d) => (d.key === key ? { ...d, ...requirementData } : d))
+        prev.map((d) => (d.key === key && d.qty === qty ? { ...d, ...requirementData } : d))
       )
     } catch { /* ignore */ }
   }
@@ -274,7 +279,12 @@ export default function ProductionCreate() {
       return
     }
 
-    const overItems = draftItems.filter((d) => d.max_qty > 0 && d.qty > d.max_qty)
+    if (draftItems.some((d) => !Number.isFinite(d.qty) || d.qty <= 0)) {
+      setNotifyModal({ open: true, type: 'error', title: 'จำนวนไม่ถูกต้อง', message: 'กรุณาระบุจำนวนผลิตมากกว่า 0' })
+      return
+    }
+
+    const overItems = draftItems.filter((d) => d.qty > d.max_qty)
     if (overItems.length > 0) {
       const names = overItems.map((d) => `${d.product_code} (สูงสุด ${d.max_qty})`).join(', ')
       setNotifyModal({ open: true, type: 'error', title: 'จำนวนเกินที่แปรรูปได้', message: `กรุณาลดจำนวน: ${names}` })
@@ -510,6 +520,7 @@ export default function ProductionCreate() {
                       <th className="px-5 py-3.5 text-left">ชื่อสินค้า</th>
                       <th className="px-5 py-3.5 text-right">คงเหลือ</th>
                       <th className="px-5 py-3.5 text-right">จุดเตือนผลิต</th>
+                      <th className="px-5 py-3.5 text-right">ผลิตสูงสุด</th>
                       <th className="px-5 py-3.5 text-right rounded-tr-xl">แปรรูปได้</th>
                     </tr>
                   </thead>
@@ -526,6 +537,7 @@ export default function ProductionCreate() {
                         <td className={`px-5 py-3 text-right font-semibold ${warning ? 'text-amber-700' : 'text-gray-500'}`}>
                           {p.min_stock ?? '-'}{warning && <i className="fas fa-exclamation-triangle ml-2"></i>}
                         </td>
+                        <td className="px-5 py-3 text-right">{p.max_stock == null ? 'ไม่กำหนด' : formatQty(p.max_stock)}</td>
                         <td className="px-5 py-3 text-right font-semibold text-indigo-600">{maxCreatableQty(p)}</td>
                       </tr>
                     })}
@@ -604,40 +616,22 @@ export default function ProductionCreate() {
 
           {/* Body - items */}
           <div className="flex-1 overflow-y-auto p-6 space-y-5">
-            {/* Add product */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
-              <div>
-                <label className="text-sm text-gray-500 font-semibold">ค้นหาสินค้า PP</label>
-                <div className="relative mt-1">
-                  <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
-                  <input
-                    type="text"
-                    value={productSearch}
-                    onChange={(e) => setProductSearch(e.target.value)}
-                    placeholder="ค้นหาด้วยรหัสหรือชื่อสินค้า..."
-                    className="w-full pl-10 pr-4 py-2.5 border rounded-lg text-base focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="text-sm text-gray-500 font-semibold">เพิ่มสินค้า PP</label>
-                <select
-                  className="mt-1 w-full px-4 py-2.5 border rounded-lg text-base focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                  value=""
-                  onChange={(e) => { if (e.target.value) { addDraftItem(e.target.value); setProductSearch('') } }}
-                >
-                  <option value="">-- เลือกสินค้า PP --</option>
-                  {allPPProducts
-                    .filter((p) => recipeProductIds.has(p.id) && (producibleMap[p.id] ?? 0) > 0 && !draftItems.some((d) => d.product_id === p.id))
-                    .filter((p) => {
-                      const search = productSearch.trim().toLowerCase()
-                      return !search || p.product_code.toLowerCase().includes(search) || p.product_name.toLowerCase().includes(search)
-                    })
-                    .map((p) => (
-                      <option key={p.id} value={p.id}>{p.product_code} - {p.product_name} (แปรรูปได้ {producibleMap[p.id] ?? 0})</option>
-                    ))}
-                </select>
-              </div>
+            <PPProductPicker
+              products={allPPProducts}
+              loading={loading}
+              error={productLoadError}
+              onRetry={() => void loadPPProducts()}
+              recipeProductIds={recipeProductIds}
+              selectedIds={new Set(draftItems.map((item) => item.product_id))}
+              maxCreatableQty={maxCreatableQty}
+              onAdd={addDraftItem}
+              editingOrderId={editingOrderId}
+            />
+
+            <div>
+              <h3 className="text-lg font-bold text-gray-800">รายการในใบแปรรูป ({draftItems.length})</h3>
+              <p className="text-sm text-gray-500 mt-1">เริ่มต้นที่จำนวนแปรรูปได้ตามวัตถุดิบและค่า “ผลิตสูงสุด” ปรับลดได้ แต่ไม่เกินจำนวนที่แปรรูปได้</p>
+              {draftItems.length === 0 && <p className="mt-3 p-5 rounded-lg border border-dashed text-center text-gray-500">ยังไม่มีรายการ กด “+ เพิ่ม” จากตารางสินค้าด้านบน</p>}
             </div>
 
             {/* Draft items table */}
@@ -650,7 +644,7 @@ export default function ProductionCreate() {
                       <th className="px-5 py-3 text-left">รหัส</th>
                       <th className="px-5 py-3 text-left">ชื่อสินค้า</th>
                       <th className="px-5 py-3 text-right">แปรรูปได้</th>
-                      <th className="px-5 py-3 text-right">จำนวน</th>
+                      <th className="px-5 py-3 text-right">จำนวนที่จะผลิต</th>
                       <th className="px-5 py-3 text-center rounded-tr-xl">ลบ</th>
                     </tr>
                   </thead>
@@ -694,7 +688,7 @@ export default function ProductionCreate() {
                           <input
                             type="number"
                             min={1}
-                            max={d.max_qty > 0 ? d.max_qty : undefined}
+                            max={d.max_qty}
                             value={d.qty}
                             onChange={(e) => updateDraftQty(d.key, Number(e.target.value) || 1)}
                             onWheel={(e) => e.currentTarget.blur()}

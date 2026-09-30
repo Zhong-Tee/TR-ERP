@@ -311,6 +311,22 @@ export async function rejectOrder(orderId: string, userId: string, reason: strin
   if (error) throw error
 }
 
+export interface OutstandingProductionItem {
+  product_id: string
+  qty: number
+  order: { id: string; doc_no: string; status: string }
+}
+
+export async function fetchOutstandingProductionItems(): Promise<OutstandingProductionItem[]> {
+  return fetchAllSupabasePages<OutstandingProductionItem>((from, to) => supabase
+    .from('pp_production_order_items')
+    .select('product_id, qty, order:pp_production_orders!inner(id, doc_no, status)')
+    .in('order.status', ['pending', 'approved', 'processing'])
+    .order('id')
+    .range(from, to)
+    .returns<OutstandingProductionItem[]>())
+}
+
 export async function startProductionOrder(orderId: string) {
   const { error } = await supabase.rpc('rpc_start_production_order', { p_order_id: orderId })
   if (error) throw error

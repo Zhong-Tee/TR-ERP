@@ -3,9 +3,13 @@ import {
   canUseIssueChat,
   getIssueVisibilityScope,
   isOperationalIssueRole,
+  resolveMenuKeyFromPath,
 } from './accessPolicy'
 
 describe('operational Issue visibility', () => {
+  it('uses GR menu permissions for receiving follow-up cases', () => {
+    expect(resolveMenuKeyFromPath('/purchase/receiving-cases')).toBe('purchase-gr')
+  })
   it.each(['production', 'qc_staff', 'packing_staff'] as const)(
     '%s can use Issue chat and receives the operational scope',
     (role) => {

@@ -1,3 +1,4 @@
+import ReceivingCaseForm from '../components/purchase/ReceivingCaseForm'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import html2canvas from 'html2canvas'
@@ -19,7 +20,6 @@ import {
   loadSellers,
   loadUserDisplayNames,
   loadGRsForPO,
-  resolveShortage,
   recalcPOLandedCost,
   correctPOUnitCosts,
   loadPOCostCorrectionHistory,
@@ -46,7 +46,7 @@ const SHIPPING_METHODS = [
   { value: 'other', label: 'อื่นๆ' },
 ]
 
-const FINANCIAL_VISIBLE_ROLES = ['superadmin', 'account']
+const FINANCIAL_VISIBLE_ROLES = ['superadmin', 'admin', 'account']
 
 interface PriceEdit {
   product_id: string
@@ -113,8 +113,6 @@ export default function PurchasePO() {
   // Resolution modal
   const [resolveOpen, setResolveOpen] = useState(false)
   const [resolvePO, setResolvePO] = useState<InventoryPO | null>(null)
-  const [resolutions, setResolutions] = useState<{ po_item_id: string; product_name: string; unit: string; qty_outstanding: number; resolution_type: string; resolution_note: string }[]>([])
-  const [resolveSaving, setResolveSaving] = useState(false)
 
   // Edit PO modal
   const [editOpen, setEditOpen] = useState(false)
@@ -432,23 +430,6 @@ export default function PurchasePO() {
 
   function openResolveModal(po: InventoryPO) {
     setResolvePO(po)
-    const items = (po.inv_po_items || []) as any[]
-    setResolutions(
-      items
-        .filter((item: any) => {
-          const recv = Number(item.qty_received_total) || 0
-          const resolved = Number(item.resolution_qty) || 0
-          return (recv + resolved) < Number(item.qty)
-        })
-        .map((item: any) => ({
-          po_item_id: item.id,
-          product_name: `${item.pr_products?.product_code || ''} - ${item.pr_products?.product_name || ''}`,
-          unit: item.unit || item.pr_products?.unit_name || 'ชิ้น',
-          qty_outstanding: Number(item.qty) - (Number(item.qty_received_total) || 0) - (Number(item.resolution_qty) || 0),
-          resolution_type: 'waiting',
-          resolution_note: '',
-        }))
-    )
     setResolveOpen(true)
   }
 
@@ -573,50 +554,6 @@ export default function PurchasePO() {
       setEditSaving(false)
     }
   }
-
-  async function handleSaveResolution() {
-    if (!resolvePO) return
-    const toResolve = resolutions.filter((r) => r.resolution_type !== 'waiting')
-    if (toResolve.length === 0) {
-      showMessage({ message: 'กรุณาเลือกวิธีจัดการอย่างน้อย 1 รายการ' })
-      return
-    }
-    setResolveSaving(true)
-    try {
-      await resolveShortage({
-        poId: resolvePO.id,
-        resolutions: toResolve.map((r) => ({
-          po_item_id: r.po_item_id,
-          resolution_type: r.resolution_type,
-          resolution_qty: r.qty_outstanding,
-          resolution_note: r.resolution_note || undefined,
-        })),
-        userId: user?.id,
-      })
-      setResolveOpen(false)
-      setResolvePO(null)
-      if (viewing && viewing.id === resolvePO.id) {
-        const [detail, grs] = await Promise.all([
-          loadPODetail(resolvePO.id, canSeeFinancial),
-          loadGRsForPO(resolvePO.id),
-        ])
-        setViewing(detail)
-        setGrHistory(grs)
-      }
-      await loadAll()
-    } catch (e: any) {
-      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'บันทึกไม่สำเร็จ: ' + (e?.message || e) })
-    } finally {
-      setResolveSaving(false)
-    }
-  }
-
-  const RESOLUTION_TYPES = [
-    { value: 'waiting', label: 'รอส่งเพิ่ม', color: 'text-gray-500' },
-    { value: 'refund', label: 'คืนเงิน', color: 'text-blue-700' },
-    { value: 'wrong_item', label: 'สินค้าผิด', color: 'text-orange-700' },
-    { value: 'cancelled', label: 'ยกเลิก', color: 'text-red-700' },
-  ]
 
   const sellerTypeById = useMemo(() => {
     const m = new Map<string, 'thailand' | 'foreign'>()
@@ -1237,7 +1174,7 @@ export default function PurchasePO() {
                     <div className="font-medium text-orange-800">{new Date(viewing.expected_arrival_date).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
                   </div>
                 )}
-                {canSeeFinancial && viewing.intl_shipping_cost_thb != null && (
+                {viewing.intl_shipping_cost_thb != null && (
                   <div className="bg-purple-50 rounded-lg p-3">
                     <div className="text-purple-600 text-xs">ค่าขนส่งต่างประเทศ</div>
                     <div className="font-medium text-purple-800">{Number(viewing.intl_shipping_cost_thb).toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท</div>
@@ -1270,7 +1207,7 @@ export default function PurchasePO() {
               </div>
 
               {/* shipping details */}
-              {canSeeFinancial && viewing.intl_shipping_method && (
+              {viewing.intl_shipping_method && (
                 <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 text-sm">
                   <div className="font-semibold text-purple-800 mb-1">ค่าขนส่งต่างประเทศ</div>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
@@ -1596,83 +1533,7 @@ export default function PurchasePO() {
         </div>
       </Modal>
 
-      {/* ── Resolution Modal ── */}
-      <Modal open={resolveOpen} onClose={() => setResolveOpen(false)} closeOnBackdropClick={false} contentClassName="max-w-3xl">
-        <div className="p-6 space-y-5">
-          <h2 className="text-xl font-bold text-gray-900">จัดการยอดค้างรับ</h2>
-          {resolvePO && (
-            <div className="bg-yellow-50 rounded-lg p-3 text-sm">
-              <span className="font-semibold text-yellow-800">PO: {resolvePO.po_no}</span>
-              {resolvePO.supplier_name && <span className="ml-3 text-gray-600">ผู้ขาย: {resolvePO.supplier_name}</span>}
-            </div>
-          )}
-
-          <div className="overflow-x-auto border rounded-lg">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-gray-50 border-b">
-                  <th className="px-3 py-2.5 text-left font-semibold text-gray-600">สินค้า</th>
-                  <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">ค้างรับ</th>
-                  <th className="px-3 py-2.5 text-center font-semibold text-gray-600 w-40">การจัดการ</th>
-                  <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-48">หมายเหตุ</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {resolutions.map((r, idx) => (
-                  <tr key={r.po_item_id} className={r.resolution_type !== 'waiting' ? 'bg-blue-50/30' : ''}>
-                    <td className="px-3 py-2">
-                      <div className="font-medium text-gray-900">{r.product_name}</div>
-                    </td>
-                    <td className="px-3 py-2 text-right text-red-600 font-semibold">{r.qty_outstanding.toLocaleString()} {r.unit}</td>
-                    <td className="px-3 py-2 text-center">
-                      <select
-                        value={r.resolution_type}
-                        onChange={(e) => {
-                          const val = e.target.value
-                          setResolutions((prev) => prev.map((item, i) => i === idx ? { ...item, resolution_type: val } : item))
-                        }}
-                        className="px-2 py-1.5 border rounded-lg text-xs w-full"
-                      >
-                        {RESOLUTION_TYPES.map((rt) => (
-                          <option key={rt.value} value={rt.value}>{rt.label}</option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="px-3 py-2">
-                      {r.resolution_type !== 'waiting' && (
-                        <input
-                          type="text"
-                          value={r.resolution_note}
-                          onChange={(e) => {
-                            const val = e.target.value
-                            setResolutions((prev) => prev.map((item, i) => i === idx ? { ...item, resolution_note: val } : item))
-                          }}
-                          className="w-full px-2 py-1.5 border rounded-lg text-xs"
-                          placeholder="หมายเหตุ..."
-                        />
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-500">
-            <strong>คำอธิบาย:</strong> "รอส่งเพิ่ม" = รอรับ GR รอบถัดไป (ไม่บันทึก), "คืนเงิน" = ผู้ขายคืนเงิน, "สินค้าผิด" = ได้รับสินค้าผิด, "ยกเลิก" = ไม่ต้องการแล้ว
-          </div>
-
-          <div className="flex justify-end gap-3 pt-2 border-t">
-            <button
-              onClick={handleSaveResolution}
-              disabled={resolveSaving || resolutions.every((r) => r.resolution_type === 'waiting')}
-              className="px-5 py-2.5 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 disabled:opacity-50 text-sm font-semibold"
-            >
-              {resolveSaving ? 'กำลังบันทึก...' : 'บันทึกการจัดการ'}
-            </button>
-          </div>
-        </div>
-      </Modal>
+      {resolveOpen && resolvePO && <ReceivingCaseForm po={resolvePO} onClose={() => setResolveOpen(false)} onSaved={() => { setViewing(null); void loadAll(); showMessage({ title: 'บันทึกแล้ว', message: 'ติดตามคำขอได้ที่เมนู ติดตามยอดค้างรับ' }) }} />}
       {/* ── Edit PO Modal ── */}
       <Modal open={editOpen} onClose={() => setEditOpen(false)} closeOnBackdropClick={false} contentClassName="max-w-4xl">
         <div className="p-6 space-y-5">

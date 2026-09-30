@@ -3600,7 +3600,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                           }}
                         >
                           <td className="p-2 text-gray-400 cursor-grab">{unlocked ? '☰' : ''}</td>
-                          <td className="p-2 font-medium">
+                          <td className="p-2 text-xs font-medium">
                             {j.name}
                             {j.is_production_voided && (
                               <span
