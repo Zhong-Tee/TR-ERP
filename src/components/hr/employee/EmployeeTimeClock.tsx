@@ -1,3 +1,4 @@
+import { lateDurationMinutes } from '../../../lib/lateDuration'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { FiLogIn, FiLogOut, FiClock, FiMapPin, FiCamera, FiRefreshCw, FiPlus, FiUsers } from 'react-icons/fi'
 import ModalCloseButton from '../../ui/ModalCloseButton'
@@ -166,7 +167,7 @@ export default function EmployeeTimeClock() {
   const effectiveWorkStart = approvedWFHToday?.start_time || schedule?.work_start || null
   const effectiveWorkEnd = approvedWFHToday?.end_time || schedule?.work_end || null
 
-  /** นาทีที่สายเกินผ่อนผัน (เฉพาะเข้างานปกติ) — 0 = ไม่สาย */
+  /** นาทีที่สายจากเวลาเริ่มงาน เมื่อเกินผ่อนผัน (เฉพาะเข้างานปกติ) — 0 = ไม่สาย */
   const lateMinutes = (entry: HRTimeEntry): number => {
     if (entry.entry_type !== 'clock_in' || !effectiveWorkStart) return 0
     const d = new Date(entry.entry_time)
@@ -181,7 +182,7 @@ export default function EmployeeTimeClock() {
     for (const [start, end] of ranges) {
       if (start <= expectedMin && end > expectedMin) expectedMin = end
     }
-    return Math.max(0, actualMin - (expectedMin + (schedule?.late_grace_min ?? 0)))
+    return lateDurationMinutes(actualMin, expectedMin, schedule?.late_grace_min ?? 0)
   }
 
   /** นาทีที่ออกก่อนเวลาเลิกงานตามตาราง — 0 = ครบเวลา */

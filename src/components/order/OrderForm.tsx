@@ -809,6 +809,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const [channelOrderNoPrefixMap, setChannelOrderNoPrefixMap] = useState<Record<string, string[]>>({})
   const [promotions, setPromotions] = useState<PromotionDefinition[]>([])
   const [selectedPromotionIds, setSelectedPromotionIds] = useState<string[]>([])
+  const [legacyPromotionToRestore, setLegacyPromotionToRestore] = useState<string | null>(null)
   const [promotionApplicationCounts, setPromotionApplicationCounts] = useState<Record<string, number>>({})
   const [shippingFeeSettings, setShippingFeeSettings] = useState({ auto_calculate_enabled: false, charge_promotion_orders: true, special_area_enabled: false })
   const [shippingFeeRanges, setShippingFeeRanges] = useState<Array<{ min_amount: number; max_amount: number | null; shipping_fee: number }>>([])
@@ -1159,6 +1160,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     loadChannelMeta()
     loadShippingFeeRules()
     async function loadOrderData() {
+      setLegacyPromotionToRestore(null)
       if (order) {
         setSelectedPromotionIds([])
         setPromotionApplicationCounts({})
@@ -1210,6 +1212,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         if (!linkedPromotionsError && linkedPromotions) {
           setSelectedPromotionIds(linkedPromotions.map((row: { promotion_id: string; application_count: number }) => row.promotion_id))
           setPromotionApplicationCounts(Object.fromEntries(linkedPromotions.map((row: { promotion_id: string; application_count: number }) => [row.promotion_id, Math.max(1, Math.floor(Number(row.application_count) || 1))])))
+        }
+        if (linkedPromotionsError || !linkedPromotions?.length) {
+          setLegacyPromotionToRestore(order.promotion || null)
         }
         {
           const oc = ((order as Order).channel_code ?? '').trim()
@@ -1278,16 +1283,18 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     loadOrderData()
   }, [order])
 
-  // บิลเก่าที่เก็บชื่อโปรโมชั่นเป็น TEXT: จับคู่กลับเป็น id เพื่อแก้ไขต่อได้
+  // Restore legacy TEXT names once, after linked selections have loaded.
+  // An empty selection after user removal must never trigger restoration.
   useEffect(() => {
-    if (!order?.promotion || selectedPromotionIds.length > 0 || promotions.length === 0) return
-    const names = String(order.promotion).split(',').map((name) => name.trim()).filter(Boolean)
+    if (!legacyPromotionToRestore || promotions.length === 0) return
+    const names = legacyPromotionToRestore.split(',').map((name) => name.trim()).filter(Boolean)
     const matched = promotions.filter((promotion) => names.includes(promotion.name)).map((promotion) => promotion.id)
     if (matched.length) {
       setSelectedPromotionIds(matched)
       setPromotionApplicationCounts(Object.fromEntries(matched.map((id) => [id, 1])))
     }
-  }, [order?.promotion, promotions, selectedPromotionIds.length])
+    setLegacyPromotionToRestore(null)
+  }, [legacyPromotionToRestore, promotions])
 
   // โหลด review (error_fields + rejection_reason) เมื่อออเดอร์สถานะ "ลงข้อมูลผิด"
   useEffect(() => {
@@ -1909,6 +1916,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
   function updateSelectedPromotions(nextIds: string[], requestedCounts = promotionApplicationCounts) {
     if (order?.prebill_price_locked) return
+    setLegacyPromotionToRestore(null)
     const nextCounts = Object.fromEntries(nextIds.map((id) => {
       const promotion = promotions.find((item) => item.id === id)
       const limit = promotion ? promotionApplicationLimit(promotion) : 1

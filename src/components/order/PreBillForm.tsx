@@ -1092,7 +1092,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
         <button disabled={saving} onClick={copyImage} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">คัดลอกรูป</button>
         <button disabled={saving} onClick={downloadImage} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">ดาวน์โหลดรูป</button>
         <button disabled={saving} onClick={downloadPdf} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">ดาวน์โหลด PDF</button>
-        {documentType === 'production_confirmation' && <button disabled={saving} onClick={copyText} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">คัดลอกข้อความ</button>}
+        <button disabled={saving} onClick={copyText} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">คัดลอกข้อความ</button>
         {document && !expired && ['active','approved'].includes(document.status) && !document.converted_order_id && <button onClick={() => onOpenBill(document)} className="ml-auto rounded-xl bg-emerald-600 px-5 py-2 font-bold text-white">เปิดบิล</button>}
       </div>
 

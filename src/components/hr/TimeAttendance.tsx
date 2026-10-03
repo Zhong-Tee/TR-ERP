@@ -1,9 +1,11 @@
+import { lateDurationMinutes } from '../../lib/lateDuration'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { FiRefreshCw, FiMapPin, FiCamera, FiSearch, FiDownload, FiUpload } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import * as ExcelJS from 'exceljs'
 import { supabase } from '../../lib/supabase'
 import Modal from '../ui/Modal'
+import { attendanceLateMinutes } from '../../lib/attendanceLateMinutes'
 import TimeEntryImport from './TimeEntryImport'
 import {
   fetchTimeEntries,
@@ -291,36 +293,13 @@ export default function TimeAttendance() {
     [schedules],
   )
 
-  /** นาทีที่สายเกินผ่อนผัน ของบันทึกเข้างาน (clock_in) ตามมาตรฐานเวลาของพนักงานคนนั้น — 0 = ไม่สาย/ไม่ใช่เข้างาน */
+  /** นาทีที่สายจากเวลาเริ่มงาน เมื่อเกินผ่อนผัน ของบันทึกเข้างาน (clock_in) ตามมาตรฐานเวลาของพนักงานคนนั้น — 0 = ไม่สาย/ไม่ใช่เข้างาน */
   const entryLateMinutes = (entry: HRTimeEntry): number => {
     if (entry.entry_type !== 'clock_in') return 0
     const empSchedId = (entry.employee as (HREmployee & { work_schedule_id?: string }))?.work_schedule_id
     const assigned = empSchedId ? schedules.find((s) => s.id === empSchedId && s.is_active) : undefined
     const sched = assigned ?? defaultSchedule ?? FALLBACK_SCHEDULE
-    const actualMin = localMinutes(entry.entry_time)
-    const wfh = approvedWFH.find((r) =>
-      r.employee_id === entry.employee_id && r.start_date <= entry.work_date && r.end_date >= entry.work_date,
-    )
-    let expectedMin = wfh?.start_time
-      ? parseTimeToMinutes(wfh.start_time.slice(0, 5))
-      : parseTimeToMinutes(sched.work_start.slice(0, 5))
-
-    const dayLeaves = approvedLeaves.filter((r) =>
-      r.employee_id === entry.employee_id && r.start_date <= entry.work_date && r.end_date >= entry.work_date,
-    )
-    // ลาเต็มวัน หรือบันทึกเข้าในช่วงลาที่อนุมัติแล้ว: ไม่แสดงว่าสาย
-    if (dayLeaves.some((r) => r.leave_mode !== 'hourly')) return 0
-    const ranges = dayLeaves
-      .filter((r) => r.leave_mode === 'hourly' && r.start_time && r.end_time)
-      .map((r) => [parseTimeToMinutes(r.start_time!.slice(0, 5)), parseTimeToMinutes(r.end_time!.slice(0, 5))] as const)
-      .sort((a, b) => a[0] - b[0])
-    if (ranges.some(([start, end]) => actualMin >= start && actualMin <= end)) return 0
-    // ถ้าลาต่อเนื่องจากเวลาเริ่มงาน ให้เลื่อนเวลาเริ่มที่คาดหวังไปหลังสิ้นสุดการลา
-    for (const [start, end] of ranges) {
-      if (start <= expectedMin && end > expectedMin) expectedMin = end
-    }
-
-    return Math.max(0, actualMin - (expectedMin + (sched.late_grace_min ?? 0)))
+    return attendanceLateMinutes(entry, sched, approvedLeaves, approvedWFH)
   }
 
   /** นาทีที่ออกก่อนเวลาเลิกงาน ของบันทึกออกงาน (clock_out) ตามมาตรฐานเวลาของพนักงาน */
@@ -508,13 +487,14 @@ export default function TimeAttendance() {
       const lastDay = new Date(y, m, 0).getDate()
       const monthEnd = `${summaryMonth}-${String(lastDay).padStart(2, '0')}`
 
-      const [monthEntries, employees, leaves, scheds, calendarDays, companyHolidays] = await Promise.all([
+      const [monthEntries, employees, leaves, scheds, calendarDays, companyHolidays, wfh] = await Promise.all([
         fetchTimeEntries({ date_from: monthStart, date_to: monthEnd, limit: 20000 }),
         fetchEmployees(),
         fetchLeaveRequests({ status: 'approved' }),
         fetchWorkSchedules(),
         fetchWorkCalendar(monthStart, monthEnd),
         fetchCompanyHolidays(monthStart, monthEnd),
+        fetchWFHRequests({ status: 'approved' }),
       ])
 
       const schedById = new Map(scheds.map((s) => [s.id, s]))
@@ -568,8 +548,6 @@ export default function TimeAttendance() {
         // มาตรฐานเวลาของพนักงานคนนี้ — ไม่ได้กำหนด/ถูกปิดใช้งาน → ใช้ชุดค่าเริ่มต้น
         const assigned = emp.work_schedule_id ? schedById.get(emp.work_schedule_id) : undefined
         const sched = assigned && (!('is_active' in assigned) || assigned.is_active) ? assigned : fallbackSched
-        const workStartMin = parseTimeToMinutes(sched.work_start.slice(0, 5))
-        const grace = sched.late_grace_min
         const baseWorkdays = getWorkdayInfo(sched.work_days)
         const workdayDates = new Set(baseWorkdays.dates)
         companyHolidayDates.forEach((date) => { if (countUntilDate && date <= countUntilDate) workdayDates.delete(date) })
@@ -593,7 +571,7 @@ export default function TimeAttendance() {
         let lateCount = 0
         let lateMinutes = 0
         firstInByDate.forEach((e) => {
-          const lateMin = localMinutes(e.entry_time) - (workStartMin + grace)
+          const lateMin = attendanceLateMinutes(e, sched, leaves, wfh)
           if (lateMin > 0) {
             lateCount++
             lateMinutes += lateMin
@@ -738,7 +716,7 @@ export default function TimeAttendance() {
           .sort((a, b) => a[0] - b[0])
         if (ranges.some(([start, end]) => actual >= start && actual <= end)) return 0
         ranges.forEach(([start, end]) => { if (start <= expected && end > expected) expected = end })
-        return Math.max(0, actual - (expected + (effectiveSchedule.late_grace_min ?? 0)))
+        return lateDurationMinutes(actual, expected, effectiveSchedule.late_grace_min ?? 0)
       }
 
       type ReportDay = {
@@ -1019,6 +997,9 @@ export default function TimeAttendance() {
       {/* ─── แท็บบันทึกเวลาสด ─── */}
       {activeTab === 'entries' && (
         <div className="bg-white rounded-xl shadow p-4 space-y-4">
+          <div className="flex justify-end">
+            <span className="text-sm text-gray-400">{filteredEntries.length} รายการ (อัปเดตสดอัตโนมัติ)</span>
+          </div>
           <div className="flex flex-wrap items-end gap-3">
             <div className="relative">
               <FiSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -1043,18 +1024,26 @@ export default function TimeAttendance() {
                 >
                   วันนี้
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDateFrom(monthStr() + '-01')
-                    setDateTo(todayStr())
-                  }}
-                  className="px-3 py-2 border border-emerald-300 text-emerald-700 bg-emerald-50 text-sm font-medium rounded-lg hover:bg-emerald-100"
-                >
-                  เดือนนี้
-                </button>
+
               </div>
             </div>
+            <label className="text-sm">
+              <span className="block text-gray-500 mb-1">เดือน</span>
+              <input
+                type="month"
+                aria-label="กรองเดือนบันทึกเวลา"
+                value={dateFrom && dateTo && dateFrom.slice(0, 7) === dateTo.slice(0, 7) ? dateFrom.slice(0, 7) : ''}
+                onChange={(e) => {
+                  const month = e.target.value
+                  if (!month) return
+                  const [year, monthNumber] = month.split('-').map(Number)
+                  const lastDay = new Date(year, monthNumber, 0).getDate()
+                  setDateFrom(`${month}-01`)
+                  setDateTo(`${month}-${String(lastDay).padStart(2, '0')}`)
+                }}
+                className={inputClass}
+              />
+            </label>
             <label className="text-sm">
               <span className="block text-gray-500 mb-1">จากวันที่</span>
               <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className={inputClass} />
@@ -1104,28 +1093,25 @@ export default function TimeAttendance() {
             >
               <FiUpload /> นำเข้า
             </button>
-            <div className="ml-auto flex items-center gap-3">
-              <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => setEntriesView('table')}
-                  className={`px-3 py-2 text-sm font-medium transition-colors ${
-                    entriesView === 'table' ? 'bg-emerald-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
-                  }`}
-                >
-                  ตาราง
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setEntriesView('dashboard')}
-                  className={`px-3 py-2 text-sm font-medium transition-colors border-l border-gray-200 ${
-                    entriesView === 'dashboard' ? 'bg-emerald-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
-                  }`}
-                >
-                  <i className="fas fa-table-cells-large mr-1.5" />Dashboard
-                </button>
-              </div>
-              <span className="text-sm text-gray-400">{filteredEntries.length} รายการ (อัปเดตสดอัตโนมัติ)</span>
+            <div className="inline-flex shrink-0 rounded-lg border border-gray-200 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setEntriesView('table')}
+                className={`px-3 py-2 text-sm font-medium transition-colors ${
+                  entriesView === 'table' ? 'bg-emerald-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                ตาราง
+              </button>
+              <button
+                type="button"
+                onClick={() => setEntriesView('dashboard')}
+                className={`px-3 py-2 text-sm font-medium transition-colors border-l border-gray-200 ${
+                  entriesView === 'dashboard' ? 'bg-emerald-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                <i className="fas fa-table-cells-large mr-1.5" />Dashboard
+              </button>
             </div>
           </div>
 

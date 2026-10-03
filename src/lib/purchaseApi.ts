@@ -885,6 +885,25 @@ export async function loadPurchaseBadgeCounts(): Promise<{ pr_pending: number; p
 
 /* ──────────────── Sellers ──────────────── */
 
+export interface LatestPurchasePrice {
+  product_id: string
+  unit_price: number
+  po_no: string
+  ordered_at: string
+  supplier_id: string | null
+  supplier_name: string | null
+}
+
+export async function loadLatestPurchasePrices(productIds: string[], supplierId?: string): Promise<LatestPurchasePrice[]> {
+  if (!productIds.length) return []
+  const { data, error } = await supabase.rpc('latest_purchase_prices_for_po', {
+    p_product_ids: [...new Set(productIds)],
+    p_supplier_id: supplierId || null,
+  })
+  if (error) throw error
+  return (data || []).map((row: LatestPurchasePrice) => ({ ...row, unit_price: Number(row.unit_price) }))
+}
+
 export async function loadSellers() {
   const { data, error } = await supabase
     .from('pr_sellers')

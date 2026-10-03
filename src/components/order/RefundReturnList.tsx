@@ -68,7 +68,7 @@ export default function RefundReturnList() {
   useEffect(() => { void load() }, [load])
 
   // รายการที่ "แนบสลิปแล้ว" = อนุมัติแล้ว; ที่ "ยังไม่แนบสลิป" = รอบัญชีแนบสลิป
-  // เมื่อบัญชีกด "ส่งสลิปแล้ว" (refund_slip_sent_at) รายการจะย้ายไปแท็บ "เสร็จสิ้น"
+  // เมื่อ Sales ยืนยันส่งสลิปให้ลูกค้าแล้ว รายการจะย้ายไปแท็บ "เสร็จสิ้น"
   const withSlipRows = rows.filter((r) => (r.refund_slip_paths?.length || 0) > 0)
   const doneRows = withSlipRows.filter((r) => !!r.refund_slip_sent_at)
   const approvedRows = withSlipRows.filter((r) => !r.refund_slip_sent_at)
@@ -144,17 +144,14 @@ export default function RefundReturnList() {
     const refund = slipSentModal.refund
     setSlipSentModal((prev) => prev ? { ...prev, submitting: true, error: '' } : prev)
     try {
-      const sentAt = new Date().toISOString()
-      const { error } = await supabase
-        .from('ac_refunds')
-        .update({ refund_slip_sent_at: sentAt, refund_slip_sent_by: user.id })
-        .eq('id', refund.id)
-        .eq('status', 'approved')
-        .is('refund_slip_sent_at', null)
+      const { data, error } = await supabase
+        .rpc('mark_refund_slip_sent', { p_refund_id: refund.id })
+        .single<{ refund_slip_sent_at: string; refund_slip_sent_by: string }>()
       if (error) throw error
+      if (!data?.refund_slip_sent_at) throw new Error('บันทึกสถานะไม่สำเร็จ กรุณารีเฟรชรายการแล้วลองใหม่')
 
       setRows((prev) => prev.map((row) => row.id === refund.id
-        ? { ...row, refund_slip_sent_at: sentAt, refund_slip_sent_by: user.id }
+        ? { ...row, ...data }
         : row))
       setSlipSentModal(null)
       setSubTab('done')
@@ -182,7 +179,7 @@ export default function RefundReturnList() {
               ? 'รายการที่รอบัญชีอนุมัติ/แนบสลิปโอนคืน'
               : subTab === 'approved'
                 ? 'รายการที่บัญชีอนุมัติและแนบสลิปแล้ว — คลิกดูสลิปเพื่อส่งให้ลูกค้า'
-                : 'รายการที่บัญชียืนยันส่งสลิปให้ลูกค้าแล้ว — ปิดงานโอนคืนเรียบร้อย'}
+                : 'รายการที่ยืนยันส่งสลิปให้ลูกค้าแล้ว — ปิดงานโอนคืนเรียบร้อย'}
           </p>
         </div>
         <button

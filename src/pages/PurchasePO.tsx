@@ -18,6 +18,8 @@ import {
   updatePONonFinancial,
   updatePOShipping,
   loadSellers,
+  loadLatestPurchasePrices,
+  type LatestPurchasePrice,
   loadUserDisplayNames,
   loadGRsForPO,
   recalcPOLandedCost,
@@ -78,6 +80,10 @@ export default function PurchasePO() {
   const [selectedSellerId, setSelectedSellerId] = useState('')
   const [selectedSellerName, setSelectedSellerName] = useState('')
   const [priceEdits, setPriceEdits] = useState<PriceEdit[]>([])
+  const [latestPrices, setLatestPrices] = useState<LatestPurchasePrice[]>([])
+  const [referencePricesLoading, setReferencePricesLoading] = useState(false)
+  const [referencePricesError, setReferencePricesError] = useState('')
+  const manuallyEditedPrices = useRef(new Set<string>())
   const [poNote, setPoNote] = useState('')
   const [expectedArrival, setExpectedArrival] = useState('')
   const [saving, setSaving] = useState(false)
@@ -242,12 +248,16 @@ export default function PurchasePO() {
   }
 
   function openCreateFromPR(pr: InventoryPR) {
+    setReferencePricesLoading(canSeeFinancial)
+    manuallyEditedPrices.current.clear()
+    setLatestPrices([])
+    setReferencePricesError('')
     setCreatePNGPreview(null)
     setSelectedPR(pr)
     const items = (pr.inv_pr_items || []) as any[]
     setPriceEdits(items.map((i: any) => ({
       product_id: i.product_id,
-      unit_price: i.estimated_price ?? null,
+      unit_price: null,
     })))
     if (pr.supplier_id && pr.supplier_name) {
       setSelectedSellerId(pr.supplier_id)
@@ -277,16 +287,41 @@ export default function PurchasePO() {
   }, [requestedPrId, availablePRs, createOpen, loading, searchParams, setSearchParams])
 
   function onSellerChange(sellerId: string) {
+    setReferencePricesLoading(canSeeFinancial)
     setSelectedSellerId(sellerId)
     const seller = sellers.find((s) => s.id === sellerId)
     setSelectedSellerName(seller ? seller.name : '')
   }
 
   function updatePrice(productId: string, price: number | null) {
+    manuallyEditedPrices.current.add(productId)
     setPriceEdits((prev) =>
       prev.map((p) => (p.product_id === productId ? { ...p, unit_price: price } : p))
     )
   }
+
+  useEffect(() => {
+    if (!createOpen || !selectedPR || !canSeeFinancial) return
+    let cancelled = false
+    setReferencePricesLoading(true)
+    setReferencePricesError('')
+    setLatestPrices([])
+    setPriceEdits(current => current.map(item => manuallyEditedPrices.current.has(item.product_id)
+      ? item : { ...item, unit_price: null }))
+    loadLatestPurchasePrices((selectedPR.inv_pr_items || []).map(item => item.product_id), selectedSellerId)
+      .then(references => {
+        if (cancelled) return
+        setLatestPrices(references)
+        setPriceEdits(current => current.map(item => manuallyEditedPrices.current.has(item.product_id)
+          ? item
+          : { ...item, unit_price: references.find(reference => reference.product_id === item.product_id)?.unit_price ?? null }))
+      })
+      .catch(error => {
+        if (!cancelled) setReferencePricesError('โหลดราคาซื้อล่าสุดไม่สำเร็จ กรุณาตรวจสอบราคาและกรอกเอง: ' + (error?.message || error))
+      })
+      .finally(() => { if (!cancelled) setReferencePricesLoading(false) })
+    return () => { cancelled = true }
+  }, [createOpen, selectedPR, selectedSellerId, canSeeFinancial])
 
   const totalAmount = useMemo(() => {
     if (!selectedPR) return 0
@@ -299,7 +334,11 @@ export default function PurchasePO() {
   }, [selectedPR, priceEdits])
 
   async function handleCreate() {
-    if (!selectedPR) return
+    if (!selectedPR || referencePricesLoading) return
+    if (canSeeFinancial && priceEdits.some(item => item.unit_price == null || !Number.isFinite(item.unit_price) || item.unit_price < 0)) {
+      showMessage({ title: 'กรุณาตรวจสอบราคา', message: 'กรอกราคาต่อหน่วยครั้งนี้ให้ครบทุกสินค้า' })
+      return
+    }
     setSaving(true)
     try {
       await convertPRtoPO({
@@ -888,6 +927,8 @@ export default function PurchasePO() {
                 )}
               </div>
 
+              {canSeeFinancial && referencePricesLoading && <p className="text-sm text-blue-600">กำลังโหลดราคาซื้อล่าสุด...</p>}
+              {canSeeFinancial && referencePricesError && <p role="alert" className="text-sm text-red-600">{referencePricesError}</p>}
               {/* items with price edit */}
               <div className="overflow-x-auto border rounded-lg">
                 <table className={`w-full text-sm ${canSeeChineseProductName ? 'min-w-[1000px]' : ''}`}>
@@ -902,7 +943,8 @@ export default function PurchasePO() {
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">จำนวน</th>
                       {canSeeFinancial && (
                         <>
-                          <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">ราคาต่อหน่วย</th>
+                          <th className="px-3 py-2.5 text-left font-semibold text-gray-600 min-w-48">ราคาซื้อล่าสุด / อ้างอิง</th>
+                          <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">ราคาต่อหน่วยครั้งนี้</th>
                           <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">รวม</th>
                         </>
                       )}
@@ -914,6 +956,7 @@ export default function PurchasePO() {
                       const price = pe?.unit_price ?? 0
                       const subtotal = price * Number(item.qty)
                       const prod = item.pr_products
+                      const reference = latestPrices.find(row => row.product_id === item.product_id)
                       const imgUrl = prod ? getPublicUrl('product-images', prod.product_code) : ''
                       return (
                         <tr key={item.id || item.product_id}>
@@ -938,6 +981,14 @@ export default function PurchasePO() {
                           <td className="px-3 py-2 text-right">{Number(item.qty).toLocaleString()} {item.unit || ''}</td>
                           {canSeeFinancial && (
                             <>
+                              <td className="px-3 py-2 text-xs text-gray-600">
+                                {reference ? <div className="space-y-1">
+                                  <div className="font-semibold text-blue-700">{reference.unit_price.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} บาท / {item.unit || 'หน่วย'}</div>
+                                  <div>{reference.po_no} · {new Date(reference.ordered_at).toLocaleDateString('th-TH', { timeZone: 'Asia/Bangkok' })}</div>
+                                  <div>{reference.supplier_name || 'ไม่ระบุผู้ขาย'}</div>
+                                  {selectedSellerId && reference.supplier_id !== selectedSellerId && <div className="text-amber-700">อ้างอิงจากผู้ขายรายอื่น</div>}
+                                </div> : referencePricesLoading ? 'กำลังโหลด...' : referencePricesError ? 'โหลดข้อมูลไม่สำเร็จ' : 'ไม่มีประวัติซื้อ'}
+                              </td>
                               <td className="px-3 py-2">
                                 <input
                                   type="number"
@@ -1103,7 +1154,7 @@ export default function PurchasePO() {
                   )}
                   ดาวน์โหลด PNG
                 </button>
-                <button onClick={handleCreate} disabled={saving || cancellingPR} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-semibold">
+                <button onClick={handleCreate} disabled={saving || cancellingPR || referencePricesLoading} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-semibold">
                   {saving ? 'กำลังสร้าง...' : 'สร้าง PO'}
                 </button>
               </div>

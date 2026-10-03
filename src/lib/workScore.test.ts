@@ -177,11 +177,11 @@ describe('1. การมาทำงาน', () => {
   it('มาสาย 45 นาที → -4', () => {
     expect(points(baseFact({ actual_in_min: 8 * 60 + 45 }))).toBe(-4)
   })
-  it('เวลาผ่อนผันหักออกก่อนคิดขั้นความสาย', () => {
+  it('เกินผ่อนผันแล้วคิดขั้นความสายจากเวลาเริ่มงานจริง', () => {
     // สายจริง 10 นาที ผ่อนผัน 10 → ไม่สาย
     expect(codes(baseFact({ actual_in_min: 8 * 60 + 10, grace_min: 10 }))).toEqual([])
-    // สายจริง 20 นาที ผ่อนผัน 10 → เหลือ 10 → ขั้นแรก
-    expect(codes(baseFact({ actual_in_min: 8 * 60 + 20, grace_min: 10 }))).toEqual(['late_1_15'])
+    // สายจริง 20 นาที ผ่อนผัน 10 → นับ 20 นาที → ขั้นที่สอง
+    expect(codes(baseFact({ actual_in_min: 8 * 60 + 20, grace_min: 10 }))).toEqual(['late_16_30'])
   })
   it('กลับก่อนเวลา → -4', () => {
     const f = baseFact({ actual_out_min: 16 * 60 })

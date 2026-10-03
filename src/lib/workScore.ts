@@ -1,3 +1,4 @@
+import { lateDurationMinutes } from './lateDuration'
 /**
  * คะแนนการปฏิบัติงาน — Phase 1: คะแนนวินัย (Discipline Score)
  *
@@ -383,7 +384,7 @@ export function evaluateDay(fact: AttendanceFact, rules: RuleIndex): ScoreEventD
     }
   }
 
-  const lateMin = (fact.actual_in_min as number) - (fact.expected_start_min + fact.grace_min)
+  const lateMin = lateDurationMinutes(fact.actual_in_min as number, fact.expected_start_min, fact.grace_min)
   if (lateMin > 0 && !hourlyLeaveCovers(fact, fact.expected_start_min)) {
     const lateRule = pickLateRule(rules, lateMin, fact)
     if (lateRule) {

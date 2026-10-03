@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { fetchProductLots, type StockLotRow } from '../../lib/inventory'
+import { getPopoverPosition } from '../../lib/popoverPosition'
 
 interface LotCostPopoverProps {
   productId: string
@@ -12,6 +14,29 @@ export default function LotCostPopover({ productId, landedCost, children }: LotC
   const [lots, setLots] = useState<StockLotRow[]>([])
   const [loading, setLoading] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const [position, setPosition] = useState<ReturnType<typeof getPopoverPosition> | null>(null)
+
+  useLayoutEffect(() => {
+    if (!open) return
+    function reposition() {
+      if (!ref.current || !panelRef.current) return
+      setPosition(getPopoverPosition(ref.current.getBoundingClientRect(), {
+        width: document.documentElement.clientWidth,
+        height: window.innerHeight,
+      }, panelRef.current.getBoundingClientRect().height))
+    }
+    reposition()
+    const observer = new ResizeObserver(reposition)
+    if (panelRef.current) observer.observe(panelRef.current)
+    window.addEventListener('resize', reposition)
+    window.addEventListener('scroll', reposition, true)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', reposition)
+      window.removeEventListener('scroll', reposition, true)
+    }
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -27,7 +52,7 @@ export default function LotCostPopover({ productId, landedCost, children }: LotC
   useEffect(() => {
     if (!open) return
     function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+      if (!ref.current?.contains(e.target as Node) && !panelRef.current?.contains(e.target as Node)) setOpen(false)
     }
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') setOpen(false)
@@ -57,12 +82,15 @@ export default function LotCostPopover({ productId, landedCost, children }: LotC
         onClick={() => setOpen((v) => !v)}
         className="cursor-pointer hover:text-blue-600 transition-colors"
         title="คลิกเพื่อดู Lot ล่าสุด"
+        aria-expanded={open}
       >
         {children}
       </button>
 
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 w-[380px] bg-white rounded-xl shadow-lg border border-gray-200 text-sm">
+      {open && createPortal(
+        <div ref={panelRef} role="dialog" aria-label="Lot ล่าสุด (คงเหลือ)"
+          style={{ ...position, visibility: position ? 'visible' : 'hidden', width: position?.width ?? 380 }}
+          className="fixed z-[100] flex flex-col overflow-auto bg-white rounded-xl shadow-lg border border-gray-200 text-sm">
           <div className="px-4 py-3 border-b border-gray-100 bg-gray-50 rounded-t-xl">
             <div className="font-semibold text-gray-800">Lot ล่าสุด (คงเหลือ)</div>
             {landedCost != null && landedCost > 0 && (
@@ -72,7 +100,7 @@ export default function LotCostPopover({ productId, landedCost, children }: LotC
             )}
           </div>
 
-          <div className="max-h-64 overflow-y-auto">
+          <div className="min-h-0 max-h-64 overflow-auto shrink">
             {loading ? (
               <div className="flex justify-center py-6">
                 <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
@@ -131,7 +159,7 @@ export default function LotCostPopover({ productId, landedCost, children }: LotC
               )}
             </div>
           )}
-        </div>
+        </div>, document.body
       )}
     </div>
   )
