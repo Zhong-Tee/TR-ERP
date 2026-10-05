@@ -97,9 +97,9 @@ export default function ProductionCreate() {
   })
 
   const canApprove = ['superadmin', 'admin', 'store'].includes(user?.role || '')
-  const canCreate = ['superadmin', 'admin', 'store', 'production'].includes(user?.role || '')
-  const canProcess = ['superadmin', 'admin', 'production'].includes(user?.role || '')
-  const canViewCosts = !['store', 'production'].includes(user?.role || '')
+  const canCreate = ['superadmin', 'admin', 'store', 'production', 'packing_staff'].includes(user?.role || '')
+  const canProcess = ['superadmin', 'admin', 'production', 'packing_staff'].includes(user?.role || '')
+  const canViewCosts = !['store', 'production', 'packing_staff'].includes(user?.role || '')
 
   const tabs: { key: TabKey; label: string; color: string; activeColor: string }[] = [
     { key: 'pp', label: 'สินค้าPP', color: 'bg-white text-gray-600 border border-gray-200', activeColor: 'bg-indigo-600 text-white' },

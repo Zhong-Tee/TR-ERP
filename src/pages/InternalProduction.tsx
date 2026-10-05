@@ -7,7 +7,7 @@ type ActiveMenu = 'create' | 'settings'
 
 export default function InternalProduction() {
   const { user } = useAuthContext()
-  const canAccessSettings = !['store', 'production'].includes(user?.role || '')
+  const canAccessSettings = !['store', 'production', 'packing_staff'].includes(user?.role || '')
   const [activeMenu, setActiveMenu] = useState<ActiveMenu>(() => {
     const saved = sessionStorage.getItem('internal-production-active-menu')
     return saved === 'settings' ? 'settings' : 'create'

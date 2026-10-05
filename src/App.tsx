@@ -523,7 +523,7 @@ function AppRoutes() {
       <Route
         path="/warehouse/production"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store', 'production', 'account']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store', 'production', 'packing_staff', 'account']}>
             <Layout>
               <InternalProduction />
             </Layout>
