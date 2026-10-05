@@ -509,9 +509,7 @@ export async function fetchLeaveCalendar(startDate: string, endDate: string) {
 export async function fetchCandidates(status?: string) {
   let q = supabase.from('hr_candidates').select('*').order('created_at', { ascending: false })
   if (status) q = q.eq('status', status)
-  const { data, error } = await q
-  if (error) pgError(error)
-  return data as HRCandidate[]
+  return fetchAllSupabasePages<HRCandidate>((from, to) => q.order('id').range(from, to))
 }
 
 export async function upsertCandidate(c: Partial<HRCandidate>) {
@@ -559,11 +557,10 @@ export async function deleteInterviewer(id: string) {
 // ─── Interviews ─────────────────────────────────────────────────────────────
 
 export async function fetchInterviews() {
-  const { data, error } = await supabase.from('hr_interviews')
+  const query = supabase.from('hr_interviews')
     .select('*, candidate:hr_candidates(*)')
     .order('interview_date', { ascending: false })
-  if (error) pgError(error)
-  return data as HRInterview[]
+  return fetchAllSupabasePages<HRInterview>((from, to) => query.order('id').range(from, to))
 }
 
 export async function upsertInterview(iv: Partial<HRInterview>) {
@@ -615,9 +612,7 @@ export async function deleteInterviewCriteriaTemplate(id: string) {
 
 /** คะแนนทั้งหมด (ใช้แสดงสรุปในตาราง "สัมภาษณ์และคะแนน") */
 export async function fetchAllInterviewScores() {
-  const { data, error } = await supabase.from('hr_interview_scores').select('*')
-  if (error) pgError(error)
-  return (data ?? []) as HRInterviewScore[]
+  return fetchAllSupabasePages<HRInterviewScore>((from, to) => supabase.from('hr_interview_scores').select('*').order('created_at').order('id').range(from, to))
 }
 
 export async function fetchInterviewScores(interviewId: string) {
@@ -1131,6 +1126,13 @@ export interface LatestSalary {
   position_allowance: number | null
   /** ประเภทค่าจ้างของรายการล่าสุดที่มีผลแล้ว */
   pay_type: 'permanent' | 'daily'
+}
+
+export async function saveInterviewFollowup(interviewId: string, status: NonNullable<HRInterview['followup_status']>, startDate: string, note: string) {
+  const { error } = await supabase.rpc('hr_save_interview_followup', {
+    p_interview_id: interviewId, p_status: status, p_start_date: startDate || null, p_note: note.trim(),
+  })
+  if (error) pgError(error)
 }
 
 /** sync ข้อมูลค่าจ้างจากรายการล่าสุดที่ถึงวันที่มีผลแล้ว — รายการอนาคตต้องยังไม่เปลี่ยนค่าปัจจุบัน */

@@ -44,6 +44,18 @@ describe('delivery check import', () => {
     expect(isConsignmentOrderNo('PUMP26090039')).toBe(false)
   })
 
+  it.each(['11 ศูนย์สิริกิติ์บัญชี', '86-บริษัท บีทูเอส จำกัด', 'ร้านอื่น', 'โมชิ อยุธยา', 'ฝากส่ง', 'PUMP6908'])('classifies free-text reference %s as consignment', (orderNo) => {
+    const parsed = parseDeliveryWorksheetRows([
+      headers,
+      ['2026-09-04 19:00:07', orderNo, 'TH050194ADXT8Q', 'Wanyen', 'ลูกค้า', '0928067279', 'อยุธยา'],
+    ])
+    expect(parsed.rows[0]).toMatchObject({ is_consignment: true, note: orderNo })
+  })
+
+  it.each(['PUMP690800315', 'FBTR26090034', 'OATR26090001', 'SHOP26090001', 'PN26090001', ' pump690800315 '])('keeps bill reference %s for reconciliation', (orderNo) => {
+    expect(isConsignmentOrderNo(orderNo)).toBe(false)
+  })
+
   it('reads the new Thai carrier export and preserves pickup status from column AH', () => {
     const newHeaders = [
       'เวลาสร้าง', 'Order status', 'เลขออเดอร์', 'เลขพัสดุ', 'เลขพัสดุย่อย',

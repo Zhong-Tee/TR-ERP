@@ -3,7 +3,6 @@ import {
   FiUpload,
   FiEye,
   FiEdit2,
-  FiCheck,
   FiPlus,
   FiTrash2,
   FiExternalLink,
@@ -25,6 +24,7 @@ import {
   fetchInterviewCriteriaTemplates,
   fetchAllInterviewScores,
   deleteInterview,
+  saveInterviewFollowup,
   type SiamIdRecord,
 } from '../../lib/hrApi'
 import type {
@@ -32,6 +32,9 @@ import type {
   HRInterviewCriteriaTemplate, HREmployee, HRPosition, HRDepartment,
 } from '../../types'
 import Modal from '../ui/Modal'
+import InterviewCalendar from './InterviewCalendar'
+import { interviewTemplateDisplayName, loadInterviewTemplateLibrary, resolveInterviewTemplate, type InterviewTemplate, type InterviewTemplateAssignment } from '../../lib/hrInterviewTemplates'
+import { isScoringInterview, scoringStage, possiblePreviousCandidates } from '../../lib/hrInterviewWorkflow'
 
 type CandidateStatus = HRCandidate['status']
 type InterviewStatus = HRInterview['status']
@@ -53,6 +56,8 @@ const INTERVIEW_STATUS_OPTIONS: { value: InterviewStatus; label: string }[] = [
   { value: 'attended', label: 'มาตามนัด' },
   { value: 'rescheduled', label: 'เลื่อนนัด' },
   { value: 'no_show', label: 'ไม่มา' },
+  { value: 'cancelled', label: 'ยกเลิกนัด' },
+  { value: 'completed', label: 'สัมภาษณ์แล้ว' },
 ]
 
 function interviewStatusLabel(status: InterviewStatus): string {
@@ -149,6 +154,16 @@ export default function InterviewSchedule() {
   const [departments, setDepartments] = useState<HRDepartment[]>([])
   const [interviewers, setInterviewers] = useState<HRInterviewer[]>([])
   const [appointmentSearch, setAppointmentSearch] = useState('')
+  const [appointmentView, setAppointmentView] = useState<'table' | 'calendar'>('table')
+  const [appointmentGroup, setAppointmentGroup] = useState('pending')
+  const [scoringGroup, setScoringGroup] = useState('pending')
+  const [candidateSearch, setCandidateSearch] = useState('')
+  const [scheduleReason, setScheduleReason] = useState('')
+  const [followupInterview, setFollowupInterview] = useState<HRInterview | null>(null)
+  const [followupStatus, setFollowupStatus] = useState<NonNullable<HRInterview['followup_status']>>('pending')
+  const [startDate, setStartDate] = useState('')
+  const [contactNote, setContactNote] = useState('')
+  const [followupSaving, setFollowupSaving] = useState(false)
   const [scoringSearch, setScoringSearch] = useState('')
   const [appointmentDateFrom, setAppointmentDateFrom] = useState('')
   const [appointmentDateTo, setAppointmentDateTo] = useState('')
@@ -187,7 +202,6 @@ export default function InterviewSchedule() {
   const [recommendation, setRecommendation] = useState<HRInterviewScore['recommendation']>('maybe')
   const [scoreComments, setScoreComments] = useState('')
   const [scoreSaving, setScoreSaving] = useState(false)
-  const [hiringCandidateId, setHiringCandidateId] = useState<string | null>(null)
   const [deletingInterviewId, setDeletingInterviewId] = useState<string | null>(null)
   /** นัดหมายที่กำลังรอยืนยันการลบ (null = ไม่มีหน้าต่างยืนยันเปิดอยู่) */
   const [confirmDeleteInterview, setConfirmDeleteInterview] = useState<HRInterview | null>(null)
@@ -197,6 +211,9 @@ export default function InterviewSchedule() {
   const [importTargetCandidate, setImportTargetCandidate] = useState<HRCandidate | null>(null)
   const [detailCandidate, setDetailCandidate] = useState<HRCandidate | null>(null)
   const [criteriaTemplates, setCriteriaTemplates] = useState<HRInterviewCriteriaTemplate[]>([])
+  const [namedTemplates, setNamedTemplates] = useState<InterviewTemplate[]>([])
+  const [templateAssignments, setTemplateAssignments] = useState<InterviewTemplateAssignment[]>([])
+  const [scoreTemplateId, setScoreTemplateId] = useState('')
   const [scoresByInterview, setScoresByInterview] = useState<Map<string, HRInterviewScore>>(new Map())
 
   /** Optional: current employee id for interviewer_id when saving score (e.g. from auth). */
@@ -206,7 +223,7 @@ export default function InterviewSchedule() {
     setLoading(true)
     setError(null)
     try {
-      const [cand, ints, emps, pos, depts, itvs, crit, allScores] = await Promise.all([
+      const [cand, ints, emps, pos, depts, itvs, crit, allScores, library] = await Promise.all([
         fetchCandidates(),
         fetchInterviews(),
         fetchEmployees({ status: 'active' }),
@@ -215,6 +232,7 @@ export default function InterviewSchedule() {
         fetchInterviewers(),
         fetchInterviewCriteriaTemplates(),
         fetchAllInterviewScores(),
+        loadInterviewTemplateLibrary(),
       ])
       setCandidates(cand)
       setInterviews(ints)
@@ -223,6 +241,8 @@ export default function InterviewSchedule() {
       setDepartments(depts)
       setInterviewers(itvs)
       setCriteriaTemplates(crit)
+      setNamedTemplates(library.templates)
+      setTemplateAssignments(library.assignments)
       setScoresByInterview(new Map(allScores.map((s) => [s.interview_id, s])))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'โหลดข้อมูลไม่สำเร็จ')
@@ -235,7 +255,16 @@ export default function InterviewSchedule() {
     loadData()
   }, [loadData])
 
-  const scheduleCandidateOptions = candidates
+  const scheduleCandidateOptions = candidates.filter(c => c.id === (scheduleCandidate?.id || scheduleCandidateId) || !candidateSearch.trim()
+    || `${candidateName(c)} ${c.phone ?? ''}`.toLowerCase().includes(candidateSearch.trim().toLowerCase()))
+  const previousCandidates = possiblePreviousCandidates(candidates, scheduleFirstName, scheduleLastName, schedulePhone)
+  const candidateForInterview = useCallback((iv: HRInterview) => {
+    const c = iv.candidate ?? candidates.find(candidate => candidate.id === iv.candidate_id)
+    return c ? { ...c, ...iv.application_snapshot } : undefined
+  }, [candidates])
+  const appointmentGroups = [['pending', 'รอนัดหมาย'], ['attended', 'มาตามนัด'], ['closed', 'ไม่มา / ยกเลิก'], ['all', 'ทั้งหมด']]
+  const scoringGroups = [['pending', 'รอประเมิน'], ['review', 'รอสรุปผล'], ['passed', 'ผ่าน — รอติดต่อเริ่มงาน'], ['failed', 'ไม่ผ่าน'], ['confirmed', 'ยืนยันเริ่มงานแล้ว'], ['started', 'เริ่มงานแล้ว'], ['declined', 'สละสิทธิ์'], ['all', 'ทั้งหมด']]
+  const stageLabel = (iv: HRInterview) => scoringGroups.find(([key]) => key === scoringStage(iv, scoresByInterview.get(iv.id)))?.[1] ?? ''
 
   const candidateMap = useMemo(() => {
     const map = new Map<string, HRCandidate>()
@@ -259,8 +288,11 @@ export default function InterviewSchedule() {
   const filteredAppointments = useMemo(() => {
     const q = appointmentSearch.trim().toLowerCase()
     return interviews.filter((iv) => {
-      const candidate = iv.candidate ?? candidateMap.get(iv.candidate_id)
-      const dateOnly = iv.interview_date?.slice(0, 10) ?? ''
+      if (appointmentGroup === 'pending' && !['scheduled', 'rescheduled', 'waiting_contact'].includes(iv.status)) return false
+      if (appointmentGroup === 'attended' && !isScoringInterview(iv)) return false
+      if (appointmentGroup === 'closed' && !['no_show', 'cancelled'].includes(iv.status)) return false
+      const candidate = candidateForInterview(iv)
+      const dateOnly = splitLocalIso(iv.interview_date).date
 
       if (appointmentDateFrom && dateOnly < appointmentDateFrom) return false
       if (appointmentDateTo && dateOnly > appointmentDateTo) return false
@@ -278,13 +310,14 @@ export default function InterviewSchedule() {
 
       return haystack.includes(q)
     })
-  }, [interviews, candidateMap, appointmentSearch, appointmentDateFrom, appointmentDateTo])
+  }, [interviews, candidateForInterview, appointmentSearch, appointmentDateFrom, appointmentDateTo, appointmentGroup])
 
   const filteredScoringInterviews = useMemo(() => {
     const q = scoringSearch.trim().toLowerCase()
-    if (!q) return interviews
     return interviews.filter((iv) => {
-      const candidate = iv.candidate ?? candidateMap.get(iv.candidate_id)
+      if (!isScoringInterview(iv)) return false
+      if (scoringGroup !== 'all' && scoringStage(iv, scoresByInterview.get(iv.id)) !== scoringGroup) return false
+      const candidate = candidateForInterview(iv)
       const score = scoresByInterview.get(iv.id)
       const haystack = [
         candidate ? candidateName(candidate) : '',
@@ -298,7 +331,7 @@ export default function InterviewSchedule() {
         .toLowerCase()
       return haystack.includes(q)
     })
-  }, [interviews, candidateMap, scoresByInterview, scoringSearch])
+  }, [interviews, candidateForInterview, scoresByInterview, scoringSearch, scoringGroup])
 
   /** ตำแหน่งให้เลือกในหน้าต่างนัดหมาย — กรองตามแผนกที่เลือก (ถ้ายังไม่เลือกแผนก = ทุกตำแหน่ง) */
   const schedulePositionOptions = useMemo(() => {
@@ -426,7 +459,7 @@ export default function InterviewSchedule() {
 
   /** เปิดหน้าต่างเดิมในโหมด "แก้ไขนัดหมาย" — บันทึกแล้วอัปเดตนัดเดิม ไม่สร้างนัดใหม่ */
   const openEditScheduleModal = (iv: HRInterview) => {
-    const candidate = iv.candidate ?? candidateMap.get(iv.candidate_id) ?? null
+    const candidate = candidateForInterview(iv) ?? null
     setScheduleCandidate(candidate)
     setScheduleCandidateId(candidate?.id ?? '')
     setScheduleFirstName(candidate?.first_name ?? '')
@@ -444,11 +477,15 @@ export default function InterviewSchedule() {
     setScheduleLocation(iv.location ?? '')
     setScheduleInterviewers(Array.isArray(iv.interviewer_ids) ? iv.interviewer_ids : [])
     setScheduleStatus(iv.status as InterviewStatus)
+    setScheduleReason(iv.notes ?? '')
+    setCandidateSearch('')
     setEditingInterviewId(iv.id)
     setScheduleModalOpen(true)
   }
 
   const openCreateScheduleModal = () => {
+    setCandidateSearch('')
+    setScheduleReason('')
     setEditingInterviewId(null)
     // เริ่มที่ "ไม่เลือกผู้สมัครเดิม" เสมอ — ถ้า preset เป็นผู้สมัครคนแรก
     // การพิมพ์ชื่อใหม่ทับจะกลายเป็นการ "แก้ชื่อผู้สมัครเดิม" โดยไม่ตั้งใจ
@@ -475,6 +512,14 @@ export default function InterviewSchedule() {
     const selectedCandidateId = scheduleCandidate?.id || scheduleCandidateId
     const canUseManual = scheduleFirstName.trim() && scheduleLastName.trim()
     if (!scheduleDate || (!selectedCandidateId && !canUseManual)) return
+    if (scheduleStatus === 'rescheduled' && editingInterviewId && !scheduleReason.trim()) {
+      setError('กรุณาระบุเหตุผลการเลื่อนนัด'); return
+    }
+    const originalAppointment = interviews.find(iv => iv.id === editingInterviewId)
+    if (editingInterviewId && scheduleStatus === 'rescheduled' && originalAppointment?.status !== 'rescheduled'
+      && originalAppointment?.interview_date && new Date(originalAppointment.interview_date).getTime() === new Date(toLocalIso(scheduleDate, scheduleTime)).getTime()) {
+      setError('กรุณาเลือกวันหรือเวลานัดใหม่'); return
+    }
     setScheduleSaving(true)
     setError(null)
     try {
@@ -501,11 +546,13 @@ export default function InterviewSchedule() {
           last_name: scheduleLastName.trim() || undefined,
           nickname: scheduleNickname.trim() || undefined,
           phone: schedulePhone.trim() || undefined,
-          custom_field_1: scheduleSalary.trim() || undefined,
-          custom_field_2: scheduleSalaryType,
-          applied_department_id: scheduleDepartmentId || undefined,
-          applied_position: scheduleAppliedPosition.trim() || undefined,
-          portfolio_url: schedulePortfolio.trim() || undefined,
+          ...(!editingInterviewId ? {
+            custom_field_1: scheduleSalary.trim() || undefined,
+            custom_field_2: scheduleSalaryType,
+            applied_department_id: scheduleDepartmentId || undefined,
+            applied_position: scheduleAppliedPosition.trim() || undefined,
+            portfolio_url: schedulePortfolio.trim() || undefined,
+          } : {}),
         })
       }
       await upsertInterview({
@@ -514,7 +561,13 @@ export default function InterviewSchedule() {
         interview_date: toLocalIso(scheduleDate, scheduleTime),
         location: scheduleLocation || undefined,
         interviewer_ids: scheduleInterviewers,
-        status: scheduleStatus,
+        status: editingInterviewId ? scheduleStatus : 'scheduled',
+        notes: scheduleReason.trim() || undefined,
+        application_snapshot: {
+          applied_position: scheduleAppliedPosition.trim(), applied_department_id: scheduleDepartmentId,
+          custom_field_1: scheduleSalary.trim(), custom_field_2: scheduleSalaryType,
+          portfolio_url: schedulePortfolio.trim(),
+        },
       })
       // นัดใหม่เท่านั้นที่ดันสถานะผู้สมัครเป็น "นัดสัมภาษณ์"
       // (แก้ไขนัดเดิมไม่ควรย้อนสถานะที่เดินไปแล้ว เช่น สัมภาษณ์แล้ว/ผ่าน)
@@ -538,6 +591,9 @@ export default function InterviewSchedule() {
   const defaultCriteriaFor = useCallback(
     (candidate: HRCandidate | undefined) => {
       const posName = candidate?.applied_position?.trim()
+      const position = positions.find(p => p.name.trim() === posName && (!candidate?.applied_department_id || p.department_id === candidate.applied_department_id))
+      const template = resolveInterviewTemplate(namedTemplates, templateAssignments, position?.id, candidate?.applied_department_id || position?.department_id)
+      if (template) return template.criteria.map(c => ({ ...c, score: 0, note: '' }))
       if (!posName) return []
       const posIds = positions.filter((p) => p.name?.trim() === posName).map((p) => p.id)
       if (posIds.length === 0) return []
@@ -546,12 +602,13 @@ export default function InterviewSchedule() {
         .sort((a, b) => a.sort_order - b.sort_order)
         .map((t) => ({ name: t.name, max_score: t.max_score, score: 0, note: '' }))
     },
-    [positions, criteriaTemplates]
+    [positions, criteriaTemplates, namedTemplates, templateAssignments]
   )
 
   const openScoring = async (interview: HRInterview) => {
+    setScoreTemplateId('')
     setScoringInterview(interview)
-    const candidate = interview.candidate ?? candidateMap.get(interview.candidate_id)
+    const candidate = candidateForInterview(interview)
     const preset = defaultCriteriaFor(candidate)
     setCriteriaRows(preset.length > 0 ? preset : [{ name: '', max_score: 10, score: 0, note: '' }])
     setRecommendation('maybe')
@@ -651,11 +708,15 @@ export default function InterviewSchedule() {
       }
       await upsertInterviewScore(payload)
       await upsertInterview({ id: scoringInterview.id, status: 'attended' })
-      const cand = scoringInterview.candidate
-      if (cand) {
+      const cand = scoringInterview.candidate ?? candidateMap.get(scoringInterview.candidate_id)
+      const latest = interviews.filter(iv => iv.candidate_id === scoringInterview.candidate_id)
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
+      if (cand && latest?.id === scoringInterview.id) {
         await upsertCandidate({
           id: cand.id,
-          status: recommendation === 'hire' ? 'passed' : recommendation === 'reject' ? 'failed' : 'interviewed',
+          status: recommendation === 'hire'
+            ? scoringInterview.followup_status === 'started' ? 'hired' : scoringInterview.followup_status === 'declined' ? 'withdrawn' : 'passed'
+            : recommendation === 'reject' ? 'failed' : 'interviewed',
         })
       }
       setSuccessMessage('บันทึกคะแนนแล้ว')
@@ -665,20 +726,6 @@ export default function InterviewSchedule() {
       setError(e instanceof Error ? e.message : 'บันทึกคะแนนไม่สำเร็จ')
     } finally {
       setScoreSaving(false)
-    }
-  }
-
-  const handleHire = async (candidateId: string) => {
-    setHiringCandidateId(candidateId)
-    setError(null)
-    try {
-      await upsertCandidate({ id: candidateId, status: 'hired' })
-      setSuccessMessage('รับเข้าทำงานแล้ว')
-      await loadData()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'ดำเนินการไม่สำเร็จ')
-    } finally {
-      setHiringCandidateId(null)
     }
   }
 
@@ -700,6 +747,11 @@ export default function InterviewSchedule() {
   }
 
   const handleInterviewStatusChange = async (interviewId: string, status: InterviewStatus) => {
+    if (status === 'rescheduled') {
+      const iv = interviews.find(item => item.id === interviewId)
+      if (iv) { openEditScheduleModal(iv); setScheduleStatus('rescheduled'); setScheduleReason('') }
+      return
+    }
     setError(null)
     try {
       await upsertInterview({ id: interviewId, status })
@@ -715,6 +767,21 @@ export default function InterviewSchedule() {
     const t = setTimeout(() => setSuccessMessage(null), 3000)
     return () => clearTimeout(t)
   }, [successMessage])
+
+  const openFollowup = (iv: HRInterview) => {
+    setFollowupInterview(iv); setFollowupStatus(iv.followup_status ?? 'pending')
+    setStartDate(iv.start_date ?? ''); setContactNote(iv.contact_note ?? '')
+  }
+  const saveFollowup = async () => {
+    if (!followupInterview) return
+    if (['confirmed', 'started'].includes(followupStatus) && !startDate) { setError('กรุณาระบุวันเริ่มงาน'); return }
+    setFollowupSaving(true)
+    try {
+      await saveInterviewFollowup(followupInterview.id, followupStatus, startDate, contactNote)
+      setFollowupInterview(null); setSuccessMessage('บันทึกการติดตามเริ่มงานแล้ว'); await loadData()
+    } catch (e) { setError(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ') }
+    finally { setFollowupSaving(false) }
+  }
 
   const statusLabel = (s: CandidateStatus): string => {
     const o = STATUS_OPTIONS.find((x) => x.value === s)
@@ -824,6 +891,14 @@ export default function InterviewSchedule() {
               </button>
             </div>
             <div className="overflow-x-auto">
+            <div className="px-6 py-3 flex flex-wrap gap-2">
+              {appointmentGroups.map(([key, label]) => <button key={key} onClick={() => setAppointmentGroup(key)} className={`rounded-lg px-3 py-2 text-sm ${appointmentGroup === key ? 'bg-emerald-600 text-white' : 'bg-surface-100'}`}>
+                {label} ({interviews.filter(iv => key === 'all' || (key === 'pending' ? ['scheduled', 'rescheduled', 'waiting_contact'].includes(iv.status) : key === 'attended' ? isScoringInterview(iv) : ['no_show', 'cancelled'].includes(iv.status))).length})
+              </button>)}
+              <button onClick={() => setAppointmentView('table')} className={`rounded-lg px-3 py-2 text-sm ${appointmentView === 'table' ? 'bg-blue-600 text-white' : 'bg-surface-100'}`}>ตาราง</button>
+              <button onClick={() => setAppointmentView('calendar')} className={`rounded-lg px-3 py-2 text-sm ${appointmentView === 'calendar' ? 'bg-blue-600 text-white' : 'bg-surface-100'}`}>ปฏิทิน</button>
+            </div>
+            {appointmentView === 'calendar' ? <InterviewCalendar interviews={filteredAppointments} name={iv => { const c = candidateForInterview(iv); return c ? candidateName(c) : '-' }} open={openEditScheduleModal} /> : <>
             <table className="w-full text-left">
               <thead>
                 <tr className="bg-surface-50 border-b border-surface-200">
@@ -832,7 +907,7 @@ export default function InterviewSchedule() {
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">ชื่อเล่น</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่/เวลานัด</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">ตำแหน่ง</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">เงินเดือน</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">เงินเดือนที่คาดหวัง</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">Portfolio</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">เบอร์โทร</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">สถานะ</th>
@@ -848,12 +923,13 @@ export default function InterviewSchedule() {
                   </tr>
                 ) : (
                   filteredAppointments.map((iv, idx) => {
-                    const candidate = iv.candidate ?? candidateMap.get(iv.candidate_id)
+                    const candidate = candidateForInterview(iv)
                     return (
                       <tr key={iv.id} className="border-b border-surface-100 hover:bg-surface-50/50 transition-colors">
                         <td className="px-6 py-3 text-sm text-surface-700">{idx + 1}</td>
                         <td className="px-6 py-3 text-sm text-surface-800">
                           {candidate ? candidateName(candidate) : '-'}
+                          {candidate && <button onClick={() => setDetailCandidate(candidate)} className="block text-xs text-emerald-700 mt-1">ดูประวัติ ({candidateInterviewHistory.get(candidate.id)?.totalAppointments ?? 0})</button>}
                         </td>
                         <td className="px-6 py-3 text-sm text-surface-700">
                           {candidate?.nickname ?? '-'}
@@ -921,10 +997,16 @@ export default function InterviewSchedule() {
                 )}
               </tbody>
             </table>
+            </>}
             </div>
           </div>
         ) : subTab === 'scoring' ? (
           <div>
+            <div className="px-6 py-3 flex flex-wrap gap-2">
+              {scoringGroups.map(([key, label]) => <button key={key} onClick={() => setScoringGroup(key)} className={`rounded-lg px-3 py-2 text-sm ${scoringGroup === key ? 'bg-emerald-600 text-white' : 'bg-surface-100'}`}>
+                {label} ({interviews.filter(iv => isScoringInterview(iv) && (key === 'all' || scoringStage(iv, scoresByInterview.get(iv.id)) === key)).length})
+              </button>)}
+            </div>
             <div className="px-6 py-4 border-b border-surface-100 flex flex-wrap items-end gap-3">
               <div className="min-w-[260px]">
                 <label className="block text-xs text-surface-600 mb-1">ค้นหา</label>
@@ -970,7 +1052,7 @@ export default function InterviewSchedule() {
                   </tr>
                 ) : (
                   filteredScoringInterviews.map((iv, idx) => {
-                    const candidate = iv.candidate ?? candidateMap.get(iv.candidate_id)
+                    const candidate = candidateForInterview(iv)
                     const score = scoresByInterview.get(iv.id)
                     return (
                       <tr
@@ -999,7 +1081,11 @@ export default function InterviewSchedule() {
                             <span className="text-surface-500">-</span>
                           )}
                         </td>
-                        <td className="px-6 py-3 text-sm text-surface-700">{interviewStatusLabel(iv.status)}</td>
+                        <td className="px-6 py-3 text-sm text-surface-700">
+                          <span className={scoringStage(iv, score) === 'failed' ? 'text-red-600' : 'text-emerald-700'}>{stageLabel(iv)}</span>
+                          {iv.start_date && <div className="text-xs mt-1">เริ่มงาน {formatDate(iv.start_date)}</div>}
+                          {iv.contact_note && <div className="text-xs mt-1">{iv.contact_note}</div>}
+                        </td>
                         <td className="px-6 py-3 text-sm text-surface-700">
                           {score
                             ? `${score.total_score ?? 0}/${score.max_possible ?? 0}`
@@ -1007,6 +1093,7 @@ export default function InterviewSchedule() {
                         </td>
                         <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center gap-2">
+                            {score?.recommendation === 'hire' && <button onClick={() => openFollowup(iv)} className="px-2 py-1 rounded-lg bg-emerald-100 text-emerald-800 text-sm">ติดตามเริ่มงาน</button>}
                             <button
                               type="button"
                               onClick={() => openScoring(iv)}
@@ -1175,20 +1262,18 @@ export default function InterviewSchedule() {
               </div>
             </dl>
 
+            <div className="space-y-2 border-t pt-3">
+              <h4 className="font-semibold">ประวัตินัดหมายและผลสัมภาษณ์</h4>
+              {interviews.filter(iv => iv.candidate_id === detailCandidate.id).sort((a, b) => b.interview_date.localeCompare(a.interview_date)).map(iv => <div key={iv.id} className="border rounded-lg p-3 text-sm">
+                <div>{formatDateTime(iv.interview_date)} · {interviewStatusLabel(iv.status)} · {iv.application_snapshot?.applied_position ?? detailCandidate!.applied_position}</div>
+                {scoresByInterview.has(iv.id) && <div>คะแนน {scoresByInterview.get(iv.id)?.total_score}/{scoresByInterview.get(iv.id)?.max_possible} · {stageLabel(iv)}<p>{scoresByInterview.get(iv.id)?.comments}</p></div>}
+                {iv.notes && <div>หมายเหตุ: {iv.notes}</div>}
+                {iv.contact_note && <div>ติดต่อเริ่มงาน: {iv.contact_note}</div>}
+                {iv.start_date && <div>วันเริ่มงาน: {formatDate(iv.start_date)}</div>}
+                {iv.appointment_history?.map((entry, index) => <div key={index} className="text-xs text-gray-500 mt-1">นัดเดิม {formatDateTime(entry.date)} · {interviewStatusLabel(entry.status as InterviewStatus)} · {entry.reason}</div>)}
+              </div>)}
+            </div>
             <div className="flex justify-end gap-2 pt-2 border-t border-surface-100">
-              {detailCandidate.status === 'passed' && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    void handleHire(detailCandidate.id)
-                    setDetailCandidate(null)
-                  }}
-                  disabled={!!hiringCandidateId}
-                  className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm hover:bg-emerald-700 disabled:opacity-50"
-                >
-                  <FiCheck className="w-4 h-4" /> รับเข้าทำงาน
-                </button>
-              )}
               <button
                 type="button"
                 onClick={() => setDetailCandidate(null)}
@@ -1306,8 +1391,20 @@ export default function InterviewSchedule() {
       </Modal>
 
       {/* Schedule interview modal */}
+      <Modal open={!!followupInterview} onClose={() => setFollowupInterview(null)} contentClassName="max-w-lg">
+        <div className="p-6 space-y-4">
+          <h3 className="text-lg font-semibold">ติดตามการเริ่มงาน</h3>
+          {error && <p className="text-red-600 text-sm">{error}</p>}
+          <label className="block">ผลการติดต่อ<select value={followupStatus} onChange={e => setFollowupStatus(e.target.value as typeof followupStatus)} className="block w-full border rounded-lg p-2 mt-1">
+            <option value="pending">รอติดต่อเริ่มงาน</option><option value="confirmed">ยืนยันเริ่มงานแล้ว</option><option value="started">เริ่มงานแล้ว</option><option value="declined">สละสิทธิ์</option>
+          </select></label>
+          <label className="block">วันเริ่มงาน<input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="block w-full border rounded-lg p-2 mt-1" /></label>
+          <label className="block">บันทึกการติดต่อ<textarea value={contactNote} onChange={e => setContactNote(e.target.value)} className="block w-full border rounded-lg p-2 mt-1" rows={3} /></label>
+          <button disabled={followupSaving} onClick={() => void saveFollowup()} className="bg-emerald-600 text-white rounded-lg px-4 py-2 disabled:opacity-50">{followupSaving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+        </div>
+      </Modal>
       <Modal
-        open={scheduleModalOpen}
+        open={scheduleModalOpen && !detailCandidate}
         onClose={() => {
           setScheduleModalOpen(false)
           setScheduleCandidate(null)
@@ -1321,8 +1418,24 @@ export default function InterviewSchedule() {
             {editingInterviewId ? 'แก้ไขนัดหมาย' : 'สร้างนัดหมาย'}
           </h3>
           <div className="space-y-4">
+            {error && <div className="text-red-600 text-sm">{error}</div>}
+            {previousCandidates.length > 0 && <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm space-y-2">
+              <strong>พบผู้สมัครที่อาจเป็นคนเดิม — ตรวจประวัติก่อนสร้างนัด</strong>
+              {previousCandidates.map(c => <div key={c.id} className="flex flex-wrap gap-2 items-center">
+                <span>{candidateName(c)} · {c.phone} · เคยนัด {candidateInterviewHistory.get(c.id)?.totalAppointments ?? 0} ครั้ง</span>
+                <button onClick={() => setDetailCandidate(c)} className="text-blue-700 underline">ดูประวัติ</button>
+                {!editingInterviewId && <button onClick={() => {
+                  setScheduleCandidate(c); setScheduleCandidateId(c.id)
+                  setScheduleFirstName(c.first_name); setScheduleLastName(c.last_name); setSchedulePhone(c.phone ?? '')
+                  setScheduleNickname(c.nickname ?? ''); setScheduleSalary(c.custom_field_1 ?? ''); setScheduleSalaryType(salaryTypeOf(c))
+                  setScheduleDepartmentId(c.applied_department_id ?? ''); setScheduleAppliedPosition(c.applied_position ?? ''); setSchedulePortfolio(c.portfolio_url ?? '')
+                }} className="text-emerald-700 underline">ใช้ผู้สมัครเดิม</button>}
+              </div>)}
+            </div>}
+            {editingInterviewId && <label className="block text-sm">เหตุผลการแก้ไข / เลื่อนนัด<textarea value={scheduleReason} onChange={e => setScheduleReason(e.target.value)} className="block w-full border rounded-lg p-2 mt-1" /></label>}
             <div>
-              <label className="block text-sm font-medium text-surface-700 mb-1">อ้างอิงผู้สมัครเดิม (ถ้ามี)</label>
+              <label className="block text-sm font-medium text-surface-700 mb-1">ค้นหาผู้สมัครเดิม</label>
+              <input value={candidateSearch} onChange={e => setCandidateSearch(e.target.value)} placeholder="ค้นหาชื่อหรือเบอร์โทร" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-2" />
               <select
                 value={scheduleCandidate ? scheduleCandidate.id : scheduleCandidateId}
                 onChange={(e) => {
@@ -1455,7 +1568,7 @@ export default function InterviewSchedule() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-surface-700 mb-1">จำนวนเงิน</label>
+                <label className="block text-sm font-medium text-surface-700 mb-1">เงินเดือนที่คาดหวัง</label>
                 <input
                   type="number"
                   min={0}
@@ -1505,7 +1618,7 @@ export default function InterviewSchedule() {
                 placeholder="ห้องสัมภาษณ์..."
                 className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
               />
-              <div className="mt-3">
+              {editingInterviewId && <div className="mt-3">
                 <label className="block text-sm font-medium text-surface-700 mb-1">สถานะ</label>
                 <select
                   value={scheduleStatus}
@@ -1518,7 +1631,7 @@ export default function InterviewSchedule() {
                     </option>
                   ))}
                 </select>
-              </div>
+              </div>}
             </div>
             <div>
               <label className="block text-sm font-medium text-surface-700 mb-1">ผู้สัมภาษณ์</label>
@@ -1569,7 +1682,7 @@ export default function InterviewSchedule() {
       <Modal
         open={!!scoringInterview}
         onClose={() => setScoringInterview(null)}
-        contentClassName="max-w-2xl"
+        contentClassName="max-w-5xl"
         closeOnBackdropClick
       >
         <div className="p-6">
@@ -1588,11 +1701,19 @@ export default function InterviewSchedule() {
                 <FiPlus className="w-4 h-4" /> เพิ่มเกณฑ์
               </button>
             </div>
+            <label className="block text-sm">เลือก Template อื่น (หัวข้อและคะแนนที่ยังไม่บันทึกจะถูกแทนที่)
+              <select value={scoreTemplateId} onChange={e => {
+                const template = namedTemplates.find(t => t.id === e.target.value)
+                if (template && window.confirm('ใช้ Template นี้แทนหัวข้อและคะแนนที่กำลังกรอกหรือไม่?')) {
+                  setScoreTemplateId(template.id); setCriteriaRows(template.criteria.map(c => ({ ...c, score: 0, note: '' })))
+                }
+              }} className="w-full border rounded-lg p-2 mt-1"><option value="">เกณฑ์ปัจจุบัน</option>{namedTemplates.map(t => <option key={t.id} value={t.id}>{interviewTemplateDisplayName(t.name)}</option>)}</select>
+            </label>
             <div className="rounded-lg border border-surface-200 overflow-hidden">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-surface-50">
-                    <th className="px-3 py-2 text-left font-semibold text-surface-700">ชื่อเกณฑ์</th>
+                    <th className="px-3 py-2 text-left font-semibold text-surface-700 w-1/2">ชื่อเกณฑ์</th>
                     <th className="px-3 py-2 text-left font-semibold text-surface-700 w-24">คะแนนเต็ม</th>
                     <th className="px-3 py-2 text-left font-semibold text-surface-700 w-24">คะแนน</th>
                     <th className="px-3 py-2 text-left font-semibold text-surface-700">หมายเหตุ</th>
@@ -1608,7 +1729,7 @@ export default function InterviewSchedule() {
                           value={row.name}
                           onChange={(e) => updateCriteriaRow(i, 'name', e.target.value)}
                           placeholder="ชื่อเกณฑ์"
-                          className="w-full rounded border border-surface-300 px-2 py-1 text-surface-800"
+                          className="w-full min-w-[280px] rounded border border-surface-300 px-2 py-1 text-surface-800"
                         />
                       </td>
                       <td className="px-3 py-2">
@@ -1659,15 +1780,15 @@ export default function InterviewSchedule() {
               รวมคะแนน: <strong>{totalScore}</strong> / {maxPossible}
             </p>
             <div>
-              <label className="block text-sm font-medium text-surface-700 mb-1">ข้อเสนอแนะ</label>
+              <label className="block text-sm font-medium text-surface-700 mb-1">ผลสัมภาษณ์</label>
               <select
                 value={recommendation}
                 onChange={(e) => setRecommendation(e.target.value as HRInterviewScore['recommendation'])}
                 className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
               >
-                <option value="hire">รับเข้าทำงาน</option>
-                <option value="maybe">พิจารณา</option>
-                <option value="reject">ไม่รับ</option>
+                <option value="hire">ผ่านสัมภาษณ์ — รอติดต่อเริ่มงาน</option>
+                <option value="maybe">รอสรุปผล</option>
+                <option value="reject">ไม่ผ่านสัมภาษณ์</option>
               </select>
             </div>
             <div>

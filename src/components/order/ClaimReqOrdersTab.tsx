@@ -1050,7 +1050,9 @@ export default function ClaimReqOrdersTab({
   /** จำนวนบิลอนุมัติแล้วที่ยังไม่ได้บันทึกและยืนยันที่อยู่ */
   const needShippingCount = useMemo(
     () => approvedClaims.filter(
-      (c) => c.created_claim_order_id && !orderById[c.created_claim_order_id]?.claim_shipping_confirmed_at,
+      (c) => c.created_claim_order_id
+        && orderById[c.created_claim_order_id]?.status !== 'ยกเลิก'
+        && !orderById[c.created_claim_order_id]?.claim_shipping_confirmed_at,
     ).length,
     [approvedClaims, orderById],
   )
@@ -1249,6 +1251,7 @@ export default function ClaimReqOrdersTab({
                     const o = c.created_claim_order_id ? orderById[c.created_claim_order_id] : undefined
                     if (!o) return null
                     const done = !!o.claim_shipping_confirmed_at
+                    const cancelled = o.status === 'ยกเลิก'
                     return (
                       <tr
                         key={c.id}
@@ -1266,7 +1269,9 @@ export default function ClaimReqOrdersTab({
                         <td className="p-3">{o.channel_code}</td>
                         <ClaimMoneyCells refSnapshot={c.ref_snapshot} proposedSnapshot={c.proposed_snapshot} />
                         <td className="p-3 whitespace-nowrap">
-                          {done ? (
+                          {cancelled ? (
+                            <span className="text-red-600 font-medium">ยกเลิกบิล</span>
+                          ) : done ? (
                             <div className="leading-tight">
                               <div className="text-green-700 font-medium">ยืนยันแล้ว</div>
                               {o.claim_shipping_confirmed_at && (
@@ -1280,7 +1285,7 @@ export default function ClaimReqOrdersTab({
                           )}
                         </td>
                         <td className="p-3" onClick={(e) => e.stopPropagation()}>
-                          {!done && canConfirm && (
+                          {!cancelled && !done && canConfirm && (
                             <button
                               type="button"
                               onClick={() => {

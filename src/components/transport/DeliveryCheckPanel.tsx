@@ -407,14 +407,14 @@ export default function DeliveryCheckPanel() {
           <div className="grid gap-3 md:grid-cols-[220px_minmax(0,1fr)]">
             <label className="block">
               <span className="mb-1.5 block text-sm font-semibold text-gray-700">บริษัทขนส่ง</span>
-              <select value={carrier} onChange={(event) => setCarrier(event.target.value)} className="w-full rounded-xl border border-gray-300 px-3 py-3 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100">
+              <select value={carrier} onChange={(event) => setCarrier(event.target.value)} className="h-14 w-full rounded-xl border border-gray-300 px-3 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100">
                 <option value="">เลือกขนส่ง</option>
                 {carriers.map((item) => <option key={item.code} value={item.code}>{item.code} — {item.name}</option>)}
               </select>
             </label>
             <label className="block">
               <span className="mb-1.5 block text-sm font-semibold text-gray-700">ไฟล์ขนส่ง (.xlsx / .xls)</span>
-              <button type="button" onClick={() => fileInputRef.current?.click()} className="flex w-full items-center justify-between rounded-xl border border-dashed border-blue-300 bg-blue-50 px-4 py-3 text-left hover:bg-blue-100">
+              <button type="button" onClick={() => fileInputRef.current?.click()} className="flex h-14 w-full items-center justify-between rounded-xl border border-dashed border-blue-300 bg-blue-50 px-4 text-left hover:bg-blue-100">
                 <span className="truncate text-sm font-semibold text-blue-700">{selectedFile?.name || 'คลิกเพื่อเลือกไฟล์ขนส่งประจำวัน'}</span>
                 <span className="ml-3 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-bold text-white">เลือกไฟล์</span>
               </button>

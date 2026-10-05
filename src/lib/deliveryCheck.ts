@@ -49,14 +49,13 @@ export function normalizeDeliveryPhone(value: unknown): string {
 }
 
 /**
- * Carrier rows without an order number are consignment shipments. Known free-text
- * order references (for example "46. Moshi อยุธยา") are consignments too and the
- * original text becomes the initial note.
+ * Bills use a channel prefix followed by YYMM and at least four sequence digits.
+ * Blank and free-text order references are consignments; preserve them as notes.
  */
 export function isConsignmentOrderNo(value: unknown): boolean {
   const orderNo = text(value)
-  if (!orderNo) return true
-  return /moshi|โมชิ|ฝากส่ง/i.test(orderNo)
+  if (!orderNo || /moshi|โมชิ|ฝากส่ง/i.test(orderNo)) return true
+  return !/^[A-Z][A-Z0-9]*[0-9]{2}(?:0[1-9]|1[0-2])[0-9]{4,}$/.test(normalizeDeliveryKey(orderNo))
 }
 
 function excelSerialToDate(value: number): Date {

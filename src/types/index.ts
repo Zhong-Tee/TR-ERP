@@ -1322,6 +1322,11 @@ export interface HRInterviewer {
 }
 
 export interface HRInterview {
+  followup_status?: 'pending' | 'confirmed' | 'started' | 'declined'
+  start_date?: string | null
+  contact_note?: string | null
+  application_snapshot?: Partial<HRCandidate>
+  appointment_history?: { date: string; status: string; reason: string; changed_at: string }[]
   id: string
   candidate_id: string
   interview_date: string

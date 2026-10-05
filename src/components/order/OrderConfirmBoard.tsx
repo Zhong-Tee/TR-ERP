@@ -12,6 +12,7 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import { isSalesPumpOwnerScopedRole, isSalesTrTeamRole } from '../../config/accessPolicy'
 import { fetchSalesTrTeamAdminValues } from '../../lib/salesTrTeam'
 import { orderQualifiesForConfirmBoard } from '../../lib/pumpConfirmRouting'
+import { bangkokDateKey, confirmBoardDefaultStart } from '../../lib/confirmBoardDates'
 import { buildProductionExportRows, productionRowsToTsv } from '../../lib/productionExportRows'
 import OrderDetailView from './OrderDetailView'
 import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
@@ -360,11 +361,9 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   const [deleteLinkTarget, setDeleteLinkTarget] = useState<string | null>(null)
   const [linkDeleting, setLinkDeleting] = useState(false)
   const chatEndRef = useRef<HTMLDivElement | null>(null)
-  const [fromDate, setFromDate] = useState(() => {
-    const now = new Date()
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
-  })
-  const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [fromDate, setFromDate] = useState(() => confirmBoardDefaultStart())
+  const [toDate, setToDate] = useState(() => bangkokDateKey())
+  const dateFilterEditedRef = useRef(false)
   const [viewMode, setViewMode] = useState<ViewMode>('default')
   const [sendOnEnter, setSendOnEnter] = useState(false)
   const [unreadByOrder, setUnreadByOrder] = useState<Record<string, number>>({})
@@ -737,8 +736,27 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       .or('channel_code.eq.PUMP,requires_confirm_design.eq.true')
       .order('created_at', { ascending: true })
 
-    if (fromDate) query = query.gte('created_at', `${fromDate}T00:00:00.000Z`)
-    if (toDate) query = query.lte('created_at', `${toDate}T23:59:59.999Z`)
+    let effectiveFromDate = fromDate
+    if (!dateFilterEditedRef.current) {
+      // Find pending work without the month filter; completed work must not extend it.
+      let oldestQuery = supabase.from('or_orders').select('created_at')
+        .in('status', statuses.filter((status) => status !== 'เสร็จสิ้น'))
+        .or('channel_code.eq.PUMP,requires_confirm_design.eq.true')
+        .order('created_at', { ascending: true }).limit(1)
+      if (isSalesTrTeamRole(user?.role)) {
+        oldestQuery = salesTrTeamAdminValues.length === 0
+          ? oldestQuery.eq('admin_user', '__no_sales_tr_team__')
+          : oldestQuery.in('admin_user', salesTrTeamAdminValues)
+      }
+      const { data: oldest, error } = await oldestQuery
+      if (error) throw error
+      if (!dateFilterEditedRef.current) {
+        effectiveFromDate = confirmBoardDefaultStart(oldest?.[0]?.created_at)
+        setFromDate(effectiveFromDate)
+      }
+    }
+    if (effectiveFromDate) query = query.gte('created_at', `${effectiveFromDate}T00:00:00+07:00`)
+    if (toDate) query = query.lte('created_at', `${toDate}T23:59:59.999+07:00`)
     if (isSalesTrTeamRole(user?.role)) {
       query = salesTrTeamAdminValues.length === 0
         ? query.eq('admin_user', '__no_sales_tr_team__')
@@ -1272,7 +1290,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 <input
                   type="date"
                   value={fromDate}
-                  onChange={(e) => setFromDate(e.target.value)}
+                  onChange={(e) => { dateFilterEditedRef.current = true; setFromDate(e.target.value) }}
                   className="h-10 box-border px-2 sm:px-3 border border-gray-300 rounded-lg bg-white text-sm min-w-0"
                 />
               </div>
@@ -1281,7 +1299,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 <input
                   type="date"
                   value={toDate}
-                  onChange={(e) => setToDate(e.target.value)}
+                  onChange={(e) => { dateFilterEditedRef.current = true; setToDate(e.target.value) }}
                   className="h-10 box-border px-2 sm:px-3 border border-gray-300 rounded-lg bg-white text-sm min-w-0"
                 />
               </div>
@@ -1300,9 +1318,10 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 onClick={() => {
                   setConfirmTableSearch('')
                   setNoDesignAlertOnly(false)
-                  const now = new Date()
-                  setFromDate(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`)
-                  setToDate(new Date().toISOString().split('T')[0])
+                  dateFilterEditedRef.current = false
+                  setFromDate(confirmBoardDefaultStart())
+                  setToDate(bangkokDateKey())
+                  setRefreshKey((key) => key + 1)
                 }}
                 className="shrink-0 inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 bg-gray-100 px-3 text-sm font-medium text-gray-700 hover:bg-gray-200"
               >
@@ -1379,7 +1398,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
               <input
                 type="date"
                 value={fromDate}
-                onChange={(e) => setFromDate(e.target.value)}
+                onChange={(e) => { dateFilterEditedRef.current = true; setFromDate(e.target.value) }}
                 className="h-10 box-border px-3 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none transition-all"
               />
             </div>
@@ -1389,7 +1408,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
               <input
                 type="date"
                 value={toDate}
-                onChange={(e) => setToDate(e.target.value)}
+                onChange={(e) => { dateFilterEditedRef.current = true; setToDate(e.target.value) }}
                 className="h-10 box-border px-3 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none transition-all"
               />
             </div>
