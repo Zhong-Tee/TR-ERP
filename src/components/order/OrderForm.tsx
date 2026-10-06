@@ -1,6 +1,7 @@
 import { parseWebOrderRows } from '../../lib/webOrderImport'
 import React, { useState, useEffect, useRef, useMemo, forwardRef, useImperativeHandle } from 'react'
 import { createPortal } from 'react-dom'
+import { fetchReservationStock, saveReservationOrderItems } from '../../lib/stockReservations'
 import { supabase } from '../../lib/supabase'
 import { fetchAllSupabasePagesResult } from '../../lib/supabasePagination'
 import { Order, OrderItem, OrderStatus, Product, CartoonPattern, BankSetting } from '../../types'
@@ -35,7 +36,7 @@ import {
   TUBE_GIFT_PRODUCT_CODE,
 } from '../../lib/orderAutoGifts'
 import { buildIlikeOr } from '../../lib/searchFilter'
-import { isSelfPickupBill, isSelfPickupChannel } from '../../lib/channelBehavior'
+import { resolveBillFulfillmentMethod } from '../../lib/channelBehavior'
 import { getMissingCustomerShippingFields } from '../../lib/orderCustomerValidation'
 import { cancelOrderWithAudit } from '../../lib/orderCancellation'
 import CancelOrderModal from './CancelOrderModal'
@@ -45,7 +46,6 @@ import {
   promotionMatchesChannel,
   totalPromotionDiscount,
   type PromotionDefinition,
-  type PromotionEvaluation,
   type PromotionOrderItem,
 } from '../../lib/promotionRules'
 import { calculateShippingCharge, findShippingAreaRule, SHIPPING_AREA_TYPE_LABELS, type ShippingAreaRule } from '../../lib/shippingAreaRules'
@@ -750,7 +750,7 @@ type ProductStockSnapshot = {
 }
 
 /** ช่องทางที่บล็อกที่อยู่ลูกค้า (SHOP PICKUP=SHOPP บล็อกที่อยู่ ปิดเลขพัสดุ; SHOP SHIPPING=SHOP แสดงที่อยู่+ชื่อช่องทาง ปิดเลขพัสดุ) */
-const CHANNELS_BLOCK_ADDRESS = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP']
+const CHANNELS_BLOCK_ADDRESS = ['SPTR', 'FSPTR', 'TTTR', 'LZTR']
 /** ช่องทางที่แยก "ชื่อลูกค้า/ผู้รับ" (recipient_name) ออกจาก "ชื่อช่องทาง" (customer_name) */
 const CHANNELS_SHOW_CHANNEL_NAME = ['FBTR', 'PUMP', 'OATR', 'SHOP', 'SHOPP', 'INFU', 'PN', 'WY']
 /** ช่องทางที่เปิดให้กรอกเลขพัสดุ (SHOP PICKUP ปิด) */
@@ -821,15 +821,17 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const [productSearchTerm, setProductSearchTerm] = useState<{ [key: number]: string }>({})
   const [patternSearchTerm, setPatternSearchTerm] = useState<{ [key: number]: string }>({})
   const [fontSearchTerm, setFontSearchTerm] = useState<{ [key: number]: string }>({})
+  const [priceInput, setPriceInput] = useState<string | null>(null)
+  const [shippingInput, setShippingInput] = useState<string | null>(null)
   const [discountType, setDiscountType] = useState<'baht' | 'percent'>('baht')
   const [uploadedSlipPaths, setUploadedSlipPaths] = useState<string[]>([])
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
   /** ช่องทางที่อยู่ใน bank_settings_channels (ต้องอัพโหลดสลิปเมื่อชำระโอน) */
   const [channelCodesWithSlipVerification, setChannelCodesWithSlipVerification] = useState<Set<string>>(new Set())
   const isCurrentBillSelfPickup = (channelCode: string | null | undefined = formData.channel_code) =>
-    isSelfPickupBill(order?.fulfillment_method, channelCode, channelMeta)
+    resolveBillFulfillmentMethod(order?.fulfillment_method, channelCode, order?.channel_code, channelMeta) === 'self_pickup'
   const isCustomerAddressDisabled = (channelCode: string | null | undefined = formData.channel_code) =>
-    CHANNELS_BLOCK_ADDRESS.includes(String(channelCode || '').trim().toUpperCase())
+    (CHANNELS_BLOCK_ADDRESS.includes(String(channelCode || '').trim().toUpperCase()) && !(order?.converted_from_self_pickup_at && order?.fulfillment_method === 'shipping'))
     || isCurrentBillSelfPickup(channelCode)
   const shouldShowChannelName = (channelCode: string | null | undefined = formData.channel_code) =>
     CHANNELS_SHOW_CHANNEL_NAME.includes(String(channelCode || '').trim().toUpperCase())
@@ -862,11 +864,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     title: string
     message: string
     itemsToSave: Partial<OrderItem>[]
-  } | null>(null)
-  const [promotionWarning, setPromotionWarning] = useState<{
-    itemsToSave: Partial<OrderItem>[]
-    results: PromotionEvaluation[]
-    overrideReason: string
   } | null>(null)
   const [importModalOpen, setImportModalOpen] = useState(false)
   const [importMode, setImportMode] = useState<'standard-pgtr' | 'wy'>('standard-pgtr')
@@ -1659,14 +1656,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         // rendered and preserved; the picker filters them unless already selected.
         supabase.from('promotion').select('*'),
         supabase.from('pr_product_field_overrides').select('*'),
-        fetchAllSupabasePagesResult((from, to) => supabase.from('inv_stock_balances').select('product_id, on_hand, reserved, safety_stock').order('product_id').range(from, to)),
+        fetchReservationStock('order', order?.id || null),
         supabase.from('or_channel_order_no_prefixes').select('channel_code, prefix, is_active').eq('is_active', true),
       ])
 
       if (productsRes.data) setProducts(productsRes.data)
       if (stockBalancesRes.data) {
         const nextStockMap: Record<string, ProductStockSnapshot> = {}
-        ;(stockBalancesRes.data || []).forEach((row: { product_id: string; on_hand: number | null; reserved: number | null; safety_stock: number | null }) => {
+        ;(stockBalancesRes.data || []).forEach((row: { product_id: string; on_hand: number | null; reserved: number | null; safety_stock: number | null; own_reserved?: number }) => {
           const onHand = Number(row.on_hand || 0)
           const reserved = Number(row.reserved || 0)
           const safety = Number(row.safety_stock || 0)
@@ -1674,7 +1671,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             on_hand: onHand,
             reserved,
             safety_stock: safety,
-            available_to_sell: onHand - reserved,
+            available_to_sell: onHand - reserved + Number(row.own_reserved || 0),
           }
         })
         setProductStockMap(nextStockMap)
@@ -2038,7 +2035,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     : 0
   const baseShippingWaived = hasFreeShippingPromotion || (selectedPromotionIds.length > 0 && !shippingFeeSettings.charge_promotion_orders)
   const shippingCharge = calculateShippingCharge(standardShippingFee, specialAreaSurcharge, baseShippingWaived)
-  const automaticShippingActive = hasFreeShippingPromotion || shippingFeeSettings.auto_calculate_enabled || shippingFeeSettings.special_area_enabled
+  const conversionShippingLocked = !!order?.converted_from_self_pickup_at && order?.fulfillment_method === 'shipping'
+  const automaticShippingActive = !conversionShippingLocked && (hasFreeShippingPromotion || shippingFeeSettings.auto_calculate_enabled || shippingFeeSettings.special_area_enabled)
   const promotionsForSelection = useMemo(
     () => promotions
       .filter((promotion) => {
@@ -2064,7 +2062,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   }, [livePromotionResults, promotions, selectedPromotionIds, order?.prebill_price_locked])
 
   useEffect(() => {
-    if (order?.prebill_price_locked) return
+    if (isCurrentBillSelfPickup()) {
+      setFormData((current) => current.shipping_cost === 0 ? current : { ...current, shipping_cost: 0 })
+      return
+    }
+    if (order?.prebill_price_locked || conversionShippingLocked) return
     let nextShipping: number | null = null
     if (hasFreeShippingPromotion || shippingFeeSettings.auto_calculate_enabled || shippingFeeSettings.special_area_enabled) {
       nextShipping = shippingFeeSettings.auto_calculate_enabled || baseShippingWaived
@@ -2073,7 +2075,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     }
     if (nextShipping == null) return
     setFormData((current) => current.shipping_cost === nextShipping ? current : { ...current, shipping_cost: nextShipping })
-  }, [hasFreeShippingPromotion, shippingFeeSettings.auto_calculate_enabled, shippingFeeSettings.special_area_enabled, baseShippingWaived, shippingCharge.total_shipping_fee, shippingCharge.special_area_surcharge, order?.prebill_price_locked])
+  }, [hasFreeShippingPromotion, shippingFeeSettings.auto_calculate_enabled, shippingFeeSettings.special_area_enabled, baseShippingWaived, shippingCharge.total_shipping_fee, shippingCharge.special_area_surcharge, order?.prebill_price_locked, formData.channel_code, order?.fulfillment_method, channelMeta, conversionShippingLocked])
 
   const isManualPriceChannel = CHANNELS_MANUAL_PRICE.includes(formData.channel_code || '')
 
@@ -2309,8 +2311,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     itemsToSave: typeof items,
     targetStatus: OrderStatus = 'รอลงข้อมูล',
     skipDesignAttachmentConfirmation = false,
-    skipPromotionValidation = false,
-    promotionOverrideReason = '',
   ) {
     if (!user) {
       console.error('User not found')
@@ -2418,25 +2418,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         }
       }
     }
-    if (Number(formData.discount || 0) > 0 && !String(formData.promotion || '').trim()) {
-      setMessageModal({
-        open: true,
-        title: 'แจ้งเตือน',
-        message: 'กรุณาเลือกโปรโมชั่นเมื่อมีการกรอกส่วนลด',
-      })
-      return
-    }
-
-    if (targetStatus === 'ลงข้อมูลเสร็จสิ้น' && selectedPromotionIds.length > 0 && !skipPromotionValidation && !order?.prebill_price_locked) {
-      const promotionResults = getPromotionEvaluations(itemsToSave)
-      const failedResults = promotionResults.filter((result) => result.checked && !result.passed)
-      if (failedResults.length > 0) {
-        setPromotionWarning({ itemsToSave, results: promotionResults, overrideReason: '' })
-        return
-      }
-    }
-
-    const stockErrors = validateItemsAgainstStock(itemsToSave)
+    const stockErrors = targetStatus === 'รอลงข้อมูล' ? [] : validateItemsAgainstStock(itemsToSave)
     if (stockErrors.length > 0) {
       setMessageModal({
         open: true,
@@ -2457,7 +2439,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       const discountBahtForSave = getDiscountInBaht(calculatedPrice, formData.discount, discountType)
       let calculatedTotal: number
       // ใช้ยอดเดียวกับหน้าจอ: รวมภาษีแล้ว ไม่บวก VAT เพิ่ม
-      calculatedTotal = calculatedPrice + formData.shipping_cost - discountBahtForSave
+      calculatedTotal = calculatedPrice + (isCurrentBillSelfPickup() ? 0 : formData.shipping_cost) - discountBahtForSave
       
       // ปัดเศษให้เป็น 2 ทศนิยมเพื่อหลีกเลี่ยง floating point error
       calculatedTotal = Math.round(calculatedTotal * 100) / 100
@@ -2571,7 +2553,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           .map((id) => promotions.find((promotion) => promotion.id === id)?.name)
           .filter(Boolean)
           .join(', ') || (order?.prebill_price_locked ? order.promotion : null),
-        fulfillment_method: order?.fulfillment_method || (isSelfPickupChannel(channelCodeForSave, channelMeta) ? 'self_pickup' : 'shipping'),
+        shipping_cost: selfPickupForSave ? 0 : formData.shipping_cost,
+        fulfillment_method: selfPickupForSave ? 'self_pickup' : 'shipping',
         // ช่องทางรับสินค้าเองต้องไม่มีเลขพัสดุ แม้บิลเก่าจะเคยมีค่าค้างอยู่
         tracking_number: isCurrentBillSelfPickup(channelCodeForSave) ? null : formDataForDb.tracking_number,
         requires_confirm_design: requiresConfirmDesign,
@@ -2618,17 +2601,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       console.log('Items with product_id:', itemsToSave.filter(item => item.product_id))
       
       if (itemsToSave.length > 0) {
-        // ลบรายการเก่าก่อน (ถ้ามี)
-        const { error: deleteError } = await supabase
-          .from('or_order_items')
-          .delete()
-          .eq('order_id', orderId)
-        
-        if (deleteError) {
-          console.error('Error deleting old order items:', deleteError)
-          // ไม่ throw error เพราะอาจจะไม่มีรายการเก่า
-        }
-        
         // กรองเฉพาะรายการที่มี product_id และเตรียมข้อมูล
         const itemsToInsert = itemsToSave
           .filter((item, idx) => {
@@ -2678,18 +2650,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         
         // บันทึกรายการสินค้า
         if (itemsToInsert.length > 0) {
-          const { data: insertedData, error: itemsError } = await supabase
-            .from('or_order_items')
-            .insert(itemsToInsert)
-            .select()
-          
+          const { error: itemsError } = await saveReservationOrderItems(orderId, itemsToInsert)
           if (itemsError) {
             console.error('Error inserting order items:', itemsError)
             console.error('Items that failed to insert:', itemsToInsert)
             throw new Error(`ไม่สามารถบันทึกรายการสินค้าได้: ${itemsError.message}`)
           }
           
-          console.log('Successfully inserted order items:', insertedData)
+          console.log('Successfully saved order items')
         } else {
           console.warn('No items to insert - all items are missing product_id')
           console.warn('All items:', items)
@@ -2707,6 +2675,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           }
         }
       } else {
+        if (order) {
+          const result = await saveReservationOrderItems(orderId, [])
+          if (result.error) throw result.error
+        }
         console.warn('No items in the form')
         // แจ้งเตือนเฉพาะ "ข้อมูลครบ" — "รอลงข้อมูล" ไม่ต้องบังคับมีสินค้า
         if (targetStatus !== 'รอลงข้อมูล') {
@@ -2746,7 +2718,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         const { error: promotionAuditError } = await supabase.from('or_promotion_audits').insert(
           selectedPromotions.map((promotion) => {
             const result = resultById.get(promotion.id)
-            const wasOverridden = !!result?.checked && !result.passed && skipPromotionValidation
             return {
               order_id: orderId,
               bill_no: currentBillNo || order?.bill_no || '-',
@@ -2755,7 +2726,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               promotion_id: promotion.id,
               promotion_name: promotion.name,
               promotion_version: Number(promotion.version || 1),
-              validation_status: !result?.checked ? 'not_checked' : result.passed ? 'passed' : wasOverridden ? 'overridden' : 'failed',
+              validation_status: !result?.checked ? 'not_checked' : result.passed ? 'passed' : 'failed',
               validation_messages: result?.messages || [],
               expected_discount: result?.expected_discount || 0,
               expected_total_discount: totalPromotionDiscount(promotionResultsForSave),
@@ -2763,7 +2734,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               application_count: result?.application_count || 0,
               rule_snapshot: promotion,
               order_snapshot: { price: calculatedPrice, shipping_cost: formData.shipping_cost, discount: discountBahtForSave, items: snapshotItems },
-              override_reason: wasOverridden ? promotionOverrideReason.trim() : null,
+              override_reason: null,
               evaluated_by: currentUserName,
             }
           }),
@@ -3279,7 +3250,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             amount_match: amountMatchValue !== null ? amountMatchValue : (r.amountMatch !== undefined ? r.amountMatch : null),
           }
         })
-        .filter((s: any) => s !== null) // Remove null entries
+        .filter((s) => s !== null) // Remove null entries
 
       // Log what we're about to insert into ac_verified_slips
       console.log('[Verify Slips] All slips to insert (before validation):', slipsToInsert.map((s, idx) => s ? {
@@ -6492,16 +6463,24 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             })()}
           </div>
 
-          {/* ฝั่งขวา: ข้อมูลการชำระเงิน */}
-          <div className="space-y-4">
+          {/* ฝั่งขวา: ข้อมูลการชำระเงิน — ยาวถึงด้านล่างของแถวปุ่มฝั่งซ้าย */}
+          <div className="flex min-w-0 flex-col gap-4 md:col-start-2 md:row-start-1 md:row-span-2">
             <h3 className="text-xl font-bold mb-2">ข้อมูลการชำระเงิน</h3>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="min-w-0">
               <label className="block text-sm font-medium mb-1">ราคารวม</label>
               <input
-                type="number"
-                value={formData.price || ''}
-                onChange={(e) => setFormData({ ...formData, price: parseFloat(e.target.value) || 0 })}
+                type="text"
+                inputMode="decimal"
+                value={priceInput ?? (formData.price ? formData.price.toLocaleString('th-TH', { maximumFractionDigits: 2 }) : '')}
+                onFocus={() => { if (isManualPriceChannel) setPriceInput(formData.price ? String(formData.price) : '') }}
+                onBlur={() => setPriceInput(null)}
+                onChange={(e) => {
+                  const value = e.target.value.replace(/,/g, '')
+                  if (!/^\d*(\.\d{0,2})?$/.test(value)) return
+                  setPriceInput(value)
+                  setFormData({ ...formData, price: parseFloat(value) || 0 })
+                }}
                 onWheel={(e) => (e.target as HTMLInputElement).blur()}
                 readOnly={!isManualPriceChannel}
                 step="0.01"
@@ -6516,68 +6495,34 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 <p className="text-xs text-amber-600 font-medium mt-1">กรุณากรอกราคาก่อนบันทึก</p>
               )}
             </div>
-            <div className="min-w-0">
+            {!isCurrentBillSelfPickup() && <div className="min-w-0">
               <label className="block text-sm font-medium mb-1">ค่าส่ง</label>
               <input
-                type="number"
-                value={formData.shipping_cost ?? ''}
-                onChange={(e) => setFormData({ ...formData, shipping_cost: parseFloat(e.target.value) || 0 })}
+                type="text"
+                inputMode="decimal"
+                value={shippingInput ?? formData.shipping_cost?.toLocaleString('th-TH', { maximumFractionDigits: 2 }) ?? ''}
+                onChange={(e) => {
+                  const value = e.target.value.replace(/,/g, '')
+                  if (!/^\d*(\.\d{0,2})?$/.test(value)) return
+                  setShippingInput(value)
+                  setFormData({ ...formData, shipping_cost: parseFloat(value) || 0 })
+                }}
                 onWheel={(e) => (e.target as HTMLInputElement).blur()}
-                onFocus={(e) => {
-                  if (e.target.value === '0') {
-                    e.target.value = ''
-                  }
-                }}
-                onBlur={(e) => {
-                  if (e.target.value === '') {
-                    setFormData({ ...formData, shipping_cost: 0 })
-                  }
-                }}
+                onFocus={() => setShippingInput(formData.shipping_cost ? String(formData.shipping_cost) : '')}
+                onBlur={() => setShippingInput(null)}
                 step="0.01"
                 placeholder="0"
-                disabled={formDisabled || automaticShippingActive}
-                className={`w-full px-3 py-2 border rounded-lg ${(formDisabled || automaticShippingActive) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${
+                disabled={formDisabled || automaticShippingActive || conversionShippingLocked}
+                className={`w-full px-3 py-2 border rounded-lg ${(formDisabled || automaticShippingActive || conversionShippingLocked) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${
                   formData.shipping_cost === 0 ? 'text-gray-400' : ''
                 }`}
               />
+              {conversionShippingLocked && <p className="mt-1 text-xs text-green-700">ค่าส่งผ่านขั้นตอนฝ่ายขายและตรวจเงินแล้ว</p>}
               {automaticShippingActive && <div className="mt-1 space-y-0.5 text-xs">
                 {(shippingFeeSettings.auto_calculate_enabled || baseShippingWaived) && <p className="text-sky-600">ค่าส่งตามยอดซื้อ {standardShippingFee.toLocaleString('th-TH')} บาท{baseShippingWaived ? ' · ส่งฟรี เหลือ 0 บาท' : ''}</p>}
                 {matchedShippingAreaRule && shippingFeeSettings.special_area_enabled && <p className="font-medium text-violet-700">ค่าขนส่ง{SHIPPING_AREA_TYPE_LABELS[matchedShippingAreaRule.area_type]} +{specialAreaSurcharge.toLocaleString('th-TH')} บาท</p>}
               </div>}
-            </div>
-            </div>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className="min-w-0">
-              <label className="block text-sm font-medium mb-1">
-                รูปแบบการลด
-              </label>
-              <div className="flex gap-0 border rounded-lg overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => setDiscountType('baht')}
-                  disabled={formDisabled || promotionDiscountLocked}
-                  className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
-                    discountType === 'baht'
-                      ? 'bg-blue-500 text-white'
-                      : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
-                  } ${(formDisabled || promotionDiscountLocked) ? 'cursor-not-allowed opacity-60' : ''}`}
-                >
-                  บาท
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDiscountType('percent')}
-                  disabled={formDisabled || promotionDiscountLocked}
-                  className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
-                    discountType === 'percent'
-                      ? 'bg-blue-500 text-white'
-                      : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
-                  } ${(formDisabled || promotionDiscountLocked) ? 'cursor-not-allowed opacity-60' : ''}`}
-                >
-                  %
-                </button>
-              </div>
-            </div>
+            </div>}
             <div className="min-w-0">
               <label className="block text-sm font-medium mb-1">
                 ส่วนลด {discountType === 'percent' ? '(%)' : '(บาท)'}
@@ -6619,14 +6564,39 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               )}
             </div>
             </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
+              <label className="block text-sm font-medium mb-1">วิธีการชำระ</label>
+              <select
+                value={formData.payment_method}
+                onChange={(e) => setFormData({ ...formData, payment_method: e.target.value })}
+                disabled={formDisabled}
+                className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+              >
+                <option value="โอน">โอน</option>
+                <option value="COD">COD</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">
+                {showTaxInvoice ? 'ยอดรวมภาษี (รวมแล้ว)' : 'ยอดสุทธิ'}
+              </label>
+              <input
+                type="text"
+                value={formData.total_amount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                readOnly
+                className="w-full px-3 py-2 border-2 border-blue-300 rounded-lg bg-blue-50 font-bold text-lg"
+              />
+            </div>
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                 <label className="block text-sm font-medium">โปรโมชั่น</label>
                 <span className={`rounded-full px-3 py-1 text-xs font-bold ${selectedPromotionIds.length > 0 ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
                   เลือกแล้ว {selectedPromotionIds.length} โปรฯ
                 </span>
               </div>
-              <div className={`rounded-xl border p-3 ${formDisabled || approvedPrebillPriceLocked ? 'bg-gray-100 text-gray-500' : 'bg-white'}`}>
+              <div className={`flex flex-1 flex-col rounded-xl border p-3 ${formDisabled || approvedPrebillPriceLocked ? 'bg-gray-100 text-gray-500' : 'bg-white'}`}>
                 <div className="mb-3">
                   <p className="mb-1.5 text-xs font-semibold text-gray-500">โปรโมชั่นที่เลือก</p>
                   {selectedPromotionDefinitions.length === 0 ? (
@@ -6655,27 +6625,31 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     </div>
                   )}
                 </div>
-                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                  <div className="min-w-0">
+                <div className="grid flex-1 grid-cols-1 gap-3 lg:grid-cols-2">
+                  <div className="flex min-w-0 flex-col">
                     <div className="mb-1 flex items-center justify-between gap-2">
                       <p className="text-xs font-bold text-amber-700">★ โปรฯ ติดดาว</p>
                       <span className="text-[10px] text-amber-600">{featuredPromotions.length} รายการ</span>
                     </div>
-                    <div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border border-amber-200 bg-amber-50/40 p-1">
+                    <div className="relative min-h-56 flex-1 rounded-lg border border-amber-200 bg-amber-50/40">
+                      <div className="absolute inset-0 space-y-1 overflow-y-auto p-1">
                       {featuredPromotions.length === 0
                         ? <p className="px-2 py-4 text-center text-xs text-gray-400">ยังไม่มีโปรฯ ติดดาว</p>
                         : featuredPromotions.map((promotion) => renderPromotionChoice(promotion, true))}
+                      </div>
                     </div>
                   </div>
-                  <div className="min-w-0">
+                  <div className="flex min-w-0 flex-col">
                     <div className="mb-1 flex items-center justify-between gap-2">
                       <p className="text-xs font-bold text-gray-600">รายการโปรฯ ทั้งหมด</p>
                       <span className="text-[10px] text-gray-400">{promotions.length} รายการ</span>
                     </div>
-                    <div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border bg-white p-1">
+                    <div className="relative min-h-56 flex-1 rounded-lg border bg-white">
+                      <div className="absolute inset-0 space-y-1 overflow-y-auto p-1">
                       {promotions.length === 0
                         ? <p className="px-2 py-4 text-center text-xs text-gray-400">ยังไม่มีโปรโมชั่นที่เปิดใช้งาน</p>
                         : promotionsForSelection.map((promotion) => renderPromotionChoice(promotion, promotion.is_featured === true))}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -6692,45 +6666,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   ))}
                 </div>
               )}
-              {Number(formData.discount || 0) > 0 && !String(formData.promotion || '').trim() && (
-                <p className="text-xs text-amber-600 font-medium mt-1">กรุณาเลือกโปรโมชั่นเมื่อมีส่วนลด</p>
-              )}
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">
-                {showTaxInvoice ? 'ยอดรวมภาษี (รวมแล้ว)' : 'ยอดสุทธิ'}
-              </label>
-              <input
-                type="text"
-                value={formData.total_amount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                readOnly
-                className="w-full px-3 py-2 border-2 border-blue-300 rounded-lg bg-blue-50 font-bold text-lg"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">วิธีการชำระ</label>
-              <select
-                value={formData.payment_method}
-                onChange={(e) => setFormData({ ...formData, payment_method: e.target.value })}
-                disabled={formDisabled}
-                className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
-              >
-                <option value="โอน">โอน</option>
-                <option value="COD">COD</option>
-              </select>
             </div>
           </div>
-        </div>
-      </div>
-
-      {!viewOnly && (
-      <div className="bg-white p-6 rounded-lg shadow">
-        <h3 className="text-xl font-bold mb-4">ขอเอกสาร</h3>
-        <div className="flex gap-4 mb-4">
+            {!viewOnly && (
+              <div className="flex flex-nowrap items-center justify-start gap-2 self-end border-t pt-4 md:col-start-1 md:row-start-2">
           <button
             type="button"
             onClick={() => setShowTaxInvoice(!showTaxInvoice)}
-            className={`px-6 py-2 rounded-lg font-medium transition-colors ${
+            className={`shrink-0 px-3 sm:px-6 py-2 text-xs sm:text-sm rounded-lg font-medium transition-colors ${
               showTaxInvoice
                 ? 'bg-blue-600 text-white'
                 : 'bg-blue-100 text-blue-600 hover:bg-blue-200'
@@ -6738,167 +6681,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           >
             ขอใบกำกับภาษี
           </button>
-        </div>
-
-        {showTaxInvoice && (
-          <div className="border-2 border-blue-200 rounded-lg p-4 bg-blue-50">
-            <h4 className="font-semibold text-blue-800 mb-3">ข้อมูลสำหรับใบกำกับภาษี</h4>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-sm font-medium mb-1">ชื่อลูกค้า/บริษัท</label>
-                <input
-                  type="text"
-                  value={taxInvoiceData.company_name}
-                  onChange={(e) => setTaxInvoiceData({ ...taxInvoiceData, company_name: e.target.value })}
-                  className="w-full px-3 py-2 border rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">ที่อยู่</label>
-                <textarea
-                  value={taxInvoiceData.address}
-                  onChange={(e) => setTaxInvoiceData({ ...taxInvoiceData, address: e.target.value })}
-                  rows={3}
-                  className="w-full px-3 py-2 border rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">เลขประจำตัวผู้เสียภาษี (TAX ID)</label>
-                <input
-                  type="text"
-                  value={taxInvoiceData.tax_id}
-                  onChange={(e) => setTaxInvoiceData({ ...taxInvoiceData, tax_id: e.target.value })}
-                  className="w-full px-3 py-2 border rounded-lg"
-                  placeholder="เช่น 0-0000-00000-00-0"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">รายการสินค้าในใบกำกับ</label>
-                <div className="border rounded-lg p-3 bg-gray-50">
-                  {items.filter(item => (item.product_id || item.product_name) && !isCondoSubRow(item)).length > 0 ? (
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b">
-                          <th className="text-center p-2" style={{ width: '8%' }}>ลำดับ</th>
-                          <th className="text-left p-2">ชื่อสินค้า</th>
-                          <th className="text-right p-2 pl-2 pr-4" style={{ width: '15%' }}>จำนวน</th>
-                          <th className="text-right p-2 pl-2 pr-4" style={{ width: '20%' }}>ราคา/หน่วย</th>
-                          <th className="text-right p-2 pl-2 pr-4" style={{ width: '20%' }}>รวม</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {items
-                          .filter(item => (item.product_id || item.product_name) && !isCondoSubRow(item))
-                          .map((item, idx) => {
-                            const quantity = item.quantity || 1
-                            const unitPrice = item.unit_price || 0
-                            const total = quantity * unitPrice
-                            return (
-                              <tr key={idx} className="border-b">
-                                <td className="p-2 text-center">{idx + 1}</td>
-                                <td className="p-2">{item.product_name || '-'}</td>
-                                <td className="p-2 pl-2 pr-4 text-right">{quantity}</td>
-                                <td className="p-2 pl-2 pr-4 text-right">{unitPrice.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
-                                <td className="p-2 pl-2 pr-4 text-right font-semibold">{total.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
-                              </tr>
-                            )
-                          })}
-                      </tbody>
-                      <tfoot>
-                        {(() => {
-                          const itemsSubtotal = items
-                            .filter(item => (item.product_id || item.product_name) && !isCondoSubRow(item))
-                            .reduce((sum, item) => {
-                              const quantity = item.quantity || 1
-                              const unitPrice = item.unit_price || 0
-                              return sum + (quantity * unitPrice)
-                            }, 0)
-                          // ฐานคำนวณส่วนลด: ช่องทางกรอกราคาเอง ใช้ราคาที่กรอก, อื่น ๆ ใช้ยอดสินค้า
-                          const basePrice = isManualPriceChannel ? (formData.price || 0) : itemsSubtotal
-                          const discountBaht = getDiscountInBaht(basePrice, formData.discount || 0, discountType)
-                          const shipping = formData.shipping_cost || 0
-                          // ยอดรวม (รวม VAT) = ยอดสินค้า - ส่วนลด + ค่าขนส่ง (สอดคล้องกับยอดรวมบิล)
-                          const grandTotal = Math.round((basePrice + shipping - discountBaht) * 100) / 100
-                          const netAmount = grandTotal / 1.07
-                          const vatAmount = grandTotal - netAmount
-
-                          return (
-                            <>
-                              <tr className="border-t">
-                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ราคาสินค้า:</td>
-                                <td className="p-2 pl-2 pr-4 text-right">
-                                  {itemsSubtotal.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
-                                </td>
-                              </tr>
-                              <tr className="border-t">
-                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ส่วนลด:</td>
-                                <td className="p-2 pl-2 pr-4 text-right text-red-600">
-                                  {discountBaht > 0 ? '-' : ''}{discountBaht.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
-                                </td>
-                              </tr>
-                              <tr className="border-t">
-                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ค่าขนส่ง:</td>
-                                <td className="p-2 pl-2 pr-4 text-right">
-                                  {shipping.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
-                                </td>
-                              </tr>
-                              <tr className="border-t">
-                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ราคาก่อนภาษี:</td>
-                                <td className="p-2 pl-2 pr-4 text-right">
-                                  {netAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
-                                </td>
-                              </tr>
-                              <tr className="border-t">
-                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ภาษีมูลค่าเพิ่ม 7%:</td>
-                                <td className="p-2 pl-2 pr-4 text-right">
-                                  {vatAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
-                                </td>
-                              </tr>
-                              <tr className="border-t font-bold text-lg">
-                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ยอดรวม (รวม VAT):</td>
-                                <td className="p-2 pl-2 pr-4 text-right">
-                                  {grandTotal.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
-                                </td>
-                              </tr>
-                            </>
-                          )
-                        })()}
-                      </tfoot>
-                    </table>
-                  ) : (
-                    <p className="text-gray-500 text-sm">ยังไม่มีรายการสินค้า กรุณาเพิ่มรายการสินค้าก่อน</p>
-                  )}
-                </div>
-                <textarea
-                  value={taxInvoiceData.items_note}
-                  onChange={(e) => setTaxInvoiceData({ ...taxInvoiceData, items_note: e.target.value })}
-                  rows={2}
-                  className="w-full px-3 py-2 border rounded-lg mt-2"
-                  placeholder="หมายเหตุเพิ่มเติม (ถ้ามี)"
-                />
-              </div>
-            </div>
-          </div>
-        )}
-
-      </div>
-      )}
-
-      <div className="flex gap-4 flex-wrap items-center">
-        {viewOnly ? (
-          <button
-            type="button"
-            onClick={onCancel}
-            className="px-6 py-2 bg-gray-500 text-white rounded hover:bg-gray-600"
-          >
-            กลับ
-          </button>
-        ) : nameLinesOnlyMode && order ? (
-          <p className="text-sm text-gray-600">
-            ใช้ปุ่ม <span className="font-semibold text-blue-700">บันทึกการแก้ไข</span> ด้านบนของหน้าแก้ไขบิล
-          </p>
-        ) : (
-        <>
+                {!(nameLinesOnlyMode && order) && (
+                  <>
         <button
           type="button"
           onClick={async (e) => {
@@ -6906,7 +6690,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             await handleSubmit(e as any)
           }}
           disabled={loading}
-          className="px-6 py-2 bg-yellow-500 text-white rounded hover:bg-yellow-600 disabled:opacity-50"
+          className="shrink-0 px-3 sm:px-6 py-2 text-xs sm:text-sm bg-yellow-500 text-white rounded hover:bg-yellow-600 disabled:opacity-50"
         >
           {loading ? 'กำลังบันทึก...' : 'บันทึก (รอลงข้อมูล)'}
         </button>
@@ -7287,10 +7071,179 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             }
           }}
           disabled={loading}
-          className="px-6 py-2 bg-green-500 text-white rounded hover:bg-green-600 disabled:opacity-50"
+          className="shrink-0 px-3 sm:px-6 py-2 text-xs sm:text-sm bg-green-500 text-white rounded hover:bg-green-600 disabled:opacity-50"
         >
           {loading ? 'กำลังบันทึก...' : 'บันทึก (ข้อมูลครบ)'}
         </button>
+                  </>
+                )}
+              </div>
+            )}
+        </div>
+      </div>
+
+      {!viewOnly && showTaxInvoice && (
+      <div className="bg-white p-6 rounded-lg shadow">
+        <h3 className="text-xl font-bold mb-4">ข้อมูลใบกำกับภาษี</h3>
+        {showTaxInvoice && (
+          <div className="border-2 border-blue-200 rounded-lg p-4 bg-blue-50">
+            <h4 className="font-semibold text-blue-800 mb-3">ข้อมูลสำหรับใบกำกับภาษี</h4>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium mb-1">ชื่อลูกค้า/บริษัท</label>
+                <input
+                  type="text"
+                  value={taxInvoiceData.company_name}
+                  onChange={(e) => setTaxInvoiceData({ ...taxInvoiceData, company_name: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">ที่อยู่</label>
+                <textarea
+                  value={taxInvoiceData.address}
+                  onChange={(e) => setTaxInvoiceData({ ...taxInvoiceData, address: e.target.value })}
+                  rows={3}
+                  className="w-full px-3 py-2 border rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">เลขประจำตัวผู้เสียภาษี (TAX ID)</label>
+                <input
+                  type="text"
+                  value={taxInvoiceData.tax_id}
+                  onChange={(e) => setTaxInvoiceData({ ...taxInvoiceData, tax_id: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-lg"
+                  placeholder="เช่น 0-0000-00000-00-0"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">รายการสินค้าในใบกำกับ</label>
+                <div className="border rounded-lg p-3 bg-gray-50">
+                  {items.filter(item => (item.product_id || item.product_name) && !isCondoSubRow(item)).length > 0 ? (
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-center p-2" style={{ width: '8%' }}>ลำดับ</th>
+                          <th className="text-left p-2">ชื่อสินค้า</th>
+                          <th className="text-right p-2 pl-2 pr-4" style={{ width: '15%' }}>จำนวน</th>
+                          <th className="text-right p-2 pl-2 pr-4" style={{ width: '20%' }}>ราคา/หน่วย</th>
+                          <th className="text-right p-2 pl-2 pr-4" style={{ width: '20%' }}>รวม</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {items
+                          .filter(item => (item.product_id || item.product_name) && !isCondoSubRow(item))
+                          .map((item, idx) => {
+                            const quantity = item.quantity || 1
+                            const unitPrice = item.unit_price || 0
+                            const total = quantity * unitPrice
+                            return (
+                              <tr key={idx} className="border-b">
+                                <td className="p-2 text-center">{idx + 1}</td>
+                                <td className="p-2">{item.product_name || '-'}</td>
+                                <td className="p-2 pl-2 pr-4 text-right">{quantity}</td>
+                                <td className="p-2 pl-2 pr-4 text-right">{unitPrice.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
+                                <td className="p-2 pl-2 pr-4 text-right font-semibold">{total.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
+                              </tr>
+                            )
+                          })}
+                      </tbody>
+                      <tfoot>
+                        {(() => {
+                          const itemsSubtotal = items
+                            .filter(item => (item.product_id || item.product_name) && !isCondoSubRow(item))
+                            .reduce((sum, item) => {
+                              const quantity = item.quantity || 1
+                              const unitPrice = item.unit_price || 0
+                              return sum + (quantity * unitPrice)
+                            }, 0)
+                          // ฐานคำนวณส่วนลด: ช่องทางกรอกราคาเอง ใช้ราคาที่กรอก, อื่น ๆ ใช้ยอดสินค้า
+                          const basePrice = isManualPriceChannel ? (formData.price || 0) : itemsSubtotal
+                          const discountBaht = getDiscountInBaht(basePrice, formData.discount || 0, discountType)
+                          const shipping = formData.shipping_cost || 0
+                          // ยอดรวม (รวม VAT) = ยอดสินค้า - ส่วนลด + ค่าขนส่ง (สอดคล้องกับยอดรวมบิล)
+                          const grandTotal = Math.round((basePrice + shipping - discountBaht) * 100) / 100
+                          const netAmount = grandTotal / 1.07
+                          const vatAmount = grandTotal - netAmount
+
+                          return (
+                            <>
+                              <tr className="border-t">
+                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ราคาสินค้า:</td>
+                                <td className="p-2 pl-2 pr-4 text-right">
+                                  {itemsSubtotal.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                                </td>
+                              </tr>
+                              <tr className="border-t">
+                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ส่วนลด:</td>
+                                <td className="p-2 pl-2 pr-4 text-right text-red-600">
+                                  {discountBaht > 0 ? '-' : ''}{discountBaht.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                                </td>
+                              </tr>
+                              <tr className="border-t">
+                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ค่าขนส่ง:</td>
+                                <td className="p-2 pl-2 pr-4 text-right">
+                                  {shipping.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                                </td>
+                              </tr>
+                              <tr className="border-t">
+                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ราคาก่อนภาษี:</td>
+                                <td className="p-2 pl-2 pr-4 text-right">
+                                  {netAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                                </td>
+                              </tr>
+                              <tr className="border-t">
+                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ภาษีมูลค่าเพิ่ม 7%:</td>
+                                <td className="p-2 pl-2 pr-4 text-right">
+                                  {vatAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                                </td>
+                              </tr>
+                              <tr className="border-t font-bold text-lg">
+                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ยอดรวม (รวม VAT):</td>
+                                <td className="p-2 pl-2 pr-4 text-right">
+                                  {grandTotal.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                                </td>
+                              </tr>
+                            </>
+                          )
+                        })()}
+                      </tfoot>
+                    </table>
+                  ) : (
+                    <p className="text-gray-500 text-sm">ยังไม่มีรายการสินค้า กรุณาเพิ่มรายการสินค้าก่อน</p>
+                  )}
+                </div>
+                <textarea
+                  value={taxInvoiceData.items_note}
+                  onChange={(e) => setTaxInvoiceData({ ...taxInvoiceData, items_note: e.target.value })}
+                  rows={2}
+                  className="w-full px-3 py-2 border rounded-lg mt-2"
+                  placeholder="หมายเหตุเพิ่มเติม (ถ้ามี)"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+      </div>
+      )}
+
+      <div className="flex gap-4 flex-wrap items-center">
+        {viewOnly ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-6 py-2 bg-gray-500 text-white rounded hover:bg-gray-600"
+          >
+            กลับ
+          </button>
+        ) : nameLinesOnlyMode && order ? (
+          <p className="text-sm text-gray-600">
+            ใช้ปุ่ม <span className="font-semibold text-blue-700">บันทึกการแก้ไข</span> ด้านบนของหน้าแก้ไขบิล
+          </p>
+        ) : (
+        <>
         {order && <button
           type="button"
           onClick={(e) => {
@@ -7585,57 +7538,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             className="px-4 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 transition-colors"
           >
             ยืนยันเปิดบิล
-          </button>
-        </div>
-      </div>
-    </Modal>
-
-    {/* ผลตรวจโปรโมชั่นก่อนยืนยันข้อมูลครบ */}
-    <Modal
-      open={promotionWarning != null}
-      onClose={() => setPromotionWarning(null)}
-      contentClassName="max-w-2xl"
-    >
-      <div className="p-6 space-y-4">
-        <div>
-          <h3 className="text-lg font-bold text-red-700">เงื่อนไขโปรโมชั่นไม่ครบ</h3>
-          <p className="mt-1 text-sm text-gray-600">ตรวจพบโปรโมชั่นที่ไม่สัมพันธ์กับสินค้า ช่องทาง หรือช่วงเวลาในบิลนี้</p>
-        </div>
-        <div className="max-h-72 space-y-3 overflow-y-auto">
-          {promotionWarning?.results.map((result) => (
-            <div key={result.promotion_id} className={`rounded-xl border p-3 ${!result.checked ? 'border-gray-200 bg-gray-50' : result.passed ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}`}>
-              <div className="flex items-center justify-between gap-3">
-                <b className="text-sm text-gray-900">{result.promotion_name}</b>
-                <span className={`text-xs font-bold ${!result.checked ? 'text-gray-500' : result.passed ? 'text-emerald-700' : 'text-red-700'}`}>{!result.checked ? 'ไม่ได้เปิดการตรวจ' : result.passed ? 'ผ่าน' : 'ไม่ผ่าน'}</span>
-              </div>
-              {result.messages.length > 0 && <ul className="mt-2 list-disc pl-5 text-sm text-red-700">{result.messages.map((message, index) => <li key={index}>{message}</li>)}</ul>}
-            </div>
-          ))}
-        </div>
-        <label className="block text-sm font-semibold text-gray-700">
-          เหตุผลที่ยืนยันเปิดบิลต่อ <span className="text-red-500">*</span>
-          <textarea
-            value={promotionWarning?.overrideReason || ''}
-            onChange={(e) => setPromotionWarning((current) => current ? { ...current, overrideReason: e.target.value } : current)}
-            rows={3}
-            placeholder="ระบุเหตุผลเพื่อให้บัญชีตรวจสอบย้อนหลัง"
-            className="mt-1 w-full rounded-xl border px-3 py-2 font-normal"
-          />
-        </label>
-        <div className="flex flex-wrap justify-end gap-3 border-t pt-4">
-          <button type="button" onClick={() => setPromotionWarning(null)} className="rounded-xl border px-4 py-2 font-semibold text-gray-700 hover:bg-gray-50">กลับไปแก้ไข</button>
-          <button
-            type="button"
-            disabled={!promotionWarning?.overrideReason.trim() || loading}
-            onClick={async () => {
-              if (!promotionWarning?.overrideReason.trim()) return
-              const pending = promotionWarning
-              setPromotionWarning(null)
-              await handleSubmitInternal(pending.itemsToSave, 'ลงข้อมูลเสร็จสิ้น', true, true, pending.overrideReason)
-            }}
-            className="rounded-xl bg-amber-600 px-4 py-2 font-semibold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            ยืนยันและบันทึกเหตุผล
           </button>
         </div>
       </div>

@@ -6,6 +6,7 @@ import { useWmsModal } from '../useWmsModal'
 import { getProductImageUrl } from '../wmsUtils'
 import Modal from '../../ui/Modal'
 import type { ProductType } from '../../../types'
+import { BORROW_OPEN_STATUSES, borrowDefaultStartDate, borrowLocalDate, isBorrowOverdue } from '../../../lib/wmsBorrow'
 
 const PAGE_SIZE = 25
 
@@ -99,11 +100,10 @@ export default function BorrowRequisitionDashboard() {
   const { user } = useAuthContext()
   const [borrows, setBorrows] = useState<BorrowRequisition[]>([])
   const [loading, setLoading] = useState(true)
-  const [filterDateStart, setFilterDateStart] = useState(() => {
-    const now = new Date()
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
-  })
-  const [filterDateEnd, setFilterDateEnd] = useState(() => new Date().toISOString().split('T')[0])
+  const [filterDateStart, setFilterDateStart] = useState(() => borrowDefaultStartDate())
+  const [filterDateEnd, setFilterDateEnd] = useState(() => borrowLocalDate())
+  const [dateInitialized, setDateInitialized] = useState(false)
+  const dateStartEdited = useRef(false)
   const [filterStatus, setFilterStatus] = useState('')
   const [page, setPage] = useState(1)
   const [totalCount, setTotalCount] = useState(0)
@@ -154,14 +154,39 @@ export default function BorrowRequisitionDashboard() {
     }
   }, [filterDateStart, filterDateEnd, filterStatus, page])
 
-  useEffect(() => { loadBorrows() }, [loadBorrows])
+  useEffect(() => {
+    let cancelled = false
+    const initializeDate = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('wms_borrow_requisitions')
+          .select('created_at')
+          .in('status', BORROW_OPEN_STATUSES)
+          .order('created_at', { ascending: true })
+          .limit(1)
+        if (error) throw error
+        if (!cancelled && !dateStartEdited.current) {
+          setFilterDateStart(borrowDefaultStartDate(data?.[0]?.created_at))
+        }
+      } catch (error) {
+        console.error('Error loading oldest outstanding borrow:', error)
+      } finally {
+        if (!cancelled) setDateInitialized(true)
+      }
+    }
+    initializeDate()
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => { if (dateInitialized) loadBorrows() }, [dateInitialized, loadBorrows])
 
   useEffect(() => {
+    if (!dateInitialized) return
     const ch = supabase.channel('borrow-req-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_borrow_requisitions' }, () => loadBorrows())
       .subscribe()
     return () => { supabase.removeChannel(ch) }
-  }, [loadBorrows])
+  }, [dateInitialized, loadBorrows])
 
   const openDetail = async (bor: BorrowRequisition) => {
     const { data } = await supabase
@@ -183,6 +208,7 @@ export default function BorrowRequisitionDashboard() {
       showMessage({ message: 'อนุมัติสำเร็จ' })
       setDetailModal({ open: false, bor: null, items: [] })
       loadBorrows()
+      window.dispatchEvent(new Event('wms-data-changed'))
     } catch (e: any) {
       showMessage({ message: 'อนุมัติไม่สำเร็จ: ' + e.message })
     } finally {
@@ -200,6 +226,7 @@ export default function BorrowRequisitionDashboard() {
       showMessage({ message: 'ปฏิเสธสำเร็จ' })
       setDetailModal({ open: false, bor: null, items: [] })
       loadBorrows()
+      window.dispatchEvent(new Event('wms-data-changed'))
     } catch (e: any) {
       showMessage({ message: 'ปฏิเสธไม่สำเร็จ: ' + e.message })
     } finally {
@@ -224,6 +251,7 @@ export default function BorrowRequisitionDashboard() {
       showMessage({ message: 'รับคืนสำเร็จ' })
       setDetailModal({ open: false, bor: null, items: [] })
       loadBorrows()
+      window.dispatchEvent(new Event('wms-data-changed'))
     } catch (e: any) {
       showMessage({ message: 'รับคืนไม่สำเร็จ: ' + e.message })
     } finally {
@@ -248,6 +276,7 @@ export default function BorrowRequisitionDashboard() {
       showMessage({ message: 'ตัดเป็นของเสียสำเร็จ' })
       setDetailModal({ open: false, bor: null, items: [] })
       loadBorrows()
+      window.dispatchEvent(new Event('wms-data-changed'))
     } catch (e: any) {
       showMessage({ message: 'ตัดเป็นของเสียไม่สำเร็จ: ' + e.message })
     } finally {
@@ -256,8 +285,7 @@ export default function BorrowRequisitionDashboard() {
   }
 
   const isOverdue = (due: string, status: string) => {
-    if (['returned', 'written_off', 'rejected'].includes(status)) return false
-    return new Date(due) < new Date(new Date().toISOString().slice(0, 10))
+    return isBorrowOverdue(due, status)
   }
 
   // --- Create borrow helpers ---
@@ -403,7 +431,7 @@ export default function BorrowRequisitionDashboard() {
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
-        <input type="date" value={filterDateStart} onChange={(e) => { setPage(1); setFilterDateStart(e.target.value) }}
+        <input type="date" value={filterDateStart} onChange={(e) => { dateStartEdited.current = true; setPage(1); setFilterDateStart(e.target.value) }}
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
         <span className="text-gray-400">ถึง</span>
         <input type="date" value={filterDateEnd} onChange={(e) => { setPage(1); setFilterDateEnd(e.target.value) }}

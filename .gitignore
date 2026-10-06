@@ -29,3 +29,6 @@ dist-ssr
 .env.production
 google api key/
 .vercel
+
+# Isolated embedded PostgreSQL tests and build output
+.reservation-test-runtime/

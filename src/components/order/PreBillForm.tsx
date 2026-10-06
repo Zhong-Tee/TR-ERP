@@ -3,7 +3,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import html2canvas from 'html2canvas'
 import { useAuthContext } from '../../contexts/AuthContext'
+import { fetchReservationStock, saveReservationPrebill } from '../../lib/stockReservations'
 import { supabase } from '../../lib/supabase'
+import { isSelfPickupChannel } from '../../lib/channelBehavior'
 import { evaluatePromotions, promotionApplicationLimit, promotionMatchesChannel, totalPromotionDiscount, type PromotionDefinition } from '../../lib/promotionRules'
 import { calculateShippingCharge, findShippingAreaRule, SHIPPING_AREA_TYPE_LABELS, type ShippingAreaRule } from '../../lib/shippingAreaRules'
 import {
@@ -32,7 +34,7 @@ type Props = {
   onOpenBill: (document: PreBillDocument) => void
 }
 
-type Channel = { channel_code: string; channel_name: string; default_carrier?: string | null }
+type Channel = { channel_code: string; channel_name: string; default_carrier?: string | null; is_self_pickup?: boolean | null }
 type FieldMap = Record<string, Record<string, boolean | null | 'required'>>
 type AddressParts = { address_line: string; sub_district: string; district: string; province: string; postal_code: string }
 
@@ -363,9 +365,9 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
     ;(async () => {
       setLoading(true)
       const [channelRes, productRes, stockRes, settingsRes, promotionRes, categoryRes, overrideRes, inkRes, fontRes, patternRes, shipSettingRes, shipRangeRes, areaRes] = await Promise.all([
-        supabase.from('channels').select('channel_code, channel_name, default_carrier').order('channel_code'),
+        supabase.from('channels').select('channel_code, channel_name, default_carrier, is_self_pickup').order('channel_code'),
         supabase.from('pr_products').select('*').eq('is_active', true).in('product_type', ['FG', 'PP']).order('product_name'),
-        supabase.from('inv_stock_balances').select('product_id, on_hand, reserved'),
+        fetchReservationStock('prebill', document?.id || null),
         supabase.from('or_prebill_channel_settings').select('*'),
         supabase.from('promotion').select('*').eq('is_active', true).order('sort_order'),
         supabase.from('pr_category_field_settings').select('*'),
@@ -385,7 +387,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
       if (criticalErrors.length > 0) throw new Error(`โหลดข้อมูลไม่สำเร็จ: ${criticalErrors.map(([name, error]) => `${name} (${error.message})`).join(', ')}`)
       setChannels((channelRes.data || []) as Channel[])
       setProducts((productRes.data || []) as Product[])
-      setStockMap(Object.fromEntries((stockRes.data || []).map((r: any) => [String(r.product_id), Number(r.on_hand || 0) - Number(r.reserved || 0)])))
+      setStockMap(Object.fromEntries((stockRes.data || []).map((r: any) => [String(r.product_id), Number(r.on_hand || 0) - Number(r.reserved || 0) + Number(r.own_reserved || 0)])))
       setSettings((settingsRes.data || []) as PreBillChannelSetting[])
       setPromotions((promotionRes.data || []) as PromotionDefinition[])
       const categoryMap: FieldMap = {}; const activeMap: Record<string, boolean> = {}
@@ -415,7 +417,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
       setLoading(false)
     })().catch((error) => { if (alive) { setMessage(error.message || String(error)); setLoading(false) } })
     return () => { alive = false }
-  }, [])
+  }, [document?.id])
 
   useEffect(() => {
     const code = form.channel_code.trim()
@@ -502,7 +504,8 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
   const hasFreeShipping = selectedPromotions.some(p => p.free_shipping === true && promoResults.some(result => result.promotion_id === p.id && result.passed))
   const standardShipping = shippingRanges.find(r => subtotal >= r.min_amount && (r.max_amount == null || subtotal <= r.max_amount))?.shipping_fee || 0
   const channel = channels.find(c => c.channel_code === form.channel_code)
-  const matchedArea = findShippingAreaRule(areaRules, { carrier: channel?.default_carrier || '', channel_code: form.channel_code, order_date: thailandBusinessDate(), ...address })
+  const isPickup = isSelfPickupChannel(form.channel_code, Object.fromEntries(channels.map(c => [c.channel_code, c])))
+  const matchedArea = isPickup ? null : findShippingAreaRule(areaRules, { carrier: channel?.default_carrier || '', channel_code: form.channel_code, order_date: thailandBusinessDate(), ...address })
   const specialAreaSurcharge = shippingSettings.special_area_enabled && matchedArea ? Number(matchedArea.surcharge || 0) : 0
   const baseShippingWaived = hasFreeShipping || (selectedPromotionIds.length > 0 && !shippingSettings.charge_promotion_orders)
   const shippingCharge = calculateShippingCharge(standardShipping, specialAreaSurcharge, baseShippingWaived)
@@ -511,7 +514,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
     ? shippingCharge.total_shipping_fee
     : shippingCharge.special_area_surcharge
   const chargedStandardShipping = shippingSettings.auto_calculate_enabled ? shippingCharge.charged_standard_fee : 0
-  const shippingCost = document && !isRenewal
+  const shippingCost = isPickup ? 0 : document && !isRenewal
     ? Number(document.shipping_cost || 0)
     : automaticShippingActive ? automaticShipping : Number(manualShipping || 0)
   const specialDiscount = Number(document?.special_discount || 0)
@@ -819,14 +822,15 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
       const payload = {
         document_type: documentType, document_no: documentNo!, status,
         channel_code: form.channel_code, header_name: headerName, customer_name: form.customer_name.trim(),
-        customer_address: form.customer_address.trim() || [address.address_line, address.sub_district, address.district, address.province, address.postal_code].filter(Boolean).join(' ') || null,
+        customer_address: isPickup ? null : form.customer_address.trim() || [address.address_line, address.sub_district, address.district, address.province, address.postal_code].filter(Boolean).join(' ') || null,
         recipient_name: form.recipient_name.trim() || null, customer_phone: form.customer_phone.trim() || null,
-        billing_details: { ...address, mobile_phone: form.customer_phone.trim() || null }, delivery_term: deliveryTerm, valid_until: form.valid_until,
+        billing_details: { ...(isPickup ? { address_line: '', sub_district: '', district: '', province: '', postal_code: '' } : address), mobile_phone: form.customer_phone.trim() || null }, delivery_term: deliveryTerm, valid_until: form.valid_until,
         payment_method: form.payment_method || null, subtotal, shipping_cost: shippingCost,
         promotion_discount: promotionDiscount, special_discount: document?.special_discount || 0,
         total_amount: totalAmount, promotion_ids: selectedPromotionIds,
         promotion_snapshot: selectedPromotions.map(p => ({ ...p, evaluation: promoResults.find(r => r.promotion_id === p.id) })),
         shipping_snapshot: {
+      is_self_pickup: isPickup,
           matched_area: matchedArea,
           standard_shipping: standardShipping,
           special_area_surcharge: specialAreaSurcharge,
@@ -838,19 +842,6 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
         internal_note: form.internal_note.trim() || null, owner_id: document?.owner_id || user!.id,
         owner_name: ownerName, source_document_id: isRenewal ? sourceDocument!.id : document?.source_document_id || null,
       }
-      let savedCreatedAt = document?.created_at || savedIdentity?.created_at || new Date().toISOString()
-      if (id) {
-        const result = await supabase.from('or_prebill_documents').update(payload).eq('id', id).select().single()
-        if (result.error) throw result.error
-        savedCreatedAt = String(result.data.created_at || savedCreatedAt)
-      } else {
-        const result = await supabase.from('or_prebill_documents').insert(payload).select().single()
-        if (result.error) throw result.error
-        id = result.data.id
-        savedCreatedAt = String(result.data.created_at || savedCreatedAt)
-      }
-      const del = await supabase.from('or_prebill_items').delete().eq('document_id', id)
-      if (del.error) throw del.error
       const rows = items.map((item, index) => ({
         id: item.id || crypto.randomUUID(), document_id: id, sort_order: index, product_id: item.product_id, product_code: item.product_code,
         product_name: item.product_name, quantity: Number(item.quantity || 1), unit_price: item.is_free ? 0 : Number(item.unit_price || 0),
@@ -861,8 +852,11 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
         line_3: item.line_3 || null, no_name_line: item.no_name_line, notes: item.notes || null,
         file_attachment: item.file_attachment || null, attachment_name: item.attachment_name || null, field_snapshot: item.field_snapshot || {},
       }))
-      const itemResult = await supabase.from('or_prebill_items').insert(rows)
-      if (itemResult.error) throw itemResult.error
+      const result = await saveReservationPrebill(id || null, payload, rows)
+      if (result.error) throw result.error
+      id = result.data.id
+      const savedCreatedAt = String(result.data.created_at)
+
       setSavedIdentity({ id: id!, document_no: documentNo!, created_at: savedCreatedAt })
       if (closeAfterSave) setMessage(status === 'draft' ? 'บันทึกร่างแล้ว' : 'บันทึกเอกสารแล้ว')
       if (closeAfterSave) onSaved()
@@ -887,11 +881,12 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
     ...document, document_type: documentType, document_no: document?.document_no || savedIdentity?.document_no || '', channel_code: form.channel_code,
     owner_name: document?.owner_name || sellerName || user?.username || user?.email || '-',
     header_name: headerName, customer_name: form.customer_name,
-    customer_address: form.customer_address || [address.address_line, address.sub_district, address.district, address.province, address.postal_code].filter(Boolean).join(' '),
+    customer_address: isPickup ? '' : form.customer_address || [address.address_line, address.sub_district, address.district, address.province, address.postal_code].filter(Boolean).join(' '),
     recipient_name: form.recipient_name, customer_phone: form.customer_phone, delivery_term: deliveryTerm, valid_until: form.valid_until,
     payment_method: form.payment_method, subtotal, shipping_cost: shippingCost, promotion_discount: promotionDiscount,
     special_discount: specialDiscount, total_amount: totalAmount,
     shipping_snapshot: {
+      is_self_pickup: isPickup,
       matched_area: matchedArea,
       standard_shipping: standardShipping,
       charged_standard_shipping: chargedStandardShipping,
@@ -993,7 +988,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
           <label className="text-sm font-semibold">ชื่อลูกค้า *<input value={form.customer_name} onChange={e => setForm(v => ({ ...v, customer_name: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5" /></label>
           <label className="text-sm font-semibold">ชื่อผู้รับ<input value={form.recipient_name} onChange={e => setForm(v => ({ ...v, recipient_name: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5" /></label>
           <label className="text-sm font-semibold">เบอร์โทร<input value={form.customer_phone} onChange={e => setForm(v => ({ ...v, customer_phone: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5" /></label>
-          <div className="text-sm font-semibold lg:col-span-2"><div className="flex items-center justify-between gap-2"><span>ที่อยู่ (ไม่บังคับ)</span><button type="button" disabled={autoFillAddressLoading || !form.customer_address.trim()} onClick={() => void handleAutoFillAddress()} className="rounded-lg bg-blue-100 px-2.5 py-1 text-xs text-blue-700 disabled:opacity-50">{autoFillAddressLoading ? 'กำลังแยก...' : 'Auto fill'}</button></div><textarea value={form.customer_address} onChange={e => setForm(v => ({ ...v, customer_address: e.target.value }))} onPaste={e => { const pasted = e.clipboardData.getData('text'); if (!pasted.trim()) return; const target = e.currentTarget; const next = target.value.slice(0, target.selectionStart ?? target.value.length) + pasted + target.value.slice(target.selectionEnd ?? target.value.length); window.setTimeout(() => void handleAutoFillAddress(next), 0) }} className="mt-1 min-h-36 w-full resize-y rounded-xl border p-2.5 font-normal" rows={5} placeholder="วางที่อยู่พร้อมรหัสไปรษณีย์ แล้วกด Auto fill" /></div>
+          {!isPickup && <div className="text-sm font-semibold lg:col-span-2"><div className="flex items-center justify-between gap-2"><span>ที่อยู่ (ไม่บังคับ)</span><button type="button" disabled={autoFillAddressLoading || !form.customer_address.trim()} onClick={() => void handleAutoFillAddress()} className="rounded-lg bg-blue-100 px-2.5 py-1 text-xs text-blue-700 disabled:opacity-50">{autoFillAddressLoading ? 'กำลังแยก...' : 'Auto fill'}</button></div><textarea value={form.customer_address} onChange={e => setForm(v => ({ ...v, customer_address: e.target.value }))} onPaste={e => { const pasted = e.clipboardData.getData('text'); if (!pasted.trim()) return; const target = e.currentTarget; const next = target.value.slice(0, target.selectionStart ?? target.value.length) + pasted + target.value.slice(target.selectionEnd ?? target.value.length); window.setTimeout(() => void handleAutoFillAddress(next), 0) }} className="mt-1 min-h-36 w-full resize-y rounded-xl border p-2.5 font-normal" rows={5} placeholder="วางที่อยู่พร้อมรหัสไปรษณีย์ แล้วกด Auto fill" /></div>}
           <label className="text-sm font-semibold">ระยะเวลาจัดส่ง *
             <select value={form.delivery_term} onChange={e => setForm(v => ({ ...v, delivery_term: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5 bg-white">
               {['1-3 วัน','7 วัน','14 วัน','30 วัน'].map(v => <option key={v}>{v}</option>)}<option value="custom">ระบุเอง</option>
@@ -1003,7 +998,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
           <label className="text-sm font-semibold">ยืนราคาถึงวันที่ *<input type="date" min={today()} value={form.valid_until} onChange={e => setForm(v => ({ ...v, valid_until: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5" /></label>
         </section>
 
-        <details className="rounded-2xl bg-white p-5 shadow-sm" open={!!form.customer_address}>
+        {!isPickup && <details className="rounded-2xl bg-white p-5 shadow-sm" open={!!form.customer_address}>
           <summary className="cursor-pointer font-bold">ข้อมูลที่อยู่สำหรับตรวจพื้นที่ห่างไกล</summary>
           <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-5">
             <label className="text-xs font-semibold">ที่อยู่<input value={address.address_line} onChange={e => { setAddress(v => ({ ...v, address_line: e.target.value })); setManualShipping(null) }} className="mt-1 w-full rounded-lg border p-2" /></label>
@@ -1013,7 +1008,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
             <label className="text-xs font-semibold">รหัสไปรษณีย์<input value={address.postal_code} onChange={e => { setAddress(v => ({ ...v, postal_code: e.target.value })); setManualShipping(null) }} className="mt-1 w-full rounded-lg border p-2" /></label>
           </div>
           {matchedArea ? <p className="mt-3 font-semibold text-violet-700">พบ{SHIPPING_AREA_TYPE_LABELS[matchedArea.area_type]}: เพิ่ม {money(matchedArea.surcharge)} บาท · {channel?.default_carrier}</p> : <p className="mt-3 text-sm text-amber-700">{areaMatchMessage}</p>}
-        </details>
+        </details>}
 
         <section className="overflow-x-auto rounded-2xl bg-white p-4 shadow-sm">
           <div className="mb-3 flex items-center justify-between"><h3 className="text-lg font-bold">รายการสินค้า</h3></div>
@@ -1077,7 +1072,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
               <div className="flex justify-between"><span>ยอดสินค้า</span><b>{money(subtotal)}</b></div>
               <div className="flex justify-between text-emerald-700"><span>ส่วนลดโปรโมชั่น</span><b>-{money(promotionDiscount)}</b></div>
               {specialDiscount > 0 && <div className="flex justify-between text-emerald-700"><span>ส่วนลดพิเศษที่อนุมัติ</span><b>-{money(specialDiscount)}</b></div>}
-              {automaticShippingActive ? <div className="space-y-2 rounded-xl border bg-slate-50 p-3 text-sm"><div className="flex justify-between text-sky-700"><span>ค่าจัดส่งปกติ{baseShippingWaived ? ' (ยกเว้น)' : ''}</span><b>{money(chargedStandardShipping)} บาท</b></div><div className="flex justify-between text-violet-700"><span>ค่าพื้นที่ห่างไกล/พิเศษ</span><b>{money(specialAreaSurcharge)} บาท</b></div><label className="flex items-center justify-between gap-4 border-t pt-2 font-semibold"><span>ค่าจัดส่งรวม</span><input type="number" min="0" value={shippingCost} disabled className="w-32 rounded-lg border bg-slate-100 p-2 text-right" /></label>{baseShippingWaived && standardShipping > 0 && <p className="text-xs text-slate-500">ค่าจัดส่งปกติก่อนยกเว้น {money(standardShipping)} บาท</p>}</div> : <label className="flex items-center justify-between gap-4"><span>ค่าจัดส่ง</span><input type="number" min="0" value={shippingCost} disabled={!!document} onChange={e => setManualShipping(Number(e.target.value))} className="w-32 rounded-lg border p-2 text-right disabled:bg-slate-100" /></label>}
+              {!isPickup && (automaticShippingActive ? <div className="space-y-2 rounded-xl border bg-slate-50 p-3 text-sm"><div className="flex justify-between text-sky-700"><span>ค่าจัดส่งปกติ{baseShippingWaived ? ' (ยกเว้น)' : ''}</span><b>{money(chargedStandardShipping)} บาท</b></div><div className="flex justify-between text-violet-700"><span>ค่าพื้นที่ห่างไกล/พิเศษ</span><b>{money(specialAreaSurcharge)} บาท</b></div><label className="flex items-center justify-between gap-4 border-t pt-2 font-semibold"><span>ค่าจัดส่งรวม</span><input type="number" min="0" value={shippingCost} disabled className="w-32 rounded-lg border bg-slate-100 p-2 text-right" /></label>{baseShippingWaived && standardShipping > 0 && <p className="text-xs text-slate-500">ค่าจัดส่งปกติก่อนยกเว้น {money(standardShipping)} บาท</p>}</div> : <label className="flex items-center justify-between gap-4"><span>ค่าจัดส่ง</span><input type="number" min="0" value={shippingCost} disabled={!!document} onChange={e => setManualShipping(Number(e.target.value))} className="w-32 rounded-lg border p-2 text-right disabled:bg-slate-100" /></label>)}
               <div className="flex justify-between border-t-2 pt-4 text-xl text-blue-700"><b>ยอดสุทธิ</b><b>{money(totalAmount)} บาท</b></div>
               <label className="block pt-2 text-sm font-semibold text-slate-800">วิธีการชำระเงิน<select value={form.payment_method} onChange={e => setForm(v => ({ ...v, payment_method: e.target.value }))} className="mt-1 w-full rounded-xl border bg-white p-2.5"><option>โอน</option><option>เงินสด</option><option>เก็บเงินปลายทาง</option><option>เครดิต</option></select></label>
               <label className="block text-sm font-semibold text-slate-800">หมายเหตุภายใน<textarea value={form.internal_note} onChange={e => setForm(v => ({ ...v, internal_note: e.target.value }))} rows={3} className="mt-1 w-full rounded-xl border p-2.5" /></label>

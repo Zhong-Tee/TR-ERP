@@ -5,6 +5,8 @@ import { fetchAllSupabasePages } from '../lib/supabasePagination'
 import { getPublicUrl } from '../lib/qcApi'
 import { useAuthContext } from '../contexts/AuthContext'
 import { Product, ProductType, StockBalance } from '../types'
+import { isMissingReservationRpc, reservationTotals } from '../lib/stockReservations'
+import StockReservationModal from '../components/warehouse/StockReservationModal'
 import LotCostPopover from '../components/ui/LotCostPopover'
 import Modal from '../components/ui/Modal'
 import ColumnVisibilityMenu from '../components/ui/ColumnVisibilityMenu'
@@ -85,6 +87,8 @@ export default function Warehouse() {
   )
   const { hiddenColumns, isColumnVisible, toggleColumn, resetColumns } = useColumnVisibility('tr-erp:warehouse:hidden-columns:v1')
 
+  const [reservationProduct, setReservationProduct] = useState<Product | null>(null)
+  const refreshReservationBalances = useCallback(() => { void loadBalances() }, [])
   const [products, setProducts] = useState<Product[]>([])
   const [balances, setBalances] = useState<Record<string, StockBalance>>({})
   const [fifoStatusMap, setFifoStatusMap] = useState<Record<string, FifoStatus>>({})
@@ -98,6 +102,7 @@ export default function Warehouse() {
   const [productTypeFilter, setProductTypeFilter] = useState<WarehouseProductTypeFilter>('')
   const [onlyBelowOrderPoint, setOnlyBelowOrderPoint] = useState(false)
   const [onlyWithoutFifo, setOnlyWithoutFifo] = useState(false)
+  const [onlyReserved, setOnlyReserved] = useState(false)
   const [categories, setCategories] = useState<string[]>([])
   const [sellers, setSellers] = useState<string[]>([])
   const [salesFromDate, setSalesFromDate] = useState(() => {
@@ -127,6 +132,12 @@ export default function Warehouse() {
     loadSellers()
     loadLocationCounts()
   }, [])
+
+  useEffect(() => {
+    const channel = supabase.channel('warehouse-reservation-balances').on('postgres_changes', { event: '*', schema: 'public', table: 'inv_stock_balances' }, refreshReservationBalances).subscribe()
+    const timer = window.setInterval(refreshReservationBalances, 60000)
+    return () => { window.clearInterval(timer); void supabase.removeChannel(channel) }
+  }, [refreshReservationBalances])
 
   async function loadLocationCounts() {
     const { data, error } = await supabase.from('wh_location_stock').select('product_id, qty').gt('qty', 0)
@@ -198,6 +209,8 @@ export default function Warehouse() {
 
   async function loadBalances() {
     try {
+      const expiry = await supabase.rpc('rpc_refresh_document_reservations')
+      if (expiry.error && !isMissingReservationRpc(expiry.error)) throw expiry.error
       const data = await fetchAllSupabasePages<StockBalance>((from, to) => supabase
         .from('inv_stock_balances')
         .select('id, product_id, on_hand, reserved, safety_stock, created_at, updated_at')
@@ -314,25 +327,28 @@ export default function Warehouse() {
     [specialTrackedSources],
   )
 
-  const getStockDisplay = useCallback((productId: string): { onHand: number; safetyStock: number | null; total: number } => {
+  const getStockDisplay = useCallback((productId: string): { onHand: number; safetyStock: number | null; total: number; reserved: number; available: number } => {
     const sourceIds = specialTrackedSources[productId]
     if (sourceIds) {
       const aggregated = sourceIds.reduce((result, sourceId) => {
         const sourceBalance = balances[sourceId]
         result.onHand += Number(sourceBalance?.on_hand || 0)
         result.safetyStock += Number(sourceBalance?.safety_stock || 0)
+        result.reserved += Number(sourceBalance?.reserved || 0)
         return result
-      }, { onHand: 0, safetyStock: 0 })
+      }, { onHand: 0, safetyStock: 0, reserved: 0 })
       return {
         onHand: aggregated.onHand,
         safetyStock: aggregated.safetyStock,
         total: aggregated.onHand + aggregated.safetyStock,
+        ...reservationTotals(aggregated.onHand, aggregated.reserved),
       }
     }
     const balance = balances[productId]
     const onHand = Number(balance?.on_hand || 0)
     const safetyStock = balance?.safety_stock != null ? Number(balance.safety_stock) : null
-    return { onHand, safetyStock, total: onHand + (safetyStock ?? 0) }
+    const reserved = Number(balance?.reserved || 0)
+    return { onHand, safetyStock, total: onHand + (safetyStock ?? 0), ...reservationTotals(onHand, reserved) }
   }, [balances, specialTrackedSources])
 
   async function loadCategories() {
@@ -444,7 +460,7 @@ export default function Warehouse() {
     )
   }, [belowOrderPointCount])
 
-  const filteredProducts = useMemo(() => {
+  const reservationFilterProducts = useMemo(() => {
     const term = search.trim().toLowerCase()
     return products.filter((p) => {
       const matchTerm =
@@ -471,6 +487,11 @@ export default function Warehouse() {
     })
   }, [products, search, categoryFilter, sellerFilter, productTypeFilter, onlyBelowOrderPoint, onlyWithoutFifo, fifoStatusLoaded, fifoStatusMap, balances, pendingPoMap, salesFromDate, salesMap, isSpecialTracked])
 
+  const reservedProductCount = reservationFilterProducts.filter((product) => getStockDisplay(product.id).reserved > 0).length
+  const filteredProducts = onlyReserved
+    ? reservationFilterProducts.filter((product) => getStockDisplay(product.id).reserved > 0)
+    : reservationFilterProducts
+
   const specialTrackedDetail = useMemo(() => {
     if (!specialTrackedDetailId) return null
 
@@ -490,7 +511,7 @@ export default function Warehouse() {
           productName: sourceProduct?.product_name || '-',
           onHand,
           safetyStock,
-          total: onHand + safetyStock,
+          total: onHand + safetyStock, reserved: Number(balance?.reserved || 0), available: onHand - Number(balance?.reserved || 0),
         }
       })
       .sort((a, b) => a.productCode.localeCompare(b.productCode, undefined, { numeric: true }))
@@ -568,14 +589,15 @@ export default function Warehouse() {
             const balance = freshBalanceMap[sourceId]
             result.onHand += Number(balance?.on_hand || 0)
             result.safetyStock += Number(balance?.safety_stock || 0)
+            result.reserved += Number(balance?.reserved || 0)
             return result
-          }, { onHand: 0, safetyStock: 0 })
-          return { ...totals, total: totals.onHand + totals.safetyStock }
+          }, { onHand: 0, safetyStock: 0, reserved: 0 })
+          return { ...totals, total: totals.onHand + totals.safetyStock, available: totals.onHand - totals.reserved }
         }
         const balance = freshBalanceMap[productId]
         const onHand = Number(balance?.on_hand || 0)
         const safetyStock = Number(balance?.safety_stock || 0)
-        return { onHand, safetyStock, total: onHand + safetyStock }
+        return { onHand, safetyStock, total: onHand + safetyStock, reserved: Number(balance?.reserved || 0), available: onHand - Number(balance?.reserved || 0) }
       }
 
       const daysInRange = salesFromDate ? calendarDaysFromFilterToToday(salesFromDate, new Date()) : 1
@@ -609,6 +631,8 @@ export default function Warehouse() {
         'Safety stock': specialTracked ? 'ไม่มีค่า' : (safetyStock ?? '-'),
         'ชื่อจุด Safety stock': locationLabelMap.get(`${p.id}:safety:`) || 'Safety stock',
         'รวมในคลัง': stockDisplay.total,
+        'จ.': stockDisplay.reserved,
+        'พข.': stockDisplay.available,
         'จำนวนจุดจัดเก็บ': specialTracked ? '-' : positiveLocationRows.length,
         'ยอดรวมตามจุดเก็บ': specialTracked ? '-' : locationTotal,
         'ผลต่างจุดเก็บ': specialTracked ? '-' : locationDifference,
@@ -780,6 +804,15 @@ export default function Warehouse() {
           />
           <button
             type="button"
+            onClick={() => setOnlyReserved((value) => !value)}
+            aria-pressed={onlyReserved}
+            title="แสดงเฉพาะสินค้าที่มียอดจอง จำนวนรายการตามตัวกรองปัจจุบัน"
+            className={`px-4 py-2.5 rounded-xl font-semibold text-sm border transition-colors whitespace-nowrap ${onlyReserved ? 'border-orange-500 bg-orange-500 text-white hover:bg-orange-600' : 'border-orange-300 bg-white text-orange-600 hover:bg-orange-50'}`}
+          >
+            จอง <span className={`ml-1 rounded-full px-2 py-0.5 text-xs ${onlyReserved ? 'bg-white/20' : 'bg-orange-100'}`}>{reservedProductCount}</span>
+          </button>
+          <button
+            type="button"
             onClick={() => setOnlyWithoutFifo((value) => !value)}
             disabled={!fifoStatusLoaded}
             title={fifoStatusLoaded ? 'แสดงเฉพาะสินค้าที่ไม่มีล็อต FIFO คงเหลือ' : 'กำลังโหลดข้อมูล FIFO'}
@@ -911,6 +944,10 @@ export default function Warehouse() {
                         <span title={specialTracked ? `ยอดรวมจากสินค้าผลิตที่ผูกไว้ ${specialTrackedSources[product.id]?.length || 0} SKU (ไม่กระทบ FIFO)` : undefined}>
                           {totalInStock.toLocaleString()} {unitName}
                         </span>
+                        <button type="button" onClick={() => setReservationProduct(product)} title="ดูรายการจอง" aria-label={`ดูรายการจองของ ${product.product_name}`} className="mx-auto mt-1 block rounded text-xs font-semibold text-orange-600 hover:text-orange-800 hover:underline focus:ring-2 focus:ring-orange-400">
+                          จ. {stockDisplay.reserved.toLocaleString()} {unitName}
+                        </button>
+                        <div title="พร้อมขาย ไม่รวม Safety stock" className={`mt-0.5 text-xs font-normal ${stockDisplay.available < 0 ? 'text-red-600' : 'text-gray-500'}`}>พข. {stockDisplay.available.toLocaleString()} {unitName}</div>
                         {specialTracked && (
                           <button
                             type="button"
@@ -1067,6 +1104,7 @@ export default function Warehouse() {
         </div>
       )}
 
+      {reservationProduct && <StockReservationModal product={reservationProduct} productIds={specialTrackedSources[reservationProduct.id] || [reservationProduct.id]} onClose={() => setReservationProduct(null)} onRefresh={refreshReservationBalances} />}
       <Modal
         open={specialTrackedDetail !== null}
         onClose={() => setSpecialTrackedDetailId(null)}

@@ -1,3 +1,5 @@
+import { isSelfPickupBill } from '../../lib/channelBehavior'
+import ShippingConversionPanel from './ShippingConversionPanel'
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { formatDateTime } from '../../lib/utils'
@@ -629,6 +631,7 @@ export default function OrderDetailView({
 
   return (
     <div className="flex flex-col max-h-[85vh]">
+      <ShippingConversionPanel order={order} compact />
       {/* Header */}
       <div className="p-4 border-b bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between shrink-0">
         <div>
@@ -718,7 +721,7 @@ export default function OrderDetailView({
             <InfoRow label="เลขคำสั่งซื้อ" value={order.channel_order_no} />
             <InfoRow label="เลขพัสดุ" value={order.tracking_number} />
             <InfoRow label="เลขรับพัสดุด่วน" value={order.express_receipt_number} />
-            {order.channel_code === 'SHOPP' && (
+            {isSelfPickupBill(order.fulfillment_method, order.channel_code) && (
               <InfoRow
                 label="วันที่ เวลา นัดรับ"
                 value={(() => {
@@ -734,6 +737,7 @@ export default function OrderDetailView({
                 })()}
               />
             )}
+            {!isSelfPickupBill(order.fulfillment_method, order.channel_code) && <>
             <div className="md:col-span-2">
               <InfoRow label="ที่อยู่" value={displayAddress} />
             </div>
@@ -741,6 +745,7 @@ export default function OrderDetailView({
             <InfoRow label="เขต/อำเภอ" value={displayDistrict} />
             <InfoRow label="จังหวัด" value={displayProvince} />
             <InfoRow label="รหัสไปรษณีย์" value={displayPostalCode} />
+            </>}
             <InfoRow label="โปรโมชั่น" value={order.promotion} />
             <InfoRow
               label={order.source_prebill_document_type === 'production_confirmation' ? 'ผู้เปิดใบยืนยันผลิต' : 'ผู้เปิดใบเสนอราคา'}
@@ -777,7 +782,7 @@ export default function OrderDetailView({
           <h4 className="text-sm font-bold text-gray-800 border-b border-gray-200 pb-1.5 mb-2">ยอดเงิน</h4>
           <dl className="grid grid-cols-2 md:grid-cols-4 gap-x-8">
             <InfoRow label="ราคาสินค้า" value={`฿${fmt(order.price)}`} />
-            <InfoRow label="ค่าส่ง" value={`฿${fmt(order.shipping_cost)}`} />
+            {!isSelfPickupBill(order.fulfillment_method, order.channel_code) && <InfoRow label="ค่าส่ง" value={`฿${fmt(order.shipping_cost)}`} />}
             <InfoRow label="ส่วนลด" value={`฿${fmt(order.discount)}`} />
             <div className="py-1.5 flex gap-2">
               <dt className="text-gray-500 text-sm shrink-0 w-28">ยอดรวม</dt>

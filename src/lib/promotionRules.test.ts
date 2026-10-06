@@ -42,6 +42,58 @@ describe('promotion rules', () => {
     expect(result.application_count).toBe(2)
   })
 
+  it.each([2, 3, 4])('ขึ้นไปลดเปอร์เซ็นต์จากสินค้าที่ตรงเงื่อนไขทั้งหมด %s ชิ้น', (quantity) => {
+    const promotion: PromotionDefinition = { ...quantityPercent, rule_config: {
+      ...quantityPercent.rule_config,
+      condition_groups: [{ id: 'ซื้อ', quantity: 2, quantity_at_least: true, options: [{ selector_type: 'category', category: 'แก้ว' }] }],
+    } }
+    const order = [
+      { ...items[0], quantity, unit_price: 500 },
+      { product_id: 'other', product_category: 'อื่น', quantity: 2, unit_price: 1000 },
+      { ...items[0], quantity: 2, unit_price: 1000, is_free: true },
+    ]
+    const result = evaluatePromotion(promotion, order, { channel_code: 'FBTR' })
+    expect(result.passed).toBe(true)
+    expect(result.expected_discount).toBe(quantity * 50)
+    const fixed = evaluatePromotion({ ...promotion, rule_type: 'quantity_fixed', rule_config: {
+      ...promotion.rule_config, discount_value: 100,
+    } }, order, { channel_code: 'FBTR' })
+    expect(fixed.passed).toBe(true)
+    expect(fixed.expected_discount).toBe(100)
+    expect(fixed.application_count).toBe(1)
+  })
+
+  it('ขึ้นไปยังต้องครบขั้นต่ำและตรวจจำนวนครั้งที่ใช้โดยไม่ลดเปอร์เซ็นต์ซ้ำ', () => {
+    const promotion: PromotionDefinition = { ...quantityPercent, rule_config: {
+      ...quantityPercent.rule_config,
+      condition_groups: [{ id: 'ซื้อ', quantity: 2, quantity_at_least: true, options: [{ selector_type: 'category', category: 'แก้ว' }] }],
+    } }
+    expect(evaluatePromotion(promotion, [{ ...items[0], quantity: 1 }], { channel_code: 'FBTR' }).passed).toBe(false)
+    expect(evaluatePromotion(promotion, [{ ...items[0], quantity: 3 }], {
+      channel_code: 'FBTR', application_counts: { p1: 2 },
+    }).passed).toBe(false)
+    expect(evaluatePromotion(promotion, [{ ...items[0], quantity: 5 }], {
+      channel_code: 'FBTR', application_counts: { p1: 2 },
+    }).expected_discount).toBe(150)
+  })
+
+  it('ขึ้นไปจัดสรรกลุ่มซ้อนกันโดยไม่ใช้ชิ้นซ้ำและกลุ่มไม่ติ๊กยังจำกัดจำนวน', () => {
+    const promotion: PromotionDefinition = { ...quantityPercent, rule_config: {
+      discount_value: 10,
+      condition_groups: [
+        { id: 'A', quantity: 2, quantity_at_least: true, options: [{ selector_type: 'category', category: 'แก้ว' }] },
+        { id: 'B', quantity: 1, options: [{ selector_type: 'sku', product_id: 'a' }] },
+        { id: 'C', quantity: 1, options: [{ selector_type: 'category', category: 'อื่น' }] },
+      ],
+    } }
+    const order = [
+      { ...items[0], quantity: 5 },
+      { product_id: 'other', product_category: 'อื่น', quantity: 3, unit_price: 1000 },
+    ]
+    expect(evaluatePromotion(promotion, order, { channel_code: 'FBTR' }).expected_discount).toBe(250)
+    expect(evaluatePromotion(promotion, [{ ...items[0], quantity: 2 }, order[1]], { channel_code: 'FBTR' }).passed).toBe(false)
+  })
+
   it('ไม่ให้ส่วนลดเมื่อสินค้าซื้อไม่ครบ แม้รวมของแถมแล้วครบ', () => {
     const result = evaluatePromotion(quantityPercent, [
       { ...items[0], quantity: 1 }, { ...items[0], quantity: 1, is_free: true },

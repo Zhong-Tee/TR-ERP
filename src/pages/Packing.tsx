@@ -9,7 +9,6 @@ import { flatBillUnitUid, normalizedLineQuantity, stableOrderItemUnitKey } from 
 import { sortOrderItemsForExport } from '../lib/orderItemExportSort'
 import { isCondoStampProductName } from '../lib/condoStamp'
 import { SELF_PICKUP_CHANNELS } from '../lib/channelBehavior'
-import { parseAddressText } from '../lib/thaiAddress'
 import { downloadFlashWaybillXlsx } from '../lib/flashWaybillExport'
 import Modal from '../components/ui/Modal'
 import {
@@ -59,6 +58,7 @@ type OrderWithItems = Order & {
 type PackingItem = {
   bill_no: string
   channel_code: string
+  shipping_conversion_pending: boolean
   is_self_pickup: boolean
   fulfillment_method: 'self_pickup' | 'shipping'
   converted_from_self_pickup_at: string | null
@@ -214,6 +214,7 @@ function buildPackingItemsFromOrder(
       rows.push({
         bill_no: order.bill_no || '',
         channel_code: order.channel_code || '',
+        shipping_conversion_pending: order.shipping_conversion_pending === true,
         is_self_pickup: isSelfPickup,
         fulfillment_method: isSelfPickup ? 'self_pickup' : 'shipping',
         converted_from_self_pickup_at: order.converted_from_self_pickup_at || null,
@@ -431,22 +432,6 @@ function isStaleQueueTimestamp(status: string, updatedAt: string | null | undefi
 
 type UploadStatusFilter = 'pending' | 'uploading' | 'success' | 'failed'
 
-type ConvertToShippingForm = {
-  orderId: string
-  billNo: string
-  isShipped: boolean
-  recipientName: string
-  originalAddress: string
-  addressLine: string
-  subDistrict: string
-  district: string
-  province: string
-  postalCode: string
-  mobilePhone: string
-  reason: string
-  cod: string
-}
-
 function UploadStatusCard({
   label,
   value,
@@ -602,9 +587,6 @@ export default function Packing() {
   const [recordingState, setRecordingState] = useState<RecordingState>({ status: 'idle', tracking: null })
   const [isLoadingOrders, setIsLoadingOrders] = useState(false)
   const [previewModal, setPreviewModal] = useState<{ open: boolean; message: string }>({ open: false, message: '' })
-  const [convertShippingForm, setConvertShippingForm] = useState<ConvertToShippingForm | null>(null)
-  const [convertShippingLoading, setConvertShippingLoading] = useState(false)
-  const [convertAddressLoading, setConvertAddressLoading] = useState(false)
   const [folderHandle, setFolderHandleState] = useState<FileSystemDirectoryHandle | null>(null)
   const [folderPath, setFolderPath] = useState('')
   const [deviceId, setDeviceId] = useState('')
@@ -792,7 +774,7 @@ export default function Packing() {
   }, [aggregatedData])
 
   const isQcPassGroup = (group: PackingItem[]) => group.every((item) => item.qc_status === 'pass' || item.qc_status === 'skip')
-  const isWmsReadyGroup = (group: PackingItem[]) => group.every((item) => item.wmsReady)
+  const isWmsReadyGroup = (group: PackingItem[]) => group.every((item) => item.wmsReady && !item.shipping_conversion_pending)
 
   const goToNextGroup = () => {
     const nextIndex = aggregatedDataRef.current.findIndex(
@@ -1328,65 +1310,6 @@ export default function Packing() {
     setDialog({ open: true, mode: 'alert', title, message, confirmText: 'รับทราบ' })
   }
 
-  async function openConvertToShipping(orderId: string) {
-    if (isViewOnly) return
-    try {
-      setConvertShippingLoading(true)
-      const { data, error } = await supabase
-        .from('or_orders')
-        .select('id, bill_no, status, customer_name, recipient_name, customer_address, billing_details, payment_method, total_amount')
-        .eq('id', orderId)
-        .single()
-      if (error) throw error
-      const billing = (data.billing_details || {}) as Record<string, any>
-      setConvertShippingForm({
-        orderId: data.id,
-        billNo: data.bill_no || '',
-        isShipped: data.status === 'จัดส่งแล้ว',
-        recipientName: data.recipient_name || data.customer_name || '',
-        originalAddress: data.customer_address || '',
-        addressLine: billing.address_line || '',
-        subDistrict: billing.sub_district || '',
-        district: billing.district || '',
-        province: billing.province || '',
-        postalCode: billing.postal_code || '',
-        mobilePhone: billing.mobile_phone || '',
-        reason: data.status === 'จัดส่งแล้ว' ? '' : 'ลูกค้าเปลี่ยนจากรับสินค้าเองเป็นจัดส่ง',
-        cod: String(data.payment_method || '').toLowerCase().includes('cod') ? String(data.total_amount || 0) : '0',
-      })
-    } catch (error: any) {
-      openAlert('โหลดข้อมูลบิลไม่สำเร็จ: ' + (error?.message || error))
-    } finally {
-      setConvertShippingLoading(false)
-    }
-  }
-
-  async function autoFillConvertAddress() {
-    if (!convertShippingForm) return
-    setConvertAddressLoading(true)
-    try {
-      const parsed = await parseAddressText(convertShippingForm.originalAddress, supabase)
-      setConvertShippingForm((current) => current ? ({
-        ...current,
-        recipientName: parsed.recipientName?.trim() || current.recipientName,
-        addressLine: parsed.addressLine || current.addressLine,
-        subDistrict: parsed.subDistrict || current.subDistrict,
-        district: parsed.district || current.district,
-        province: parsed.province || current.province,
-        postalCode: parsed.postalCode || current.postalCode,
-        mobilePhone: parsed.mobilePhone || current.mobilePhone,
-      }) : current)
-    } catch (error: any) {
-      openAlert('แยกที่อยู่อัตโนมัติไม่สำเร็จ: ' + (error?.message || error))
-    } finally {
-      setConvertAddressLoading(false)
-    }
-  }
-
-  function waybillAddressFromForm(form: ConvertToShippingForm): string {
-    return [form.addressLine, form.subDistrict, form.district, form.province].filter(Boolean).join(' ').trim()
-  }
-
   async function exportConvertedWaybill(orderId: string) {
     const { data, error } = await supabase
       .from('or_orders')
@@ -1405,62 +1328,6 @@ export default function Packing() {
       phone1: billing.mobile_phone || '',
       cod: String(data.payment_method || '').toLowerCase().includes('cod') ? String(data.total_amount || 0) : '0',
     }], data.bill_no || 'waybill')
-  }
-
-  async function saveConversionAndExport() {
-    if (isViewOnly) return
-    const form = convertShippingForm
-    if (!form) return
-    if (!form.recipientName.trim() || !form.addressLine.trim() || !form.province.trim() || !form.postalCode.trim() || !form.mobilePhone.trim()) {
-      openAlert('กรุณากรอกชื่อผู้รับ ที่อยู่ จังหวัด รหัสไปรษณีย์ และเบอร์โทรให้ครบ')
-      return
-    }
-    if (form.isShipped && !form.reason.trim()) {
-      openAlert('กรุณาระบุเหตุผลที่ยกเลิกการจัดส่งและเปลี่ยนเป็นจัดส่งใหม่')
-      return
-    }
-
-    let converted = false
-    setConvertShippingLoading(true)
-    try {
-      const { error } = await supabase.rpc('pk_convert_self_pickup_to_shipping', {
-        p_order_id: form.orderId,
-        p_recipient_name: form.recipientName.trim(),
-        p_original_address: form.originalAddress.trim(),
-        p_address_line: form.addressLine.trim(),
-        p_sub_district: form.subDistrict.trim(),
-        p_district: form.district.trim(),
-        p_province: form.province.trim(),
-        p_postal_code: form.postalCode.trim(),
-        p_mobile_phone: form.mobilePhone.trim(),
-        p_reason: form.reason.trim(),
-        p_changed_by: user?.username || user?.email || 'unknown',
-      })
-      if (error) throw error
-      converted = true
-      await downloadFlashWaybillXlsx([{
-        billNo: form.billNo,
-        consigneeName: form.recipientName.trim(),
-        address: waybillAddressFromForm(form),
-        postalCode: form.postalCode.trim(),
-        phone1: form.mobilePhone.trim(),
-        cod: form.cod,
-      }], form.billNo || 'waybill')
-      openAlert('เปลี่ยนเป็นจัดส่งและ Export ใบปะหน้าเรียบร้อยแล้ว กรุณาสแกนเลขพัสดุเพื่อแพ็คใหม่', 'สำเร็จ')
-    } catch (error: any) {
-      openAlert(
-        converted
-          ? 'เปลี่ยนบิลเป็นจัดส่งแล้ว แต่ Export ใบปะหน้าไม่สำเร็จ สามารถกด Export ใบปะหน้าอีกครั้งได้\n' + (error?.message || error)
-          : 'เปลี่ยนเป็นจัดส่งไม่สำเร็จ: ' + (error?.message || error),
-        converted ? 'Export ไม่สำเร็จ' : 'เกิดข้อผิดพลาด',
-      )
-    } finally {
-      setConvertShippingLoading(false)
-      if (converted) {
-        setConvertShippingForm(null)
-        if (currentWorkOrderName) await loadPackingData(currentWorkOrderName)
-      }
-    }
   }
 
   const openConfirm = (message: string, onConfirm: () => void, title = 'ยืนยันการทำรายการ', confirmText = 'ตกลง', cancelText = 'ยกเลิก') => {
@@ -1964,7 +1831,7 @@ export default function Packing() {
       if (orders.length > 0) {
         const names = orders.map((wo) => wo.work_order_name)
         const workOrderIds = orders.map((wo) => wo.id)
-        const packingOrderSelect = 'id, bill_no, channel_code, channel_order_no, work_order_id, work_order_name, tracking_number, fulfillment_method, converted_from_self_pickup_at, converted_from_self_pickup_by, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, shipped_time, or_order_items(id, item_uid, product_id, product_name, product_type, is_detail_row, parent_item_id, quantity, created_at, cancellation_stock_action)'
+        const packingOrderSelect = 'id, bill_no, channel_code, channel_order_no, work_order_id, work_order_name, tracking_number, shipping_conversion_pending, fulfillment_method, converted_from_self_pickup_at, converted_from_self_pickup_by, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, shipped_time, or_order_items(id, item_uid, product_id, product_name, product_type, is_detail_row, parent_item_id, quantity, created_at, cancellation_stock_action)'
         const [
           { data: productionOrdersById, error: productionOrdersByIdError },
           { data: productionOrdersByName, error: productionOrdersByNameError },
@@ -4573,18 +4440,11 @@ export default function Packing() {
                             ? 'ขั้นตอนที่ 1: ลูกค้ารับสินค้าเอง'
                             : 'ขั้นตอนที่ 1: สแกนเลขพัสดุ'}
                         </h3>
+                        {currentGroup[0].shipping_conversion_pending && <p className="rounded bg-amber-100 p-3 text-center font-semibold text-amber-800">รอฝ่ายขายจัดการจัดส่ง / ตรวจค่าส่ง / อนุมัติค่าส่ง 0 — ยังแพ็คไม่ได้</p>}
                         {currentGroup[0].is_self_pickup ? (
                           <div className="flex flex-wrap items-center justify-center gap-2 rounded border-2 border-emerald-400 bg-emerald-50 px-3 py-2 text-center font-semibold text-emerald-700">
                             <span>รับสินค้าเอง — ไม่ต้องสแกนเลขพัสดุ</span>
-                            <button
-                              type="button"
-                              onClick={() => void openConvertToShipping(currentGroup[0].order_id)}
-                              disabled={isViewOnly || convertShippingLoading || (currentGroup[0].isOrderComplete && !isAdminOrSuperadmin(user?.role))}
-                              className="rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
-                              title={currentGroup[0].isOrderComplete && !isAdminOrSuperadmin(user?.role) ? 'บิลที่จัดส่งแล้วต้องให้ Admin ดำเนินการ' : 'เปลี่ยนบิลนี้จากรับเองเป็นจัดส่ง'}
-                            >
-                              เปลี่ยนเป็นจัดส่ง
-                            </button>
+                            <span className="text-xs">เปลี่ยนวิธีรับสินค้าได้ผ่านฝ่ายขายเท่านั้น</span>
                           </div>
                         ) : (() => {
                           const parcelDisabled =
@@ -4987,92 +4847,6 @@ export default function Packing() {
           </div>
         </div>
       )}
-      <Modal
-        open={Boolean(convertShippingForm)}
-        onClose={() => { if (!convertShippingLoading) setConvertShippingForm(null) }}
-        contentClassName="max-w-3xl w-full mx-4"
-      >
-        {convertShippingForm && (
-          <div className="p-6 space-y-4">
-            <div>
-              <h3 className="text-xl font-bold text-gray-900">เปลี่ยนเป็นจัดส่ง</h3>
-              <p className="mt-1 text-sm text-gray-600">
-                บิล {convertShippingForm.billNo} จะคงช่องทางและเลขบิลเดิม ระบบจะล้างข้อมูลสแกนแพ็คเดิมและให้แพ็คใหม่
-              </p>
-              {convertShippingForm.isShipped && (
-                <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
-                  บิลนี้จัดส่งแล้ว ระบบจะยกเลิกการจัดส่งและเปิดใบงานกลับอัตโนมัติ
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label className="mb-1 block text-sm font-medium">วางชื่อ ที่อยู่ และเบอร์โทร</label>
-              <textarea
-                value={convertShippingForm.originalAddress}
-                onChange={(event) => setConvertShippingForm({ ...convertShippingForm, originalAddress: event.target.value })}
-                rows={3}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2"
-                placeholder="วางข้อมูลลูกค้า แล้วกด Auto Fill"
-              />
-              <button
-                type="button"
-                onClick={() => void autoFillConvertAddress()}
-                disabled={convertAddressLoading || !convertShippingForm.originalAddress.trim()}
-                className="mt-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-700 disabled:opacity-50"
-              >
-                {convertAddressLoading ? 'กำลังแยกที่อยู่...' : 'Auto Fill ที่อยู่'}
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-sm font-medium">ชื่อผู้รับ *</label>
-                <input value={convertShippingForm.recipientName} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, recipientName: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium">เบอร์โทร *</label>
-                <input value={convertShippingForm.mobilePhone} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, mobilePhone: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
-              </div>
-              <div className="md:col-span-2">
-                <label className="mb-1 block text-sm font-medium">บ้านเลขที่/ถนน/ซอย *</label>
-                <input value={convertShippingForm.addressLine} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, addressLine: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium">แขวง/ตำบล</label>
-                <input value={convertShippingForm.subDistrict} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, subDistrict: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium">เขต/อำเภอ</label>
-                <input value={convertShippingForm.district} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, district: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium">จังหวัด *</label>
-                <input value={convertShippingForm.province} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, province: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium">รหัสไปรษณีย์ *</label>
-                <input value={convertShippingForm.postalCode} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, postalCode: e.target.value })} maxLength={5} className="w-full rounded-lg border px-3 py-2" />
-              </div>
-              {convertShippingForm.isShipped && (
-                <div className="md:col-span-2">
-                  <label className="mb-1 block text-sm font-medium">เหตุผลที่ยกเลิกจัดส่งและแพ็คใหม่ *</label>
-                  <textarea value={convertShippingForm.reason} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, reason: e.target.value })} rows={2} className="w-full rounded-lg border px-3 py-2" />
-                </div>
-              )}
-            </div>
-
-            <div className="flex flex-wrap justify-end gap-2 border-t pt-4">
-              <button type="button" onClick={() => setConvertShippingForm(null)} disabled={convertShippingLoading} className="rounded-lg border px-4 py-2 text-sm font-semibold hover:bg-gray-50 disabled:opacity-50">
-                ยกเลิก
-              </button>
-              <button type="button" onClick={() => void saveConversionAndExport()} disabled={convertShippingLoading || convertAddressLoading} className="rounded-lg bg-orange-500 px-4 py-2 text-sm font-bold text-white hover:bg-orange-600 disabled:opacity-50">
-                {convertShippingLoading ? 'กำลังบันทึก...' : 'บันทึกและ Export ใบปะหน้า'}
-              </button>
-            </div>
-          </div>
-        )}
-      </Modal>
       <Modal
         open={previewModal.open}
         onClose={() => setPreviewModal({ open: false, message: '' })}

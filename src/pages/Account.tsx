@@ -10,6 +10,8 @@ import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { getEasySlipQuota, uploadMultipleToStorage, getSignedUrlsFromStoragePaths } from '../lib/slipVerification'
 import Modal from '../components/ui/Modal'
 import BillEditSection from '../components/account/BillEditSection'
+import { useShippingConversionCount } from '../hooks/useShippingConversionCount'
+import ShippingConversionPanel from '../components/order/ShippingConversionPanel'
 import ManualSlipCheckSection from '../components/account/ManualSlipCheckSection'
 import TaxInvoiceModal from '../components/account/TaxInvoiceModal'
 import TrialBalanceSection from '../components/account/TrialBalanceSection'
@@ -25,7 +27,7 @@ import ClaimApprovalSection from '../components/account/ClaimApprovalSection'
 import { SLIP_BANK_APPS_30D, SLIP_BANK_APPS_7D, bankLogoUrl } from '../config/thaiBanks'
 import * as XLSX from 'xlsx'
 
-type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bank-reconciliation' | 'bill-edit' | 'cancelled-bills' | 'amendment' | 'claim-approval' | 'slip-age' | 'ecommerce' | 'promotion-audit' | 'payroll' | 'trial-balance'
+type AccountSection = 'zero-shipping' | 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bank-reconciliation' | 'bill-edit' | 'cancelled-bills' | 'amendment' | 'claim-approval' | 'slip-age' | 'ecommerce' | 'promotion-audit' | 'payroll' | 'trial-balance'
 type AccountTab = 'refunds' | 'claim-approval' | 'tax-invoice' | 'approvals'
 type ApprovalFilter = 'refund' | 'claim' | 'tax-invoice'
 
@@ -176,7 +178,7 @@ async function fetchSlipImageUrlsForOrder(orderId: string): Promise<string[]> {
 }
 
 const ALL_ACCOUNT_SECTIONS: AccountSection[] = [
-  'dashboard', 'slip-verification', 'manual-slip-check', 'bank-reconciliation',
+  'zero-shipping', 'dashboard', 'slip-verification', 'manual-slip-check', 'bank-reconciliation',
   'bill-edit', 'cancelled-bills', 'amendment', 'claim-approval', 'slip-age', 'ecommerce', 'promotion-audit', 'payroll', 'trial-balance',
 ]
 
@@ -191,6 +193,7 @@ const ACCOUNT_TOP_NAV_ITEMS: Array<{
 }> = [
   // ตัวเลข Dashboard = ผลรวมงานใหม่ (โอนคืน + อนุมัติเคลม + ขอใบกำกับภาษี) — เมนูย่อยพวกนี้อยู่ใน Dashboard แล้ว
   { id: 'nav-dashboard', section: 'dashboard', label: 'Dashboard', count: 'dashboard', accessKey: 'account-dashboard' },
+  { id: 'nav-zero-shipping', section: 'zero-shipping', label: 'อนุมัติค่าส่ง 0' },
   { id: 'nav-slip-verification', section: 'slip-verification', label: 'รายการการตรวจสลิป' },
   { id: 'nav-manual-slip', section: 'manual-slip-check', label: 'ตรวจสลิปมือ', count: 'manualSlip' },
   { id: 'nav-bank-reconciliation', section: 'bank-reconciliation', label: 'กระทบยอดธนาคาร' },
@@ -213,6 +216,7 @@ export default function Account() {
     [canUseBankReconciliation],
   )
   const [accountSection, setAccountSection] = useState<AccountSection>('dashboard')
+  const zeroShippingCount = useShippingConversionCount(true)
   const [activeTab, setActiveTab] = useState<AccountTab>('refunds')
 
   useEffect(() => {
@@ -1007,6 +1011,7 @@ export default function Account() {
   }
 
   function accountTopNavCountPill(item: (typeof ACCOUNT_TOP_NAV_ITEMS)[number]): { text: string; pillClass: string } | null {
+    if (item.section === 'zero-shipping') return { text: String(zeroShippingCount), pillClass: 'bg-amber-100 text-amber-800' }
     if (!item.count) return null
     if (item.count === 'manualSlip') {
       return {
@@ -1302,7 +1307,7 @@ export default function Account() {
             </div>
           )}
         </section>
-      ) : accountSection === 'manual-slip-check' ? (
+      ) : accountSection === 'zero-shipping' ? (<ShippingConversionPanel approvalOnly />) : accountSection === 'manual-slip-check' ? (
         <ManualSlipCheckSection />
       ) : accountSection === 'bank-reconciliation' && canUseBankReconciliation ? (
         <BankReconciliationSection />
@@ -1542,7 +1547,19 @@ export default function Account() {
                 <div className="text-center py-12 text-gray-500 text-base">ไม่พบรายการโอนคืนที่อนุมัติหรือปฏิเสธแล้ว</div>
               ) : (
                 <div className="overflow-x-auto rounded-lg border border-gray-100">
-                  <table className="w-full text-base">
+                  <table className="w-full min-w-[1600px] table-fixed text-sm">
+                    <colgroup>
+                      <col className="w-[9%]" />
+                      <col className="w-[8%]" />
+                      <col className="w-[9%]" />
+                      <col className="w-[10%]" />
+                      <col className="w-[18%]" />
+                      <col className="w-[6%]" />
+                      <col className="w-[8%]" />
+                      <col className="w-[9%]" />
+                      <col className="w-[12%]" />
+                      <col className="w-[11%]" />
+                    </colgroup>
                     <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
                   <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">เลขบิล</th>
@@ -1550,11 +1567,11 @@ export default function Account() {
                   <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">ชื่อบัญชีรับคืน</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">ธนาคาร / เลขบัญชี</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">ที่อยู่</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">จำนวนเงิน</th>
+                  <th className="px-4 py-3 text-right font-semibold text-gray-700 text-sm whitespace-nowrap">จำนวนเงิน</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">สถานะ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">วันที่ดำเนินการ</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap min-w-[20rem] max-w-[28rem]">เหตุผลโอนเกิน</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">การจัดการ</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">เหตุผลโอนเกิน</th>
+                  <th className="px-4 py-3 text-center font-semibold text-gray-700 text-sm whitespace-nowrap">การจัดการ</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1562,33 +1579,39 @@ export default function Account() {
                         <tr
                           key={refund.id}
                           onClick={() => { setViewOrderId(refund.order_id); setViewBillRefund(refund) }}
-                          className="border-b border-gray-100 hover:bg-amber-50/50 transition-colors cursor-pointer"
+                          className="border-b border-gray-100 hover:bg-amber-50/50 transition-colors cursor-pointer align-top"
                         >
-                          <td className="px-4 py-3 font-medium text-gray-800">
+                          <td className="px-4 py-3 font-semibold text-sky-700 whitespace-nowrap">
                           <span>{(refund as any).or_orders?.bill_no || '–'}</span>
                           {((refund as any).or_orders?.bill_no || '').startsWith('REQ') && (
                             <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
                           )}
                         </td>
-                          <td className="px-4 py-3 text-gray-700">{(refund as any).or_orders?.customer_name || '–'}</td>
-                          <td className="px-4 py-3 text-gray-700 text-sm max-w-[120px] truncate" title={refund.refund_recipient_account_name || ''}>{refund.refund_recipient_account_name?.trim() || '–'}</td>
+                          <td className="px-4 py-3 text-gray-800">
+                            <span className="block line-clamp-2 break-words leading-snug" title={(refund as any).or_orders?.customer_name || ''}>{(refund as any).or_orders?.customer_name || '–'}</span>
+                          </td>
+                          <td className="px-4 py-3 text-gray-700">
+                            <span className="block line-clamp-2 break-words leading-snug" title={refund.refund_recipient_account_name || ''}>{refund.refund_recipient_account_name?.trim() || '–'}</span>
+                          </td>
                           <td className="px-4 py-3 text-gray-700 text-sm">
-                            <div className="max-w-[140px] leading-tight">
-                              <div className="truncate" title={refund.refund_recipient_bank || ''}>
+                            <div className="leading-snug">
+                              <div className="line-clamp-2 break-words" title={refund.refund_recipient_bank || ''}>
                                 {refund.refund_recipient_bank?.trim() || '–'}
                               </div>
                               <div
-                                className="font-mono tabular-nums text-base text-gray-800 truncate mt-0.5"
+                                className="font-mono tabular-nums text-sm text-gray-800 break-all mt-0.5"
                                 title={refund.refund_recipient_account_number || ''}
                               >
                                 {refund.refund_recipient_account_number?.trim() || '–'}
                               </div>
                             </div>
                           </td>
-                          <td className="px-4 py-3 text-gray-600 max-w-[180px] text-sm whitespace-pre-wrap truncate" title={(refund as any).or_orders?.customer_address}>{(refund as any).or_orders?.customer_address || '–'}</td>
-                          <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums">฿{refund.amount.toLocaleString()}</td>
+                          <td className="px-4 py-3 text-gray-600">
+                            <span className="text-sm leading-snug whitespace-normal break-words line-clamp-3" title={(refund as any).or_orders?.customer_address || ''}>{(refund as any).or_orders?.customer_address || '–'}</span>
+                          </td>
+                          <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums text-right whitespace-nowrap">฿{refund.amount.toLocaleString()}</td>
                           <td className="px-4 py-3">
-                            <span className={`inline-flex px-2.5 py-1 rounded-lg text-sm font-medium ${
+                            <span className={`inline-flex px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap ${
                               refund.status !== 'approved'
                                 ? 'bg-red-100 text-red-700'
                                 : refund.refund_slip_sent_at
@@ -1603,15 +1626,15 @@ export default function Account() {
                               </div>
                             )}
                           </td>
-                          <td className="px-4 py-3 text-gray-500 text-sm">{refund.approved_at ? formatDateTime(refund.approved_at) : '–'}</td>
-                          <td className="px-4 py-3 text-gray-600 text-sm min-w-[20rem] max-w-[28rem] align-top whitespace-normal break-words" title={formatRefundReason(refund.reason)}>
-                            <div>{formatRefundReason(refund.reason)}</div>
+                          <td className="px-4 py-3 text-gray-500 text-sm whitespace-nowrap [&>div>div]:text-sm">{refund.approved_at ? <DateTimeStacked text={formatDateTime(refund.approved_at)} /> : '–'}</td>
+                          <td className="px-4 py-3 text-gray-600 text-sm leading-snug whitespace-normal break-words">
+                            <div className="whitespace-pre-line" title={formatRefundReason(refund.reason).replace(/[()]/g, '')}>{formatRefundReason(refund.reason).replace(/[()]/g, '').replace(/,?\s*(?=สลิป\s*:)/u, '\n')}</div>
                             {refund.refund_recipient_reason?.trim() && (
-                              <div className="text-gray-800 mt-0.5">{refund.refund_recipient_reason.trim()}</div>
+                              <div className="text-gray-800 mt-0.5 line-clamp-2" title={refund.refund_recipient_reason.trim()}>{refund.refund_recipient_reason.trim()}</div>
                             )}
                           </td>
                           <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                            <div className="flex flex-col items-start gap-1.5">
+                            <div className="flex flex-col items-center gap-1.5">
                               {/* สลิปโอนคืน — เฉพาะรายการที่อนุมัติแล้ว */}
                               {refund.status === 'approved' && (
                                 (refund.refund_slip_paths?.length || 0) > 0 ? (
@@ -1645,7 +1668,7 @@ export default function Account() {
                                     type="button"
                                     onClick={(e) => { e.stopPropagation(); triggerRefundSlipUpload(refund.id) }}
                                     disabled={refundSlipUploadingId === refund.id}
-                                    className="inline-flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 text-sm font-medium transition-colors disabled:opacity-60"
+                                    className="w-full inline-flex items-center justify-center gap-1.5 whitespace-nowrap px-2 py-2 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 text-xs font-medium transition-colors disabled:opacity-60"
                                   >
                                     {refundSlipUploadingId === refund.id ? (
                                       <><span className="animate-spin rounded-full h-3.5 w-3.5 border-2 border-white border-t-transparent" />กำลังอัปโหลด...</>
@@ -1705,17 +1728,17 @@ export default function Account() {
                               <span className="block max-w-[140px] truncate" title={o.customer_name || ''}>{o.customer_name || '–'}</span>
                             </td>
                             <td className="px-4 py-3 text-gray-700">
-                              <span className="block max-w-[180px] truncate" title={bd.tax_customer_name || ''}>{bd.tax_customer_name || '–'}</span>
-                              <span className="block text-xs text-gray-400 tabular-nums mt-0.5">{bd.tax_id ? `TAX ID: ${bd.tax_id}` : '–'}</span>
+                              <span className="block whitespace-normal break-words" title={bd.tax_customer_name || ''}>{bd.tax_customer_name || '–'}</span>
+                              <span className="block text-sm text-black tabular-nums mt-0.5">{bd.tax_id ? `TAX ID: ${bd.tax_id}` : '–'}</span>
                             </td>
                             <td className="px-4 py-3 text-gray-600">
-                              <span className="block max-w-[220px] text-xs leading-snug line-clamp-2" title={bd.tax_customer_address || ''}>{bd.tax_customer_address || '–'}</span>
+                              <span className="block max-w-[260px] text-sm leading-snug" title={bd.tax_customer_address || ''}>{bd.tax_customer_address || '–'}</span>
                             </td>
                             <td className="px-4 py-3 text-gray-700 tabular-nums text-right whitespace-nowrap">฿{(() => { const t = Number(o.total_amount || 0); const b = t ? t / 1.07 : 0; return b.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); })()}</td>
                             <td className="px-4 py-3 text-gray-700 tabular-nums text-right whitespace-nowrap">฿{(() => { const t = Number(o.total_amount || 0); const b = t ? t / 1.07 : 0; return (t - b).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); })()}</td>
                             <td className="px-4 py-3 text-gray-700 tabular-nums text-right whitespace-nowrap">฿{Number((o as any).shipping_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                             <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums text-right whitespace-nowrap">฿{Number(o.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                            <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
+                            <td className="px-4 py-3 text-gray-500 text-sm whitespace-nowrap [&>div>div]:text-sm">
                               {bd.account_confirmed_tax_at ? (
                                 <DateTimeStacked text={formatDateTime(bd.account_confirmed_tax_at)} />
                               ) : (
@@ -1723,13 +1746,13 @@ export default function Account() {
                               )}
                             </td>
                             <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                              <div className="flex flex-col gap-1.5 w-40">
+                              <div className="flex flex-col gap-1.5 w-36">
                                 {/* คำขอที่ถูกปิดเพราะยกเลิกบิล — บล็อคการออกใบกำกับภาษี */}
                                 {!isClosedRequest && (
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); viewTaxInvoice(o) }}
-                                  className="w-full px-3 py-1.5 bg-sky-500 text-white rounded-lg hover:bg-sky-600 text-sm font-medium transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                                  className="w-full px-2 py-1.5 bg-sky-500 text-white rounded-lg hover:bg-sky-600 text-xs font-medium transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
                                 >
                                   <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                                   ออกใบกำกับภาษี
@@ -1738,7 +1761,7 @@ export default function Account() {
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); openSlipPopup(o.id, o.bill_no) }}
-                                  className="w-full px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm font-medium transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                                  className="w-full px-2 py-1.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-xs font-medium transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
                                 >
                                   <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                                   ดูสลิปโอน

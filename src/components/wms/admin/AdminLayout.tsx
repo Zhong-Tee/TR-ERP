@@ -50,6 +50,7 @@ export default function AdminLayout() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_requisitions' }, () => debouncedLoadTabCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_notifications' }, () => debouncedLoadTabCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_return_requisitions' }, () => debouncedLoadTabCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_borrow_requisitions' }, () => debouncedLoadTabCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => debouncedLoadTabCounts())
       .subscribe()
     return () => { supabase.removeChannel(channel) }
@@ -103,7 +104,7 @@ export default function AdminLayout() {
                 >
                   {item.label}
                   {showBadge && (
-                    <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.3rem] h-5 px-1.5 rounded-full text-xs font-bold bg-red-500 text-white">
+                    <span title={item.key === WMS_MENU_KEYS.BORROW_REQUISITION ? 'จำนวนใบยืมเลยกำหนด' : undefined} className="ml-1.5 inline-flex items-center justify-center min-w-[1.3rem] h-5 px-1.5 rounded-full text-xs font-bold bg-red-500 text-white">
                       {count > 99 ? '99+' : count}
                     </span>
                   )}

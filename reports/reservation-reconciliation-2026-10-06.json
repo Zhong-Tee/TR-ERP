@@ -1,0 +1,221 @@
+{
+  "corrected": [
+    {
+      "batch_id": "a0ac385b-8e51-4f7b-b403-a3c1c8996cab",
+      "product_id": "726f60c0-4e67-45ff-b771-846e892a7bb5",
+      "product_code": "110000050",
+      "old_reserved": "2.00",
+      "new_reserved": "0",
+      "released_qty": "2.00"
+    },
+    {
+      "batch_id": "a0ac385b-8e51-4f7b-b403-a3c1c8996cab",
+      "product_id": "eebe7920-6337-4620-9e18-b7ce37286bf4",
+      "product_code": "110000008",
+      "old_reserved": "1.00",
+      "new_reserved": "0",
+      "released_qty": "1.00"
+    }
+  ],
+  "physicalBefore": [
+    {
+      "product_id": "726f60c0-4e67-45ff-b771-846e892a7bb5",
+      "on_hand": "186.00",
+      "safety_stock": "0.00",
+      "lots": "186.00"
+    },
+    {
+      "product_id": "eebe7920-6337-4620-9e18-b7ce37286bf4",
+      "on_hand": "199.00",
+      "safety_stock": "0.00",
+      "lots": "199.00"
+    }
+  ],
+  "physicalAfter": [
+    {
+      "product_id": "726f60c0-4e67-45ff-b771-846e892a7bb5",
+      "on_hand": "186.00",
+      "safety_stock": "0.00",
+      "lots": "186.00"
+    },
+    {
+      "product_id": "eebe7920-6337-4620-9e18-b7ce37286bf4",
+      "on_hand": "199.00",
+      "safety_stock": "0.00",
+      "lots": "199.00"
+    }
+  ],
+  "preserved": [
+    {
+      "product_id": "bfcf71b7-e9c0-45f2-b1c1-1751b2adeb55",
+      "product_code": "990000166",
+      "product_name": "ฟิล์ม A (ขาว) เครื่อง Funsun",
+      "unit_name": "ม้วน",
+      "on_hand": "0.00",
+      "reserved": "3.00",
+      "document_reserved": "0",
+      "wms_reserved": "0",
+      "borrow_reserved": "0",
+      "linked_reserved": "0",
+      "difference": "3.00",
+      "completed_wms_count": "0",
+      "uncertain_count": "0",
+      "classification": "unexplained_excess",
+      "jsonb_build_object": {
+        "wms": [
+          {
+            "qty": 3,
+            "status": "out_of_stock",
+            "wms_id": "855ae8a6-f886-4ae5-8c00-18ecf68fca49",
+            "uncertain": 0,
+            "work_order": "REQ-20260903-001",
+            "net_deducted": 0
+          }
+        ],
+        "wms_reserved": 0,
+        "borrow_reserved": 0,
+        "document_reserved": 0
+      }
+    },
+    {
+      "product_id": "bb836985-ec7c-4bb4-a704-3bbd2d977d67",
+      "product_code": "990000167",
+      "product_name": "ฟิล์ม B (ฟ้า) เครื่อง Funsun",
+      "unit_name": "ม้วน",
+      "on_hand": "0.00",
+      "reserved": "3.00",
+      "document_reserved": "0",
+      "wms_reserved": "0",
+      "borrow_reserved": "0",
+      "linked_reserved": "0",
+      "difference": "3.00",
+      "completed_wms_count": "0",
+      "uncertain_count": "0",
+      "classification": "unexplained_excess",
+      "jsonb_build_object": {
+        "wms": [
+          {
+            "qty": 3,
+            "status": "out_of_stock",
+            "wms_id": "345e1ed3-db8d-4e6f-afa0-25615f05e63d",
+            "uncertain": 0,
+            "work_order": "REQ-20260903-001",
+            "net_deducted": 0
+          }
+        ],
+        "wms_reserved": 0,
+        "borrow_reserved": 0,
+        "document_reserved": 0
+      }
+    },
+    {
+      "product_id": "d0dc5ac6-a339-4fd3-8ea7-ac665b964547",
+      "product_code": "990000179",
+      "product_name": "ถุงCTTเล็กOPP TR 8x12cm.",
+      "unit_name": "ใบ",
+      "on_hand": "17424.00",
+      "reserved": "1.00",
+      "document_reserved": "0",
+      "wms_reserved": "0",
+      "borrow_reserved": "0",
+      "linked_reserved": "0",
+      "difference": "1.00",
+      "completed_wms_count": "0",
+      "uncertain_count": "0",
+      "classification": "unexplained_excess",
+      "jsonb_build_object": {
+        "wms": [
+          {
+            "qty": 1,
+            "status": "out_of_stock",
+            "wms_id": "2a9d48c8-76b6-4f5d-8173-e547bb2d5b30",
+            "uncertain": 0,
+            "work_order": "REQ-20260907-006",
+            "net_deducted": 0
+          }
+        ],
+        "wms_reserved": 0,
+        "borrow_reserved": 0,
+        "document_reserved": 0
+      }
+    },
+    {
+      "product_id": "a6b87308-e942-40a9-b6b4-467bc9927455",
+      "product_code": "990000180",
+      "product_name": "ถุงสติกเกอร์ OPP TR 11x22cm.",
+      "unit_name": "ใบ",
+      "on_hand": "10150.00",
+      "reserved": "1451.00",
+      "document_reserved": "0",
+      "wms_reserved": "0",
+      "borrow_reserved": "0",
+      "linked_reserved": "0",
+      "difference": "1451.00",
+      "completed_wms_count": "0",
+      "uncertain_count": "0",
+      "classification": "unexplained_excess",
+      "jsonb_build_object": {
+        "wms": [
+          {
+            "qty": 870,
+            "status": "out_of_stock",
+            "wms_id": "f62ce086-9d23-411c-a6a2-5b99cf140b47",
+            "uncertain": 0,
+            "work_order": "REQ-20260908-002",
+            "net_deducted": 0
+          },
+          {
+            "qty": 1450,
+            "status": "out_of_stock",
+            "wms_id": "468e6078-fe88-447a-877e-c28aa3dbabc0",
+            "uncertain": 0,
+            "work_order": "REQ-20260917-001",
+            "net_deducted": 0
+          },
+          {
+            "qty": 1,
+            "status": "out_of_stock",
+            "wms_id": "d0f365d7-239f-406b-9b4f-115ae56485b7",
+            "uncertain": 0,
+            "work_order": "REQ-20260907-005",
+            "net_deducted": 0
+          }
+        ],
+        "wms_reserved": 0,
+        "borrow_reserved": 0,
+        "document_reserved": 0
+      }
+    },
+    {
+      "product_id": "0a877e58-98a5-4241-b5cc-47f29d28db4d",
+      "product_code": "990000181",
+      "product_name": "ถุงสติกเกอร์ OPP TR 15x22cm.",
+      "unit_name": "ใบ",
+      "on_hand": "2100.00",
+      "reserved": "1.00",
+      "document_reserved": "0",
+      "wms_reserved": "0",
+      "borrow_reserved": "0",
+      "linked_reserved": "0",
+      "difference": "1.00",
+      "completed_wms_count": "0",
+      "uncertain_count": "0",
+      "classification": "unexplained_excess",
+      "jsonb_build_object": {
+        "wms": [
+          {
+            "qty": 1,
+            "status": "out_of_stock",
+            "wms_id": "e2394f32-f9ae-4908-8270-eb4890ba75b6",
+            "uncertain": 0,
+            "work_order": "REQ-20260907-005",
+            "net_deducted": 0
+          }
+        ],
+        "wms_reserved": 0,
+        "borrow_reserved": 0,
+        "document_reserved": 0
+      }
+    }
+  ]
+}

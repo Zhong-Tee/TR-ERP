@@ -6,7 +6,7 @@ import { PREBILL_STATUS_LABEL, PREBILL_TYPE_LABEL } from '../../types/prebill'
 import Modal from '../ui/Modal'
 import PreBillForm from './PreBillForm'
 
-type View = 'mine' | 'pending' | 'approved' | 'converted' | 'expired' | 'cancelled'
+type View = 'draft' | 'mine' | 'pending' | 'approved' | 'converted' | 'expired' | 'cancelled'
 type Props = {
   onOpenBill: (document: PreBillDocument) => void
   onViewConvertedOrder: (document: PreBillDocument) => void
@@ -70,6 +70,7 @@ export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder, pen
   }, [documentType, load])
 
   const counts = useMemo(() => ({
+    draft: documents.filter(d => d.valid_until >= today() && d.status === 'draft').length,
     mine: documents.filter(d => d.valid_until >= today() && ['draft','active','rejected'].includes(d.status)).length,
     pending: documents.filter(d => d.valid_until >= today() && d.status === 'pending_discount').length,
     approved: documents.filter(d => d.valid_until >= today() && d.status === 'approved').length,
@@ -82,6 +83,7 @@ export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder, pen
     const isExpired = doc.valid_until < today() && !['converted','cancelled'].includes(doc.status)
     if (view === 'expired' && !isExpired) return false
     if (view !== 'expired' && isExpired) return false
+    if (view === 'draft' && doc.status !== 'draft') return false
     if (view === 'mine' && !['draft','active','rejected'].includes(doc.status)) return false
     if (view === 'pending' && doc.status !== 'pending_discount') return false
     if (view === 'approved' && doc.status !== 'approved') return false
@@ -180,11 +182,12 @@ export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder, pen
         <button onClick={() => setEditing('new')} className="rounded-xl bg-blue-600 px-5 py-2.5 font-bold text-white">+ สร้าง{PREBILL_TYPE_LABEL[documentType]}</button>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 rounded-2xl bg-white p-4 shadow-sm md:grid-cols-2 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-3 rounded-2xl bg-white p-4 shadow-sm md:grid-cols-2 lg:grid-cols-6">
         <input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="ค้นหาเลขเอกสาร ลูกค้า สินค้า..." className="rounded-xl border p-2.5 lg:col-span-2" />
         {['superadmin', 'sales-tr'].includes(user?.role || '') && <select value={ownerFilter} onChange={e => setOwnerFilter(e.target.value)} className="rounded-xl border p-2.5 bg-white"><option value="">ผู้เปิดเอกสารทั้งหมด</option>{users.map(u => <option key={u.id} value={u.id}>{u.seller_name || u.username || u.email}</option>)}</select>}
         <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="rounded-xl border p-2.5" />
         <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="rounded-xl border p-2.5" />
+        <button type="button" aria-pressed={view === 'draft'} onClick={() => setView(view === 'draft' ? 'mine' : 'draft')} className={`rounded-xl border px-4 py-2.5 font-bold ${view === 'draft' ? 'border-blue-600 bg-blue-50 text-blue-700' : 'bg-white text-slate-600'}`}>ร่าง ({counts.draft})</button>
       </div>
 
       {view === 'cancelled' && user?.role === 'superadmin' && (

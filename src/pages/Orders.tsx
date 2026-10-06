@@ -8,6 +8,8 @@ import IssueBoard from '../components/order/IssueBoard'
 import ClaimReqOrdersTab from '../components/order/ClaimReqOrdersTab'
 import RefundReturnList from '../components/order/RefundReturnList'
 import PreBillWorkspace from '../components/order/PreBillWorkspace'
+import { useShippingConversionCount } from '../hooks/useShippingConversionCount'
+import ShippingConversionPanel from '../components/order/ShippingConversionPanel'
 import OrderDetailView from '../components/order/OrderDetailView'
 import Modal from '../components/ui/Modal'
 import { Order, OrderStatus } from '../types'
@@ -26,6 +28,7 @@ import { getBangkokCalendarDayUtcBoundsISO } from '../lib/utils'
 import { cancelOrderWithAudit, isZeroValueOrder } from '../lib/orderCancellation'
 
 type Tab =
+  | 'shipping-conversion'
   | 'all'
   | 'prebill'
   | 'create'
@@ -42,7 +45,7 @@ type Tab =
 
 type FailureArchiveFilter = 'active' | 'archived' | 'all'
 
-const ALL_TABS: Tab[] = ['all', 'prebill', 'create', 'claim-req', 'waiting', 'data-error', 'complete', 'verified', 'refund-return', 'confirm', 'shipped', 'cancelled', 'issue']
+const ALL_TABS: Tab[] = ['all', 'prebill', 'shipping-conversion', 'create', 'claim-req', 'waiting', 'data-error', 'complete', 'verified', 'refund-return', 'confirm', 'shipped', 'cancelled', 'issue']
 
 /** แท็บที่ sales-tr มี dropdown + ปุ่มเฉพาะฉัน กรอง admin_user */
 const SALES_TR_FILTER_TABS: Tab[] = ['all', 'waiting', 'data-error', 'complete', 'verified', 'shipped', 'issue', 'claim-req']
@@ -77,6 +80,7 @@ function getDefaultStatusFilterForTab(tab: Tab): OrderStatus | '' {
 export default function Orders() {
   const { hasAccess, menuAccessLoading } = useMenuAccess()
   const { user } = useAuthContext()
+  const shippingConversionCount = useShippingConversionCount()
   const [activeTab, setActiveTab] = useState<Tab>('prebill')
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
   const [prebillDetailOrder, setPrebillDetailOrder] = useState<Order | null>(null)
@@ -734,6 +738,7 @@ export default function Orders() {
               { id: 'all', label: 'ทั้งหมด' },
               { id: 'prebill', label: `QT/PC${prebillPendingCount > 0 ? ` (${prebillPendingCount})` : ''}` },
               { id: 'create', label: 'สร้าง/แก้ไข' },
+              { id: 'shipping-conversion', label: 'เปลี่ยนเป็นจัดส่ง', count: shippingConversionCount, countColor: 'text-amber-600' },
               { id: 'claim-req', label: 'บิลเคลม' },
               { id: 'waiting', label: `รอลงข้อมูล (${waitingCount})` },
               { id: 'data-error', label: `ลงข้อมูลผิด (${dataErrorCount})` },
@@ -780,7 +785,7 @@ export default function Orders() {
         </div>
 
         {/* Search and Filter - แสดงเมื่อไม่ใช่แท็บสร้าง/แก้ไข */}
-        {activeTab !== 'create' && activeTab !== 'prebill' && activeTab !== 'confirm' && activeTab !== 'claim-req' && activeTab !== 'refund-return' && (
+        {activeTab !== 'shipping-conversion' && activeTab !== 'create' && activeTab !== 'prebill' && activeTab !== 'confirm' && activeTab !== 'claim-req' && activeTab !== 'refund-return' && (
           <div className="w-full px-4 sm:px-6 lg:px-8 py-3 bg-surface-100 border-t border-surface-200">
             <div className="flex flex-wrap gap-3">
               <div className="relative flex-1 min-w-[200px]">
@@ -962,7 +967,7 @@ export default function Orders() {
         className="w-full pb-6 min-h-0 pt-4"
         aria-label="เนื้อหาออเดอร์"
       >
-        {activeTab === 'prebill' ? (
+        {activeTab === 'shipping-conversion' ? (<ShippingConversionPanel />) : activeTab === 'prebill' ? (
           <PreBillWorkspace
             onOpenBill={handleOpenPreBill}
             onViewConvertedOrder={handleViewConvertedPreBillOrder}

@@ -735,6 +735,7 @@ export default function Settings() {
     // ── ออเดอร์ ──
     { key: 'orders', label: 'ออเดอร์', group: '' },
     { key: 'orders-all', label: 'ทั้งหมด', group: 'orders' },
+    { key: 'orders-shipping-conversion', label: 'เปลี่ยนเป็นจัดส่ง', group: 'orders' },
     { key: 'orders-prebill', label: 'QT/PC', group: 'orders' },
     { key: 'orders-create', label: 'สร้าง/แก้ไข', group: 'orders' },
     { key: 'orders-claim-req', label: 'บิลเคลม (REQ)', group: 'orders' },
@@ -804,6 +805,7 @@ export default function Settings() {
     { key: 'account-tax-invoice', label: 'ขอใบกำกับภาษี', group: 'account' },
     { key: 'account-approvals', label: 'รายการอนุมัติ', group: 'account' },
     { key: 'account-ecommerce', label: 'Ecommerce', group: 'account' },
+    { key: 'account-zero-shipping', label: 'อนุมัติค่าส่ง 0', group: 'account' },
     { key: 'account-promotion-audit', label: 'ตรวจโปรโมชั่น', group: 'account' },
     { key: 'account-payroll', label: 'เงินเดือน', group: 'account' },
     { key: 'account-trial-balance', label: 'งบต้นทุนขาย', group: 'account' },

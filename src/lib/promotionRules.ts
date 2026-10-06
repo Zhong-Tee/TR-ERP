@@ -16,6 +16,7 @@ export type PromotionSelector =
 export type PromotionRuleGroup = {
   id: string
   quantity: number
+  quantity_at_least?: boolean
   options: PromotionSelector[]
 }
 
@@ -103,6 +104,7 @@ function scaledGroups(groups: PromotionRuleGroup[], count: number): PromotionRul
 function allocateGroups(
   source: PromotionOrderItem[],
   groups: PromotionRuleGroup[],
+  includeExtraQuantity = false,
 ): { passed: boolean; subtotal: number; missing: string[] } {
   if (!groups.length) return { passed: true, subtotal: 0, missing: [] }
   type Edge = { to: number; reverse: number; capacity: number; cost: number }
@@ -134,11 +136,26 @@ function allocateGroups(
   const groupDemandEdges = groups.map((group, groupIndex) =>
     addEdge(firstGroupNode + groupIndex, sinkNode, positiveInt(group.quantity), 0),
   )
-  const totalDemand = groups.reduce((sum, group) => sum + positiveInt(group.quantity), 0)
+  let totalDemand = groups.reduce((sum, group) => sum + positiveInt(group.quantity), 0)
   let totalFlow = 0
   let totalCost = 0
+  let expanded = false
 
-  while (totalFlow < totalDemand) {
+  while (true) {
+    // First satisfy every group's minimum. Only then allow extra matching
+    // items into the checked groups, using the same graph to prevent reuse.
+    if (totalFlow === totalDemand) {
+      if (!includeExtraQuantity || expanded) break
+      expanded = true
+      const availableQuantity = source.reduce((sum, item) => sum + Math.max(0, Math.floor(Number(item.quantity) || 0)), 0)
+      groups.forEach((group, index) => {
+        if (group.quantity_at_least === true) {
+          groupDemandEdges[index].capacity += availableQuantity
+          totalDemand += availableQuantity
+        }
+      })
+      if (totalFlow === totalDemand) break
+    }
     const distance = Array(graph.length).fill(Number.POSITIVE_INFINITY) as number[]
     const previousNode = Array(graph.length).fill(-1) as number[]
     const previousEdge = Array(graph.length).fill(-1) as number[]
@@ -175,7 +192,7 @@ function allocateGroups(
   }
 
   const missing = groups.flatMap((group, index) => {
-    const shortage = groupDemandEdges[index].capacity
+    const shortage = expanded ? 0 : groupDemandEdges[index].capacity
     return shortage > 0 ? [`กลุ่ม ${group.id || '-'} ขาด ${shortage} ชิ้น`] : []
   })
   return { passed: missing.length === 0, subtotal: money(-totalCost / 100), missing }
@@ -247,7 +264,7 @@ export function evaluatePromotion(
       }
     } else if (promotion.rule_type === 'quantity_fixed' || promotion.rule_type === 'quantity_percent') {
       if (!conditionGroups.length) messages.push('ยังไม่ได้กำหนดกลุ่มสินค้าฝั่งซื้อ')
-      const allocation = allocateGroups(paidItems, conditionGroups)
+      const allocation = allocateGroups(paidItems, conditionGroups, promotion.rule_type === 'quantity_percent')
       if (conditionGroups.length && !allocation.passed) messages.push(...allocation.missing)
       else {
         const discountValue = Math.max(0, Number(config.discount_value) || 0)

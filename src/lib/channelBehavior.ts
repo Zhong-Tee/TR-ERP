@@ -10,7 +10,7 @@ export const CHANNELS_COMPLETE_TO_VERIFIED = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', '
 export const CHANNELS_MANUAL_PRICE = ['SPTR', 'FSPTR', 'TTTR', 'LZTR']
 
 /** ช่องทางที่ปิดการกรอกที่อยู่ (marketplace ใบปะหน้ามาจากแพลตฟอร์ม) */
-export const CHANNELS_BLOCK_ADDRESS = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP']
+export const CHANNELS_BLOCK_ADDRESS = ['SPTR', 'FSPTR', 'TTTR', 'LZTR']
 
 /** ช่องทางที่แสดงฟิลด์ "เลขคำสั่งซื้อ" (เลขออเดอร์ของแพลตฟอร์ม) */
 export const CHANNELS_SHOW_ORDER_NO = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'PGTR', 'WY']
@@ -48,4 +48,15 @@ export function isSelfPickupBill(
 ): boolean {
   if (fulfillmentMethod) return fulfillmentMethod === 'self_pickup'
   return isSelfPickupChannel(channelCode, channelMetadata)
+}
+
+/** A changed sales channel gets its own default; conversions retain the stored method on the same channel. */
+export function resolveBillFulfillmentMethod(
+  storedMethod: 'self_pickup' | 'shipping' | null | undefined,
+  channelCode: string | null | undefined,
+  originalChannelCode: string | null | undefined,
+  channelMetadata?: SelfPickupChannelMetadata,
+): 'self_pickup' | 'shipping' {
+  const sameChannel = !!originalChannelCode && String(originalChannelCode).trim().toUpperCase() === String(channelCode || '').trim().toUpperCase()
+  return isSelfPickupBill(sameChannel ? storedMethod : null, channelCode, channelMetadata) ? 'self_pickup' : 'shipping'
 }

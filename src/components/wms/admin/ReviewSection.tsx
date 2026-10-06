@@ -12,7 +12,8 @@ import {
 import { useWmsModal } from '../useWmsModal'
 import { fetchPlanDeptSettings, type PlanDeptSettings } from '../../../lib/planPickingDepartments'
 import { enrichWmsRowsWithPickingDepartment, getDepartmentOptionsForWmsRows } from '../../../lib/wmsPickingDepartmentEnrichment'
-import { fetchAllSupabasePages } from '../../../lib/supabasePagination'
+import { fetchAllSupabasePages, fetchAllSupabasePagesResult } from '../../../lib/supabasePagination'
+import { selectReviewScopes } from '../../../lib/wmsReviewQueue'
 import {
   consolidateCondoStampWmsDisplayRows,
   getWmsConsolidatedRowIds,
@@ -21,6 +22,16 @@ import {
 } from '../../../lib/wmsCondoStampConsolidation'
 
 const REQUISITION_SCOPE_PREFIX = 'req:'
+const fetchReviewMetadata = async (table: string, columns: string, key: string, ids: string[]) => {
+  const data: any[] = []
+  for (let offset = 0; offset < ids.length; offset += 100) {
+    const result = await fetchAllSupabasePagesResult<any>((from, to) =>
+      supabase.from(table).select(columns).in(key, ids.slice(offset, offset + 100)).order('id').range(from, to))
+    if (result.error) return { data, error: result.error }
+    data.push(...(result.data || []))
+  }
+  return { data, error: null }
+}
 const isRequisitionScope = (scopeId: string) => scopeId.startsWith(REQUISITION_SCOPE_PREFIX)
 const requisitionNumberFromScope = (scopeId: string) => scopeId.slice(REQUISITION_SCOPE_PREFIX.length)
 const reviewScopeFromRow = (row: any): string => {
@@ -57,13 +68,13 @@ const displayPickingDepartmentLabel = (dept: string): string => {
 }
 
 export default function ReviewSection() {
-  const [reviewDate, setReviewDate] = useState('')
+  const [reviewDate, setReviewDate] = useState(() => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Bangkok' }))
   const [reviewOrderSelect, setReviewOrderSelect] = useState('') // work_order_id
   const [reviewOrderSearch, setReviewOrderSearch] = useState('')
   const [reviewOrderActualId, setReviewOrderActualId] = useState('') // work_order_id
   const [orderOptions, setOrderOptions] = useState<Array<{ value: string; label: string; hasUnchecked?: boolean }>>([])
   const [rowsByWorkOrder, setRowsByWorkOrder] = useState<Record<string, any[]>>({})
-  const [reviewPendingOrders, setReviewPendingOrders] = useState<Array<{ id: string; label: string; total: number; unchecked: number }>>([])
+  const [reviewPendingOrders, setReviewPendingOrders] = useState<Array<{ id: string; label: string; total: number; unchecked: number; pending: number; date: string }>>([])
   const [inspectItems, setInspectItems] = useState<any[]>([])
   const [currentTab, setCurrentTab] = useState('all')
   const [showCounter, setShowCounter] = useState(false)
@@ -93,16 +104,7 @@ export default function ReviewSection() {
     return matches.length === 1 ? matches[0].value : ''
   }, [filteredOrderOptions, reviewOrderSelect])
   useEffect(() => {
-    const today = new Date().toISOString().split('T')[0]
-    setReviewDate(today)
-  }, [])
-
-  useEffect(() => {
-    if (reviewDate) {
-      loadReviewDropdown()
-    } else {
-      resetReviewUI()
-    }
+    loadReviewDropdown()
   }, [reviewDate])
 
   const resetReviewUI = () => {
@@ -120,10 +122,8 @@ export default function ReviewSection() {
     const sourceIds = [...new Set(rows.map((r) => r.source_order_id).filter(Boolean))]
     if (sourceIds.length === 0) return rows
 
-    const { data: releasedOrders } = await supabase
-      .from('or_orders')
-      .select('id, bill_no, work_order_name, plan_released_from_work_order')
-      .in('id', sourceIds as string[])
+    const { data: releasedOrders } = await fetchReviewMetadata('or_orders',
+      'id, bill_no, work_order_name, plan_released_from_work_order', 'id', sourceIds as string[])
 
     const sourceOrderMap = new Map(
       (releasedOrders || []).map((order: any) => [String(order.id), order])
@@ -151,14 +151,8 @@ export default function ReviewSection() {
     if (!requisitionNumbers.length) return rows
 
     const [requisitionsResult, itemsResult] = await Promise.all([
-      supabase
-        .from('wms_requisitions')
-        .select('requisition_id, created_by, notes, requester:us_users!created_by(username)')
-        .in('requisition_id', requisitionNumbers),
-      supabase
-        .from('wms_requisition_items')
-        .select('requisition_id, product_code, requisition_topic, item_note')
-        .in('requisition_id', requisitionNumbers),
+      fetchReviewMetadata('wms_requisitions', 'requisition_id, created_by, notes, requester:us_users!created_by(username)', 'requisition_id', requisitionNumbers),
+      fetchReviewMetadata('wms_requisition_items', 'requisition_id, product_code, requisition_topic, item_note', 'requisition_id', requisitionNumbers),
     ])
     if (requisitionsResult.error || itemsResult.error) {
       console.error('enrichRequisitionReviewRows error:', requisitionsResult.error || itemsResult.error)
@@ -190,7 +184,6 @@ export default function ReviewSection() {
 
   const loadReviewDropdown = async (skipReset = true, showLoading = true) => {
     if (!skipReset) resetReviewUI()
-    if (!reviewDate) return
     const requestId = ++reviewLoadRequestRef.current
     if (showLoading) setReviewDropdownLoading(true)
 
@@ -203,8 +196,6 @@ export default function ReviewSection() {
             'id, work_order_id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released, stock_action'
           )
           .or(WMS_REVIEW_INCLUDE_CANCELLED_RECALLED_OR)
-          .gte('created_at', reviewDate + 'T00:00:00')
-          .lte('created_at', reviewDate + 'T23:59:59')
           .order('created_at', { ascending: true })
           .order('id', { ascending: true })
           .range(from, to)
@@ -246,10 +237,7 @@ export default function ReviewSection() {
     const workOrderIds = Object.keys(groupedByWo).filter((scopeId) => !isRequisitionScope(scopeId))
     const woNameById: Record<string, string> = {}
     if (workOrderIds.length > 0) {
-      const { data: workOrders } = await supabase
-        .from('or_work_orders')
-        .select('id, work_order_name')
-        .in('id', workOrderIds)
+      const { data: workOrders } = await fetchReviewMetadata('or_work_orders', 'id, work_order_name', 'id', workOrderIds)
       ;(workOrders || []).forEach((wo: any) => {
         const id = String(wo.id || '')
         const name = String(wo.work_order_name || '').trim()
@@ -279,12 +267,13 @@ export default function ReviewSection() {
         pending,
         shelfPending,
         uncheckedInspect,
+        date: first.created_at ? new Date(first.created_at).toLocaleDateString('sv-SE', { timeZone: 'Asia/Bangkok' }) : '',
       }
     })
 
     // ใบงานที่พร้อมเข้าเมนูตรวจ: ต้องไม่มี pending
     // หมายเหตุ: รวมทั้งใบงานที่ "ตรวจเสร็จแล้ว" เพื่อให้เปิดมาเช็คซ้ำได้
-    const completed = grouped.filter((o) => o.pending === 0)
+    const { ready: completed, backlog } = selectReviewScopes(grouped, groupedByWo, reviewDate)
     const currentSelected = reviewOrderSelect
 
     setRowsByWorkOrder(groupedByWo)
@@ -304,10 +293,8 @@ export default function ReviewSection() {
         : [{ value: '', label: 'ไม่มีใบงานหรือใบเบิกที่พร้อมตรวจ' }]
     )
     setReviewPendingOrders(
-      completed
-        .filter((o) => o.uncheckedInspect > 0)
-        .sort((a, b) => b.uncheckedInspect - a.uncheckedInspect)
-        .map((o) => ({ id: o.id, label: o.label, total: o.total, unchecked: o.uncheckedInspect }))
+      backlog
+        .map((o) => ({ id: o.id, label: o.label, total: o.total, unchecked: o.uncheckedInspect, pending: o.pending, date: o.date }))
     )
 
     if (currentSelected && completed.some((o) => o.id === currentSelected)) {
@@ -551,11 +538,11 @@ export default function ReviewSection() {
 
   return (
     <section>
-      <div className="flex justify-between items-end mb-6 flex-wrap gap-4">
-        <div className="w-full">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_auto] items-start mb-6 gap-4">
+        <div className={`min-w-0 ${showCounter ? 'row-start-2 lg:row-start-1' : ''}`}>
           <div className="flex w-full flex-wrap items-end gap-3">
             <div className="w-full sm:w-auto">
-              <label className="text-sm font-bold text-gray-700 uppercase block mb-1">1. เลือกวันที่</label>
+              <label className="text-sm font-bold text-gray-700 block mb-1">1. เลือกวันที่</label>
               <input
                 type="date"
                 value={reviewDate}
@@ -635,7 +622,7 @@ export default function ReviewSection() {
           </div>
         </div>
         {showCounter && (
-          <div className="bg-white px-4 py-3 rounded-2xl shadow-lg border-t-[3px] border-blue-600 text-center min-w-[180px] flex flex-col items-center gap-1.5">
+          <div className="row-start-1 lg:col-start-2 justify-self-end bg-white px-4 py-3 rounded-2xl shadow-lg border-t-[3px] border-blue-600 text-center min-w-[180px] max-w-[260px] flex flex-col items-center gap-1.5">
             <div className="text-[9px] font-black text-gray-400 uppercase tracking-widest">ตรวจแล้ว / ทั้งหมด</div>
             <div className="text-4xl leading-none font-black text-blue-600">
               {checkedCount} / {inspectItems.length}
@@ -652,7 +639,7 @@ export default function ReviewSection() {
       {reviewPendingOrders.length > 0 && (
         <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4">
           <h3 className="text-sm font-semibold text-red-800 mb-3 flex items-center gap-2">
-            รายการใบงานและใบเบิกที่ต้องตรวจเพิ่มเติม
+            รายการค้างตรวจทุกวัน (งานเก่าอยู่ก่อน)
             <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-red-600 text-white text-xs font-bold">
               {reviewPendingOrders.length}
             </span>
@@ -663,9 +650,12 @@ export default function ReviewSection() {
                 key={o.id}
                 type="button"
                 onClick={() => startInspection(o.id)}
+                disabled={reviewDropdownLoading || o.pending > 0}
+                title={o.pending > 0 ? `รอจัดสินค้าอีก ${o.pending} รายการก่อนเริ่มตรวจ` : 'เริ่มตรวจสินค้า'}
                 className="px-3 py-1.5 bg-white border border-red-300 rounded-lg text-sm text-red-700 hover:bg-red-100 font-medium transition-colors"
               >
-                {o.label} → ตรวจเพิ่ม ({o.unchecked}/{o.total})
+                {o.label} · {o.date || 'ไม่ระบุวันที่'} → ค้างตรวจ {o.unchecked}/{o.total}
+                {o.pending > 0 && ` · รอจัดอีก ${o.pending} รายการ`}
               </button>
             ))}
           </div>
@@ -725,7 +715,7 @@ export default function ReviewSection() {
         <div className="divide-y">
           {filtered.length === 0 ? (
             <div className="p-20 text-center text-gray-300 italic">
-              {inspectItems.length === 0 ? 'เลือกวันที่และใบงานหรือใบเบิกเพื่อเริ่มการตรวจสอบ' : `ไม่มีรายการในหมวดหมู่ ${currentTab.toUpperCase()}`}
+              {inspectItems.length === 0 ? 'เลือกงานค้างตรวจด้านบน หรือค้นหาใบงาน / ใบเบิกเพื่อเริ่มตรวจ' : `ไม่มีรายการในหมวดหมู่ ${currentTab.toUpperCase()}`}
             </div>
           ) : (
             filtered.map((item, idx) => {

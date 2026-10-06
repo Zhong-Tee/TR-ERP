@@ -56,6 +56,7 @@ export type OrderStatus =
   | 'ยกเลิก'
 
 export interface Order {
+  shipping_conversion_pending?: boolean
   id: string
   channel_code: string
   bill_no: string

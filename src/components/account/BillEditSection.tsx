@@ -1,3 +1,4 @@
+import { isSelfPickupBill } from '../../lib/channelBehavior'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import { fetchAllSupabasePages } from '../../lib/supabasePagination'
@@ -351,7 +352,7 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
     const payload = orderFormRef.current?.getLimitedEditPayload()
     if (!payload) return
     const channelCode = String(selectedOrder.channel_code || '').trim()
-    if (!CHANNELS_WITHOUT_EDITABLE_SHIPPING_ADDRESS.has(channelCode)) {
+    if (!isSelfPickupBill(selectedOrder.fulfillment_method, channelCode) && (selectedOrder.converted_from_self_pickup_at || !CHANNELS_WITHOUT_EDITABLE_SHIPPING_ADDRESS.has(channelCode))) {
       const missingShippingFields = getMissingCustomerShippingFields(payload.shipping, {
         requireRecipientName: CHANNELS_WITH_SEPARATE_RECIPIENT.has(channelCode),
       })

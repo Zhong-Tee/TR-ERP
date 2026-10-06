@@ -149,12 +149,14 @@ function RuleGroupsEditor({
   onChange,
   categories,
   products,
+  allowQuantityAtLeast = false,
 }: {
   title: string
   groups: PromotionRuleGroup[]
   onChange: (groups: PromotionRuleGroup[]) => void
   categories: string[]
   products: ProductOption[]
+  allowQuantityAtLeast?: boolean
 }) {
   const addGroup = () => onChange([
     ...groups,
@@ -183,6 +185,10 @@ function RuleGroupsEditor({
               จำนวน
               <input type="number" min="1" value={group.quantity} onChange={(e) => updateGroup(groupIndex, { ...group, quantity: Math.max(1, Number(e.target.value) || 1) })} className="mt-1 w-full rounded-lg border px-3 py-2" />
             </label>
+            {allowQuantityAtLeast && <label className="flex h-[42px] items-center gap-2 whitespace-nowrap text-sm font-medium text-slate-700">
+              <input type="checkbox" checked={group.quantity_at_least === true} onChange={(e) => updateGroup(groupIndex, { ...group, quantity_at_least: e.target.checked })} className="h-4 w-4 accent-blue-600" />
+              ขึ้นไป
+            </label>}
             <button type="button" onClick={() => onChange(groups.filter((_, i) => i !== groupIndex))} className="rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50">ลบกลุ่ม</button>
           </div>
           <div className="space-y-2">
@@ -507,11 +513,11 @@ export default function PromotionSettingsPanel() {
           <div><h4 className="mb-2 font-bold text-gray-800">ช่องทางที่ร่วมรายการ</h4><p className="mb-2 text-xs text-gray-500">ไม่เลือกช่องทาง = ใช้ได้ทุกช่องทาง</p><div className="grid gap-2 sm:grid-cols-2 md:grid-cols-4">{channels.map((channel) => <label key={channel.channel_code} className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm"><input type="checkbox" checked={(editor.channel_codes || []).includes(channel.channel_code)} onChange={(e) => setEditor({ ...editor, channel_codes: e.target.checked ? [...(editor.channel_codes || []), channel.channel_code] : (editor.channel_codes || []).filter((code) => code !== channel.channel_code) })} />{channel.channel_code} · {channel.channel_name}</label>)}</div></div>
           <div className="grid gap-4 md:grid-cols-3">
             {needsThreshold && <label className="text-sm font-semibold text-gray-700">ยอดซื้อขั้นต่ำ (บาท)<input type="number" min="0" value={config.threshold_amount ?? ''} onChange={(e) => updateConfig({ threshold_amount: Number(e.target.value) || 0 })} className="mt-1 w-full rounded-xl border px-3 py-2" /></label>}
-            {needsDiscount && <label className="text-sm font-semibold text-gray-700">{['spend_percent', 'quantity_percent'].includes(editor.rule_type) ? 'ส่วนลด (%)' : 'ส่วนลด (บาท)'}<input type="number" min="0" max={['spend_percent', 'quantity_percent'].includes(editor.rule_type) ? 100 : undefined} value={config.discount_value ?? ''} onChange={(e) => updateConfig({ discount_value: Number(e.target.value) || 0 })} className="mt-1 w-full rounded-xl border px-3 py-2" /><span className="mt-1 block text-xs font-normal text-gray-500">ใส่ 0 ได้เมื่อเลือก “ฟรีค่าส่ง”</span>{editor.rule_type === 'quantity_percent' && <span className="mt-1 block text-xs font-normal text-gray-500">คิดส่วนลดจากมูลค่าสินค้าที่ครบชุดตามเงื่อนไข ตามจำนวนครั้งที่ใช้โปรโมชั่น</span>}</label>}
+            {needsDiscount && <label className="text-sm font-semibold text-gray-700">{['spend_percent', 'quantity_percent'].includes(editor.rule_type) ? 'ส่วนลด (%)' : 'ส่วนลด (บาท)'}<input type="number" min="0" max={['spend_percent', 'quantity_percent'].includes(editor.rule_type) ? 100 : undefined} value={config.discount_value ?? ''} onChange={(e) => updateConfig({ discount_value: Number(e.target.value) || 0 })} className="mt-1 w-full rounded-xl border px-3 py-2" /><span className="mt-1 block text-xs font-normal text-gray-500">ใส่ 0 ได้เมื่อเลือก “ฟรีค่าส่ง”</span>{editor.rule_type === 'quantity_percent' && <span className="mt-1 block text-xs font-normal text-gray-500">คิดส่วนลดจากสินค้าที่ครบชุดตามจำนวนครั้งที่ใช้โปรโมชั่น หากติ๊ก “ขึ้นไป” จะรวมชิ้นส่วนเกินที่ตรงเงื่อนไขด้วย</span>}</label>}
             {editor.rule_type === 'bundle_fixed_price' && <label className="text-sm font-semibold text-gray-700">ราคาเซ็ต (บาท)<input type="text" inputMode="decimal" value={formatAmount(config.set_price)} onChange={(e) => updateConfig({ set_price: parseAmount(e.target.value) })} placeholder="0" className="mt-1 w-full rounded-xl border px-3 py-2 text-right tabular-nums" /></label>}
             <label className="text-sm font-semibold text-gray-700">จำนวนโปรโมชั่นต่อบิล<input type="number" inputMode="numeric" min="1" step="1" value={config.max_applications ?? 1} onWheel={(event) => event.currentTarget.blur()} onChange={(e) => updateConfig({ max_applications: Math.max(1, Math.floor(Number(e.target.value) || 1)) })} className="mt-1 w-full appearance-none rounded-xl border px-3 py-2 text-right tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" /></label>
           </div>
-          {needsConditions && <RuleGroupsEditor title="สินค้าฝั่งซื้อ" groups={config.condition_groups || []} onChange={(condition_groups) => updateConfig({ condition_groups })} categories={categories} products={products} />}
+          {needsConditions && <RuleGroupsEditor title="สินค้าฝั่งซื้อ" groups={config.condition_groups || []} onChange={(condition_groups) => updateConfig({ condition_groups })} categories={categories} products={products} allowQuantityAtLeast={['quantity_fixed', 'quantity_percent'].includes(editor.rule_type)} />}
           {needsRewards && <RuleGroupsEditor title="ของแถม" groups={config.reward_groups || []} onChange={(reward_groups) => updateConfig({ reward_groups })} categories={categories} products={products} />}
           {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
           <div className="flex justify-end gap-3 border-t pt-4"><button type="button" onClick={() => setEditor(null)} disabled={saving} className="rounded-xl border px-4 py-2 font-semibold hover:bg-gray-50">ยกเลิก</button><button type="button" onClick={save} disabled={saving} className="rounded-xl bg-blue-600 px-5 py-2 font-semibold text-white hover:bg-blue-700 disabled:opacity-50">{saving ? 'กำลังบันทึก...' : 'บันทึกโปรโมชั่น'}</button></div>

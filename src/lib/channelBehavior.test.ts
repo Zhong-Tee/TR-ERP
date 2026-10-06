@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isSelfPickupBill, isSelfPickupChannel } from './channelBehavior'
+import { isSelfPickupBill, isSelfPickupChannel, resolveBillFulfillmentMethod } from './channelBehavior'
 
 describe('isSelfPickupChannel', () => {
   it('recognizes SHOPP regardless of surrounding whitespace or case', () => {
@@ -33,5 +33,23 @@ describe('isSelfPickupBill', () => {
 
   it('uses the channel default before a bill-level method exists', () => {
     expect(isSelfPickupBill(undefined, 'SHOPP', metadata)).toBe(true)
+  })
+})
+
+describe('resolveBillFulfillmentMethod', () => {
+  const metadata = { SHOP: { is_self_pickup: false }, SHOPP: { is_self_pickup: true }, 'OATR-P': { is_self_pickup: true } }
+  it('uses the new channel default when changing a bill channel', () => {
+    expect(resolveBillFulfillmentMethod('shipping', 'OATR-P', 'SHOP', metadata)).toBe('self_pickup')
+    expect(resolveBillFulfillmentMethod('self_pickup', 'SHOP', 'SHOPP', metadata)).toBe('shipping')
+  })
+  it('retains sales-approved shipping on a pickup channel', () => {
+    expect(resolveBillFulfillmentMethod('shipping', 'SHOPP', 'SHOPP', metadata)).toBe('shipping')
+  })
+  it('keeps historical pickup after a channel default changes', () => {
+    expect(resolveBillFulfillmentMethod('self_pickup', 'SHOP', 'SHOP', metadata)).toBe('self_pickup')
+  })
+  it('normalizes channel codes and initializes new bills from metadata', () => {
+    expect(resolveBillFulfillmentMethod('shipping', ' shopp ', 'SHOPP', metadata)).toBe('shipping')
+    expect(resolveBillFulfillmentMethod(undefined, 'OATR-P', undefined, metadata)).toBe('self_pickup')
   })
 })

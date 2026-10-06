@@ -1,6 +1,8 @@
 import { getPublicUrl } from '../../lib/qcApi'
 import { supabase } from '../../lib/supabase'
 import { fetchAllSupabasePages } from '../../lib/supabasePagination'
+import { loadWmsNotificationBadgeCount } from '../../lib/wmsNotificationBadge'
+import { BORROW_OPEN_STATUSES } from '../../lib/wmsBorrow'
 
 /** แถวที่ต้องหยิบจริง — ซ่อน system_complete จาก Picker / ตรวจสินค้า / รายการหยิบ */
 export const WMS_FULFILLMENT_PICK_OR_LEGACY =
@@ -246,7 +248,7 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
   }
 
   // 4-7. รายการเบิก + รายการคืน + รายการยืม + แจ้งเตือน — ยิง parallel
-  const [reqRes, returnReqRes, borrowReqRes, notifRowsRes, anomalyRes] = await Promise.all([
+  const [reqRes, returnReqRes, borrowReqRes, notifCount, anomalyRes] = await Promise.all([
     supabase
       .from('wms_requisitions')
       .select('id', { count: 'exact', head: true })
@@ -258,28 +260,11 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
     supabase
       .from('wms_borrow_requisitions')
       .select('id', { count: 'exact', head: true })
-      .eq('status', 'pending'),
-    supabase
-      .from('wms_notifications')
-      .select('id, type, order_id')
-      .eq('is_read', false),
+      .in('status', BORROW_OPEN_STATUSES)
+      .lt('due_date', today),
+    loadWmsNotificationBadgeCount(supabase),
     supabase.rpc('rpc_get_wms_stock_anomalies', { p_from_date: today, p_to_date: today }),
   ])
-
-  const notifRows = (notifRowsRes.data || []) as { id: string; type: string; order_id: string | null }[]
-  const cancelOrderSet = new Set<string>()
-  let notifCount = 0
-  for (const row of notifRows) {
-    if (row.type === 'ยกเลิกบิล') {
-      const key = String(row.order_id || '').trim()
-      if (!key) continue
-      if (cancelOrderSet.has(key)) continue
-      cancelOrderSet.add(key)
-      notifCount += 1
-    } else {
-      notifCount += 1
-    }
-  }
 
   const counts: WmsTabCounts = {
     [WMS_MENU_KEYS.NEW_ORDERS]: newOrdersCount,

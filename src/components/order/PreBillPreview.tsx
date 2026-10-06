@@ -33,6 +33,7 @@ function shippingBreakdown(document: Partial<PreBillDocument>) {
 }
 
 export function buildPreBillCustomerText(document: Partial<PreBillDocument>, items: PreBillItem[]): string {
+  const isPickup = (document.shipping_snapshot as Record<string, unknown> | null)?.is_self_pickup === true
   const shipping = shippingBreakdown(document)
   const detail = items.map((item, index) => {
     const specs = [
@@ -66,9 +67,9 @@ export function buildPreBillCustomerText(document: Partial<PreBillDocument>, ite
     `ยอดสินค้า: ${money(document.subtotal)} บาท`,
     Number(document.promotion_discount || 0) > 0 ? `ส่วนลดโปรโมชั่น: ${money(document.promotion_discount)} บาท` : '',
     Number(document.special_discount || 0) > 0 ? `ส่วนลดพิเศษ: ${money(document.special_discount)} บาท` : '',
-    shipping.available ? `ค่าจัดส่งปกติ${shipping.baseWaived ? ' (ยกเว้น)' : ''}: ${money(shipping.standard)} บาท` : '',
-    shipping.available ? `ค่าพื้นที่ห่างไกล/พิเศษ: ${money(shipping.special)} บาท` : '',
-    `ค่าจัดส่ง${shipping.available ? 'รวม' : ''}: ${money(document.shipping_cost)} บาท`,
+    !isPickup && shipping.available ? `ค่าจัดส่งปกติ${shipping.baseWaived ? ' (ยกเว้น)' : ''}: ${money(shipping.standard)} บาท` : '',
+    !isPickup && shipping.available ? `ค่าพื้นที่ห่างไกล/พิเศษ: ${money(shipping.special)} บาท` : '',
+    !isPickup ? `ค่าจัดส่ง${shipping.available ? 'รวม' : ''}: ${money(document.shipping_cost)} บาท` : '',
     `ยอดสุทธิ: ${money(document.total_amount)} บาท`,
     document.payment_method ? `วิธีชำระเงิน: ${document.payment_method}` : '',
     `ระยะเวลาจัดส่ง: ${document.delivery_term || '-'}`,
@@ -81,6 +82,7 @@ export function buildPreBillCustomerText(document: Partial<PreBillDocument>, ite
 }
 
 const PreBillPreview = forwardRef<HTMLDivElement, Props>(function PreBillPreview({ document, items }, ref) {
+  const isPickup = (document.shipping_snapshot as Record<string, unknown> | null)?.is_self_pickup === true
   const shipping = shippingBreakdown(document)
   return (
     <div ref={ref} className="bg-white text-slate-900 w-[794px] min-h-[1123px] p-12 font-sans">
@@ -166,9 +168,9 @@ const PreBillPreview = forwardRef<HTMLDivElement, Props>(function PreBillPreview
         <div className="flex justify-between"><span>ยอดสินค้า</span><b>{money(document.subtotal)} บาท</b></div>
         {Number(document.promotion_discount || 0) > 0 && <div className="flex justify-between text-emerald-700"><span>ส่วนลดโปรโมชั่น</span><b>-{money(document.promotion_discount)} บาท</b></div>}
         {Number(document.special_discount || 0) > 0 && <div className="flex justify-between text-emerald-700"><span>ส่วนลดพิเศษ</span><b>-{money(document.special_discount)} บาท</b></div>}
-        {shipping.available && <div className="flex justify-between text-sky-700"><span>ค่าจัดส่งปกติ{shipping.baseWaived ? ' (ยกเว้น)' : ''}</span><b>{money(shipping.standard)} บาท</b></div>}
-        {shipping.available && <div className="flex justify-between text-violet-700"><span>ค่าพื้นที่ห่างไกล/พิเศษ</span><b>{money(shipping.special)} บาท</b></div>}
-        <div className={`flex justify-between ${shipping.available ? 'border-t pt-2 font-semibold' : ''}`}><span>ค่าจัดส่ง{shipping.available ? 'รวม' : ''}</span><b>{money(document.shipping_cost)} บาท</b></div>
+        {!isPickup && shipping.available && <div className="flex justify-between text-sky-700"><span>ค่าจัดส่งปกติ{shipping.baseWaived ? ' (ยกเว้น)' : ''}</span><b>{money(shipping.standard)} บาท</b></div>}
+        {!isPickup && shipping.available && <div className="flex justify-between text-violet-700"><span>ค่าพื้นที่ห่างไกล/พิเศษ</span><b>{money(shipping.special)} บาท</b></div>}
+        {!isPickup && <div className={`flex justify-between ${shipping.available ? 'border-t pt-2 font-semibold' : ''}`}><span>ค่าจัดส่ง{shipping.available ? 'รวม' : ''}</span><b>{money(document.shipping_cost)} บาท</b></div>}
         <div className="flex justify-between border-t-2 border-blue-700 pt-3 text-xl text-blue-800"><span className="font-bold">ยอดสุทธิ</span><b>{money(document.total_amount)} บาท</b></div>
       </div>
 

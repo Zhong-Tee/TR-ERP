@@ -200,6 +200,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'settings-backup-clear': 'settings',
   'orders-create': 'orders',
   'orders-prebill': 'orders',
+  'orders-shipping-conversion': 'orders',
   'orders-all': 'orders',
   'orders-waiting': 'orders',
   'orders-data-error': 'orders',
@@ -241,6 +242,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'account-bank-reconciliation': 'account',
   'account-ecommerce': 'account',
   'account-promotion-audit': 'account',
+  'account-zero-shipping': 'account',
 }
 
 export function resolveMenuKeyFromPath(pathname: string): string | null {
