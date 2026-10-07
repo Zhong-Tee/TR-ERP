@@ -1,3 +1,5 @@
+import { FiEye } from 'react-icons/fi'
+import NewWorkOrderViewModal from './NewWorkOrderViewModal'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../../../lib/supabase'
 import Modal from '../../ui/Modal'
@@ -30,6 +32,7 @@ export default function NewOrdersSection() {
   >([])
   const [pickers, setPickers] = useState<Array<{ id: string; username: string | null }>>([])
   const [selectedWorkOrder, setSelectedWorkOrder] = useState<string | null>(null)
+  const [viewWorkOrder, setViewWorkOrder] = useState<{ id: string; work_order_name: string } | null>(null)
   const [selectedPickerId, setSelectedPickerId] = useState('')
   /** แสดงหน้ากำลังโหลดเฉพาะครั้งแรก; Realtime refresh ต้องคงรายการเดิมไว้เพื่อไม่ให้หน้ากระพริบ */
   const [initialLoading, setInitialLoading] = useState(true)
@@ -276,10 +279,9 @@ export default function NewOrdersSection() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 overflow-y-auto pb-4">
           {workOrders.map((wo) => (
-            <button
+            <div
               key={wo.id}
               className="p-4 border rounded-lg text-left transition-colors bg-gray-100 border-gray-200 hover:bg-gray-200"
-              onClick={() => openAssignPicker(wo.id)}
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
@@ -294,9 +296,14 @@ export default function NewOrdersSection() {
                   </div>
                   <div className="text-sm text-gray-600">{activeBillCountByWo[wo.id] ?? wo.order_count} บิล</div>
                 </div>
-                <span className="text-blue-600 font-medium shrink-0">เลือก Picker</span>
+                <div className="flex items-center gap-3 shrink-0">
+                  <button type="button" onClick={() => setViewWorkOrder(wo)} title="ดูอย่างเดียว" aria-label={`ดูใบงาน ${wo.work_order_name} อย่างเดียว`} className="p-2 rounded-lg text-slate-600 hover:bg-white hover:text-blue-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600">
+                    <FiEye size={20} aria-hidden="true" />
+                  </button>
+                  <button type="button" onClick={() => openAssignPicker(wo.id)} className="text-blue-600 font-medium hover:underline">เลือก Picker</button>
+                </div>
               </div>
-            </button>
+            </div>
           ))}
         </div>
       )}
@@ -334,6 +341,7 @@ export default function NewOrdersSection() {
           </div>
         </div>
       </Modal>
+      {viewWorkOrder && <NewWorkOrderViewModal workOrder={viewWorkOrder} onClose={() => setViewWorkOrder(null)} />}
       {MessageModal}
     </div>
   )
