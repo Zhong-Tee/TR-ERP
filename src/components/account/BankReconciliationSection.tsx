@@ -4,6 +4,8 @@ import { supabase } from '../../lib/supabase'
 import type { Order } from '../../types'
 import OrderDetailView from '../order/OrderDetailView'
 import Modal from '../ui/Modal'
+import SalesReconciliationPanel from './SalesReconciliationPanel'
+import ReconciliationDateFilter from './ReconciliationDateFilter'
 import { accountDisplay, easySlipAccountDetails } from '../../lib/easySlipAccount'
 import { verifySlipFromStorage } from '../../lib/slipVerification'
 import {
@@ -48,6 +50,13 @@ type ImportRow = {
 }
 
 type TransactionRow = {
+  bank_setting_id?: string
+  import_id?: string
+  bank_name?: string
+  account_number?: string
+  rule_name?: string
+  match_keyword?: string
+  rule_valid?: boolean
   id: string
   source_row_number: number
   transaction_at: string
@@ -253,11 +262,39 @@ function durationLabel(minutes: number): string {
   return `${money(absolute / 1440)} วัน`
 }
 
+async function fetchAllocations(transactionIds: string[]): Promise<AllocationRow[]> {
+  const rows: AllocationRow[] = []
+  for (let start = 0; start < transactionIds.length; start += 100) {
+    for (let offset = 0; ; offset += 1000) {
+      const page = await supabase.from('ac_bank_reconciliation_allocations')
+        .select('id, transaction_id, order_id, allocated_amount, match_method, or_orders(bill_no, total_amount, status)')
+        .in('transaction_id', transactionIds.slice(start,start+100)).order('id').range(offset,offset+999)
+      if (page.error) throw page.error
+      rows.push(...(page.data || []) as unknown as AllocationRow[])
+      if ((page.data || []).length < 1000) break
+    }
+  }
+  return rows
+}
+
 export default function BankReconciliationSection() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const statementPickerRef = useRef<HTMLElement>(null)
   const unmatchedSectionRef = useRef<HTMLDivElement>(null)
   const missingPaymentsSectionRef = useRef<HTMLDivElement>(null)
+  const [view, setView] = useState<'sales' | 'bank' | 'history'>('sales')
+  const [salesInitialStatus, setSalesInitialStatus] = useState('pending')
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [bankFrom, setBankFrom] = useState('')
+  const [bankTo, setBankTo] = useState('')
+  const [bankFilter, setBankFilter] = useState('')
+  const [bankStatus, setBankStatus] = useState('all')
+  const [bankSearch, setBankSearch] = useState('')
+  const [bankOffset, setBankOffset] = useState(0)
+  const [bankCount, setBankCount] = useState(0)
+  const [bankTotals, setBankTotals] = useState<{ credit: number; matched: number; other: number; unmatchedCount: number; ambiguousCount: number } | null>(null)
+  const detailGeneration = useRef(0)
+  const cancelDetailLoad = useCallback(() => { detailGeneration.current++ }, [])
   const [banks, setBanks] = useState<BankSettingRow[]>([])
   const [imports, setImports] = useState<ImportRow[]>([])
   const [selectedImportId, setSelectedImportId] = useState('')
@@ -270,7 +307,7 @@ export default function BankReconciliationSection() {
     missing_payment_count: 0,
   })
   const [importIssueById, setImportIssueById] = useState<Record<string, ImportIssueSummary>>({})
-  const [importIssueFilter, setImportIssueFilter] = useState<ImportIssueFilter>('issues')
+  const [importIssueFilter, setImportIssueFilter] = useState<ImportIssueFilter>('all')
   const [importBankFilter, setImportBankFilter] = useState('all')
   const [importMonthFilter, setImportMonthFilter] = useState('all')
   const [importSearch, setImportSearch] = useState('')
@@ -285,6 +322,7 @@ export default function BankReconciliationSection() {
   const [orderSummaryExpanded, setOrderSummaryExpanded] = useState(true)
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [actionId, setActionId] = useState('')
   const [error, setError] = useState('')
@@ -341,11 +379,15 @@ export default function BankReconciliationSection() {
       const loadedBanks = (bankResult.data || []) as BankSettingRow[]
       const loadedImports = (importResult.data || []) as unknown as ImportRow[]
       const loadedIssueSummaries = await loadImportIssueSummaries(loadedImports.map((row) => row.id))
+      const summaryResult = await supabase.rpc('bank_reconciliation_global_summary')
+      if (summaryResult.error) throw summaryResult.error
+      setGlobalSummary(summaryResult.data as GlobalReconciliationSummary)
       setBanks(loadedBanks)
       setImports(loadedImports)
       setImportIssueById(Object.fromEntries(loadedIssueSummaries.map((row) => [row.import_id, row])))
       setHasMoreImports(loadedImports.length === IMPORT_PAGE_SIZE)
       setSelectedImportId((current) => {
+        if (current === 'all') return current
         if (preferredImportId && loadedImports.some((row) => row.id === preferredImportId)) return preferredImportId
         if (current && loadedImports.some((row) => row.id === current)) return current
         return loadedImports[0]?.id || ''
@@ -384,7 +426,9 @@ export default function BankReconciliationSection() {
   }
 
   function showIssueImports(filter: Extract<ImportIssueFilter, 'unmatched' | 'ambiguous' | 'missing'>) {
-    setImportIssueFilter(filter)
+    if (filter === 'missing') { setSalesInitialStatus('waiting_bank'); setView('sales'); return }
+    setBankFrom(''); setBankTo(''); setBankFilter(''); setBankSearch(''); setBankOffset(0)
+    setBankStatus(filter); setSelectedImportId('all'); setView('bank')
     window.requestAnimationFrame(() => statementPickerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
   }
 
@@ -396,29 +440,36 @@ export default function BankReconciliationSection() {
       setMatchDiagnostics([])
       return
     }
+    const request = ++detailGeneration.current
     setDetailLoading(true)
     setError('')
     try {
-      const transactionResult = await supabase
-        .from('ac_bank_statement_transactions')
-        .select('id, source_row_number, transaction_at, transaction_type, debit_amount, credit_amount, balance, channel, description, reconciliation_status, classification_rule_id, classification_name')
-        .eq('import_id', importId)
-        .order('transaction_at', { ascending: true })
-        .order('id', { ascending: true })
-      if (transactionResult.error) throw transactionResult.error
-      const loadedTransactions = (transactionResult.data || []) as TransactionRow[]
+      if (bankFrom && bankTo && bankFrom > bankTo && importId === 'all') throw new Error('วันที่เริ่มต้องไม่เกินวันที่สิ้นสุด')
+      const workspaceResult = importId === 'all' ? await supabase.rpc('bank_statement_workspace', { p_from: bankFrom || null, p_to: bankTo || null, p_bank: bankFilter || null, p_status: bankStatus, p_search: bankSearch.trim(), p_offset: bankOffset, p_include_debits: showDebitTransactions }) : null
+      if (workspaceResult?.error) throw workspaceResult.error
+      if (request !== detailGeneration.current) return
+      if (workspaceResult) { setBankCount(workspaceResult.data.count); setBankTotals(workspaceResult.data.summary) }
+      const loadedTransactions: TransactionRow[] = workspaceResult ? workspaceResult.data.rows : []
+      if (!workspaceResult) {
+        for (let offset = 0; ; offset += 1000) {
+          const page = await supabase.from('ac_bank_statement_transactions').select('*').eq('import_id', importId).order('transaction_at').order('id').range(offset, offset+999)
+          if (page.error) throw page.error
+          loadedTransactions.push(...(page.data || []) as TransactionRow[])
+          if ((page.data || []).length < 1000) break
+        }
+      }
+      if (request !== detailGeneration.current) return
       setTransactions(loadedTransactions)
       const transactionIds = loadedTransactions.map((row) => row.id)
+      const workspaceDiagnostics = importId === 'all' ? await supabase.rpc('bank_workspace_diagnostics', { p_transaction_ids: transactionIds }) : null
       const [allocationResult, missingResult, diagnosticResult, candidateListsResult, globalSummaryResult] = await Promise.all([
-        supabase
-          .from('ac_bank_reconciliation_allocations')
-          .select('id, transaction_id, order_id, allocated_amount, match_method, or_orders(bill_no, total_amount, status)')
-          .in('transaction_id', transactionIds.length > 0 ? transactionIds : ['00000000-0000-0000-0000-000000000000']),
-        supabase.rpc('bank_reconciliation_missing_payments', { p_import_id: importId }),
-        supabase.rpc('bank_statement_match_diagnostics', { p_import_id: importId }),
-        supabase.rpc('bank_statement_match_candidate_lists', { p_import_id: importId }),
+        fetchAllocations(transactionIds).then(data => ({ data, error: null })).catch(error => ({ data: [], error })),
+        importId === 'all' ? Promise.resolve({ data: [], error: null }) : supabase.rpc('bank_reconciliation_missing_payments', { p_import_id: importId }),
+        workspaceDiagnostics ? Promise.resolve({ data: workspaceDiagnostics.data?.diagnostics, error: workspaceDiagnostics.error }) : supabase.rpc('bank_statement_match_diagnostics', { p_import_id: importId }),
+        workspaceDiagnostics ? Promise.resolve({ data: workspaceDiagnostics.data?.candidates, error: workspaceDiagnostics.error }) : supabase.rpc('bank_statement_match_candidate_lists', { p_import_id: importId }),
         supabase.rpc('bank_reconciliation_global_summary'),
       ])
+      if (request !== detailGeneration.current) return
       const detailErrors: string[] = []
       if (allocationResult.error) {
         setAllocations([])
@@ -442,7 +493,7 @@ export default function BankReconciliationSection() {
       } else {
         const loadedMissingPayments = (missingResult.data || []) as MissingPaymentRow[]
         setMissingPayments(loadedMissingPayments)
-        setImportIssueById((current) => ({
+        if (importId !== 'all') setImportIssueById((current) => ({
           ...current,
           [importId]: {
             import_id: importId,
@@ -485,6 +536,7 @@ export default function BankReconciliationSection() {
             .from('ac_verified_slips')
             .select('id, easyslip_response, easyslip_receiver_account')
             .in('id', easySlipIds)
+          if (request !== detailGeneration.current) return
           if (slipAccountResult.error) {
             setMatchDiagnostics(loadedDiagnostics)
             detailErrors.push(`โหลดชื่อและเลขบัญชีจากสลิปไม่สำเร็จ: ${readableError(slipAccountResult.error)}`)
@@ -521,18 +573,34 @@ export default function BankReconciliationSection() {
       }
       if (detailErrors.length > 0) setError(detailErrors.join(' | '))
     } catch (caught) {
+      if (request !== detailGeneration.current) return
       setTransactions([])
       setAllocations([])
       setMissingPayments([])
       setMatchDiagnostics([])
+      setBankTotals(null)
       setError(readableError(caught))
     } finally {
-      setDetailLoading(false)
+      if (request === detailGeneration.current) setDetailLoading(false)
     }
-  }, [])
+  }, [bankFrom, bankTo, bankFilter, bankStatus, bankSearch, bankOffset, showDebitTransactions])
 
-  useEffect(() => { void loadBaseData() }, [loadBaseData])
-  useEffect(() => { void loadDetail(selectedImportId) }, [loadDetail, selectedImportId])
+  useEffect(() => { const timer = window.setTimeout(() => void loadBaseData(), 0); return () => window.clearTimeout(timer) }, [loadBaseData])
+  useEffect(() => {
+    if (refreshKey === 0) return
+    let active = true
+    void supabase.rpc('bank_reconciliation_global_summary').then(result => {
+      if (!active) return
+      if (result.error) setError(result.error.message)
+      else setGlobalSummary(result.data as GlobalReconciliationSummary)
+    })
+    return () => { active = false }
+  }, [refreshKey])
+  useEffect(() => {
+    if (view === 'sales') return
+    const timer = window.setTimeout(() => void loadDetail(selectedImportId), 250)
+    return () => { window.clearTimeout(timer); cancelDetailLoad() }
+  }, [loadDetail, selectedImportId, view, refreshKey, cancelDetailLoad])
 
   const importBankOptions = useMemo(() => {
     const options = new Map<string, string>()
@@ -576,11 +644,13 @@ export default function BankReconciliationSection() {
   }, [importBankFilter, importIssueById, importIssueFilter, importMonthFilter, importSearch, imports])
 
   useEffect(() => {
+    if (view !== 'history') return
     if (filteredImports.some((row) => row.id === selectedImportId)) return
-    setSelectedImportId(filteredImports[0]?.id || '')
-  }, [filteredImports, selectedImportId])
+    const timer = window.setTimeout(() => setSelectedImportId(filteredImports[0]?.id || ''), 0)
+    return () => window.clearTimeout(timer)
+  }, [filteredImports, selectedImportId, view])
 
-  const selectedImport = imports.find((row) => row.id === selectedImportId) || null
+  const selectedImport = selectedImportId === 'all' ? { id: 'all', bank_setting_id: bankFilter, period_start: bankFrom || 'ทุกวัน', account_number_snapshot: '', bank_settings: null, opening_balance: null, closing_balance: null, imported_row_count: bankCount, source_row_count: bankCount, warnings: [] as string[] } : imports.find((row) => row.id === selectedImportId) || null
   const allocationByTransaction = useMemo(() => {
     const map = new Map<string, AllocationRow[]>()
     allocations.forEach((row) => map.set(row.transaction_id, [...(map.get(row.transaction_id) || []), row]))
@@ -609,12 +679,12 @@ export default function BankReconciliationSection() {
     return [...map.values()].sort((a, b) => a.billNo.localeCompare(b.billNo))
   }, [allocations])
 
-  const totals = useMemo(() => ({
+  const totals = useMemo(() => selectedImportId === 'all' && bankTotals ? bankTotals : ({
     credit: transactions.reduce((sum, row) => sum + Number(row.credit_amount), 0),
     matched: transactions.filter((row) => row.reconciliation_status === 'matched').reduce((sum, row) => sum + Number(row.credit_amount), 0),
     unmatchedCount: transactions.filter((row) => row.credit_amount > 0 && row.reconciliation_status === 'unmatched').length,
     ambiguousCount: transactions.filter((row) => row.reconciliation_status === 'ambiguous').length,
-  }), [transactions])
+  }), [transactions, selectedImportId, bankTotals])
 
   const displayedTransactions = useMemo(
     () => showDebitTransactions ? transactions : transactions.filter((row) => Number(row.credit_amount) > 0),
@@ -685,6 +755,7 @@ export default function BankReconciliationSection() {
     const results: UploadResult[] = []
     for (const file of Array.from(files)) results.push(await importOneFile(file))
     setUploadResults(results)
+    setRefreshKey(key => key + 1)
     const lastSuccess = [...results].reverse().find((row) => row.success && row.importId)
     await loadBaseData(lastSuccess?.importId)
     setUploading(false)
@@ -735,6 +806,7 @@ export default function BankReconciliationSection() {
       } else {
         setManualBillNos((current) => ({ ...current, [transactionId]: '' }))
         await loadDetail(selectedImportId)
+        setRefreshKey(key => key + 1)
       }
     }
     setActionId('')
@@ -764,7 +836,7 @@ export default function BankReconciliationSection() {
     setError('')
     const { error: rpcError } = await supabase.rpc('bank_reconciliation_clear_match', { p_transaction_id: transactionId })
     if (rpcError) setError(rpcError.message)
-    else await loadDetail(selectedImportId)
+    else { await loadDetail(selectedImportId); setRefreshKey(key => key + 1) }
     setActionId('')
   }
 
@@ -775,7 +847,7 @@ export default function BankReconciliationSection() {
     setRuleName(marketplace ? `เงินรับจาก ${marketplace.toUpperCase()}` : '')
     setRuleKeyword(marketplace || description)
     setRuleClassification(marketplace.toUpperCase())
-    setRuleBankSettingId(selectedImport?.bank_setting_id || null)
+    setRuleBankSettingId(transaction?.bank_setting_id || selectedImport?.bank_setting_id || null)
     setRuleApplyExisting(true)
   }
 
@@ -832,6 +904,7 @@ export default function BankReconciliationSection() {
       setUploadResults([{ fileName: 'กฎจำแนกรายการ', success: true, message: `บันทึกแล้ว · จัดประเภทรายการเดิม ${result.applied_count || 0} รายการ` }])
       resetRuleForm()
       await Promise.all([loadTransactionRules(), loadDetail(selectedImportId)])
+      setRefreshKey(key => key + 1)
     }
     setRuleSaving(false)
   }
@@ -842,7 +915,7 @@ export default function BankReconciliationSection() {
       .update({ is_active: !rule.is_active, updated_at: new Date().toISOString() })
       .eq('id', rule.id)
     if (updateError) setError(`เปลี่ยนสถานะกฎไม่สำเร็จ: ${readableError(updateError)}`)
-    else await loadTransactionRules()
+    else { await Promise.all([loadTransactionRules(), loadDetail(selectedImportId)]); setRefreshKey(key => key + 1) }
   }
 
   async function unclassifyTransaction(transactionId: string) {
@@ -851,7 +924,7 @@ export default function BankReconciliationSection() {
       p_transaction_id: transactionId,
     })
     if (rpcError) setError(`ยกเลิกการจัดประเภทไม่สำเร็จ: ${readableError(rpcError)}`)
-    else await loadDetail(selectedImportId)
+    else { await loadDetail(selectedImportId); setRefreshKey(key => key + 1) }
     setActionId('')
   }
 
@@ -859,9 +932,9 @@ export default function BankReconciliationSection() {
     if (!selectedImportId) return
     setActionId('auto')
     setError('')
-    const { error: rpcError } = await supabase.rpc('bank_statement_auto_match', { p_import_id: selectedImportId })
+    const { error: rpcError } = await supabase.rpc(selectedImportId === 'all' ? 'bank_workspace_auto_match' : 'bank_statement_auto_match', selectedImportId === 'all' ? { p_from: bankFrom || null, p_to: bankTo || null, p_bank: bankFilter || null } : { p_import_id: selectedImportId })
     if (rpcError) setError(rpcError.message)
-    else await loadDetail(selectedImportId)
+    else { await loadDetail(selectedImportId); setRefreshKey(key => key + 1) }
     setActionId('')
   }
 
@@ -1011,36 +1084,52 @@ export default function BankReconciliationSection() {
     setManualRetryLoading(false)
   }
 
-  function exportWorkbook() {
-    if (!selectedImport) return
-    const transactionRows = transactions.map((row) => {
-      const matches = allocationByTransaction.get(row.id) || []
-      return {
-        'วันที่เวลา': dateTime(row.transaction_at),
-        'รายการ': row.transaction_type,
-        'เงินออก': Number(row.debit_amount),
-        'เงินเข้า': Number(row.credit_amount),
-        'ยอดคงเหลือ': row.balance == null ? '' : Number(row.balance),
-        'ช่องทาง': row.channel || '',
-        'รายละเอียด': row.description || '',
-        'ผลกระทบยอด': statusLabel(row.reconciliation_status),
-        'ประเภทรายการอื่น': row.classification_name || '',
-        'เลขบิล': matches.map((item) => item.or_orders?.bill_no || '').filter(Boolean).join(', '),
-        'ยอดบิล': matches.reduce((sum, item) => sum + Number(item.or_orders?.total_amount || 0), 0),
-      }
-    })
-    const missingRows = missingPayments.map((row) => ({
-      'วันที่เวลา': dateTime(row.payment_at),
-      'เลขบิล': row.bill_no,
-      'ยอดสลิป': Number(row.paid_amount),
-      'ยอดบิล': Number(row.bill_amount),
-      'ส่วนต่าง': Number(row.difference),
-      'แหล่งข้อมูล': row.source_type === 'manual_slip' ? 'สลิปมือ' : 'EasySlip',
-    }))
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(transactionRows), 'Statement')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(missingRows), 'ไม่พบในบัญชี')
-    XLSX.writeFile(wb, `กระทบยอด-${selectedImport.period_start}-${maskedAccount(selectedImport.account_number_snapshot)}.xlsx`)
+  async function exportWorkbook() {
+    if (!selectedImport || exporting) return
+    setExporting(true); setError('')
+    try {
+      const exportTransactions: TransactionRow[] = []
+      if (selectedImportId === 'all') {
+        for (let offset = 0; ; offset += 100) {
+          const page = await supabase.rpc('bank_statement_workspace', { p_from: bankFrom || null, p_to: bankTo || null, p_bank: bankFilter || null, p_status: bankStatus, p_search: bankSearch.trim(), p_offset: offset, p_include_debits: showDebitTransactions })
+          if (page.error) throw page.error
+          exportTransactions.push(...page.data.rows)
+          if (exportTransactions.length >= page.data.count || !page.data.rows.length) break
+        }
+      } else exportTransactions.push(...transactions)
+      const exportAllocations = await fetchAllocations(exportTransactions.map(row => row.id))
+      const transactionRows = exportTransactions.map((row) => {
+        const matches = exportAllocations.filter(item => item.transaction_id === row.id)
+        return {
+          'บัญชี': `${row.bank_name || ''} ${maskedAccount(row.account_number || selectedImport.account_number_snapshot)}`,
+          'วันที่เวลา': dateTime(row.transaction_at),
+          'รายการ': row.transaction_type,
+          'เงินออก': Number(row.debit_amount),
+          'เงินเข้า': Number(row.credit_amount),
+          'ยอดคงเหลือ': row.balance == null ? '' : Number(row.balance),
+          'ช่องทาง': row.channel || '',
+          'รายละเอียด': row.description || '',
+          'ผลกระทบยอด': statusLabel(row.reconciliation_status),
+          'ประเภทรายการอื่น': row.classification_name || '',
+          'เลขบิล': matches.map((item) => item.or_orders?.bill_no || '').filter(Boolean).join(', '),
+          'ยอดบิล': matches.reduce((sum, item) => sum + Number(item.or_orders?.total_amount || 0), 0),
+          'ยอดจับคู่': matches.reduce((sum, item) => sum + Number(item.allocated_amount), 0),
+        }
+      })
+      const missingRows = missingPayments.map((row) => ({
+        'วันที่เวลา': dateTime(row.payment_at),
+        'เลขบิล': row.bill_no,
+        'ยอดสลิป': Number(row.paid_amount),
+        'ยอดบิล': Number(row.bill_amount),
+        'ส่วนต่าง': Number(row.difference),
+        'แหล่งข้อมูล': row.source_type === 'manual_slip' ? 'สลิปมือ' : 'EasySlip',
+      }))
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(transactionRows), 'Statement')
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(missingRows), 'ไม่พบในบัญชี')
+      XLSX.writeFile(wb, `กระทบยอด-${selectedImport.period_start}-${maskedAccount(selectedImport.account_number_snapshot)}.xlsx`)
+    } catch (caught) { setError(`ส่งออก Excel ไม่สำเร็จ: ${readableError(caught)}`) }
+    finally { setExporting(false) }
   }
 
   function renderDiagnosticCandidate(candidate: MatchDiagnosticCandidate, transactionId: string, allowUse: boolean) {
@@ -1080,7 +1169,7 @@ export default function BankReconciliationSection() {
         <div className="flex flex-wrap items-start justify-between gap-4 border-b border-blue-100 bg-gradient-to-r from-blue-50 to-cyan-50 px-6 py-5">
           <div>
             <h2 className="text-lg font-bold text-gray-900">กระทบยอดธนาคาร</h2>
-            <p className="mt-1 text-sm text-gray-600">อัปโหลด Statement หลายบัญชี แล้วเทียบกับ EasySlip และรายการตรวจสลิปมือ</p>
+            <p className="mt-1 text-sm text-gray-600">ติดตามเงินรับจากบิลขาย รวม Statement ทุกบัญชี และตรวจจับคู่กับ EasySlip / สลิปมือ</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -1106,17 +1195,17 @@ export default function BankReconciliationSection() {
             >
               {uploading ? 'กำลังนำเข้า...' : 'อัปโหลด Statement'}
             </button>
-            <button
+            {view !== 'sales' && <button
               type="button"
-              disabled={!selectedImport || transactions.length === 0}
-              onClick={exportWorkbook}
+              disabled={detailLoading || exporting || !selectedImport || transactions.length === 0}
+              onClick={() => void exportWorkbook()}
               className="rounded-lg border border-emerald-300 bg-white px-4 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
             >
-              ดาวน์โหลด Excel
-            </button>
+              {exporting ? 'กำลังส่งออก...' : 'ดาวน์โหลด Excel'}
+            </button>}
           </div>
         </div>
-        <div className="space-y-3 px-6 py-4">
+        {view !== 'sales' && <div className="space-y-3 px-6 py-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-gray-800">ภาพรวมทุก Statement ที่นำเข้า</h3>
             <span className="text-xs text-gray-500">รวมทุกบัญชีและทุกไฟล์ โดยไม่นับธุรกรรมซ้ำ</span>
@@ -1127,7 +1216,7 @@ export default function BankReconciliationSection() {
             <SummaryCard label="สลิปไม่พบในบัญชี" value={String(globalSummary.missing_payment_count)} tone="violet" onClick={() => showIssueImports('missing')} />
           </div>
           {banks.length === 0 && <p className="text-sm font-medium text-amber-700">ยังไม่มีบัญชีธนาคารที่เปิดใช้งาน กรุณาเพิ่มในหน้าตั้งค่าก่อนนำเข้า</p>}
-        </div>
+        </div>}
       </section>
 
       {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
@@ -1141,12 +1230,14 @@ export default function BankReconciliationSection() {
         </div>
       )}
 
-      <section ref={statementPickerRef} className="scroll-mt-24 rounded-xl border border-gray-200 bg-white shadow-sm">
+      <nav className="flex flex-wrap gap-2" aria-label="มุมมองกระทบยอด">{([['sales', 'บิลขาย'], ['bank', 'เงินเข้าธนาคาร'], ['history', 'ประวัตินำเข้า']] as const).map(([key, label]) => <button key={key} onClick={() => { setView(key); if (key === 'sales') setSalesInitialStatus('pending'); if (key === 'bank') setSelectedImportId('all'); if (key === 'history') setSelectedImportId(filteredImports[0]?.id || '') }} className={`rounded-lg border px-5 py-2 text-sm font-semibold ${view === key ? 'bg-blue-600 text-white' : 'bg-white text-gray-700'}`}>{label}</button>)}</nav>
+      {view === 'sales' && <SalesReconciliationPanel key={salesInitialStatus} initialStatus={salesInitialStatus} openOrder={id => void openOrderDetail(id)} refreshKey={refreshKey} onChanged={() => setRefreshKey(key => key + 1)} />}
+      {view !== 'sales' && <section ref={statementPickerRef} className="scroll-mt-24 rounded-xl border border-gray-200 bg-white shadow-sm">
         <div className="space-y-3 border-b border-gray-100 px-5 py-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="font-semibold text-gray-900">ติดตามรอบ Statement</h3>
-              <p className="text-xs text-gray-500">ค่าเริ่มต้นแสดงเฉพาะรอบที่ยังมีรายการต้องติดตาม</p>
+              <h3 className="font-semibold text-gray-900">{view === 'bank' ? 'เงินเข้าธนาคารรวมทุกไฟล์' : 'ประวัตินำเข้า Statement'}</h3>
+              <p className="text-xs text-gray-500">{view === 'bank' ? 'กรองตามวันที่ธุรกรรม · รวมรายการข้ามไฟล์ โดยไม่นับซ้ำ' : 'ดูรายละเอียดและติดตามผลแยกตามไฟล์ที่นำเข้า'}</p>
             </div>
             <button
               type="button"
@@ -1157,7 +1248,15 @@ export default function BankReconciliationSection() {
               {actionId === 'auto' ? 'กำลังตรวจ...' : 'ตรวจจับคู่อีกครั้ง'}
             </button>
           </div>
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+          {view === 'bank' && <div className="space-y-3">
+            <ReconciliationDateFilter from={bankFrom} to={bankTo} onChange={(a,b) => { setBankFrom(a); setBankTo(b); setBankOffset(0) }} />
+            <div className="flex flex-wrap gap-2">
+              <select aria-label="บัญชีธนาคาร" value={bankFilter} onChange={e => { setBankFilter(e.target.value); setBankOffset(0) }} className="rounded-lg border px-3 py-2 text-sm"><option value="">ทุกบัญชี</option>{banks.map(b => <option key={b.id} value={b.id}>{b.bank_name} {maskedAccount(b.account_number)}</option>)}</select>
+              <select aria-label="สถานะเงินเข้า" value={bankStatus} onChange={e => { setBankStatus(e.target.value); setBankOffset(0) }} className="rounded-lg border px-3 py-2 text-sm"><option value="all">ทุกสถานะ</option>{(['unmatched','ambiguous','matched','ignored'] as const).map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}</select>
+              <input aria-label="ค้นหารายการธนาคาร" placeholder="ค้นหาผู้โอน / รายละเอียด" value={bankSearch} onChange={e => { setBankSearch(e.target.value); setBankOffset(0) }} className="rounded-lg border px-3 py-2 text-sm" />
+            </div>
+          </div>}
+          {view === 'history' && <><div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
             <label className="text-xs font-medium text-gray-600">
               สถานะติดตาม
               <select value={importIssueFilter} onChange={(event) => setImportIssueFilter(event.target.value as ImportIssueFilter)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800">
@@ -1212,7 +1311,7 @@ export default function BankReconciliationSection() {
             {hasMoreImports && <button type="button" disabled={loadingMoreImports} onClick={() => void loadOlderImports()} className="rounded-md border border-gray-300 bg-white px-3 py-1.5 font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">
               {loadingMoreImports ? 'กำลังโหลด...' : `โหลดรอบเก่าเพิ่ม ${IMPORT_PAGE_SIZE} รายการ`}
             </button>}
-          </div>
+          </div></>}
         </div>
 
         {!selectedImport ? (
@@ -1224,15 +1323,15 @@ export default function BankReconciliationSection() {
               <SummaryCard label="จับคู่บิลแล้ว" value={`฿${money(totals.matched)}`} tone="green" />
               <SummaryCard label="เงินเข้าที่ยังจับคู่ไม่ได้" value={String(totals.unmatchedCount)} tone="red" onClick={() => unmatchedSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} />
               <SummaryCard label="รายการรอตรวจ" value={String(totals.ambiguousCount)} tone="amber" />
-              <SummaryCard label="สลิปไม่พบในบัญชี" value={String(missingPayments.length)} tone="violet" onClick={() => missingPaymentsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} />
+              {view === 'bank' ? <SummaryCard label="เงินเข้าที่ไม่ใช่บิลขาย" value={`฿${money(bankTotals?.other || 0)}`} tone="violet" /> : <SummaryCard label="สลิปไม่พบในบัญชี" value={String(missingPayments.length)} tone="violet" onClick={() => missingPaymentsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} />}
             </div>
 
-            <div className="grid gap-3 rounded-lg bg-gray-50 p-4 text-sm text-gray-700 md:grid-cols-4">
+            {view === 'history' && <div className="grid gap-3 rounded-lg bg-gray-50 p-4 text-sm text-gray-700 md:grid-cols-4">
               <div><span className="text-gray-500">บัญชี:</span> {selectedImport.bank_settings?.bank_name || '–'} {maskedAccount(selectedImport.account_number_snapshot)}</div>
               <div><span className="text-gray-500">ยอดยกมา:</span> ฿{money(selectedImport.opening_balance)}</div>
               <div><span className="text-gray-500">ยอดปลายงวด:</span> ฿{money(selectedImport.closing_balance)}</div>
               <div><span className="text-gray-500">นำเข้า:</span> {selectedImport.imported_row_count}/{selectedImport.source_row_count} รายการ</div>
-            </div>
+            </div>}
 
             {Array.isArray(selectedImport.warnings) && selectedImport.warnings.length > 0 && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
@@ -1240,9 +1339,9 @@ export default function BankReconciliationSection() {
               </div>
             )}
 
-            <div>
+            {view === 'history' && <div>
               <div className="mb-2 flex items-center justify-between gap-3">
-                <h3 className="font-semibold text-gray-900">สรุปยอดต่อบิล <span className="text-sm font-normal text-gray-500">({orderSummaries.length} บิล)</span></h3>
+                <h3 className="font-semibold text-gray-900">สรุปยอดบิลที่จับคู่ในไฟล์นี้ <span className="text-sm font-normal text-gray-500">({orderSummaries.length} บิล)</span></h3>
                 <button
                   type="button"
                   onClick={() => setOrderSummaryExpanded((current) => !current)}
@@ -1264,7 +1363,7 @@ export default function BankReconciliationSection() {
                   <tbody>
                     {orderSummaries.length === 0 ? <tr><td colSpan={5} className="px-3 py-8 text-center text-gray-500">ยังไม่มีรายการที่จับคู่บิล</td></tr> : orderSummaries.map((row) => {
                       const difference = row.received - row.billAmount
-                      const label = Math.abs(difference) <= 0.01 ? 'ยอดตรง' : difference > 0 ? 'โอนเกิน' : 'ยอดไม่ครบ'
+                      const label = Math.abs(difference) <= 0.01 ? 'ยอดตรงในไฟล์นี้' : difference > 0 ? 'ยอดในไฟล์นี้เกิน' : 'ยอดในไฟล์นี้ไม่ครบ'
                       const tone = Math.abs(difference) <= 0.01 ? 'text-emerald-700' : difference > 0 ? 'text-amber-700' : 'text-red-700'
                       return <tr key={row.orderId} className="border-t border-gray-100">
                         <td className="px-3 py-2 font-mono"><button type="button" onClick={() => void openOrderDetail(row.orderId)} disabled={!!detailOrderLoadingId} className="font-semibold text-blue-700 hover:underline disabled:cursor-wait disabled:opacity-50" title="ดูรายละเอียดบิล">{row.billNo}</button></td><td className="px-3 py-2 text-right">฿{money(row.billAmount)}</td>
@@ -1275,7 +1374,7 @@ export default function BankReconciliationSection() {
                   </tbody>
                 </table>
               </div>}
-            </div>
+            </div>}
 
             <div ref={unmatchedSectionRef} className="scroll-mt-24">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -1286,7 +1385,7 @@ export default function BankReconciliationSection() {
                   <input
                     type="checkbox"
                     checked={showDebitTransactions}
-                    onChange={(event) => setShowDebitTransactions(event.target.checked)}
+                    onChange={(event) => { setShowDebitTransactions(event.target.checked); setBankOffset(0) }}
                     className="h-4 w-4 rounded border-gray-300 text-blue-600"
                   />
                   แสดงรายการเงินออก
@@ -1305,7 +1404,7 @@ export default function BankReconciliationSection() {
                       const isDebit = Number(row.credit_amount) <= 0 && Number(row.debit_amount) > 0
                       return <tr key={row.id} className="border-t border-gray-100 align-top">
                         <td className="whitespace-nowrap px-3 py-3">{dateTime(row.transaction_at)}</td>
-                        <td className="max-w-sm px-3 py-3"><div>{row.transaction_type}</div><div className="text-xs text-gray-500">{row.channel || '–'} · {row.description || '–'}</div></td>
+                        <td className="max-w-sm px-3 py-3"><div>{row.transaction_type}</div><div className="text-xs text-gray-500">{row.channel || '–'} · {row.description || '–'}</div>{row.bank_name && <div className="mt-1 text-xs text-blue-700">{row.bank_name} {maskedAccount(row.account_number || '')}</div>}</td>
                         <td className="px-3 py-3 text-right font-medium text-emerald-700">{row.credit_amount > 0 ? `฿${money(row.credit_amount)}` : '–'}</td>
                         <td className="px-3 py-3 text-right text-red-700">{row.debit_amount > 0 ? `฿${money(row.debit_amount)}` : '–'}</td>
                         <td className="px-3 py-3 text-center">
@@ -1319,6 +1418,8 @@ export default function BankReconciliationSection() {
                             <button disabled={actionId === row.id} onClick={() => void clearMatch(row.id)} className="text-xs text-red-600 hover:underline">ยกเลิกคู่</button>
                           </div> : row.reconciliation_status === 'ignored' ? <div className="flex flex-wrap items-center gap-2">
                             <span className="rounded bg-violet-50 px-2 py-1 text-xs font-semibold text-violet-700">{row.classification_name || 'รายการที่ไม่ใช่บิลขาย'}</span>
+                            {row.rule_name && <span className="text-xs text-gray-500">กฎ: {row.rule_name} · พบคำ “{row.match_keyword}”</span>}
+                            {row.rule_valid === false && <span className="text-xs text-red-700">ไม่ตรงกฎปัจจุบัน กรุณายกเลิกการจัดประเภท</span>}
                             <button type="button" onClick={() => void openRuleDialog(row)} className="text-xs font-medium text-blue-700 hover:underline">ดูกฎ</button>
                             <button type="button" disabled={actionId === row.id} onClick={() => void unclassifyTransaction(row.id)} className="text-xs text-red-600 hover:underline disabled:opacity-50">ยกเลิกการจัดประเภท</button>
                           </div> : row.credit_amount > 0 ? <div className="space-y-2">
@@ -1376,7 +1477,8 @@ export default function BankReconciliationSection() {
               </div>
             </div>
 
-            <div ref={missingPaymentsSectionRef} className="scroll-mt-24">
+            {view === 'bank' && <div className="flex items-center justify-between text-sm"><span>{bankCount} รายการ · หน้า {bankOffset / 100 + 1} · ยอดสรุปรวมทุกหน้าในช่วงที่เลือก</span><div className="flex gap-2"><button disabled={detailLoading || bankOffset === 0} onClick={() => setBankOffset(bankOffset - 100)} className="rounded-lg border px-3 py-2 disabled:opacity-40">ก่อนหน้า</button><button disabled={detailLoading || bankOffset + 100 >= bankCount} onClick={() => setBankOffset(bankOffset + 100)} className="rounded-lg border px-3 py-2 disabled:opacity-40">ถัดไป</button></div></div>}
+            {view === 'history' && <div ref={missingPaymentsSectionRef} className="scroll-mt-24">
               <h3 className="mb-2 font-semibold text-gray-900">มีสลิปในระบบ แต่ไม่พบรายการเงินเข้าใน Statement</h3>
               <div className="overflow-x-auto rounded-lg border border-gray-200">
                 <table className="min-w-full text-sm">
@@ -1400,10 +1502,10 @@ export default function BankReconciliationSection() {
                   </tbody>
                 </table>
               </div>
-            </div>
+            </div>}
           </div>
         )}
-      </section>
+      </section>}
       <Modal open={detailOrder != null} onClose={() => setDetailOrder(null)} contentClassName="max-w-[96vw] w-full">
         {detailOrder && <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} readOnly />}
       </Modal>

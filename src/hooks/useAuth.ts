@@ -40,6 +40,13 @@ export function useAuth() {
 
   useEffect(() => {
     let cancelled = false
+    let authEventTimer: ReturnType<typeof setTimeout> | undefined
+    const handleAuthError = (error: unknown) => {
+      if (cancelled) return
+      console.error('Error initializing auth:', error)
+      setUser(null)
+      setLoading(false)
+    }
     // ใช้ non-async callback เพื่อไม่ return Promise (ซึ่ง Supabase internals อาจตีความผิด)
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (cancelled) return
@@ -53,15 +60,17 @@ export function useAuth() {
       setSupabaseUser(session?.user ?? null)
       if (session?.user) {
         ensureSessionDay()
-        void handleSessionWithMfaCheck(session)
+        void handleSessionWithMfaCheck(session).catch(handleAuthError)
       } else {
         setLoading(false)
       }
-    })
+    }).catch(handleAuthError)
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (cancelled) return
+      clearTimeout(authEventTimer)
       // ระหว่างบังคับออกจากระบบข้ามวัน event ที่ยังพก session เก่ามาให้ข้ามไป
       if (dailySignOutRef.current && session?.user) return
       setSupabaseUser(session?.user ?? null)
@@ -73,7 +82,12 @@ export function useAuth() {
           setLoading(false)
           return
         }
-        void handleSessionWithMfaCheck(session)
+        // Auth notifications run under Supabase's auth lock. Defer API work
+        // so getSession/profile/MFA calls only start after it is released.
+        authEventTimer = setTimeout(() => {
+          if (cancelled || dailySignOutRef.current) return
+          void handleSessionWithMfaCheck(session).catch(handleAuthError)
+        }, 0)
       } else {
         setUser(null)
         setMfaPending(false)
@@ -84,6 +98,7 @@ export function useAuth() {
 
     return () => {
       cancelled = true
+      clearTimeout(authEventTimer)
       subscription.unsubscribe()
     }
   }, [])
@@ -190,9 +205,10 @@ export function useAuth() {
     })()
 
     authFlowRef.current = { userId: authUser.id, promise }
-    void promise.finally(() => {
+    const clearAuthFlow = () => {
       if (authFlowRef.current?.promise === promise) authFlowRef.current = null
-    })
+    }
+    void promise.then(clearAuthFlow, clearAuthFlow)
     return promise
   }
 

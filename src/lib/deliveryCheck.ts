@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx'
+import { sha256BytesHex } from './fileHash'
 
 const DELIVERY_HEADER_ALIASES = {
   pickupAt: ['เวลาสร้าง', 'PU time'],
@@ -190,6 +191,5 @@ export async function parseDeliveryFile(file: File): Promise<ParsedDeliveryFile>
 }
 
 export async function deliveryFileHash(file: File): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  return sha256BytesHex(new Uint8Array(await file.arrayBuffer()))
 }

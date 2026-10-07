@@ -1058,9 +1058,9 @@ export default function Account() {
   }
 
   return (
-    <div className="space-y-4 md:space-y-8">
-      <div className="sticky top-0 z-10 -mx-3 border-b border-surface-200 bg-white shadow-soft sm:-mx-4 md:-mx-6">
-        <nav className="flex min-w-max flex-nowrap gap-1 overflow-x-auto px-2 py-2 scrollbar-thin sm:gap-3 sm:px-4 md:px-6 md:py-3 lg:px-8">
+    <div className="min-w-0 max-w-full space-y-4 md:space-y-8">
+      <div className="sticky top-0 z-10 -mx-3 min-w-0 border-b border-surface-200 bg-white shadow-soft sm:-mx-4 md:-mx-6">
+        <nav aria-label="เมนูบัญชี" className="account-top-nav flex w-full min-w-0 flex-nowrap gap-1 overflow-x-auto overflow-y-hidden bg-white px-2 py-2 sm:gap-3 sm:px-4 md:px-6 md:py-3 lg:px-8">
           {ACCOUNT_TOP_NAV_ITEMS.filter((item) => (
             (item.section !== 'bank-reconciliation' || canUseBankReconciliation)
             && hasAccess(item.accessKey ?? `account-${item.section}`)
@@ -1078,7 +1078,7 @@ export default function Account() {
                     setActiveTab(item.dashboardTab)
                   }
                 }}
-                className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-t-xl border-b-2 px-2 py-2 text-sm font-semibold transition-colors sm:gap-2 sm:px-4 sm:py-3 sm:text-base ${accountTopNavActive(item) ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
+                className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-t-xl border-b-2 bg-white px-2 py-2 text-sm font-semibold transition-colors sm:gap-2 sm:px-4 sm:py-3 sm:text-base ${accountTopNavActive(item) ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
               >
                 {item.label}
                 {pill && (

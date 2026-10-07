@@ -903,14 +903,14 @@ export default function PurchaseGR() {
                       : isThailand ? 'border-sky-300 bg-sky-50 text-sky-800' : 'border-orange-300 bg-orange-50 text-orange-800'
                   }`}
                 >
-                  <div className="flex h-full items-start justify-between gap-3">
+                  <div className="h-full">
                     <button
                       onClick={() => openReceive(po, false)}
-                      className={`min-w-0 flex-1 text-left font-medium transition-colors ${
+                      className={`block w-full min-w-0 text-left font-medium transition-colors ${
                         embedDark ? 'hover:text-sky-100' : 'hover:text-blue-800'
                       }`}
                     >
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2 pr-12">
                         <span className="text-sm whitespace-nowrap">{po.po_no}</span>
                         <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${
                           isThailand ? 'bg-sky-200 text-sky-800' : 'bg-orange-200 text-orange-800'
@@ -931,7 +931,7 @@ export default function PurchaseGR() {
                       onClick={() => openEtaEdit(po)}
                       aria-label="แก้ไขกำหนดเข้า"
                       title="แก้ไขกำหนดเข้า"
-                      className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border transition-colors ${
+                      className={`absolute right-3 top-2 inline-flex h-9 w-9 items-center justify-center rounded-md border transition-colors ${
                         embedDark
                           ? 'border-sky-600/50 bg-slate-800 text-sky-300 hover:bg-slate-700'
                           : 'border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100'

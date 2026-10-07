@@ -1,7 +1,7 @@
 {
   "name": "tr-erp",
   "private": true,
-  "version": "1.9.6-1",
+  "version": "1.9.6-2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,6 +13,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@noble/hashes": "1.8.0",
     "@react-pdf/renderer": "^4.3.2",
     "@supabase/supabase-js": "^2.91.0",
     "exceljs": "^4.4.0",

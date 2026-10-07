@@ -168,6 +168,29 @@ summary.h-\[112px\] > div:first-child > div:last-child {
   grid-row: 1;
 }
 
+.account-top-nav {
+  scrollbar-width: thin;
+  scrollbar-color: #94a3b8 #ffffff;
+}
+
+.account-top-nav::-webkit-scrollbar {
+  height: 6px;
+}
+
+.account-top-nav::-webkit-scrollbar-track {
+  background: #ffffff;
+}
+
+.account-top-nav::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border: 1px solid #ffffff;
+  border-radius: 999px;
+}
+
+.account-top-nav::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
 summary.h-\[112px\] b.block.truncate[title] {
   grid-column: 1 / -1;
   grid-row: 2;
