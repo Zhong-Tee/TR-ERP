@@ -585,7 +585,7 @@ export async function fetchRecordsForSession(sessionId: string) {
   )
 }
 
-/** Save one QC record (Pass/Fail) — upsert by session_id + item_uid. */
+/** Save by stable unit identity; UID is a display/scanning label, not identity. */
 export async function saveQcRecord(
   sessionId: string,
   item: { uid: string; source_order_id?: string; source_order_item_id?: string; unit_index?: number; status: 'pass' | 'fail' | 'pending'; fail_reason?: string | null; product_code?: string; product_name?: string; bill_no?: string; ink_color?: string | null; font?: string | null; floor?: string; cartoon_name?: string; line1?: string; line2?: string; line3?: string; qty?: number; remark?: string },
@@ -622,10 +622,22 @@ export async function saveQcRecord(
     qty: item.qty ?? 1,
     remark: item.remark ?? null,
   }
-  const conflictColumns = item.source_order_item_id && item.unit_index ? 'session_id,order_item_id,unit_index' : 'session_id,item_uid'
-  const { data, error } = await supabase.from('qc_records').upsert(row, {
-    onConflict: conflictColumns,
-  }).select('*').single()
+  let write
+  if (item.source_order_item_id && item.unit_index) {
+    write = supabase.from('qc_records').upsert(row, {
+      onConflict: 'session_id,order_item_id,unit_index',
+    })
+  } else {
+    // A legacy UID must never overwrite a record belonging to a stable unit.
+    const { data: existing, error: lookupError } = await supabase.from('qc_records')
+      .select('id').eq('session_id', sessionId).eq('item_uid', item.uid)
+      .or('order_item_id.is.null,unit_index.is.null').maybeSingle()
+    if (lookupError) throw lookupError
+    write = existing
+      ? supabase.from('qc_records').update(row).eq('id', existing.id)
+      : supabase.from('qc_records').insert(row)
+  }
+  const { data, error } = await write.select('*').single()
   if (error) throw error
   if (item.status === 'pass' || item.status === 'fail') {
     const { data: session } = await supabase.from('qc_sessions').select('start_time').eq('id', sessionId).maybeSingle()
@@ -1329,7 +1341,7 @@ export async function fetchQcCategoryGroups(): Promise<QCCategoryGroup[]> {
   }))
 }
 
-/** ผลตรวจล่าสุดต่อ UID จากทุก session ของใบงานเดียวกัน */
+/** ผลตรวจล่าสุดต่อชิ้นงานจริง จากทุก session ของใบงานเดียวกัน */
 export async function fetchLatestRecordsForWorkOrder(workOrderName: string) {
   const sessions = await fetchAllQueryPages<{ id: string }>((from, to) =>
     supabase
@@ -1356,9 +1368,14 @@ export async function fetchLatestRecordsForWorkOrder(workOrderName: string) {
     const timeDiff = new Date(a.last_result_at || 0).getTime() - new Date(b.last_result_at || 0).getTime()
     return timeDiff !== 0 ? timeDiff : a.id.localeCompare(b.id)
   })
-  const latestByUid = new Map<string, QCRecord>()
-  records.forEach((record) => latestByUid.set(record.item_uid, record))
-  return Array.from(latestByUid.values())
+  const latestByIdentity = new Map<string, QCRecord>()
+  records.forEach((record) => {
+    const identity = record.order_item_id && record.unit_index
+      ? `unit:${stableOrderItemUnitKey(record.order_item_id, record.unit_index)}`
+      : `legacy:${record.item_uid}`
+    latestByIdentity.set(identity, record)
+  })
+  return Array.from(latestByIdentity.values())
 }
 
 export async function createQcCategoryGroup(name: string, sortOrder = 0): Promise<QCCategoryGroup> {
