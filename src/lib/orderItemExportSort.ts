@@ -2,7 +2,7 @@ import { identifyCondoStampItems, isCondoStampItem, isCondoStampProductName } fr
 
 /**
  * ลำดับรายการสำหรับ Export (Excel/คลิปบอร์ด): ตรายางคอนโดเรียงชั้น 1→5 ก่อน
- * แล้วตามด้วยสินค้าอื่น (เรียงตาม created_at, id, item_uid)
+ * แล้วตามด้วยสินค้าอื่น (เรียงตาม sort_order แล้วเลขท้าย item_uid)
  */
 
 export function isCondoTierExportProduct(productName: string | null | undefined): boolean {
@@ -33,6 +33,7 @@ export type ExportSortableItem = {
   is_detail_row?: boolean | null
   parent_item_id?: string | null
   created_at?: string | null
+  sort_order?: number | null
   item_uid?: string | null
 }
 
@@ -43,21 +44,30 @@ function compareItems(a: ExportSortableItem, b: ExportSortableItem, aCondo: bool
     const fb = condoFloorSortKey(b.product_type)
     if (fa !== fb) return fa - fb
   }
-  const ta = new Date(a.created_at || 0).getTime()
-  const tb = new Date(b.created_at || 0).getTime()
-  if (ta !== tb) return ta - tb
-  const idCmp = String(a.id || '').localeCompare(String(b.id || ''))
-  if (idCmp !== 0) return idCmp
-  return String(a.item_uid || '').localeCompare(String(b.item_uid || ''))
+  return compareSourceOrder(a, b)
 }
 
-function compareSourceOrder(a: ExportSortableItem, b: ExportSortableItem): number {
-  const ta = new Date(a.created_at || 0).getTime()
-  const tb = new Date(b.created_at || 0).getTime()
+export function itemUidSequence(uid: string | null | undefined): number | null {
+  const match = String(uid || '').match(/-(\d+)$/)
+  return match ? Number(match[1]) : null
+}
+
+export function compareSourceOrder(a: ExportSortableItem, b: ExportSortableItem): number {
+  const position = (item: ExportSortableItem) =>
+    typeof item.sort_order === 'number' && Number.isFinite(item.sort_order)
+      ? item.sort_order : (itemUidSequence(item.item_uid) ?? Infinity)
+  const pa = position(a), pb = position(b)
+  if (pa !== pb) return pa < pb ? -1 : 1
+  const ta = Date.parse(a.created_at || '') || 0
+  const tb = Date.parse(b.created_at || '') || 0
   if (ta !== tb) return ta - tb
-  const idCmp = String(a.id || '').localeCompare(String(b.id || ''))
-  if (idCmp !== 0) return idCmp
-  return String(a.item_uid || '').localeCompare(String(b.item_uid || ''))
+  return String(a.id || '').localeCompare(String(b.id || '')) ||
+    String(a.item_uid || '').localeCompare(String(b.item_uid || ''))
+}
+
+/** Form order follows saved positions, without the export's condo grouping. */
+export function sortOrderItemsForEditing<T extends ExportSortableItem>(items: T[]): T[] {
+  return [...items].sort(compareSourceOrder)
 }
 
 export function compareExportOrderItems(a: ExportSortableItem, b: ExportSortableItem): number {

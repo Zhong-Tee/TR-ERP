@@ -1,3 +1,4 @@
+import { itemUidSequence, sortOrderItemsForEditing } from '../../lib/orderItemExportSort'
 import { parseWebOrderRows } from '../../lib/webOrderImport'
 import React, { useState, useEffect, useRef, useMemo, forwardRef, useImperativeHandle } from 'react'
 import { createPortal } from 'react-dom'
@@ -1238,7 +1239,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         }
 
         if (orderItems && orderItems.length > 0) {
-          const loadedItems = orderItems.map(item => ({ ...item }))
+          const loadedItems = sortOrderItemsForEditing(orderItems).map(item => ({ ...item }))
           setItems(loadedItems)
           const searchTerms: { [key: number]: string } = {}
           loadedItems.forEach((item, idx) => {
@@ -2035,6 +2036,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     : 0
   const baseShippingWaived = hasFreeShippingPromotion || (selectedPromotionIds.length > 0 && !shippingFeeSettings.charge_promotion_orders)
   const shippingCharge = calculateShippingCharge(standardShippingFee, specialAreaSurcharge, baseShippingWaived)
+  const legacyPickupFinancialLocked = !!order && Number(order.shipping_cost || 0) > 0 && isCurrentBillSelfPickup() && formData.channel_code === order.channel_code
   const conversionShippingLocked = !!order?.converted_from_self_pickup_at && order?.fulfillment_method === 'shipping'
   const automaticShippingActive = !conversionShippingLocked && (hasFreeShippingPromotion || shippingFeeSettings.auto_calculate_enabled || shippingFeeSettings.special_area_enabled)
   const promotionsForSelection = useMemo(
@@ -2052,16 +2054,17 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   )
 
   useEffect(() => {
-    if (order?.prebill_price_locked) return
+    if (order?.prebill_price_locked || legacyPickupFinancialLocked) return
     if (!selectedPromotionIds.length) return
     const selected = selectedPromotionIds.map((id) => promotions.find((promotion) => promotion.id === id)).filter(Boolean) as PromotionDefinition[]
     if (!selected.some((promotion) => promotion.rule_type !== 'legacy')) return
     const expected = totalPromotionDiscount(livePromotionResults)
     setDiscountType('baht')
     setFormData((current) => current.discount === expected ? current : { ...current, discount: expected })
-  }, [livePromotionResults, promotions, selectedPromotionIds, order?.prebill_price_locked])
+  }, [livePromotionResults, promotions, selectedPromotionIds, order?.prebill_price_locked, legacyPickupFinancialLocked])
 
   useEffect(() => {
+    if (legacyPickupFinancialLocked) return
     if (isCurrentBillSelfPickup()) {
       setFormData((current) => current.shipping_cost === 0 ? current : { ...current, shipping_cost: 0 })
       return
@@ -2075,7 +2078,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     }
     if (nextShipping == null) return
     setFormData((current) => current.shipping_cost === nextShipping ? current : { ...current, shipping_cost: nextShipping })
-  }, [hasFreeShippingPromotion, shippingFeeSettings.auto_calculate_enabled, shippingFeeSettings.special_area_enabled, baseShippingWaived, shippingCharge.total_shipping_fee, shippingCharge.special_area_surcharge, order?.prebill_price_locked, formData.channel_code, order?.fulfillment_method, channelMeta, conversionShippingLocked])
+  }, [hasFreeShippingPromotion, shippingFeeSettings.auto_calculate_enabled, shippingFeeSettings.special_area_enabled, baseShippingWaived, shippingCharge.total_shipping_fee, shippingCharge.special_area_surcharge, order?.prebill_price_locked, formData.channel_code, order?.fulfillment_method, channelMeta, conversionShippingLocked, legacyPickupFinancialLocked])
 
   const isManualPriceChannel = CHANNELS_MANUAL_PRICE.includes(formData.channel_code || '')
 
@@ -2439,7 +2442,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       const discountBahtForSave = getDiscountInBaht(calculatedPrice, formData.discount, discountType)
       let calculatedTotal: number
       // ใช้ยอดเดียวกับหน้าจอ: รวมภาษีแล้ว ไม่บวก VAT เพิ่ม
-      calculatedTotal = calculatedPrice + (isCurrentBillSelfPickup() ? 0 : formData.shipping_cost) - discountBahtForSave
+      calculatedTotal = calculatedPrice + (isCurrentBillSelfPickup() && !legacyPickupFinancialLocked ? 0 : formData.shipping_cost) - discountBahtForSave
       
       // ปัดเศษให้เป็น 2 ทศนิยมเพื่อหลีกเลี่ยง floating point error
       calculatedTotal = Math.round(calculatedTotal * 100) / 100
@@ -2553,7 +2556,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           .map((id) => promotions.find((promotion) => promotion.id === id)?.name)
           .filter(Boolean)
           .join(', ') || (order?.prebill_price_locked ? order.promotion : null),
-        shipping_cost: selfPickupForSave ? 0 : formData.shipping_cost,
+        shipping_cost: selfPickupForSave && !legacyPickupFinancialLocked ? 0 : formData.shipping_cost,
         fulfillment_method: selfPickupForSave ? 'self_pickup' : 'shipping',
         // ช่องทางรับสินค้าเองต้องไม่มีเลขพัสดุ แม้บิลเก่าจะเคยมีค่าค้างอยู่
         tracking_number: isCurrentBillSelfPickup(channelCodeForSave) ? null : formDataForDb.tracking_number,
@@ -2573,14 +2576,19 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       }
 
       let orderId: string
+      let reusedApprovedPayment = false
       let currentBillNo: string | null = null
       if (order) {
         // แก้ไขบิล: คง admin_user (ผู้สร้างบิล) ไว้ตามเดิม — บันทึกเฉพาะผู้แก้ไขล่าสุด
-        const { error } = await supabase
+        const { data: updatedOrder, error } = await supabase
           .from('or_orders')
           .update({ ...orderData, last_edited_by: currentUserName })
           .eq('id', order.id)
+          .select('status')
+          .single()
         if (error) throw error
+        reusedApprovedPayment = statusToSave === 'ลงข้อมูลเสร็จสิ้น'
+          && ['รอตรวจคำสั่งซื้อ', 'ตรวจสอบแล้ว', 'ไม่ต้องออกแบบ'].includes(updatedOrder.status)
         orderId = order.id
         currentBillNo = order.bill_no || null
       } else {
@@ -2602,6 +2610,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       
       if (itemsToSave.length > 0) {
         // กรองเฉพาะรายการที่มี product_id และเตรียมข้อมูล
+        let nextItemSequence = Math.max(0, ...itemsToSave.map(item => itemUidSequence(item.item_uid) || 0))
         const itemsToInsert = itemsToSave
           .filter((item, idx) => {
             if (!item.product_id) {
@@ -2615,13 +2624,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             return true
           })
           .map((item, index) => {
-            // ตั้งชื่อ item_uid เป็น bill_no-1, bill_no-2, ... ตามลำดับรายการ
-            const itemUid = currentBillNo ? `${currentBillNo}-${index + 1}` : `${formData.channel_code}-${Date.now()}-${index}-${Math.random().toString(36).substring(2, 9)}`
+            // รักษา UID เดิม; จัดลำดับแยกด้วย sort_order (RPC จัดสรร UID ใหม่อย่าง atomic)
+            const itemUid = item.item_uid || (currentBillNo ? `${currentBillNo}-${++nextItemSequence}` : `${formData.channel_code}-${Date.now()}-${index}-${Math.random().toString(36).substring(2, 9)}`)
             
             return {
               id: item.id || crypto.randomUUID(),
               order_id: orderId,
               item_uid: itemUid,
+              sort_order: index + 1,
               product_id: item.product_id!,
               product_name: item.product_name || '',
               quantity: item.quantity || 1,
@@ -2772,7 +2782,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           }
         }
 
-        if (channelHasSlipVerification) {
+        if (channelHasSlipVerification && !reusedApprovedPayment) {
           const shouldVerifySlips =
             uploadedSlipPaths.length > 0 ||
             originalStatus === 'ลงข้อมูลผิด' ||

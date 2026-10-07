@@ -151,6 +151,7 @@ export interface Order {
 }
 
 export interface OrderItem {
+  sort_order?: number | null
   id: string
   order_id: string
   item_uid: string

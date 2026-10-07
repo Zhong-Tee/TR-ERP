@@ -147,6 +147,7 @@ export default function ManualSlipCheckSection() {
       const { data, error } = await supabase
         .from('ac_manual_slip_checks')
         .select('*')
+        .is('duplicate_of', null)
         .order('submitted_at', { ascending: false })
       if (error) throw error
       setRows((data || []) as ManualSlipRow[])
