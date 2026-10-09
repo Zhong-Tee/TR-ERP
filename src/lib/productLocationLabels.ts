@@ -20,6 +20,7 @@ export interface ProductLocationLabelInput extends ProductLocationLabelRow {
 }
 
 export interface AuditLocationSnapshotEntry {
+  sort_order?: number
   key: string
   label_type: ProductLocationLabelType
   location_id: string | null
@@ -170,6 +171,7 @@ export async function loadProductLocationSnapshotMap(
           label_type: 'storage',
           location_id: locationId,
           code: location.code,
+          sort_order: Number(location.sort_order || 0),
           name: storageLabels.get(locationId) || location.name || location.code,
           qty: Number(stocks.get(locationId) || 0),
         })

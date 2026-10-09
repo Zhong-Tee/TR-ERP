@@ -1,6 +1,7 @@
 import { getPublicUrl } from '../../lib/qcApi'
 import type { InventoryAuditItem } from '../../types'
 import AuditLocationDisplay from './AuditLocationDisplay'
+import { hasAuditStockDifference } from '../../lib/auditRules'
 
 interface VarianceTableProps {
   items: InventoryAuditItem[]
@@ -9,7 +10,7 @@ interface VarianceTableProps {
 
 export default function VarianceTable({ items, showOnlyMismatch }: VarianceTableProps) {
   const filtered = showOnlyMismatch
-    ? items.filter((i) => i.is_counted && Number(i.variance) !== 0)
+    ? items.filter(hasAuditStockDifference)
     : items.filter((i) => i.is_counted)
 
   return (
@@ -36,7 +37,7 @@ export default function VarianceTable({ items, showOnlyMismatch }: VarianceTable
           ) : (
             filtered.map((item, idx) => {
               const variance = Number(item.variance || 0)
-              const isMatch = variance === 0
+              const isMatch = !hasAuditStockDifference(item)
               const rowClass = isMatch
                 ? 'bg-green-50'
                 : Math.abs(variance) <= 2
@@ -70,12 +71,13 @@ export default function VarianceTable({ items, showOnlyMismatch }: VarianceTable
                   <td className="p-3 text-xs text-gray-600">
                     <AuditLocationDisplay entries={item.location_snapshot} fallback={item.storage_location || '-'} />
                   </td>
-                  <td className="p-3 text-right font-medium">{Number(item.system_qty).toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}</td>
-                  <td className="p-3 text-right font-medium">{Number(item.counted_qty).toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}</td>
+                  <td className="p-3 text-right font-medium">{Number(item.system_qty).toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}{item.count_mode === 'separate' && item.system_safety_stock != null && <div className="text-xs">Safety: {Number(item.system_safety_stock)}</div>}</td>
+                  <td className="p-3 text-right font-medium">{Number(item.counted_qty).toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}{item.count_mode === 'separate' && item.system_safety_stock != null && <div className="text-xs">Safety: {item.counted_safety_stock ?? '-'}</div>}</td>
                   <td className={`p-3 text-right font-bold ${
                     isMatch ? 'text-green-600' : variance > 0 ? 'text-blue-600' : 'text-red-600'
                   }`}>
                     {isMatch ? '0' : (variance > 0 ? '+' : '') + variance.toLocaleString()}
+                    {item.count_mode === 'separate' && item.counted_safety_stock != null && <div className="text-xs">Safety: {Number(item.counted_safety_stock) - Number(item.system_safety_stock || 0)}</div>}
                   </td>
                 </tr>
               )

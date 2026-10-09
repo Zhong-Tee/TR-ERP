@@ -1,5 +1,6 @@
 import { supabase } from './supabase'
 import { fetchAllSupabasePages } from './supabasePagination'
+import { auditDateBounds, compareAuditItems, hasAuditStockDifference, auditAdjustmentTarget } from './auditRules'
 import {
   fetchDistinctProductLocationNames,
   formatLocationSnapshot,
@@ -114,13 +115,12 @@ export async function fetchAuditById(id: string) {
 }
 
 export async function fetchAuditItems(auditId: string) {
-  const { data, error } = await supabase
+  const data = await fetchAllSupabasePages<InventoryAuditItem>((from, to) => supabase
     .from('inv_audit_items')
-    .select('*, pr_products(product_code, product_name, storage_location, product_category, unit_name)')
+    .select('*, pr_products(product_code, product_name, product_type, storage_location, product_category, unit_name)')
     .eq('audit_id', auditId)
-    .order('created_at', { ascending: true })
-  if (error) throw error
-  return (data || []) as InventoryAuditItem[]
+    .order('id', { ascending: true }).range(from, to))
+  return data.sort(compareAuditItems)
 }
 
 export async function fetchAuditorAssignedAudits(userId: string) {
@@ -136,6 +136,20 @@ export async function fetchAuditorAssignedAudits(userId: string) {
 
 // ── Create Audit ─────────────────────────────────────────────
 
+export async function excludeDerivedAuditProducts<T extends { id: string }>(products: T[]): Promise<T[]> {
+  const configs = await fetchAllSupabasePages<{ fg_product_id: string }>((from, to) => supabase.from('roll_material_configs').select('fg_product_id').order('id').range(from, to))
+  const derived = new Set(configs.map(row => row.fg_product_id))
+  return products.filter(product => !derived.has(product.id))
+}
+
+export async function fetchMovementAuditProductIds(start: string, end: string): Promise<string[]> {
+  const bounds = auditDateBounds(start, end)
+  const data = await fetchAllSupabasePages<{ product_id: string }>((from, to) => supabase
+    .rpc('rpc_audit_movement_products', { p_from: bounds.from, p_to: bounds.to })
+    .order('product_id').range(from, to))
+  return data.map(row => row.product_id)
+}
+
 interface CreateAuditInput {
   auditType: AuditType
   scopeFilter?: Record<string, string[]>
@@ -145,7 +159,7 @@ interface CreateAuditInput {
   showSystemQty?: boolean
 }
 
-type AuditStockSnapshot = { systemQty: number; systemSafetyStock: number | null }
+type AuditStockSnapshot = { systemQty: number; systemSafetyStock: number | null; systemReserved?: number }
 
 /** Build the Audit snapshot. ST uses the Warehouse aggregate of linked production SKUs. */
 async function loadAuditStockSnapshots(productIds: string[]): Promise<Record<string, AuditStockSnapshot>> {
@@ -174,21 +188,22 @@ async function loadAuditStockSnapshots(productIds: string[]): Promise<Record<str
 
   const sourceIds = [...new Set(sourceRows.map((row) => row.product_id))]
   const balanceProductIds = [...new Set([...productIds, ...sourceIds])]
-  const balances: { product_id: string; on_hand: number | null; safety_stock: number | null }[] = []
+  const balances: { product_id: string; on_hand: number | null; safety_stock: number | null; reserved: number | null }[] = []
   for (const productIdBatch of chunkValues(balanceProductIds)) {
     const { data, error } = await supabase
       .from('inv_stock_balances')
-      .select('product_id, on_hand, safety_stock')
+      .select('product_id, on_hand, safety_stock, reserved')
       .in('product_id', productIdBatch)
     if (error) throw error
     balances.push(...(data || []))
   }
 
-  const balanceMap = new Map<string, { onHand: number; safetyStock: number }>()
+  const balanceMap = new Map<string, { onHand: number; safetyStock: number; reserved: number }>()
   balances.forEach((balance) => {
     balanceMap.set(balance.product_id, {
       onHand: Number(balance.on_hand || 0),
       safetyStock: Number(balance.safety_stock || 0),
+      reserved: Number(balance.reserved || 0),
     })
   })
 
@@ -208,7 +223,7 @@ async function loadAuditStockSnapshots(productIds: string[]): Promise<Record<str
         const balance = balanceMap.get(sourceId)
         return sum + (balance?.onHand || 0) + (balance?.safetyStock || 0)
       }, 0)
-      snapshots[productId] = { systemQty, systemSafetyStock: null }
+      snapshots[productId] = { systemQty, systemSafetyStock: null, systemReserved: [...(sourceIdsByGroup.get(groupId) || [])].reduce((sum, id) => sum + (balanceMap.get(id)?.reserved || 0), 0) }
       return
     }
 
@@ -216,12 +231,15 @@ async function loadAuditStockSnapshots(productIds: string[]): Promise<Record<str
     snapshots[productId] = {
       systemQty: balance?.onHand || 0,
       systemSafetyStock: balance?.safetyStock ?? 0,
+      systemReserved: balance?.reserved || 0,
     }
   })
   return snapshots
 }
 
 export async function createAudit(input: CreateAuditInput) {
+  const movementIds = input.auditType === 'movement' ? await fetchMovementAuditProductIds(input.scopeFilter?.dates?.[0] || '', input.scopeFilter?.dates?.[1] || '') : null
+  if (movementIds && movementIds.length === 0) throw new Error('ไม่พบสินค้าที่เคลื่อนไหวในช่วงวันที่เลือก')
   const auditNo = await generateAuditNo()
 
   // 1. สร้าง audit header
@@ -246,7 +264,7 @@ export async function createAudit(input: CreateAuditInput) {
     // 2. ดึงสินค้าตาม scope
     let productQuery = supabase
       .from('pr_products')
-      .select('id, product_code, product_name, product_category, storage_location, unit_name')
+      .select('id, product_code, product_name, product_type, product_category, storage_location, unit_name')
       .eq('is_active', true)
 
     if (input.auditType === 'category' && input.scopeFilter?.categories?.length) {
@@ -259,6 +277,11 @@ export async function createAudit(input: CreateAuditInput) {
     let products
     try {
       products = await fetchAllSupabasePages((from, to) => productQuery.range(from, to))
+      products = await excludeDerivedAuditProducts(products)
+      if (movementIds) {
+        const moved = new Set(movementIds)
+        products = products.filter(product => moved.has(product.id))
+      }
       if (!products.length) throw new Error('ไม่พบสินค้าตามเงื่อนไขที่เลือก')
     } catch (error) {
       throw new AuditCreateError('products', error)
@@ -299,6 +322,9 @@ export async function createAudit(input: CreateAuditInput) {
       const locationSummary = formatLocationSnapshot(locationSnapshot)
       return {
         audit_id: audit.id,
+        count_mode: 'separate',
+        product_type: snapshot.systemSafetyStock === null ? 'ST' : (p.product_type || 'FG'),
+        system_reserved: snapshot.systemReserved || 0,
         product_id: p.id,
         system_qty: snapshot.systemQty,
         counted_qty: 0,
@@ -363,15 +389,17 @@ interface SaveCountInput {
 }
 
 export async function saveCount(input: SaveCountInput) {
+  if (!Number.isFinite(input.countedQty) || input.countedQty < 0 || (input.countedSafetyStock != null && (!Number.isFinite(input.countedSafetyStock) || input.countedSafetyStock < 0))) throw new Error('กรุณากรอกจำนวนที่ไม่ติดลบ')
   const now = new Date().toISOString()
 
   // 1. ดึง system_qty เพื่อคำนวณ variance
   const { data: item, error: fetchErr } = await supabase
     .from('inv_audit_items')
-    .select('system_qty, system_safety_stock')
+    .select('system_qty, system_safety_stock, count_mode')
     .eq('id', input.auditItemId)
     .single()
   if (fetchErr) throw fetchErr
+  if (item.count_mode === 'separate' && Number(item.system_safety_stock || 0) > 0 && input.countedSafetyStock == null) throw new Error('กรุณากรอกจำนวน Safety ที่นับได้ (กรอก 0 หากไม่พบ)')
 
   const systemQty = Number(item.system_qty || 0)
   const variance = input.countedQty - systemQty
@@ -422,8 +450,8 @@ export async function submitAuditForReview(auditId: string) {
   if (totalItems === 0) throw new Error('ยังไม่มีรายการที่ถูกนับ')
 
   // Quantity accuracy
-  const qtyMatched = countedItems.filter((i) => Number(i.variance) === 0).length
-  const totalVariance = countedItems.reduce((sum, i) => sum + Math.abs(Number(i.variance || 0)), 0)
+  const qtyMatched = countedItems.filter((i) => !hasAuditStockDifference(i)).length
+  const totalVariance = countedItems.reduce((sum, i) => sum + Math.abs(Number(i.variance || 0)) + (i.count_mode === 'separate' && i.counted_safety_stock != null ? Math.abs(Number(i.counted_safety_stock) - Number(i.system_safety_stock || 0)) : 0), 0)
   const accuracyPercent = (qtyMatched / totalItems) * 100
 
   // Location accuracy
@@ -492,7 +520,7 @@ export async function closeAudit(auditId: string, reviewedBy: string) {
 
 export async function createAdjustmentFromAudit(auditId: string) {
   const items = await fetchAuditItems(auditId)
-  const countedVarianceItems = items.filter((i) => i.is_counted && Number(i.variance) !== 0)
+  const countedVarianceItems = items.filter(hasAuditStockDifference)
   const locationItems = items.filter((i) => i.location_match === false && i.actual_location)
 
   const varianceProductIds = [...new Set(countedVarianceItems.map((item) => item.product_id))]
@@ -526,18 +554,7 @@ export async function createAdjustmentFromAudit(auditId: string) {
 
   if (varianceItems.length) {
     const rpcItems = varianceItems.map((item) => {
-      const targetTotal = Number(item.counted_qty || 0)
-      const targetSafety = item.counted_safety_stock != null
-        ? Number(item.counted_safety_stock)
-        : Number(item.system_safety_stock || 0)
-      if (targetTotal < targetSafety) {
-        throw new Error(`ยอดนับรวมของ ${item.pr_products?.product_code || item.product_id} น้อยกว่า Safety Stock`)
-      }
-      return {
-        product_id: item.product_id,
-        target_on_hand: targetTotal - targetSafety,
-        target_safety: targetSafety,
-      }
+      return auditAdjustmentTarget(item)
     })
     const { data, error } = await supabase.rpc('rpc_create_inventory_adjustment', {
       p_adjustment_type: 'stocktake_reconcile',
@@ -576,10 +593,11 @@ export async function createAdjustmentFromAudit(auditId: string) {
 
   // เชื่อม audit กับ adjustment เมื่อมีผลต่างจำนวนจริง
   if (adjustment) {
-    await supabase
+    const { error } = await supabase
       .from('inv_audits')
       .update({ adjustment_id: adjustment.id })
       .eq('id', auditId)
+    if (error) throw error
   }
 
   return adjustment

@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-09",
+  "timezone": "Asia/Bangkok",
+  "scope": "Warehouse Audit movement scope, store creation, separate safety counts, derived FG exclusion and ST retention",
+  "migration": {
+    "version": "643",
+    "installed": true,
+    "openAuditsBeforeCutover": 0,
+    "existingAuditRecordsUnchanged": true,
+    "stockBalancesUnchanged": true
+  },
+  "applicationTests": {
+    "files": 5,
+    "passed": 26,
+    "failed": 0,
+    "coverage": ["All five creation scopes", "Derived FG excluded", "ST retained with linked stock snapshot", "Separate normal and safety adjustment targets", "Safety-only discrepancy", "Empty and failed creation cleanup", "Bangkok date boundaries", "Location and product-group sorting", "Blind count hides location quantities", "Movement results beyond 1000 rows"]
+  },
+  "databaseChecks": {
+    "passed": 19,
+    "testChangesRolledBack": true,
+    "coverage": ["Store creation and dependency reads", "Store cannot close or complete Audit", "Store cannot approve through RPC or direct table update", "Creator spoofing blocked", "Derived FG insertion blocked", "Movement uniqueness and exact date boundaries", "Linked ST source movement", "Posted location transfers", "Safety required and negative counts rejected", "Snapshot immutable", "Targets do not subtract Safety twice", "Pending adjustment leaves stock unchanged", "Administrator can still close Audit"]
+  },
+  "verification": {
+    "typescript": "passed",
+    "productionBuild": "passed",
+    "newRuleAndTestFilesLint": "passed",
+    "diffWhitespace": "passed"
+  },
+  "frontendProductionDeployed": false,
+  "existingLimitations": ["ST stock adjustments must use the linked production SKU", "Count per physical storage location remains outside this change"]
+}

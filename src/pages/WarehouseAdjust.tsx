@@ -30,9 +30,9 @@ interface RollMapping {
 type AdjustmentType = 'audit_adjustment' | 'stocktake_reconcile' | 'safety_reclass'
 
 const ADJUSTMENT_STATUS: Record<string, { label: string; className: string }> = {
-  pending: { label: 'รออนุมัติ', className: 'bg-amber-500 text-white' },
-  approved: { label: 'อนุมัติแล้ว', className: 'bg-green-500 text-white' },
-  cancelled: { label: 'ยกเลิก', className: 'bg-gray-400 text-white' },
+  pending: { label: 'รออนุมัติ', className: 'text-amber-600' },
+  approved: { label: 'อนุมัติแล้ว', className: 'text-green-600' },
+  cancelled: { label: 'ยกเลิก', className: 'text-gray-500' },
 }
 
 const TEMPLATE_HEADERS = ['product_code', 'on_hand', 'safety_stock'] as const
@@ -773,7 +773,7 @@ export default function WarehouseAdjust() {
             <table className="w-full">
               <thead>
                 <tr className="bg-blue-600 text-white">
-                  <th className="p-3 text-left font-semibold rounded-tl-xl">เลขที่ปรับสต๊อค</th>
+                  <th className="min-w-[190px] p-3 text-left font-semibold whitespace-nowrap rounded-tl-xl">เลขที่ปรับสต๊อค</th>
                   <th className="p-3 text-left font-semibold">ประเภท</th>
                   <th className="p-3 text-left font-semibold">หัวข้อการปรับ</th>
                   <th className="p-3 text-left font-semibold">สถานะ</th>
@@ -787,7 +787,7 @@ export default function WarehouseAdjust() {
               <tbody>
                 {adjustments.map((adjustment, idx) => (
                   <tr key={adjustment.id} className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
-                    <td className="p-3 font-medium">{adjustment.adjust_no}</td>
+                    <td className="min-w-[190px] p-3 font-medium whitespace-nowrap">{adjustment.adjust_no}</td>
                     <td className="p-3 text-sm text-gray-700">
                       {adjustment.adjustment_type === 'safety_reclass'
                         ? 'โยก Safety'
@@ -797,7 +797,7 @@ export default function WarehouseAdjust() {
                     </td>
                     <td className="p-3 text-sm text-gray-700">{adjustment.note || '-'}</td>
                     <td className="p-3">
-                      <span className={`inline-flex px-3 py-1 rounded-full text-xs font-bold ${ADJUSTMENT_STATUS[adjustment.status]?.className || 'bg-gray-200 text-gray-700'}`}>
+                      <span className={`text-sm font-semibold whitespace-nowrap ${ADJUSTMENT_STATUS[adjustment.status]?.className || 'text-gray-700'}`}>
                         {updating === adjustment.id ? 'กำลังอนุมัติ...' : (ADJUSTMENT_STATUS[adjustment.status]?.label || adjustment.status)}
                       </span>
                     </td>
@@ -806,13 +806,13 @@ export default function WarehouseAdjust() {
                     <td className="p-3 text-sm">{adjustment.approved_by ? (userMap[adjustment.approved_by] || '-') : '-'}</td>
                     <td className="p-3 text-center">{itemCountMap[adjustment.id] || 0}</td>
                     <td className="p-3 text-right">
-                      <div className="flex gap-2 justify-end">
+                      <div className="flex gap-1.5 justify-end">
                         <button
                           type="button"
                           onClick={() => openView(adjustment)}
-                          className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-semibold"
+                          className="px-2 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-xs font-semibold whitespace-nowrap"
                         >
-                          ดูรายละเอียด
+                          ดู
                         </button>
                         {adjustment.status === 'pending' && (
                           <>
@@ -820,7 +820,7 @@ export default function WarehouseAdjust() {
                               type="button"
                               onClick={() => openCancelAdjustment(adjustment)}
                               disabled={updating === adjustment.id}
-                              className="px-3 py-1.5 bg-red-50 text-red-700 border border-red-200 rounded-lg hover:bg-red-100 text-sm font-semibold disabled:opacity-50"
+                              className="px-2 py-1 bg-red-50 text-red-700 border border-red-200 rounded-md hover:bg-red-100 text-xs font-semibold whitespace-nowrap disabled:opacity-50"
                             >
                               ยกเลิก
                             </button>
@@ -829,7 +829,7 @@ export default function WarehouseAdjust() {
                                 type="button"
                                 onClick={() => void openApproveAdjustment(adjustment)}
                                 disabled={updating === adjustment.id}
-                                className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-semibold disabled:opacity-50"
+                                className="px-2 py-1 bg-green-600 text-white rounded-md hover:bg-green-700 text-xs font-semibold whitespace-nowrap disabled:opacity-50"
                               >
                                 {updating === adjustment.id ? 'กำลังอนุมัติ...' : 'อนุมัติ'}
                               </button>

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { fetchAuditById, fetchAuditItems, saveCount, submitAuditForReview } from '../../lib/auditApi'
 import { getPublicUrl } from '../../lib/qcApi'
+import { auditProductGroup } from '../../lib/auditRules'
 import type { InventoryAudit, InventoryAuditItem } from '../../types'
 import BarcodeScanner from './BarcodeScanner'
 import CountProgress from './CountProgress'
@@ -33,6 +34,7 @@ export default function MobileCountView() {
   const [toast, setToast] = useState<Toast | null>(null)
   const [confirmModal, setConfirmModal] = useState<{ message: string; onConfirm: () => void } | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
+  const [groupFilter, setGroupFilter] = useState('')
 
   function showToast(type: ToastType, message: string) {
     setToast({ type, message })
@@ -73,13 +75,13 @@ export default function MobileCountView() {
 
   const filteredItems = useMemo(() => {
     const keyword = searchTerm.trim().toLowerCase()
-    if (!keyword) return items
     return items.filter((item) => {
+      if (groupFilter && auditProductGroup(item) !== groupFilter) return false
       const code = item.pr_products?.product_code?.toLowerCase() || ''
       const name = item.pr_products?.product_name?.toLowerCase() || ''
       return code.includes(keyword) || name.includes(keyword)
     })
-  }, [items, searchTerm])
+  }, [items, searchTerm, groupFilter])
 
   function handleScanResult(code: string) {
     setScannerOpen(false)
@@ -191,6 +193,7 @@ export default function MobileCountView() {
             <div>
               <div className="text-xs text-slate-300">Audit</div>
               <div className="font-bold text-white">{audit.audit_no}</div>
+              {audit.audit_type === 'movement' && <div className="text-xs text-slate-300">{audit.scope_filter?.dates?.join(' ถึง ')}</div>}
             </div>
             <button
               onClick={() => navigate('/warehouse/audit')}
@@ -235,6 +238,12 @@ export default function MobileCountView() {
       <div className="flex-1 max-w-lg mx-auto w-full px-4 py-3 pb-24">
         {mode === 'list' && (
           <div className="space-y-3">
+            <label className="block text-sm text-gray-700">กลุ่มสินค้า
+              <select value={groupFilter} onChange={event => setGroupFilter(event.target.value)} className="ml-2 border rounded-lg p-2 bg-white">
+                <option value="">ทั้งหมด</option>
+                {['RM', 'FG', 'ST', 'อื่นๆ'].map(group => <option key={group} value={group}>{group}</option>)}
+              </select>
+            </label>
             <div className="relative">
               <svg
                 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none"
@@ -287,7 +296,8 @@ export default function MobileCountView() {
               return (
                 <button
                   key={item.id}
-                  onClick={() => setSelectedItem(item)}
+                  onClick={() => { if (audit.status === 'in_progress') setSelectedItem(item) }}
+                  disabled={audit.status !== 'in_progress'}
                   className={`w-full flex items-center gap-3 p-3 rounded-xl border-2 text-left transition-all active:scale-[0.98] ${
                     isCounted
                       ? 'border-green-200 bg-green-50'
@@ -309,7 +319,7 @@ export default function MobileCountView() {
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="font-semibold text-sm text-gray-900 truncate">{productCode}</div>
+                    <div className="font-semibold text-sm text-gray-900 truncate"><span className="mr-2 text-xs text-blue-700">{auditProductGroup(item)}</span>{productCode}</div>
                     <div className="text-xs text-gray-500 truncate">{productName}</div>
                     <div className="text-xs text-red-600 font-medium mt-0.5">
                       {Array.isArray(item.location_snapshot) && item.location_snapshot.length > 0

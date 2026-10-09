@@ -36,9 +36,13 @@ export default function ProductCountCard({ item, showSystemQty = false, onSave, 
   const productName = item.pr_products?.product_name || ''
   const imageUrl = getPublicUrl('product-images', productCode, '.jpg')
   const systemLocation = item.system_location || item.storage_location || '-'
+  const separate = item.count_mode === 'separate'
+  const [showSafety, setShowSafety] = useState(Number(item.system_safety_stock || 0) > 0 || item.counted_safety_stock != null)
 
   function canSave() {
     if (countedQty === '' || isNaN(Number(countedQty))) return false
+    if (!Number.isFinite(Number(countedQty)) || Number(countedQty) < 0) return false
+    if (showSafety && (countedSafetyStock === '' || !Number.isFinite(Number(countedSafetyStock)) || Number(countedSafetyStock) < 0)) return false
     if (locationMatch === null) return false
     if (locationMatch === false && !actualLocation.trim()) return false
     return true
@@ -51,7 +55,7 @@ export default function ProductCountCard({ item, showSystemQty = false, onSave, 
       locationMatch: locationMatch!,
       actualLocation: locationMatch === false ? actualLocation.trim() : undefined,
       actualLocationKey: locationMatch === false ? actualLocationKey : undefined,
-      countedSafetyStock: countedSafetyStock !== '' ? Number(countedSafetyStock) : undefined,
+      countedSafetyStock: countedSafetyStock !== '' ? Number(countedSafetyStock) : separate && item.system_safety_stock != null ? 0 : undefined,
     })
   }
 
@@ -83,7 +87,7 @@ export default function ProductCountCard({ item, showSystemQty = false, onSave, 
               {locationSnapshot.map((location) => (
                 <div key={location.key} className="flex items-center justify-between gap-3">
                   <span className="min-w-0 truncate text-surface-600"><b>{location.code}</b> · {location.name}</span>
-                  <span className="shrink-0 font-semibold tabular-nums text-surface-800">{location.qty.toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}</span>
+                  {showSystemQty && <span className="shrink-0 font-semibold tabular-nums text-surface-800">{location.qty.toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}</span>}
                 </div>
               ))}
             </div>
@@ -92,16 +96,17 @@ export default function ProductCountCard({ item, showSystemQty = false, onSave, 
           )}
           {showSystemQty && (
             <div className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-lg">
-              <span className="text-xs font-medium text-blue-700">สต๊อคคงเหลือ (ระบบ)</span>
+              <span className="text-xs font-medium text-blue-700">{separate && item.system_safety_stock != null ? 'สต๊อคปกติ (ไม่รวม Safety)' : 'สต๊อคคงเหลือ (ระบบ)'}</span>
               <span className="text-lg font-bold text-blue-800">{item.system_qty} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}</span>
             </div>
           )}
         </div>
 
         {/* Counted Qty - Blind Count */}
+        {showSystemQty && separate && <div className="text-sm text-blue-700">Safety: {item.system_safety_stock ?? '-'} · รวม: {Number(item.system_qty) + Number(item.system_safety_stock || 0)} · จอง: {Number(item.system_reserved || 0)}<div className="text-xs">ยอดจองเป็นข้อมูลประกอบ ให้นับสินค้าที่จองแต่ยังอยู่ในคลังด้วย</div></div>}
         <div>
           <label className="block text-sm font-semibold text-gray-700 mb-1">
-            จำนวนที่นับได้ ({item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}) <span className="text-red-500">*</span>
+            {separate && item.system_safety_stock != null ? 'สต๊อคปกติที่นับได้ (ไม่รวม Safety)' : separate ? 'จำนวนจริงรวมที่นับได้ (ST)' : 'จำนวนที่นับได้'} ({item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}) <span className="text-red-500">*</span>
           </label>
           <input
             type="number"
@@ -169,10 +174,10 @@ export default function ProductCountCard({ item, showSystemQty = false, onSave, 
         </div>
 
         {/* Safety Stock Check — แสดงเฉพาะสินค้าที่มี safety stock ในระบบ */}
-        {item.system_safety_stock != null && item.system_safety_stock > 0 && (
+        {item.system_safety_stock != null && showSafety && (
           <div>
             <label className="block text-sm font-semibold text-gray-700 mb-1">
-              Safety Stock ที่นับได้ ({item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}) <span className="text-gray-400 font-normal">(ถ้ามี)</span>
+              Safety Stock ที่นับได้ ({item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}) <span className="text-red-500">* กรอก 0 หากไม่พบ</span>
             </label>
             <input
               type="number"
@@ -185,6 +190,8 @@ export default function ProductCountCard({ item, showSystemQty = false, onSave, 
             />
           </div>
         )}
+        {separate && item.system_safety_stock != null && !showSafety && <button type="button" onClick={() => setShowSafety(true)} className="text-sm text-blue-600 underline">พบ Safety จริง: เพิ่มช่องกรอก</button>}
+        {separate && item.system_safety_stock != null && <div className="text-sm font-semibold">จำนวนจริงรวมที่นับได้: {Number(countedQty || 0) + Number(countedSafetyStock || 0)}</div>}
 
         {/* Actions */}
         <div className="flex gap-3 pt-2">

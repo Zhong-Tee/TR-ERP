@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthContext } from '../../contexts/AuthContext'
-import { createAudit, fetchAuditors } from '../../lib/auditApi'
+import { createAudit, fetchAuditors, fetchMovementAuditProductIds } from '../../lib/auditApi'
+import { auditDateRange } from '../../lib/auditRules'
 import type { AuditType } from '../../types'
 import Modal from '../ui/Modal'
 import ScopeSelector from './ScopeSelector'
@@ -12,6 +13,10 @@ export default function CreateAuditForm() {
   const [saving, setSaving] = useState(false)
   const [note, setNote] = useState('')
   const [showSystemQty, setShowSystemQty] = useState(false)
+  const [dates, setDates] = useState(() => auditDateRange(1))
+  const [movementCount, setMovementCount] = useState<number | null>(null)
+  const [movementLoading, setMovementLoading] = useState(false)
+  const [movementError, setMovementError] = useState('')
 
   // Scope
   const [auditType, setAuditType] = useState<AuditType>('full')
@@ -36,6 +41,19 @@ export default function CreateAuditForm() {
       .catch(console.error)
   }, [])
 
+  useEffect(() => {
+    if (auditType !== 'movement') return
+    let current = true
+    setMovementCount(null)
+    setMovementLoading(true)
+    setMovementError('')
+    fetchMovementAuditProductIds(dates.start, dates.end)
+      .then(ids => { if (current) setMovementCount(ids.length) })
+      .catch(error => { if (current) setMovementError(error instanceof Error ? error.message : String(error)) })
+      .finally(() => { if (current) setMovementLoading(false) })
+    return () => { current = false }
+  }, [auditType, dates.start, dates.end])
+
   function toggleAuditor(id: string) {
     setSelectedAuditors((prev) =>
       prev.includes(id) ? prev.filter((a) => a !== id) : [...prev, id]
@@ -43,6 +61,7 @@ export default function CreateAuditForm() {
   }
 
   function getScopeFilter(): Record<string, string[]> | undefined {
+    if (auditType === 'movement') return { dates: [dates.start, dates.end] }
     if (auditType === 'category' && selectedCategories.length) {
       return { categories: selectedCategories }
     }
@@ -56,6 +75,7 @@ export default function CreateAuditForm() {
   }
 
   function canSave() {
+    if (auditType === 'movement' && (movementLoading || !movementCount || movementError)) return false
     if (selectedAuditors.length === 0) return false
     if (auditType === 'category' && selectedCategories.length === 0) return false
     if (auditType === 'location' && selectedLocations.length === 0) return false
@@ -147,6 +167,21 @@ export default function CreateAuditForm() {
       </div>
 
       {/* Show System Qty Toggle */}
+      {auditType === 'movement' && (
+        <div className="bg-white p-6 rounded-xl border space-y-3">
+          <div className="flex gap-2 flex-wrap">
+            {[{ days: 1, label: 'เมื่อวาน' }, { days: 7, label: 'สัปดาห์ (7 วัน)' }, { days: 30, label: 'เดือน (30 วัน)' }].map(option => (
+              <button key={option.days} type="button" onClick={() => setDates(auditDateRange(option.days))} className="px-3 py-2 rounded-lg bg-blue-50 text-blue-700">{option.label}</button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="text-sm">ตั้งแต่วันที่ (เวลาไทย)<input type="date" value={dates.start} onChange={event => setDates(previous => ({ ...previous, start: event.target.value }))} className="block w-full border rounded-lg p-2" /></label>
+            <label className="text-sm">ถึงวันที่ (รวมเต็มวัน)<input type="date" value={dates.end} onChange={event => setDates(previous => ({ ...previous, end: event.target.value }))} className="block w-full border rounded-lg p-2" /></label>
+          </div>
+          <p className="text-sm text-gray-600">รับเข้า จ่ายออก คืน ปรับสต๊อค และย้ายจุดจริง ไม่รวมการจองอย่างเดียว ยอดอ้างอิง ณ ตอนสร้างใบ</p>
+          <p className={movementError ? 'text-red-600' : 'text-blue-700'}>{movementLoading ? 'กำลังตรวจสอบรายการ...' : movementError || `พบสินค้า ${movementCount ?? 0} รายการ`}</p>
+        </div>
+      )}
       <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 space-y-3">
         <div className="flex items-center justify-between gap-4">
           <div>

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { fetchAllSupabasePages } from '../../lib/supabasePagination'
 import { getPublicUrl } from '../../lib/qcApi'
-import { fetchDistinctCategories, fetchDistinctLocations } from '../../lib/auditApi'
+import { fetchDistinctCategories, fetchDistinctLocations, excludeDerivedAuditProducts } from '../../lib/auditApi'
 import type { AuditType } from '../../types'
 
 interface ProductOption {
@@ -31,6 +31,7 @@ const AUDIT_TYPES: { value: AuditType; label: string; desc: string }[] = [
   { value: 'category', label: 'ตามหมวดหมู่', desc: 'เลือกหมวดหมู่สินค้า' },
   { value: 'location', label: 'ตามจุดจัดเก็บ', desc: 'เลือกจุดจัดเก็บ ค้นหาได้' },
   { value: 'custom', label: 'กำหนดเอง', desc: 'เลือกสินค้าทีละรายการ' },
+  { value: 'movement', label: 'สินค้าเคลื่อนไหว', desc: 'เลือกช่วงวันที่เคลื่อนไหวจริง' },
 ]
 
 export default function ScopeSelector({
@@ -76,11 +77,13 @@ export default function ScopeSelector({
         .order('product_code', { ascending: true })
         .order('id')
         .range(from, to))
+        .then(excludeDerivedAuditProducts)
         .then((data) => {
           setProducts(data)
           setProductsLoaded(true)
           setProductsLoading(false)
         })
+        .catch((error) => { console.error(error); setProductsLoading(false) })
     }
   }, [auditType, productsLoaded])
 
@@ -134,7 +137,7 @@ export default function ScopeSelector({
   return (
     <div className="space-y-4">
       <label className="block text-sm font-semibold text-gray-700">ประเภท Audit</label>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         {AUDIT_TYPES.map((t) => (
           <button
             key={t.value}
@@ -317,7 +320,7 @@ export default function ScopeSelector({
             ตรวจนับสินค้า active ทั้งหมดในระบบ
           </div>
           <div className="text-xs text-amber-600 mt-1">
-            ระบบจะดึงสินค้าทุกรายการที่ active อยู่มาสร้างรายการตรวจนับ
+            รวม RM, FG ที่มีสินค้าจริง และ ST โดยไม่รวม FG ที่คำนวณจาก RM
           </div>
         </div>
       )}

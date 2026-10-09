@@ -547,7 +547,7 @@ export interface InventorySampleItem {
 }
 
 export type AuditStatus = 'draft' | 'in_progress' | 'review' | 'completed' | 'closed'
-export type AuditType = 'full' | 'category' | 'location' | 'custom' | 'free_scan'
+export type AuditType = 'full' | 'category' | 'location' | 'custom' | 'free_scan' | 'movement'
 
 export interface InventoryAudit {
   id: string
@@ -575,6 +575,9 @@ export interface InventoryAudit {
 }
 
 export interface InventoryAuditItem {
+  count_mode?: 'legacy' | 'separate'
+  product_type?: string | null
+  system_reserved?: number | null
   id: string
   audit_id: string
   product_id: string
@@ -598,6 +601,7 @@ export interface InventoryAuditItem {
     code: string
     name: string
     qty: number
+    sort_order?: number
   }> | null
   system_safety_stock?: number | null
   counted_safety_stock?: number | null
@@ -605,6 +609,7 @@ export interface InventoryAuditItem {
   created_at: string
   /** Joined product data */
   pr_products?: {
+    product_type?: string | null
     product_code: string
     product_name: string
     storage_location?: string | null

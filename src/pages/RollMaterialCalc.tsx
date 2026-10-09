@@ -4,7 +4,7 @@ import ProductImageHover from '../components/ui/ProductImageHover'
 import { useAuthContext } from '../contexts/AuthContext'
 import {
   fetchRollCalcDashboard,
-  upsertRollConfig,
+  createRollPairingGroup,
   updateRollConfigField,
   deleteRollConfig,
   fetchAvailableFgProducts,
@@ -28,7 +28,8 @@ export default function RollMaterialCalc() {
   // ── Pair modal state ─────────────────────────────────
   const [fgProducts, setFgProducts] = useState<Product[]>([])
   const [rmProducts, setRmProducts] = useState<Product[]>([])
-  const [pairFgId, setPairFgId] = useState('')
+  const [pairFgIds, setPairFgIds] = useState<string[]>([])
+  const [pairSheets, setPairSheets] = useState('220')
   const [pairRmIds, setPairRmIds] = useState<string[]>([])
   const [pairSaving, setPairSaving] = useState(false)
   const [fgSearch, setFgSearch] = useState('')
@@ -89,13 +90,14 @@ export default function RollMaterialCalc() {
   // ── Pair modal ───────────────────────────────────────
   const openPairModal = async () => {
     setShowPairModal(true)
-    setPairFgId('')
+    setPairFgIds([])
     setPairRmIds([])
+    setPairSheets('220')
     setFgSearch('')
     setRmSearch('')
     try {
       const [fg, rm] = await Promise.all([fetchAvailableFgProducts(), fetchAvailableRmProducts()])
-      setFgProducts(fg)
+      setFgProducts(fg.filter((p) => !rows.some((r) => r.fg_product_id === p.id)))
       setRmProducts(rm)
     } catch {
       setNotify({ type: 'error', message: 'โหลดรายการสินค้าไม่สำเร็จ' })
@@ -103,13 +105,10 @@ export default function RollMaterialCalc() {
   }
 
   const handlePairSave = async () => {
-    if (!pairFgId || pairRmIds.length === 0) return
+    if (pairSaving || !canManagePairing || pairFgIds.length === 0 || pairRmIds.length !== 1 || !Number.isFinite(Number(pairSheets)) || Number(pairSheets) <= 0) return
     try {
       setPairSaving(true)
-      await upsertRollConfig({
-        fg_product_id: pairFgId,
-        rm_product_ids: pairRmIds,
-      })
+      await createRollPairingGroup(pairRmIds[0], pairFgIds, Number(pairSheets))
       setShowPairModal(false)
       setNotify({ type: 'success', message: 'จับคู่สินค้าสำเร็จ' })
       await loadAll()
@@ -158,9 +157,7 @@ export default function RollMaterialCalc() {
       try {
         setSavingIds((prev) => new Set(prev).add(configId))
         await updateRollConfigField(configId, dbField, numVal)
-        setRows((prev) =>
-          prev.map((r) => (r.config_id === configId ? { ...r, [dbField]: numVal } : r)),
-        )
+        setRows(await fetchRollCalcDashboard())
         setEditingValues((prev) => {
           const copy = { ...prev }
           if (copy[configId]) {
@@ -194,14 +191,15 @@ export default function RollMaterialCalc() {
   }, [fgProducts, fgSearch])
 
   const filteredRm = useMemo(() => {
-    if (!rmSearch) return rmProducts.slice(0, 30)
+    const available = rmProducts.filter((p) => !rows.some((r) => r.rm_product_code.split('\n').includes(p.product_code)))
+    if (!rmSearch) return available.slice(0, 30)
     const s = rmSearch.toLowerCase()
-    return rmProducts
+    return available
       .filter((p) => p.product_code.toLowerCase().includes(s) || p.product_name.toLowerCase().includes(s))
       .slice(0, 30)
-  }, [rmProducts, rmSearch])
+  }, [rmProducts, rmSearch, rows])
 
-  const selectedFg = fgProducts.find((p) => p.id === pairFgId)
+  const selectedFgs = fgProducts.filter((p) => pairFgIds.includes(p.id))
   const selectedRms = useMemo(
     () => rmProducts.filter((p) => pairRmIds.includes(p.id)),
     [rmProducts, pairRmIds],
@@ -250,6 +248,7 @@ export default function RollMaterialCalc() {
             />
           </div>
 
+          <button type="button" onClick={() => void loadAll()} className="px-4 py-2.5 border border-gray-200 rounded-xl text-gray-600">รีเฟรชยอด RM</button>
           {/* Pair button */}
           {canManagePairing && <button
             onClick={openPairModal}
@@ -400,6 +399,7 @@ export default function RollMaterialCalc() {
         </table>
       </div>
 
+      <p className="text-xs text-gray-500">กลุ่มที่จับคู่ใหม่ใช้ตัวคูณร่วมกัน การแก้แผ่น/ม้วนจะเปลี่ยนให้ทุก FG ในกลุ่ม</p>
       {/* Summary */}
       <div className="text-sm text-gray-400 text-right">
         แสดง {filtered.length} / {rows.length} รายการ
@@ -408,7 +408,7 @@ export default function RollMaterialCalc() {
       {/* ════════════════════════════════════════════════ */}
       {/* Pair Modal                                      */}
       {/* ════════════════════════════════════════════════ */}
-      <Modal open={showPairModal} onClose={() => setShowPairModal(false)} contentClassName="max-w-5xl w-[95vw] max-h-[90vh]">
+      <Modal open={showPairModal} onClose={() => { if (!pairSaving) setShowPairModal(false) }} contentClassName="max-w-5xl w-[95vw] max-h-[90vh]">
         <div className="p-6 space-y-5 min-h-[72vh]">
           <h3 className="text-lg font-bold text-gray-800">
             <i className="fas fa-link mr-2 text-blue-500"></i>จับคู่สินค้า FG กับ RM
@@ -417,38 +417,27 @@ export default function RollMaterialCalc() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* FG Selector */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">สินค้า FG (สินค้าสำเร็จรูป)</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">สินค้า FG (เลือกได้หลายรายการที่ยังไม่จับคู่)</label>
               <div className="relative" ref={fgRef}>
-                {selectedFg ? (
-                  <div className="flex items-center gap-2 px-3 py-2 border border-blue-300 rounded-lg bg-blue-50">
-                    <ProductImageHover productCode={selectedFg.product_code} productName={selectedFg.product_name} size="sm" />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-mono font-semibold text-gray-800">{selectedFg.product_code}</div>
-                      <div className="text-xs text-gray-500 truncate">{selectedFg.product_name}</div>
-                    </div>
-                    <button onClick={() => { setPairFgId(''); setFgSearch('') }} className="text-gray-400 hover:text-red-500">
-                      <i className="fas fa-times"></i>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {selectedFgs.map((p) => (
+                    <button key={p.id} type="button" disabled={pairSaving} onClick={() => setPairFgIds((ids) => ids.filter((id) => id !== p.id))} className="px-3 py-2 rounded-lg bg-blue-50 text-blue-700">
+                      {p.product_code} · {p.product_name} ×
                     </button>
-                  </div>
-                ) : (
-                  <input
-                    type="text"
-                    placeholder="ค้นหา FG product..."
-                    value={fgSearch}
-                    onChange={(e) => setFgSearch(e.target.value)}
-                    onFocus={() => setFgDropOpen(true)}
-                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-400 outline-none"
-                  />
-                )}
-                {fgDropOpen && !selectedFg && (
+                  ))}
+                </div>
+                <input type="text" placeholder="ค้นหาและเลือก FG ได้หลายรายการ" value={fgSearch} disabled={pairSaving}
+                  onChange={(e) => setFgSearch(e.target.value)} onFocus={() => setFgDropOpen(true)}
+                  className="w-full px-3 py-2.5 border border-gray-300 rounded-lg" />
+                {fgDropOpen && !pairSaving && (
                   <div className="absolute z-40 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-[30rem] overflow-y-auto">
                     {filteredFg.length === 0 ? (
                       <div className="p-3 text-sm text-gray-400 text-center">ไม่พบสินค้า</div>
                     ) : (
-                      filteredFg.map((p) => (
+                      filteredFg.filter((p) => !pairFgIds.includes(p.id)).map((p) => (
                         <button
                           key={p.id}
-                          onClick={() => { setPairFgId(p.id); setFgDropOpen(false); setFgSearch('') }}
+                          onClick={() => { setPairFgIds((ids) => ids.includes(p.id) ? ids : [...ids, p.id]); setFgSearch('') }}
                           className="w-full flex items-center gap-2 px-3 py-2 hover:bg-blue-50 transition text-left"
                         >
                           <ProductImageHover productCode={p.product_code} productName={p.product_name} size="sm" />
@@ -466,7 +455,7 @@ export default function RollMaterialCalc() {
 
             {/* RM Selector */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">สินค้า RM (วัตถุดิบ - ม้วน)</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">สินค้า RM (เลือก 1 รายการ)</label>
               <div className="relative" ref={rmRef}>
                 {selectedRms.length > 0 && (
                   <div className="mb-2 p-2 border border-emerald-300 rounded-lg bg-emerald-50">
@@ -475,6 +464,7 @@ export default function RollMaterialCalc() {
                         <span key={p.id} className="inline-flex items-center gap-1 px-2 py-1 bg-white rounded border border-emerald-200 text-xs">
                           <span className="font-mono">{p.product_code}</span>
                           <button
+                            disabled={pairSaving}
                             onClick={() => setPairRmIds((prev) => prev.filter((id) => id !== p.id))}
                             className="text-gray-400 hover:text-red-500"
                             title="ลบรายการนี้"
@@ -484,20 +474,21 @@ export default function RollMaterialCalc() {
                         </span>
                       ))}
                     </div>
-                    <button onClick={() => setPairRmIds([])} className="mt-2 text-xs text-red-500 hover:text-red-700">
+                    <button disabled={pairSaving} onClick={() => setPairRmIds([])} className="mt-2 text-xs text-red-500 hover:text-red-700">
                       ล้างรายการ RM ที่เลือก
                     </button>
                   </div>
                 )}
                 <input
                   type="text"
-                  placeholder="ค้นหา RM product..."
+                  disabled={pairSaving}
+                  placeholder="ค้นหา RM ที่ยังไม่จับคู่..."
                   value={rmSearch}
                   onChange={(e) => setRmSearch(e.target.value)}
                   onFocus={() => setRmDropOpen(true)}
                   className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-400 outline-none"
                 />
-                {rmDropOpen && (
+                {rmDropOpen && !pairSaving && (
                   <div className="absolute z-40 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-[30rem] overflow-y-auto">
                     {filteredRm.length === 0 ? (
                       <div className="p-3 text-sm text-gray-400 text-center">ไม่พบสินค้า</div>
@@ -506,7 +497,7 @@ export default function RollMaterialCalc() {
                         <button
                           key={p.id}
                           onClick={() => {
-                            setPairRmIds((prev) => (prev.includes(p.id) ? prev : [...prev, p.id]))
+                            setPairRmIds([p.id])
                             setRmSearch('')
                           }}
                           className="w-full flex items-center gap-2 px-3 py-2 hover:bg-emerald-50 transition text-left"
@@ -526,11 +517,16 @@ export default function RollMaterialCalc() {
             </div>
           </div>
 
+          <label className="block text-sm font-medium text-gray-700">
+            แผ่น/ม้วน (ใช้เท่ากันกับ FG ทุกตัวที่เลือก)
+            <input type="number" min="0.01" step="0.01" value={pairSheets} disabled={pairSaving} onChange={(e) => setPairSheets(e.target.value)} className="ml-3 w-28 px-3 py-2 border rounded-lg" />
+          </label>
+          <p className="text-sm text-gray-500">ยอดคำนวณจาก RM ใช้แสดงใน Calculator อาจต่างจากยอดคลังสินค้า การจับคู่ไม่เพิ่มสต๊อคย้อนหลัง</p>
           {/* Actions */}
           <div className="flex justify-end gap-3 pt-2">
             <button
               onClick={handlePairSave}
-              disabled={!pairFgId || pairRmIds.length === 0 || pairSaving}
+              disabled={pairFgIds.length === 0 || pairRmIds.length !== 1 || !Number.isFinite(Number(pairSheets)) || Number(pairSheets) <= 0 || pairSaving}
               className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition font-medium shadow-sm"
             >
               {pairSaving ? (

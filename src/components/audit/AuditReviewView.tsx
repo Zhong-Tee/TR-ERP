@@ -14,6 +14,7 @@ import AuditSummaryStats from './AuditSummaryStats'
 import VarianceTable from './VarianceTable'
 import LocationMismatchTable from './LocationMismatchTable'
 import SafetyStockTable from './SafetyStockTable'
+import { hasAuditStockDifference } from '../../lib/auditRules'
 
 type Tab = 'qty' | 'location' | 'safety'
 
@@ -29,6 +30,7 @@ export default function AuditReviewView() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { user } = useAuthContext()
+  const canReview = !!user && ['superadmin', 'admin', 'account'].includes(user.role)
 
   const [audit, setAudit] = useState<InventoryAudit | null>(null)
   const [items, setItems] = useState<InventoryAuditItem[]>([])
@@ -79,7 +81,7 @@ export default function AuditReviewView() {
   const stats = useMemo(() => {
     const counted = items.filter((i) => i.is_counted)
     const totalItems = counted.length
-    const qtyMatched = counted.filter((i) => Number(i.variance) === 0).length
+    const qtyMatched = counted.filter((i) => !hasAuditStockDifference(i)).length
     const qtyMismatch = totalItems - qtyMatched
     const accuracyPercent = totalItems > 0 ? (qtyMatched / totalItems) * 100 : null
 
@@ -208,10 +210,11 @@ export default function AuditReviewView() {
               {AUDIT_STATUS_LABELS[audit.status] || audit.status}
             </span>
             {audit.note && <span className="ml-3 text-gray-400">| {audit.note}</span>}
+            {audit.audit_type === 'movement' && <div>สินค้าเคลื่อนไหว: {audit.scope_filter?.dates?.join(' ถึง ')} (เวลาไทย)</div>}
           </div>
         </div>
         <div className="flex gap-2">
-          {audit.status === 'review' && !audit.adjustment_id && (
+          {canReview && audit.status === 'review' && !audit.adjustment_id && (
             <button
               onClick={requestCreateAdjustment}
               disabled={creatingAdj}
@@ -220,7 +223,7 @@ export default function AuditReviewView() {
               {creatingAdj ? 'กำลังสร้าง...' : 'สร้างใบปรับสต๊อค'}
             </button>
           )}
-          {audit.status === 'review' && (
+          {canReview && audit.status === 'review' && (
             <button
               onClick={requestComplete}
               disabled={completing}

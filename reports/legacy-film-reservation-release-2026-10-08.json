@@ -1,0 +1,83 @@
+{
+  "batch_id": "60f939c7-fc3c-4851-bd76-5e4532731d51",
+  "reason": "ผู้ใช้ยืนยันไม่ต้องการเบิกต่อ: ใบ REQ-20260903-001 เป็นรายการเก่าช่วงเริ่มใช้ ERP ที่มีบั๊ก ขอปลดยอดจองฟิล์มสองรายการเป็น 0",
+  "before": [
+    {
+      "product_id": "bfcf71b7-e9c0-45f2-b1c1-1751b2adeb55",
+      "product_code": "990000166",
+      "product_name": "ฟิล์ม A (ขาว) เครื่อง Funsun",
+      "unit_name": "ม้วน",
+      "on_hand": "0.00",
+      "reserved": "3.00",
+      "document_reserved": "0",
+      "wms_reserved": "0",
+      "borrow_reserved": "0",
+      "linked_reserved": "0",
+      "difference": "3.00",
+      "completed_wms_count": "0",
+      "uncertain_count": "0",
+      "classification": "unexplained_excess",
+      "evidence": {
+        "wms": [
+          {
+            "qty": 3,
+            "status": "out_of_stock",
+            "wms_id": "855ae8a6-f886-4ae5-8c00-18ecf68fca49",
+            "uncertain": 0,
+            "work_order": "REQ-20260903-001",
+            "net_deducted": 0
+          }
+        ],
+        "wms_reserved": 0,
+        "borrow_reserved": 0,
+        "document_reserved": 0
+      }
+    },
+    {
+      "product_id": "bb836985-ec7c-4bb4-a704-3bbd2d977d67",
+      "product_code": "990000167",
+      "product_name": "ฟิล์ม B (ฟ้า) เครื่อง Funsun",
+      "unit_name": "ม้วน",
+      "on_hand": "0.00",
+      "reserved": "3.00",
+      "document_reserved": "0",
+      "wms_reserved": "0",
+      "borrow_reserved": "0",
+      "linked_reserved": "0",
+      "difference": "3.00",
+      "completed_wms_count": "0",
+      "uncertain_count": "0",
+      "classification": "unexplained_excess",
+      "evidence": {
+        "wms": [
+          {
+            "qty": 3,
+            "status": "out_of_stock",
+            "wms_id": "345e1ed3-db8d-4e6f-afa0-25615f05e63d",
+            "uncertain": 0,
+            "work_order": "REQ-20260903-001",
+            "net_deducted": 0
+          }
+        ],
+        "wms_reserved": 0,
+        "borrow_reserved": 0,
+        "document_reserved": 0
+      }
+    }
+  ],
+  "after": [
+    {
+      "product_code": "990000166",
+      "reserved": "0.00",
+      "linked_reserved": "0",
+      "difference": "0.00"
+    },
+    {
+      "product_code": "990000167",
+      "reserved": "0.00",
+      "linked_reserved": "0",
+      "difference": "0.00"
+    }
+  ],
+  "physicalUnchanged": true
+}
