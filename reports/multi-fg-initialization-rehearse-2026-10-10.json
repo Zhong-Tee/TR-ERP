@@ -1,0 +1,111 @@
+{
+  "mode": "rehearse",
+  "rows": [
+    {
+      "product_code": "110000328",
+      "on_hand": "49000.00",
+      "reserved": "0.00",
+      "safety_stock": "0.00",
+      "target_on_hand": "49000.00",
+      "fifo": "49000.00"
+    },
+    {
+      "product_code": "110000329",
+      "on_hand": "49000.00",
+      "reserved": "2.00",
+      "safety_stock": "0.00",
+      "target_on_hand": "49000.00",
+      "fifo": "49000.00"
+    },
+    {
+      "product_code": "110000330",
+      "on_hand": "49000.00",
+      "reserved": "3.00",
+      "safety_stock": "0.00",
+      "target_on_hand": "49000.00",
+      "fifo": "49000.00"
+    },
+    {
+      "product_code": "110000331",
+      "on_hand": "49000.00",
+      "reserved": "0.00",
+      "safety_stock": "0.00",
+      "target_on_hand": "49000.00",
+      "fifo": "49000.00"
+    },
+    {
+      "product_code": "110000332",
+      "on_hand": "49000.00",
+      "reserved": "0.00",
+      "safety_stock": "0.00",
+      "target_on_hand": "49000.00",
+      "fifo": "49000.00"
+    },
+    {
+      "product_code": "110000333",
+      "on_hand": "49000.00",
+      "reserved": "0.00",
+      "safety_stock": "0.00",
+      "target_on_hand": "49000.00",
+      "fifo": "49000.00"
+    },
+    {
+      "product_code": "110000334",
+      "on_hand": "49000.00",
+      "reserved": "0.00",
+      "safety_stock": "0.00",
+      "target_on_hand": "49000.00",
+      "fifo": "49000.00"
+    },
+    {
+      "product_code": "110000335",
+      "on_hand": "49000.00",
+      "reserved": "2.00",
+      "safety_stock": "0.00",
+      "target_on_hand": "49000.00",
+      "fifo": "49000.00"
+    },
+    {
+      "product_code": "110000336",
+      "on_hand": "49000.00",
+      "reserved": "0.00",
+      "safety_stock": "0.00",
+      "target_on_hand": "49000.00",
+      "fifo": "49000.00"
+    },
+    {
+      "product_code": "110000337",
+      "on_hand": "49000.00",
+      "reserved": "0.00",
+      "safety_stock": "0.00",
+      "target_on_hand": "49000.00",
+      "fifo": "49000.00"
+    },
+    {
+      "product_code": "110000338",
+      "on_hand": "49000.00",
+      "reserved": "0.00",
+      "safety_stock": "0.00",
+      "target_on_hand": "49000.00",
+      "fifo": "49000.00"
+    },
+    {
+      "product_code": "110000414",
+      "on_hand": "49000.00",
+      "reserved": "0.00",
+      "safety_stock": "0.00",
+      "target_on_hand": "49000.00",
+      "fifo": "49000.00"
+    }
+  ],
+  "checks": [
+    "all grouped FG initialized",
+    "FIFO matches FG",
+    "RM and unrelated stock unchanged",
+    "reservations and safety preserved",
+    "new pairing initialized atomically",
+    "repeat does not reset sales",
+    "private helper inaccessible"
+  ],
+  "committed": false
+}

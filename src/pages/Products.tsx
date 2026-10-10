@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
 import { buildIlikeOr } from '../lib/searchFilter'
+import { fetchAllSupabasePages } from '../lib/supabasePagination'
 import { getPublicUrl } from '../lib/qcApi'
 import { getNextProductCode } from '../lib/purchaseApi'
 import Modal from '../components/ui/Modal'
@@ -414,7 +415,8 @@ export default function Products() {
   const [searchInput, setSearchInput] = useState('')
   const [appliedSearch, setAppliedSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
-  const [productTypeFilter, setProductTypeFilter] = useState<'' | ProductType>('')
+  const [productTypeFilter, setProductTypeFilter] = useState<'' | ProductType | 'ST'>('')
+  const [specialTrackedIds, setSpecialTrackedIds] = useState<Set<string>>(new Set())
   const [productVisibilityFilter, setProductVisibilityFilter] = useState<ProductVisibilityFilter>('active')
   const [activeCount, setActiveCount] = useState(0)
   const [hiddenCount, setHiddenCount] = useState(0)
@@ -568,6 +570,13 @@ export default function Products() {
   async function loadProducts() {
     setLoading(true)
     try {
+      // ST is a display classification, derived from the same spare mapping as Warehouse.
+      // Filter before pagination so page counts and searches include every matching SKU.
+      const spareRows = await fetchAllSupabasePages<{ product_id: string; group_id: string }>((start, end) => supabase
+        .from('wh_sub_wms_map_spares').select('product_id, group_id')
+        .order('product_id').order('group_id').range(start, end))
+      const trackedIds = [...new Set(spareRows.map(row => row.product_id))]
+      setSpecialTrackedIds(new Set(trackedIds))
       const from = (page - 1) * PAGE_SIZE
       const to = from + PAGE_SIZE - 1
 
@@ -608,8 +617,11 @@ export default function Products() {
       if (categoryFilter) {
         query = query.eq('product_category', categoryFilter)
       }
-      if (productTypeFilter) {
+      if (productTypeFilter === 'ST') {
+        query = query.in('id', trackedIds.length ? trackedIds : ['00000000-0000-0000-0000-000000000000'])
+      } else if (productTypeFilter) {
         query = query.eq('product_type', productTypeFilter)
+        if (trackedIds.length) query = query.not('id', 'in', `(${trackedIds.join(',')})`)
       }
 
       const [
@@ -1747,13 +1759,14 @@ export default function Products() {
             <select
               id="products-type"
               value={productTypeFilter}
-              onChange={(e) => setProductTypeFilter(e.target.value as '' | ProductType)}
+              onChange={(e) => setProductTypeFilter(e.target.value as '' | ProductType | 'ST')}
               className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-surface-50 text-base"
             >
               <option value="">ทุกประเภท</option>
               {PRODUCT_TYPE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
+              <option value="ST">ST - อะไหล่ยอดรวมจากสินค้าผลิต</option>
             </select>
           </div>
           <div className="w-full sm:w-auto sm:min-w-[180px]">
@@ -1833,8 +1846,8 @@ export default function Products() {
                     {isColumnVisible('code') && <td className="px-3 py-2 font-semibold text-surface-900">{product.product_code}</td>}
                     {isColumnVisible('name') && <td className="px-3 py-2 text-surface-800">{product.product_name}</td>}
                     {isColumnVisible('type') && <td className="px-3 py-2 text-center">
-                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-bold ${product.product_type === 'RM' ? 'bg-orange-100 text-orange-700' : product.product_type === 'PP' ? 'bg-purple-100 text-purple-700' : 'bg-green-100 text-green-700'}`}>
-                        {product.product_type}
+                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-bold ${specialTrackedIds.has(product.id) ? 'bg-sky-100 text-sky-700' : product.product_type === 'RM' ? 'bg-orange-100 text-orange-700' : product.product_type === 'PP' ? 'bg-purple-100 text-purple-700' : 'bg-green-100 text-green-700'}`}>
+                        {specialTrackedIds.has(product.id) ? 'ST' : product.product_type}
                       </span>
                     </td>}
                     {isColumnVisible('seller') && <td className="px-3 py-2 text-surface-700">{product.seller_name || '-'}</td>}

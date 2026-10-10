@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
+import { findShippedOrderByTracking, normalizeParcelTracking } from '../../../lib/parcelReturnLookup'
 import BarcodeScanner from './BarcodeScanner'
 import { getProductImageUrl } from '../wmsUtils'
 import { useWmsModal } from '../useWmsModal'
@@ -49,26 +50,19 @@ export default function ProductionParcelReturn() {
 
   const lookupTracking = async (tracking: string) => {
     const trimmed = tracking.trim().toUpperCase()
-    if (!trimmed) return
+    if (!normalizeParcelTracking(trimmed)) return
     setSearching(true)
     setMatchedOrder(null)
     setNotFound(false)
 
     try {
-      const { data: orders, error } = await supabase
-        .from('or_orders')
-        .select('bill_no, tracking_number, recipient_name, status, or_order_items(product_id, quantity)')
-        .eq('tracking_number', trimmed)
-        .eq('status', 'จัดส่งแล้ว')
-        .limit(1)
-      if (error) throw error
+      const order = await findShippedOrderByTracking(trimmed)
 
-      if (!orders || orders.length === 0) {
+      if (!order) {
         setNotFound(true)
         return
       }
 
-      const order = orders[0]
       const items = order.or_order_items || []
       const productIds = items.map((i: any) => i.product_id).filter(Boolean)
 

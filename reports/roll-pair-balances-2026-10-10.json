@@ -1,0 +1,839 @@
+{
+  "guards": {
+    "receipt_single_pair": true
+  },
+  "rows": [
+    {
+      "fg_code": "110000212",
+      "fg_name": "PVCL1",
+      "sheets_per_roll": "200.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "2234.00",
+      "reserved": "0.00",
+      "calculated": "2200.00",
+      "rm": [
+        {
+          "code": "990000099",
+          "on_hand": 11,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000213",
+      "fg_name": "PVCL2",
+      "sheets_per_roll": "200.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "1000.00",
+      "reserved": "0.00",
+      "calculated": "1000.00",
+      "rm": [
+        {
+          "code": "990000100",
+          "on_hand": 5,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000214",
+      "fg_name": "PVCL4",
+      "sheets_per_roll": "200.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "314.00",
+      "reserved": "0.00",
+      "calculated": "200.00",
+      "rm": [
+        {
+          "code": "990000101",
+          "on_hand": 1,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000215",
+      "fg_name": "PVCL5",
+      "sheets_per_roll": "200.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "0.00",
+      "reserved": "0.00",
+      "calculated": "0.00",
+      "rm": [
+        {
+          "code": "990000184",
+          "on_hand": 0,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000216",
+      "fg_name": "PVCL5C ใส",
+      "sheets_per_roll": "200.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "1199.00",
+      "reserved": "0.00",
+      "calculated": "1200.00",
+      "rm": [
+        {
+          "code": "990000102",
+          "on_hand": 6,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000217",
+      "fg_name": "PVCL6",
+      "sheets_per_roll": "200.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "1600.00",
+      "reserved": "0.00",
+      "calculated": "1600.00",
+      "rm": [
+        {
+          "code": "990000103",
+          "on_hand": 8,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000218",
+      "fg_name": "PVCL7",
+      "sheets_per_roll": "200.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "0.00",
+      "reserved": "0.00",
+      "calculated": "0.00",
+      "rm": [
+        {
+          "code": "990000104",
+          "on_hand": 0,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000219",
+      "fg_name": "PVCL8C ใส",
+      "sheets_per_roll": "200.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "482.00",
+      "reserved": "0.00",
+      "calculated": "400.00",
+      "rm": [
+        {
+          "code": "990000105",
+          "on_hand": 2,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000220",
+      "fg_name": "PVCM1",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "8070.00",
+      "reserved": "0.00",
+      "calculated": "8140.00",
+      "rm": [
+        {
+          "code": "990000106",
+          "on_hand": 37,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000221",
+      "fg_name": "PVCM2",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "0.00",
+      "reserved": "0.00",
+      "calculated": "0.00",
+      "rm": [
+        {
+          "code": "990000107",
+          "on_hand": 0,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000222",
+      "fg_name": "PVCM10",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "2162.00",
+      "reserved": "0.00",
+      "calculated": "2200.00",
+      "rm": [
+        {
+          "code": "990000108",
+          "on_hand": 10,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000223",
+      "fg_name": "PVCM11",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "2141.00",
+      "reserved": "0.00",
+      "calculated": "1980.00",
+      "rm": [
+        {
+          "code": "990000109",
+          "on_hand": 9,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000224",
+      "fg_name": "PVCM12",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "1972.00",
+      "reserved": "0.00",
+      "calculated": "1980.00",
+      "rm": [
+        {
+          "code": "990000110",
+          "on_hand": 9,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000225",
+      "fg_name": "PVCM13",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "1529.00",
+      "reserved": "0.00",
+      "calculated": "1540.00",
+      "rm": [
+        {
+          "code": "990000111",
+          "on_hand": 7,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000226",
+      "fg_name": "PVCS1",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "5220.00",
+      "reserved": "0.00",
+      "calculated": "5280.00",
+      "rm": [
+        {
+          "code": "990000112",
+          "on_hand": 24,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000227",
+      "fg_name": "PVCS1C ใส",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "1939.00",
+      "reserved": "0.00",
+      "calculated": "1760.00",
+      "rm": [
+        {
+          "code": "990000113",
+          "on_hand": 8,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000228",
+      "fg_name": "PVCS2C ใส",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "0.00",
+      "reserved": "0.00",
+      "calculated": "0.00",
+      "rm": [
+        {
+          "code": "990000230",
+          "on_hand": 0,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000229",
+      "fg_name": "PVCS5C ใส",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "404.00",
+      "reserved": "0.00",
+      "calculated": "220.00",
+      "rm": [
+        {
+          "code": "990000114",
+          "on_hand": 1,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000230",
+      "fg_name": "PVCS6",
+      "sheets_per_roll": "180.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "900.00",
+      "reserved": "0.00",
+      "calculated": "900.00",
+      "rm": [
+        {
+          "code": "990000115",
+          "on_hand": 5,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000231",
+      "fg_name": "PVCS14",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "2347.00",
+      "reserved": "0.00",
+      "calculated": "2200.00",
+      "rm": [
+        {
+          "code": "990000182",
+          "on_hand": 10,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000232",
+      "fg_name": "PVCS17",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "0.00",
+      "reserved": "0.00",
+      "calculated": "0.00",
+      "rm": [
+        {
+          "code": "990000183",
+          "on_hand": 0,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000233",
+      "fg_name": "PVCS18",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "0.00",
+      "reserved": "0.00",
+      "calculated": "0.00",
+      "rm": [
+        {
+          "code": "990000116",
+          "on_hand": 0,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000234",
+      "fg_name": "PVCS26",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "776.00",
+      "reserved": "0.00",
+      "calculated": "880.00",
+      "rm": [
+        {
+          "code": "990000117",
+          "on_hand": 4,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000235",
+      "fg_name": "PVCS27",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "858.00",
+      "reserved": "0.00",
+      "calculated": "880.00",
+      "rm": [
+        {
+          "code": "990000118",
+          "on_hand": 4,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000236",
+      "fg_name": "PVCS28",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "1358.00",
+      "reserved": "0.00",
+      "calculated": "1320.00",
+      "rm": [
+        {
+          "code": "990000119",
+          "on_hand": 6,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000237",
+      "fg_name": "PVCS29",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "1100.00",
+      "reserved": "0.00",
+      "calculated": "1100.00",
+      "rm": [
+        {
+          "code": "990000120",
+          "on_hand": 5,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000238",
+      "fg_name": "PVCS30G กลิตเตอร์",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "404.00",
+      "reserved": "0.00",
+      "calculated": "440.00",
+      "rm": [
+        {
+          "code": "990000121",
+          "on_hand": 2,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000239",
+      "fg_name": "PVCS31G กลิตเตอร์",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "1921.00",
+      "reserved": "0.00",
+      "calculated": "1980.00",
+      "rm": [
+        {
+          "code": "990000122",
+          "on_hand": 9,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000240",
+      "fg_name": "PVCS32G กลิตเตอร์",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "1098.00",
+      "reserved": "0.00",
+      "calculated": "1320.00",
+      "rm": [
+        {
+          "code": "990000123",
+          "on_hand": 6,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000241",
+      "fg_name": "PVCS33G กลิตเตอร์",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "1540.00",
+      "reserved": "0.00",
+      "calculated": "1540.00",
+      "rm": [
+        {
+          "code": "990000124",
+          "on_hand": 7,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000242",
+      "fg_name": "PVCS34",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "2130.00",
+      "reserved": "0.00",
+      "calculated": "1980.00",
+      "rm": [
+        {
+          "code": "990000125",
+          "on_hand": 9,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000243",
+      "fg_name": "PVCS35",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "395.00",
+      "reserved": "0.00",
+      "calculated": "440.00",
+      "rm": [
+        {
+          "code": "990000126",
+          "on_hand": 2,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000244",
+      "fg_name": "PVCSH36",
+      "sheets_per_roll": "180.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "1831.00",
+      "reserved": "0.00",
+      "calculated": "1800.00",
+      "rm": [
+        {
+          "code": "990000127",
+          "on_hand": 10,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000245",
+      "fg_name": "PVCSH37",
+      "sheets_per_roll": "180.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "0.00",
+      "reserved": "0.00",
+      "calculated": "0.00",
+      "rm": [
+        {
+          "code": "990000128",
+          "on_hand": 0,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000246",
+      "fg_name": "PVCSH38C ใส",
+      "sheets_per_roll": "180.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "1259.00",
+      "reserved": "0.00",
+      "calculated": "1260.00",
+      "rm": [
+        {
+          "code": "990000129",
+          "on_hand": 7,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000247",
+      "fg_name": "PVCSH39C ใส",
+      "sheets_per_roll": "180.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "3140.00",
+      "reserved": "0.00",
+      "calculated": "3240.00",
+      "rm": [
+        {
+          "code": "990000130",
+          "on_hand": 18,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000248",
+      "fg_name": "PVCS40",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "2178.00",
+      "reserved": "2.00",
+      "calculated": "2200.00",
+      "rm": [
+        {
+          "code": "990000131",
+          "on_hand": 10,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000249",
+      "fg_name": "PVCS41C ใส",
+      "sheets_per_roll": "220.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "1469.00",
+      "reserved": "0.00",
+      "calculated": "1320.00",
+      "rm": [
+        {
+          "code": "990000132",
+          "on_hand": 6,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000250",
+      "fg_name": "PVCXS1",
+      "sheets_per_roll": "200.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "0.00",
+      "reserved": "0.00",
+      "calculated": "0.00",
+      "rm": [
+        {
+          "code": "990000133",
+          "on_hand": 0,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000251",
+      "fg_name": "PVCXL1",
+      "sheets_per_roll": "150.00",
+      "pairing_group_id": null,
+      "fg_on_hand": "0.00",
+      "reserved": "0.00",
+      "calculated": "0.00",
+      "rm": [
+        {
+          "code": "990000134",
+          "on_hand": 0,
+          "fg_count": 1
+        }
+      ]
+    },
+    {
+      "fg_code": "110000328",
+      "fg_name": "CTTA คริสตัลแท็ก",
+      "sheets_per_roll": "1000.00",
+      "pairing_group_id": "b072b30f-c417-4a2b-a3c6-26a964cb3558",
+      "fg_on_hand": "8933.00",
+      "reserved": "0.00",
+      "calculated": "49000.00",
+      "rm": [
+        {
+          "code": "990000195",
+          "on_hand": 49,
+          "fg_count": 12
+        }
+      ]
+    },
+    {
+      "fg_code": "110000329",
+      "fg_name": "CTTB คริสตัลแท็ก",
+      "sheets_per_roll": "1000.00",
+      "pairing_group_id": "b072b30f-c417-4a2b-a3c6-26a964cb3558",
+      "fg_on_hand": "663.00",
+      "reserved": "2.00",
+      "calculated": "49000.00",
+      "rm": [
+        {
+          "code": "990000195",
+          "on_hand": 49,
+          "fg_count": 12
+        }
+      ]
+    },
+    {
+      "fg_code": "110000330",
+      "fg_name": "CTTC คริสตัลแท็ก",
+      "sheets_per_roll": "1000.00",
+      "pairing_group_id": "b072b30f-c417-4a2b-a3c6-26a964cb3558",
+      "fg_on_hand": "863.00",
+      "reserved": "3.00",
+      "calculated": "49000.00",
+      "rm": [
+        {
+          "code": "990000195",
+          "on_hand": 49,
+          "fg_count": 12
+        }
+      ]
+    },
+    {
+      "fg_code": "110000331",
+      "fg_name": "CTTD คริสตัลแท็ก",
+      "sheets_per_roll": "1000.00",
+      "pairing_group_id": "b072b30f-c417-4a2b-a3c6-26a964cb3558",
+      "fg_on_hand": "496.00",
+      "reserved": "0.00",
+      "calculated": "49000.00",
+      "rm": [
+        {
+          "code": "990000195",
+          "on_hand": 49,
+          "fg_count": 12
+        }
+      ]
+    },
+    {
+      "fg_code": "110000332",
+      "fg_name": "CTTE คริสตัลแท็ก",
+      "sheets_per_roll": "1000.00",
+      "pairing_group_id": "b072b30f-c417-4a2b-a3c6-26a964cb3558",
+      "fg_on_hand": "77.00",
+      "reserved": "0.00",
+      "calculated": "49000.00",
+      "rm": [
+        {
+          "code": "990000195",
+          "on_hand": 49,
+          "fg_count": 12
+        }
+      ]
+    },
+    {
+      "fg_code": "110000333",
+      "fg_name": "CTTF คริสตัลแท็ก",
+      "sheets_per_roll": "1000.00",
+      "pairing_group_id": "b072b30f-c417-4a2b-a3c6-26a964cb3558",
+      "fg_on_hand": "728.00",
+      "reserved": "0.00",
+      "calculated": "49000.00",
+      "rm": [
+        {
+          "code": "990000195",
+          "on_hand": 49,
+          "fg_count": 12
+        }
+      ]
+    },
+    {
+      "fg_code": "110000334",
+      "fg_name": "CTTG คริสตัลแท็ก",
+      "sheets_per_roll": "1000.00",
+      "pairing_group_id": "b072b30f-c417-4a2b-a3c6-26a964cb3558",
+      "fg_on_hand": "15.00",
+      "reserved": "0.00",
+      "calculated": "49000.00",
+      "rm": [
+        {
+          "code": "990000195",
+          "on_hand": 49,
+          "fg_count": 12
+        }
+      ]
+    },
+    {
+      "fg_code": "110000335",
+      "fg_name": "CTTL คริสตัลแท็ก",
+      "sheets_per_roll": "1000.00",
+      "pairing_group_id": "b072b30f-c417-4a2b-a3c6-26a964cb3558",
+      "fg_on_hand": "697.00",
+      "reserved": "1.00",
+      "calculated": "49000.00",
+      "rm": [
+        {
+          "code": "990000195",
+          "on_hand": 49,
+          "fg_count": 12
+        }
+      ]
+    },
+    {
+      "fg_code": "110000336",
+      "fg_name": "CTTH คริสตัลแท็ก",
+      "sheets_per_roll": "1000.00",
+      "pairing_group_id": "b072b30f-c417-4a2b-a3c6-26a964cb3558",
+      "fg_on_hand": "100.00",
+      "reserved": "0.00",
+      "calculated": "49000.00",
+      "rm": [
+        {
+          "code": "990000195",
+          "on_hand": 49,
+          "fg_count": 12
+        }
+      ]
+    },
+    {
+      "fg_code": "110000337",
+      "fg_name": "CTTI คริสตัลแท็ก",
+      "sheets_per_roll": "1000.00",
+      "pairing_group_id": "b072b30f-c417-4a2b-a3c6-26a964cb3558",
+      "fg_on_hand": "100.00",
+      "reserved": "0.00",
+      "calculated": "49000.00",
+      "rm": [
+        {
+          "code": "990000195",
+          "on_hand": 49,
+          "fg_count": 12
+        }
+      ]
+    },
+    {
+      "fg_code": "110000338",
+      "fg_name": "CTTJ คริสตัลแท็ก",
+      "sheets_per_roll": "1000.00",
+      "pairing_group_id": "b072b30f-c417-4a2b-a3c6-26a964cb3558",
+      "fg_on_hand": "100.00",
+      "reserved": "0.00",
+      "calculated": "49000.00",
+      "rm": [
+        {
+          "code": "990000195",
+          "on_hand": 49,
+          "fg_count": 12
+        }
+      ]
+    },
+    {
+      "fg_code": "110000414",
+      "fg_name": "CTT-CUSTOM คริสตัลแท็กสั่งทำตามแบบ",
+      "sheets_per_roll": "1000.00",
+      "pairing_group_id": "b072b30f-c417-4a2b-a3c6-26a964cb3558",
+      "fg_on_hand": "84.00",
+      "reserved": "0.00",
+      "calculated": "49000.00",
+      "rm": [
+        {
+          "code": "990000195",
+          "on_hand": 49,
+          "fg_count": 12
+        }
+      ]
+    }
+  ]
+}

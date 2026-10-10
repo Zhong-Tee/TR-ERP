@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { findShippedOrderByTracking, normalizeParcelTracking } from '../lib/parcelReturnLookup'
 import Modal from '../components/ui/Modal'
 import { useAuthContext } from '../contexts/AuthContext'
 import { InventoryReturn, InventoryReturnItem } from '../types'
@@ -118,21 +119,15 @@ export default function WarehouseReturns() {
 
   const lookupTracking = async (tracking: string) => {
     const trimmed = tracking.trim().toUpperCase()
-    if (!trimmed) return
+    if (!normalizeParcelTracking(trimmed)) return
     setSearching(true)
     setMatchedOrder(null)
     setNotFound(false)
 
     try {
-      let { data: orders, error } = await supabase
-        .from('or_orders')
-        .select('bill_no, tracking_number, recipient_name, status, or_order_items(product_id, quantity)')
-        .eq('tracking_number', trimmed)
-        .eq('status', 'จัดส่งแล้ว')
-        .limit(1)
-      if (error) throw error
+      let order = await findShippedOrderByTracking(trimmed)
 
-      if (!orders || orders.length === 0) {
+      if (!order) {
         const byBill = await supabase
           .from('or_orders')
           .select('bill_no, tracking_number, recipient_name, status, or_order_items(product_id, quantity)')
@@ -140,15 +135,14 @@ export default function WarehouseReturns() {
           .eq('status', 'จัดส่งแล้ว')
           .limit(1)
         if (byBill.error) throw byBill.error
-        orders = byBill.data
+        order = byBill.data?.[0] ?? null
       }
 
-      if (!orders || orders.length === 0) {
+      if (!order) {
         setNotFound(true)
         return
       }
 
-      const order = orders[0]
       const items = order.or_order_items || []
       const productIds = items.map((i: any) => i.product_id).filter(Boolean)
 
