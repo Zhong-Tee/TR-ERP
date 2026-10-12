@@ -1,4 +1,5 @@
 import { isSelfPickupBill } from '../../lib/channelBehavior'
+import OrderStatusHistory from './OrderStatusHistory'
 import ShippingConversionPanel from './ShippingConversionPanel'
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabase'
@@ -833,6 +834,8 @@ export default function OrderDetailView({
             <p className="text-sm text-gray-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 whitespace-pre-wrap select-all">{order.confirm_note}</p>
           </section>
         )}
+
+        <OrderStatusHistory key={order.id} orderId={order.id} />
 
         {/* ── รายการสินค้า ── */}
         {displayItems.length > 0 && (() => {

@@ -1,10 +1,11 @@
-﻿import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { Order } from '../types'
 import { useAuthContext } from '../contexts/AuthContext'
 import Modal from '../components/ui/Modal'
 import DeliveryCheckPanel from '../components/transport/DeliveryCheckPanel'
 import OrderDetailView from '../components/order/OrderDetailView'
+import { partitionTransportOrders } from '../lib/transportVerificationOrders'
 import { listVerificationCarriers, resolveVerificationCarrier } from '../lib/transportVerificationCarrier'
 
 type ChannelRow = { channel_code: string; channel_name: string; default_carrier?: string | null; is_self_pickup?: boolean }
@@ -280,9 +281,13 @@ export default function TransportVerification() {
     return pickupOrders
   }, [pickupOrders, pickupStatusFilter])
 
+  const { eligible: verificationOrders, anomalies: anomalousOrders } = useMemo(
+    () => partitionTransportOrders(relevantOrders), [relevantOrders],
+  )
+
   const summaryData = useMemo(() => {
     const nested: Record<string, Record<string, Record<string, number>>> = {}
-    relevantOrders.forEach((o) => {
+    verificationOrders.forEach((o) => {
       const isRangeVerified = o.transport_meta?.verified && isInDateRange(o.transport_meta?.verified_at, dateFilter, dateFilter)
       if (!isRangeVerified) return
       const carrier = getCarrierName(o)
@@ -297,14 +302,14 @@ export default function TransportVerification() {
       nested[carrier][ch].total = (nested[carrier][ch].total || 0) + 1
     })
     return nested
-  }, [relevantOrders, dateFilter, channels])
+  }, [verificationOrders, dateFilter, channels])
 
   const stats = useMemo(() => {
     let gTotal = 0
     let gVer = 0
     let cTotal = 0
     let cVer = 0
-    relevantOrders.forEach((o) => {
+    verificationOrders.forEach((o) => {
       if (o.status === 'จัดส่งแล้ว') gTotal += 1
       const isV = o.transport_meta?.verified && isInDateRange(o.transport_meta?.verified_at, dateFilter, dateFilter)
       if (isV) gVer += 1
@@ -314,14 +319,14 @@ export default function TransportVerification() {
       }
     })
     return { gTotal, gVer, cTotal, cVer }
-  }, [relevantOrders, dateFilter, activeCarrier])
+  }, [verificationOrders, dateFilter, activeCarrier, channels])
 
   const displayOrders = useMemo(() => {
     if (!activeCarrier) return []
-    return relevantOrders.filter(
+    return verificationOrders.filter(
       (o) => getCarrierName(o) === activeCarrier && o.status === 'จัดส่งแล้ว'
     )
-  }, [relevantOrders, activeCarrier])
+  }, [verificationOrders, activeCarrier, channels])
 
   function playSound(type: 'success' | 'error') {
     const sound = type === 'success' ? successSoundRef.current : errorSoundRef.current
@@ -350,6 +355,7 @@ export default function TransportVerification() {
       const now = new Date().toISOString()
       const carrier = activeCarrier
       const transport_meta = {
+        ...(order.transport_meta || {}),
         verified: true,
         verified_at: now,
         verified_by: user?.username || user?.email || 'unknown',
@@ -709,9 +715,19 @@ export default function TransportVerification() {
         </div>
       </div>
 
+      {anomalousOrders.length > 0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="font-semibold">พบข้อมูลขนส่งไม่ตรงกับสถานะบิล {anomalousOrders.length} รายการ — แยกจากยอดทวนสอบและไฟล์สรุป</p>
+          <p className="mt-1">มีข้อมูลแพ็คหรือทวนสอบแล้ว แต่สถานะไม่ใช่จัดส่งแล้ว กรุณาตรวจประวัติก่อนแก้ไข</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {anomalousOrders.map((o) => <button key={o.id} type="button" onClick={() => openOrderDetail(o.id)} className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-left hover:bg-amber-100">{o.bill_no} · {getCarrierName(o)} · {o.status}</button>)}
+          </div>
+        </div>
+      )}
+
       <div className="bg-white rounded-xl border border-gray-200 p-3 flex flex-wrap gap-2">
         {carriersList.map((carrier) => {
-          const cCount = relevantOrders.filter(
+          const cCount = verificationOrders.filter(
             (o) => getCarrierName(o) === carrier && o.status === 'จัดส่งแล้ว'
           ).length
           return (

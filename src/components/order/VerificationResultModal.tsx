@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import Modal from '../ui/Modal'
 import { THAI_BANKS, bankLogoUrl } from '../../config/thaiBanks'
+import { refundRequestLink } from '../../lib/refundRequest'
 
 export type VerificationResultType = 'success' | 'failed' | 'over_transfer' | 'save_success'
 export type AmountStatus = 'match' | 'over' | 'under' | 'mismatch'
@@ -11,6 +12,7 @@ export type OverpayRefundBankDetails = {
   refund_recipient_bank: string
   refund_recipient_account_number: string
   refund_recipient_reason: string
+  refund_request_link: string | null
 }
 
 export interface VerificationResultModalProps {
@@ -203,6 +205,7 @@ export default function VerificationResultModal({
   const [recipientBank, setRecipientBank] = useState('')
   const [recipientAccountNo, setRecipientAccountNo] = useState('')
   const [recipientReason, setRecipientReason] = useState('')
+  const [requestLink, setRequestLink] = useState('')
   const [formError, setFormError] = useState('')
 
   useEffect(() => {
@@ -212,6 +215,7 @@ export default function VerificationResultModal({
       setRecipientBank('')
       setRecipientAccountNo('')
       setRecipientReason('')
+      setRequestLink('')
       setFormError('')
     }
   }, [open])
@@ -224,16 +228,21 @@ export default function VerificationResultModal({
   const isFailed = type === 'failed'
   const showVerificationDetails = !isSaveSuccess && !(isOverTransfer && showOverpayBankForm)
 
-  // บังคับกรอกชื่อบัญชี + เลือกธนาคาร + เลขบัญชี ก่อนจึงกดส่งรายการโอนคืนได้
+  // ต้องกรอกบัญชีและเหตุผลก่อนส่งคำขอ; ลิงก์เป็นข้อมูลเพิ่มเติม
   const overpayFormComplete =
-    recipientName.trim() !== '' && recipientBank.trim() !== '' && recipientAccountNo.trim() !== ''
+    recipientName.trim() !== '' && recipientBank.trim() !== '' && recipientAccountNo.trim() !== '' && recipientReason.trim() !== ''
 
   function handleSubmitOverpayBank() {
     const n = recipientName.trim()
     const b = recipientBank.trim()
     const a = recipientAccountNo.trim()
-    if (!n || !b || !a) {
-      setFormError('กรุณากรอกชื่อบัญชี ธนาคาร และเลขบัญชีให้ครบ')
+    if (!n || !b || !a || !recipientReason.trim()) {
+      setFormError('กรุณากรอกชื่อบัญชี ธนาคาร เลขบัญชี และเหตุผลโอนคืนให้ครบ')
+      return
+    }
+    const link = refundRequestLink(requestLink)
+    if (requestLink.trim() && !link) {
+      setFormError('กรุณากรอกลิงก์ให้ถูกต้อง โดยขึ้นต้นด้วย https:// หรือ http://')
       return
     }
     setFormError('')
@@ -242,6 +251,7 @@ export default function VerificationResultModal({
       refund_recipient_bank: b,
       refund_recipient_account_number: a,
       refund_recipient_reason: recipientReason.trim(),
+      refund_request_link: link,
     })
   }
 
@@ -308,15 +318,19 @@ export default function VerificationResultModal({
               />
             </label>
             <label className="block">
-              <span className="text-sm font-medium text-gray-700">เหตุผลโอนคืน</span>
+              <span className="text-sm font-medium text-gray-700">เหตุผลโอนคืน <span className="text-red-500">*</span></span>
               <textarea
                 value={recipientReason}
                 onChange={(e) => setRecipientReason(e.target.value)}
                 disabled={confirmingOverpay}
                 rows={2}
-                placeholder="เช่น ลูกค้าโอนเกิน, โอนซ้ำ (ถ้ามี)"
+                placeholder="ระบุเหตุผล เช่น ลูกค้าโอนเกิน หรือโอนซ้ำ"
                 className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-amber-400 focus:border-amber-400 disabled:bg-gray-100 resize-none"
               />
+            </label>
+            <label className="block">
+              <span className="text-sm font-medium text-gray-700">ลิงก์เพิ่มเติม (ไม่บังคับ)</span>
+              <input type="url" value={requestLink} onChange={event => setRequestLink(event.target.value)} disabled={confirmingOverpay} placeholder="https://..." className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100" />
             </label>
             {formError ? <p className="text-sm text-red-600 font-medium">{formError}</p> : null}
           </div>
@@ -382,7 +396,7 @@ export default function VerificationResultModal({
                 type="button"
                 onClick={handleSubmitOverpayBank}
                 disabled={confirmingOverpay || !overpayFormComplete}
-                title={!overpayFormComplete ? 'กรุณากรอกชื่อบัญชี ธนาคาร และเลขบัญชีให้ครบ' : undefined}
+                title={!overpayFormComplete ? 'กรุณากรอกชื่อบัญชี ธนาคาร เลขบัญชี และเหตุผลโอนคืนให้ครบ' : undefined}
                 className="px-4 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium flex items-center justify-center gap-2"
               >
                 {confirmingOverpay ? (

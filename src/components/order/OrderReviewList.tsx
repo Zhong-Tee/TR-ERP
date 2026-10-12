@@ -538,10 +538,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     setUpdating(true)
     try {
       const nextStatus = selectedOrder.channel_code === 'PUMP' ? 'รอคอนเฟิร์ม' : 'ใบสั่งงาน'
-      const { error } = await supabase
-        .from('or_orders')
-        .update({ status: nextStatus })
-        .eq('id', selectedOrder.id)
+      const { error } = await supabase.rpc('or_apply_payment_review_status', { p_order_id: selectedOrder.id, p_status: nextStatus, p_source: 'order_review' })
 
       if (error) throw error
 
@@ -552,7 +549,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
       }
     } catch (error: any) {
       console.error('Error approving order:', error)
-      alert('เกิดข้อผิดพลาด: ' + error.message)
+      setMessageModal({ open: true, title: 'เกิดข้อผิดพลาด', message: error.message })
     } finally {
       setUpdating(false)
     }
@@ -637,10 +634,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
 
     setUpdating(true)
     try {
-      const { error: orderError } = await supabase
-        .from('or_orders')
-        .update({ status: 'ลงข้อมูลผิด' })
-        .eq('id', selectedOrder.id)
+      const { error: orderError } = await supabase.rpc('or_apply_payment_review_status', { p_order_id: selectedOrder.id, p_status: 'ลงข้อมูลผิด', p_source: 'order_review' })
 
       if (orderError) throw orderError
 
@@ -729,18 +723,12 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
       const updates = []
       if (defaultOrderIds.length > 0) {
         updates.push(
-          supabase
-            .from('or_orders')
-            .update({ status: 'ใบสั่งงาน' })
-            .in('id', defaultOrderIds)
+          ...defaultOrderIds.map((id) => supabase.rpc('or_apply_payment_review_status', { p_order_id: id, p_status: 'ใบสั่งงาน', p_source: 'order_review' }))
         )
       }
       if (pumpOrderIds.length > 0) {
         updates.push(
-          supabase
-            .from('or_orders')
-            .update({ status: 'รอคอนเฟิร์ม' })
-            .in('id', pumpOrderIds)
+          ...pumpOrderIds.map((id) => supabase.rpc('or_apply_payment_review_status', { p_order_id: id, p_status: 'รอคอนเฟิร์ม', p_source: 'order_review' }))
         )
       }
 

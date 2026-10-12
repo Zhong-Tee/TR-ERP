@@ -2808,10 +2808,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               // ถ้าไม่มีสลิปเลย แต่บิลอยู่ในสถานะ "ลงข้อมูลผิด" หรือ "ตรวจสอบไม่ผ่าน"
               // ให้แจ้งเตือนและย้ายไปสถานะ "ตรวจสอบไม่ผ่าน"
               if (originalStatus === 'ลงข้อมูลผิด' || originalStatus === 'ตรวจสอบไม่ผ่าน') {
-                const { error: updateError } = await supabase
-                  .from('or_orders')
-                  .update({ status: 'ตรวจสอบไม่ผ่าน' })
-                  .eq('id', orderId)
+                const { error: updateError } = await supabase.rpc('or_apply_payment_review_status', { p_order_id: orderId, p_status: 'ตรวจสอบไม่ผ่าน', p_source: 'easyslip' })
 
                 if (updateError) {
                   console.error('Error updating order status:', updateError)
@@ -3445,10 +3442,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       // Now process validation results to determine order status
       // If all slips failed validation, mark as "ตรวจสอบไม่ผ่าน"
       if (successfulVerifications.length === 0) {
-        const { error: updateError } = await supabase
-          .from('or_orders')
-          .update({ status: 'ตรวจสอบไม่ผ่าน' })
-          .eq('id', orderId)
+        const { error: updateError } = await supabase.rpc('or_apply_payment_review_status', { p_order_id: orderId, p_status: 'ตรวจสอบไม่ผ่าน', p_source: 'easyslip' })
 
         if (updateError) {
           console.error('Error updating order status:', updateError)
@@ -3576,10 +3570,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         }
       }
 
-      const { error: updateError } = await supabase
-        .from('or_orders')
-        .update({ status: statusForDb })
-        .eq('id', orderId)
+      const { error: updateError } = await supabase.rpc('or_apply_payment_review_status', { p_order_id: orderId, p_status: statusForDb, p_source: 'easyslip' })
 
       if (updateError) {
         console.error('Error updating order status:', updateError)
@@ -7286,13 +7277,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         open
         onClose={async () => {
           if (verificationModal.type === 'over_transfer' && verificationModal.orderId) {
-            const { error } = await supabase
-              .from('or_orders')
-              .update({ status: 'ตรวจสอบไม่ผ่าน' })
-              .eq('id', verificationModal.orderId)
+            const { error } = await supabase.rpc('or_apply_payment_review_status', { p_order_id: verificationModal.orderId, p_status: 'ตรวจสอบไม่ผ่าน', p_source: 'easyslip' })
             if (error) {
               console.error('Error updating order status:', error)
-              alert('เกิดข้อผิดพลาดในการอัปเดตสถานะ: ' + error.message)
+              setMessageModal({ open: true, title: 'อัปเดตสถานะไม่สำเร็จ', message: error.message })
             } else {
               // สลับไปแท็บ "ตรวจสอบไม่ผ่าน" เพื่อให้ผู้ใช้เห็นบิลที่เพิ่งปฏิเสธโอนเกิน
               onSave({ switchToTab: 'complete' })
@@ -7327,7 +7315,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     refund_recipient_account_name: bankDetails.refund_recipient_account_name,
                     refund_recipient_bank: bankDetails.refund_recipient_bank,
                     refund_recipient_account_number: bankDetails.refund_recipient_account_number,
-                    refund_recipient_reason: bankDetails.refund_recipient_reason || null,
+                    refund_recipient_reason: bankDetails.refund_recipient_reason.trim(),
+                    refund_request_link: bankDetails.refund_request_link,
                   }
 
                   // เช็คว่ามี pending refund ของ order นี้อยู่แล้วหรือไม่ — ถ้ามีให้อัพเดตแทน insert
@@ -7349,6 +7338,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         refund_recipient_bank: refundData.refund_recipient_bank,
                         refund_recipient_account_number: refundData.refund_recipient_account_number,
                         refund_recipient_reason: refundData.refund_recipient_reason,
+                        refund_request_link: refundData.refund_request_link,
                       })
                       .eq('id', existingRefund.id)
                     if (refundError) throw new Error(refundError.message)
@@ -7371,17 +7361,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       { fallbackNonPumpNonSales: 'ตรวจสอบแล้ว' },
                     )
                   }
-                  const { error: updateError } = await supabase
-                    .from('or_orders')
-                    .update({ status: overpayStatus })
-                    .eq('id', verificationModal.orderId)
+                  const { error: updateError } = await supabase.rpc('or_apply_payment_review_status', { p_order_id: verificationModal.orderId, p_status: overpayStatus, p_source: 'overpayment_request' })
                   if (updateError) throw new Error(updateError.message)
                   setVerificationModal(null)
                   onSave({ stayOnCreate: true })
                   window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
                 } catch (err: any) {
                   console.error('Error confirming overpay:', err)
-                  alert('เกิดข้อผิดพลาด: ' + (err?.message || err))
+                  setMessageModal({ open: true, title: 'ส่งคำขอโอนคืนไม่สำเร็จ', message: String(err?.message || err) })
                 } finally {
                   setConfirmingOverpay(false)
                 }

@@ -175,24 +175,24 @@ export default function TaskManagement() {
         {([...(user?.role==='superadmin'?[['global','งานทั้งหมด',tasks.length] as const]:[]),['managed','งานที่ฉันติดตาม',tasks.filter((task)=>isManaged(task)&&task.status!=='completed').length] as const,['mine','งานที่ฉันต้องทำ',tasks.filter((task)=>isMine(task)&&task.status!=='completed').length] as const,['all','ทั้งหมดที่เกี่ยวข้อง',tasks.filter((task)=>isRelated(task)&&task.status!=='completed').length] as const,['completed','เสร็จแล้ว',tasks.filter((task)=>task.status==='completed').length] as const]).map(([key,label,count])=><button key={key} onClick={()=>{setScope(key);setStatus('')}} className={`px-4 py-2 rounded-xl text-sm font-medium border ${scope===key?'bg-emerald-600 border-emerald-600 text-white':'bg-white text-gray-600 hover:bg-gray-50'}`}>{label} ({count})</button>)}
       </div>
       <div className="p-4 flex flex-col md:flex-row gap-3"><label className="relative flex-1"><FiSearch className="absolute left-3 top-3 text-gray-400"/><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ค้นหารหัส ชื่องาน หรือพนักงาน..." className="w-full border rounded-xl py-2.5 pl-10 pr-3"/></label><select value={status} onChange={(e) => setStatus(e.target.value)} className="border rounded-xl px-3"><option value="">ทุกสถานะ</option>{Object.entries(STATUS).filter(([key])=>scope==='completed'?key==='completed':scope==='global'||key!=='completed').map(([k,v]) => <option key={k} value={k}>{v}</option>)}{scope!=='completed'&&<option value="overdue">เลยกำหนด</option>}{(scope==='global'||scope==='completed')&&<option value="reviewed">รีวิวแล้ว</option>}</select><select value={dueSort} onChange={(e) => setDueSort(e.target.value as typeof dueSort)} className="border rounded-xl px-3" aria-label="เรียงตามกำหนดส่ง"><option value="">กำหนดส่ง: ค่าเดิม</option><option value="asc">กำหนดส่ง: น้อยไปมาก</option><option value="desc">กำหนดส่ง: มากไปน้อย</option></select></div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[1440px] table-fixed text-sm">
+      <div className="max-h-[70vh] overflow-auto" tabIndex={0} role="region" aria-label="รายการงาน เลื่อนเพื่อดูคอลัมน์เพิ่มเติม">
+        <table className="w-full min-w-[1940px] table-fixed text-sm [&_td]:align-top [&_th]:whitespace-nowrap">
           <colgroup>
-            <col style={{width:'14%'}}/>
-            <col style={{width:'23%'}}/>
-            <col style={{width:'14%'}}/>
-            <col style={{width:'12%'}}/>
-            <col style={{width:'8%'}}/>
-            <col style={{width:'8%'}}/>
-            <col style={{width:'7%'}}/>
-            <col style={{width:'9%'}}/>
-            <col style={{width:'5%'}}/>
+            <col style={{width:'300px'}}/>
+            <col style={{width:'300px'}}/>
+            <col style={{width:'300px'}}/>
+            <col style={{width:'240px'}}/>
+            <col style={{width:'210px'}}/>
+            <col style={{width:'160px'}}/>
+            <col style={{width:'120px'}}/>
+            <col style={{width:'160px'}}/>
+            <col style={{width:'100px'}}/>
           </colgroup>
-          <thead className="bg-gray-50 text-gray-600"><tr><th className="text-left p-3">งาน</th><th className="text-left p-3">ผู้รับผิดชอบ</th><th className="text-left p-3">ผู้ประสานงาน / ที่ปรึกษา</th><th className="text-left p-3">กำหนดส่ง</th><th className="text-left p-3">เวลาที่ใช้</th><th className="text-left p-3">ความคืบหน้า</th><th className="text-left p-3">ลิงก์ผลงาน</th><th className="text-left p-3">สถานะ</th><th className="p-3"></th></tr></thead>
-          <tbody>{visible.map((t) => <tr key={t.id} onClick={()=>setDetailTask(t)} className="border-t cursor-pointer hover:bg-emerald-50/40">
-            <td className="p-3"><div className="font-semibold">{t.title}</div><div className="flex items-center gap-1.5 text-xs text-gray-500"><span>{t.task_no} ·</span><span className="w-2.5 h-2.5 rounded-full shrink-0 border border-black/10" style={{backgroundColor:t.category?.color??'#9ca3af'}}/><span>{t.category?.name ?? 'ไม่ระบุประเภท'}</span></div><div className="mt-1 text-xs text-slate-500">ผู้มอบหมาย: <span className="font-medium text-slate-700">{nameOf(t.creator)}</span></div></td>
-            <td className="p-3">{t.participants?.filter((p) => p.role === 'assignee').map((p) => nameOf(p.employee)).join(', ') || '-'}</td>
-            <td className="p-3 min-w-48"><div className="space-y-1">{t.participants?.filter((p)=>p.role==='coordinator'||p.role==='advisor').map((p)=><div key={p.id} className="flex items-center gap-1.5 text-xs"><span className={`px-1.5 py-0.5 rounded ${p.role==='coordinator'?'bg-blue-50 text-blue-700':'bg-violet-50 text-violet-700'}`}>{p.role==='coordinator'?'ประสานงาน':'ที่ปรึกษา'}</span><span className="text-gray-700">{nameOf(p.employee)}</span></div>)}{!t.participants?.some((p)=>p.role==='coordinator'||p.role==='advisor')&&<span className="text-gray-400">-</span>}</div></td>
+          <thead className="sticky top-0 z-10 bg-gray-50 text-gray-600 shadow-sm"><tr><th className="text-left p-3">งาน</th><th className="text-left p-3">ผู้รับผิดชอบ</th><th className="text-left p-3">ผู้ประสานงาน / ที่ปรึกษา</th><th className="text-left p-3">กำหนดส่ง</th><th className="text-left p-3">เวลาที่ใช้</th><th className="text-left p-3">ความคืบหน้า</th><th className="text-left p-3">ลิงก์ผลงาน</th><th className="text-left p-3">สถานะ</th><th className="p-3"></th></tr></thead>
+          <tbody>{visible.map((t) => <tr key={t.id} onClick={()=>setDetailTask(t)} className="border-t border-gray-100 cursor-pointer odd:bg-white even:bg-gray-50/60 hover:bg-emerald-50 transition-colors">
+            <td className="p-3"><div className="font-semibold leading-relaxed break-words">{t.title}</div><div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-gray-500"><span className="whitespace-nowrap">{t.task_no}</span><span className="w-2.5 h-2.5 rounded-full shrink-0 border border-black/10" style={{backgroundColor:t.category?.color??'#9ca3af'}}/><span>{t.category?.name ?? 'ไม่ระบุประเภท'}</span></div><div className="mt-1 text-xs text-slate-500">ผู้มอบหมาย: <span className="font-medium text-slate-700">{nameOf(t.creator)}</span></div></td>
+            <td className="p-3"><div className="space-y-1.5 leading-relaxed">{t.participants?.some((p) => p.role === 'assignee') ? t.participants.filter((p) => p.role === 'assignee').map((p) => <div key={p.id} className="break-words">{nameOf(p.employee)}</div>) : '-'}</div></td>
+            <td className="p-3 min-w-48"><div className="space-y-1">{t.participants?.filter((p)=>p.role==='coordinator'||p.role==='advisor').map((p)=><div key={p.id} className="flex items-start gap-2 text-xs leading-relaxed"><span className={`shrink-0 whitespace-nowrap px-1.5 py-0.5 rounded ${p.role==='coordinator'?'bg-blue-50 text-blue-700':'bg-violet-50 text-violet-700'}`}>{p.role==='coordinator'?'ประสานงาน':'ที่ปรึกษา'}</span><span className="text-gray-700">{nameOf(p.employee)}</span></div>)}{!t.participants?.some((p)=>p.role==='coordinator'||p.role==='advisor')&&<span className="text-gray-400">-</span>}</div></td>
             <td className="p-3 min-w-48">{t.due_at ? <><div className="whitespace-nowrap">{new Date(t.due_at).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })}</div>{dueResult(t) && <div className={`mt-1 text-xs font-medium ${dueResult(t)!.tone}`}>{dueResult(t)!.text}</div>}</> : '-'}</td>
             <td className="p-3 min-w-36"><div className="font-medium whitespace-nowrap">{elapsedText(t)}</div></td>
             <td className="p-3 min-w-36"><div className="h-2 bg-gray-100 rounded-full"><div className="h-full bg-emerald-500 rounded-full" style={{width:`${t.progress}%`}}/></div><span className="text-xs">{t.progress}%</span></td>

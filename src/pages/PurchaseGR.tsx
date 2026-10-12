@@ -149,10 +149,10 @@ function ShipmentEntriesDisplay({ po, compact = false, twoColumns = false }: {
   const entries = getPOShipmentEntries(po)
   if (entries.length === 0) return <span className="text-gray-400">-</span>
   return (
-    <div className={`${twoColumns && entries.length > 1 ? 'grid grid-cols-2 gap-x-3 gap-y-1.5' : 'space-y-1.5'} min-w-0 [overflow-wrap:anywhere]`}>
+    <div className={`${twoColumns && entries.length > 1 ? 'grid grid-cols-2 gap-x-2 gap-y-1.5' : 'space-y-1.5'} min-w-0 [overflow-wrap:anywhere]`}>
       {entries.map((entry, index) => (
         <div key={`${entry.vehicle_number}-${entry.tracking_number}-${index}`} className={`${compact ? 'text-xs' : 'text-[12px]'} min-w-0 leading-snug`}>
-          <div className="break-words font-semibold text-violet-700">{entry.tracking_number || '-'}</div>
+          <div className="text-[12px] break-words font-semibold text-violet-700">{entry.tracking_number || '-'}</div>
           {(entry.vehicle_number || entry.box_count > 0) && (
             <div className="mt-0.5 break-words text-[11px] font-normal text-gray-600">
               {entry.vehicle_number || '-'}{' '}

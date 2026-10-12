@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import { buildIlikeOr, buildWhitespaceTolerantTrackingPattern } from '../../lib/searchFilter'
-import { fetchLatestRejectedManualSlipOrderIds, fetchLatestRejectedOverpayOrderIds } from '../../lib/rejectedOverpayRefunds'
+import { fetchLatestRejectedManualSlipOrderIds, fetchLatestRejectedOverpayOrderIds, latestRefundsByOrder } from '../../lib/rejectedOverpayRefunds'
 import { hasDuplicateSlipError, manualSlipSubmissionMode } from '../../lib/manualSlipRules'
 import { Order, OrderStatus } from '../../types'
 import { formatDateTime } from '../../lib/utils'
+import { fetchAllSupabasePages } from '../../lib/supabasePagination'
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
 import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
@@ -379,12 +380,7 @@ export default function OrderList({
 
       if (filterByRejectedOverpayRefund) {
         // โหลดบิลที่ปฏิเสธโอนคืน: จาก ac_refunds (status=rejected, reason โอนเกิน) แล้วดึง or_orders
-        const { data: rejectedData } = await supabase
-          .from('ac_refunds')
-          .select('order_id')
-          .ilike('reason', '%โอนเกิน%')
-          .eq('status', 'rejected')
-        const orderIds = [...new Set((rejectedData || []).map((r: any) => r.order_id).filter(Boolean))]
+        const orderIds = await fetchLatestRejectedOverpayOrderIds(supabase)
         if (orderIds.length === 0) {
           commitEmptyResult()
           return
@@ -643,15 +639,20 @@ export default function OrderList({
         if (!isLatestRequest()) return
 
         // Load refunds ที่ถูกปฏิเสธ (โอนเกิน) เพื่อแสดงป้าย "ปฏิเสธโอนคืน" + เหตุผลไม่อนุมัติ
-        const { data: rejectedRefundsData } = await supabase
+        const rejectedRefundsData = await fetchAllSupabasePages<{ id: string; order_id: string; status: string; created_at: string; rejected_reason: string | null }>((from, to) => supabase
           .from('ac_refunds')
-          .select('order_id, rejected_reason')
+          .select('id, order_id, status, created_at, rejected_reason')
           .in('order_id', orderIds)
           .ilike('reason', '%โอนเกิน%')
-          .eq('status', 'rejected')
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to))
 
+        const latestOverpayRefundByOrder = latestRefundsByOrder(rejectedRefundsData || [])
         const rejectedOverpayRefundByOrder = new Map<string, string | null>(
-          (rejectedRefundsData || []).map((r: any) => [r.order_id, r.rejected_reason ?? null]),
+          [...latestOverpayRefundByOrder.values()]
+            .filter((r) => r.status === 'rejected')
+            .map((r) => [r.order_id!, r.rejected_reason ?? null]),
         )
 
         if (!isLatestRequest()) return
@@ -686,6 +687,7 @@ export default function OrderList({
             ...order,
             has_overpay_refund: orderIdsWithOverpayRefund.has(order.id),
             has_rejected_overpay_refund: rejectedOverpayRefundByOrder.has(order.id),
+            latest_overpay_refund_status: latestOverpayRefundByOrder.get(order.id)?.status,
             rejected_overpay_reason: rejectedOverpayRefundByOrder.get(order.id) ?? null,
             manual_slip_badge,
             manual_slip_rejected_reason: slip?.rejectedReason ?? null,
@@ -902,6 +904,11 @@ export default function OrderList({
                 {showDesignBadge && (
                   <span className="px-2.5 py-1 rounded-full text-sm font-semibold bg-fuchsia-100 text-fuchsia-800 border border-fuchsia-200">
                     ออกแบบ
+                  </span>
+                )}
+                {['pending', 'approved'].includes((order as any).latest_overpay_refund_status) && (
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${(order as any).latest_overpay_refund_status === 'approved' ? 'bg-emerald-100 text-emerald-800 border-emerald-200' : 'bg-amber-100 text-amber-800 border-amber-200'}`}>
+                    {(order as any).latest_overpay_refund_status === 'approved' ? 'อนุมัติโอนคืนแล้ว' : 'รออนุมัติโอนคืน'}
                   </span>
                 )}
                 {(order as any).has_rejected_overpay_refund && (

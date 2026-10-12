@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase'
 import { Refund, Order } from '../types'
 import { formatDateTime, downloadFileFromUrl } from '../lib/utils'
 import DateTimeStacked from '../components/ui/DateTimeStacked'
+import RefundRequestLink from '../components/order/RefundRequestLink'
 import { splitAddressParts } from '../lib/thaiAddress'
 import { fetchClaimTypeLabelMap, claimTypeLabel } from '../lib/claimTypeLabels'
 import { useAuthContext } from '../contexts/AuthContext'
@@ -1632,6 +1633,7 @@ export default function Account() {
                             {refund.refund_recipient_reason?.trim() && (
                               <div className="text-gray-800 mt-0.5 line-clamp-2" title={refund.refund_recipient_reason.trim()}>{refund.refund_recipient_reason.trim()}</div>
                             )}
+                            <RefundRequestLink value={refund.refund_request_link} iconOnly />
                           </td>
                           <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                             <div className="flex flex-col items-center gap-1.5">
@@ -1906,6 +1908,7 @@ export default function Account() {
                       {refund.refund_recipient_reason?.trim() && (
                         <div className="text-gray-800 mt-0.5">{refund.refund_recipient_reason.trim()}</div>
                       )}
+                      <RefundRequestLink value={refund.refund_request_link} iconOnly />
                     </td>
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       <div className="flex gap-2">
@@ -2507,6 +2510,7 @@ export default function Account() {
                             <span className="text-gray-800">{viewBillRefund.refund_recipient_reason.trim()}</span>
                           </p>
                         )}
+                        <div className="sm:col-span-2"><RefundRequestLink value={viewBillRefund.refund_request_link} iconOnly /></div>
                       </div>
                       <div>
                         <p className="font-medium text-gray-600 text-sm mb-2">รูปสลิปโอน</p>

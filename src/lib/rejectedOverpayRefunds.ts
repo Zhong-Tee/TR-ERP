@@ -1,6 +1,18 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchAllSupabasePages } from './supabasePagination'
 
+export function latestRefundsByOrder<T extends { id: string; order_id: string | null; created_at: string }>(rows: T[]): Map<string, T> {
+  const latest = new Map<string, T>()
+  for (const row of rows) {
+    if (!row.order_id) continue
+    const previous = latest.get(row.order_id)
+    if (!previous || Date.parse(row.created_at) > Date.parse(previous.created_at) || (Date.parse(row.created_at) === Date.parse(previous.created_at) && row.id > previous.id)) {
+      latest.set(row.order_id, row)
+    }
+  }
+  return latest
+}
+
 type ClaimReapprovalState = {
   status: string
   reviewed_at: string | null

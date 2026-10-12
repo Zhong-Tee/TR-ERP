@@ -509,12 +509,13 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
   const specialAreaSurcharge = shippingSettings.special_area_enabled && matchedArea ? Number(matchedArea.surcharge || 0) : 0
   const baseShippingWaived = hasFreeShipping || (selectedPromotionIds.length > 0 && !shippingSettings.charge_promotion_orders)
   const shippingCharge = calculateShippingCharge(standardShipping, specialAreaSurcharge, baseShippingWaived)
-  const automaticShippingActive = hasFreeShipping || shippingSettings.auto_calculate_enabled || shippingSettings.special_area_enabled
+  const automaticShippingActive = baseShippingWaived || shippingSettings.auto_calculate_enabled || shippingSettings.special_area_enabled
   const automaticShipping = shippingSettings.auto_calculate_enabled || baseShippingWaived
     ? shippingCharge.total_shipping_fee
     : shippingCharge.special_area_surcharge
   const chargedStandardShipping = shippingSettings.auto_calculate_enabled ? shippingCharge.charged_standard_fee : 0
-  const shippingCost = isPickup ? 0 : document && !isRenewal
+  // Recalculate editable documents; preserve saved shipping for locked documents.
+  const shippingCost = isPickup ? 0 : document && (locked || expired)
     ? Number(document.shipping_cost || 0)
     : automaticShippingActive ? automaticShipping : Number(manualShipping || 0)
   const specialDiscount = Number(document?.special_discount || 0)

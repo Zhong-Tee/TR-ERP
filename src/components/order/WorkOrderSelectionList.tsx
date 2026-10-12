@@ -52,6 +52,7 @@ export default function WorkOrderSelectionList({
   onCreateWorkOrder,
 }: WorkOrderSelectionListProps) {
   const [orders, setOrders] = useState<Order[]>([])
+  const [refundBlocks, setRefundBlocks] = useState<Record<string, string>>({})
   const [orderLinks, setOrderLinks] = useState<Record<string, string[]>>({})
   const [loading, setLoading] = useState(true)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -96,6 +97,13 @@ export default function WorkOrderSelectionList({
         if (!bn.startsWith('REQ')) return true
         return !!(o as Order & { claim_shipping_confirmed_at?: string | null }).claim_shipping_confirmed_at
       })
+      const nextRefundBlocks: Record<string, string> = {}
+      const blockChunks = Array.from({ length: Math.ceil(list.length / 100) }, (_, index) => list.slice(index * 100, (index + 1) * 100).map((o) => o.id))
+      const blockResults = await Promise.all(blockChunks.map((ids) => supabase.rpc('or_work_order_refund_blocks', { p_order_ids: ids })))
+      for (const result of blockResults) {
+        if (result.error) throw result.error
+        for (const row of (result.data || []) as { order_id: string; reason: string }[]) nextRefundBlocks[row.order_id] = row.reason
+      }
       const nextOrderLinks: Record<string, string[]> = {}
       if (list.length > 0) {
         const orderIds = list.map((order) => order.id)
@@ -126,6 +134,7 @@ export default function WorkOrderSelectionList({
         }
       }
       setOrders(list)
+      setRefundBlocks(nextRefundBlocks)
       setOrderLinks(nextOrderLinks)
       setSelectedIds(new Set())
       setSelectQty('')
@@ -133,7 +142,9 @@ export default function WorkOrderSelectionList({
       onCountChange?.(list.length)
     } catch (error: any) {
       console.error('Error loading orders:', error)
-      alert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
+      setRefundBlocks({})
+      setOrders([])
+      setErrorPopup({ title: 'โหลดเงื่อนไขเข้าใบงานไม่สำเร็จ', message: error.message })
     } finally {
       setLoading(false)
     }
@@ -153,6 +164,7 @@ export default function WorkOrderSelectionList({
   const filteredOrders = pillChannel ? orders.filter((o) => pillChannelKeyOf(o) === pillChannel) : orders
 
   const toggleSelect = (id: string) => {
+    if (refundBlocks[id]) return
     setSelectedIds((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
@@ -162,8 +174,9 @@ export default function WorkOrderSelectionList({
   }
 
   const selectAll = () => {
-    setSelectedIds(new Set(filteredOrders.map((o) => o.id)))
-    setSelectQty(String(filteredOrders.length))
+    const available = filteredOrders.filter((o) => !refundBlocks[o.id])
+    setSelectedIds(new Set(available.map((o) => o.id)))
+    setSelectQty(String(available.length))
   }
 
   const clearSelection = () => {
@@ -177,7 +190,7 @@ export default function WorkOrderSelectionList({
       setSelectedIds(new Set())
       return
     }
-    const topN = filteredOrders.slice(0, n).map((o) => o.id)
+    const topN = filteredOrders.filter((o) => !refundBlocks[o.id]).slice(0, n).map((o) => o.id)
     setSelectedIds(new Set(topN))
   }
 
@@ -195,11 +208,12 @@ export default function WorkOrderSelectionList({
       setSelectedIds(new Set())
       return
     }
-    const topN = list.slice(0, n).map((o) => o.id)
+    const topN = list.filter((o) => !refundBlocks[o.id]).slice(0, n).map((o) => o.id)
     setSelectedIds(new Set(topN))
-  }, [selectQty, orders, pillChannel])
+  }, [selectQty, orders, pillChannel, refundBlocks])
 
-  const selectedOrders = filteredOrders.filter((o) => selectedIds.has(o.id))
+  const selectableOrders = filteredOrders.filter((o) => !refundBlocks[o.id])
+  const selectedOrders = selectableOrders.filter((o) => selectedIds.has(o.id))
 
   /** สร้าง id สำหรับ plan_jobs (รูปแบบเดียวกับ Plan.tsx) */
   const planJobId = () => 'J' + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4)
@@ -247,12 +261,15 @@ export default function WorkOrderSelectionList({
 
   async function handleCreateWorkOrder() {
     if (selectedOrders.length === 0) {
-      alert('กรุณาเลือกรายการบิลอย่างน้อย 1 รายการ')
+      setErrorPopup({ title: 'ยังไม่ได้เลือกบิล', message: 'กรุณาเลือกรายการบิลอย่างน้อย 1 รายการ' })
       return
     }
 
     setCreating(true)
     try {
+      const { data: blocks, error: blockError } = await supabase.rpc('or_work_order_refund_blocks', { p_order_ids: selectedOrders.map((o) => o.id) })
+      if (blockError) throw blockError
+      if (blocks?.length) throw new Error((blocks as { bill_no: string; reason: string }[]).map((b) => `${b.bill_no}: ${b.reason}`).join('\n'))
       const byChannel = selectedOrders.reduce<Record<string, Order[]>>((acc, o) => {
         // Keep claim bills in their own work order and make the claim origin
         // visible in the generated name, e.g. "(Claim)SPTR-170769-R1".
@@ -420,7 +437,8 @@ export default function WorkOrderSelectionList({
                   <th className="w-10 p-2 text-left whitespace-nowrap">
                     <input
                       type="checkbox"
-                      checked={selectedIds.size === filteredOrders.length && filteredOrders.length > 0}
+                      checked={selectedOrders.length === selectableOrders.length && selectableOrders.length > 0}
+                      disabled={selectableOrders.length === 0 || creating}
                       onChange={(e) => (e.target.checked ? selectAll() : clearSelection())}
                       className="rounded border-gray-300"
                     />
@@ -445,6 +463,8 @@ export default function WorkOrderSelectionList({
                       <input
                         type="checkbox"
                         checked={selectedIds.has(order.id)}
+                        disabled={!!refundBlocks[order.id] || creating}
+                        title={refundBlocks[order.id]}
                         onChange={() => toggleSelect(order.id)}
                         onClick={(e) => e.stopPropagation()}
                         className="rounded border-gray-300 cursor-pointer"

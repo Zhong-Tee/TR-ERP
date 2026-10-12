@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabase'
+import RefundRequestLink from './RefundRequestLink'
 import { formatDateTime, downloadFileFromUrl } from '../../lib/utils'
 import { getSignedUrlsFromStoragePaths } from '../../lib/slipVerification'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -244,6 +245,7 @@ export default function RefundReturnList() {
                 <tr key={r.id} className="border-b border-gray-100 hover:bg-emerald-50/40 transition-colors">
                   <td className="px-4 py-3 font-medium text-gray-800 whitespace-nowrap">
                     <span>{r.or_orders?.bill_no || '–'}</span>
+                    <RefundRequestLink value={r.refund_request_link} />
                     {(r.or_orders?.bill_no || '').startsWith('REQ') && (
                       <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
                     )}

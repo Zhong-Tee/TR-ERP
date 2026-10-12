@@ -885,12 +885,12 @@ export default function EmployeeRegistry() {
             <div className="animate-spin rounded-full h-10 w-10 border-2 border-emerald-600 border-t-transparent" />
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
+          <div className="max-h-[70vh] overflow-auto" tabIndex={0} role="region" aria-label="รายการพนักงาน เลื่อนเพื่อดูคอลัมน์เพิ่มเติม">
+            <table className="w-full min-w-[1600px] [&_th]:whitespace-nowrap [&_td]:align-middle">
+              <thead className="sticky top-0 z-10 bg-gray-50 shadow-sm">
                 <tr className="bg-gray-50 border-b border-gray-200">
                   <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">รหัส</th>
-                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">ชื่อ-นามสกุล</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap min-w-[240px]">ชื่อ-นามสกุล</th>
                   <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">เบอร์โทร</th>
                   <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">ชื่อเล่น</th>
                   <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">
@@ -905,15 +905,15 @@ export default function EmployeeRegistry() {
                       </span>
                     </div>
                   </th>
-                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">แผนก</th>
-                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">ตำแหน่ง</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap min-w-[160px]">แผนก</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap min-w-[180px]">ตำแหน่ง</th>
                   <th className="text-right py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">เงินเดือน</th>
                   <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">ประเภทสัญญาจ้าง</th>
                   <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">สถานะ</th>
                   <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">วันที่เข้างาน</th>
                   <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">อายุงาน</th>
                   <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">อายุสัญญา</th>
-                  <th className="text-right py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap w-24">Actions</th>
+                  <th className="text-right py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap w-24">จัดการ</th>
                 </tr>
               </thead>
               <tbody>
@@ -927,7 +927,7 @@ export default function EmployeeRegistry() {
                   filtered.map((emp) => (
                     <tr
                       key={emp.id}
-                      className="border-b border-gray-100 hover:bg-emerald-50/50 transition"
+                      className="border-b border-gray-100 odd:bg-white even:bg-gray-50/60 hover:bg-emerald-50 transition-colors"
                     >
                       <td className="py-3 px-3 text-sm text-gray-900">
                         <div className="flex items-center gap-1.5 whitespace-nowrap">
@@ -965,18 +965,18 @@ export default function EmployeeRegistry() {
                               />
                             </button>
                           ) : (
-                            <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 text-xs">
+                            <div className="w-8 h-8 shrink-0 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 text-xs">
                               {(emp.first_name?.[0] ?? '?')}
                             </div>
                           )}
-                          <span className="text-sm text-gray-900">
+                          <span className="text-sm font-medium text-gray-900 whitespace-nowrap">
                             {emp.prefix} {emp.first_name} {emp.last_name}
                           </span>
                         </div>
                       </td>
-                      <td className="py-3 px-3 text-sm text-gray-600">{emp.phone ?? '-'}</td>
-                      <td className="py-3 px-3 text-sm text-gray-600">{emp.nickname ?? '-'}</td>
-                      <td className="py-3 px-3 text-sm text-gray-600">
+                      <td className="py-3 px-3 text-sm text-gray-600 whitespace-nowrap tabular-nums">{emp.phone ?? '-'}</td>
+                      <td className="py-3 px-3 text-sm text-gray-600 whitespace-nowrap">{emp.nickname ?? '-'}</td>
+                      <td className="py-3 px-3 text-sm text-gray-600 whitespace-nowrap tabular-nums">
                         {emp.birth_date ? (
                           <div>
                             <div>{new Date(emp.birth_date).toLocaleDateString('th-TH')}</div>
@@ -994,7 +994,7 @@ export default function EmployeeRegistry() {
                       <td className="py-3 px-3 text-sm text-gray-600">
                         {(emp.position as { name?: string })?.name ?? '-'}
                       </td>
-                      <td className="py-3 px-3 text-sm text-right tabular-nums">
+                      <td className="py-3 px-3 text-sm text-right whitespace-nowrap tabular-nums">
                         {emp.salary != null || emp.position_allowance != null ? (
                           <button
                             type="button"
@@ -1008,7 +1008,7 @@ export default function EmployeeRegistry() {
                           <span className="text-gray-400">-</span>
                         )}
                       </td>
-                      <td className="py-3 px-3 text-sm text-gray-600">
+                      <td className="py-3 px-3 text-sm text-gray-600 whitespace-nowrap">
                         {getContractTypeLabel(emp.contract_type)}
                       </td>
                       <td className="py-3 px-3">
@@ -1020,12 +1020,12 @@ export default function EmployeeRegistry() {
                           {getStatusLabel(emp.employment_status)}
                         </span>
                       </td>
-                      <td className="py-3 px-3 text-sm text-gray-600">
+                      <td className="py-3 px-3 text-sm text-gray-600 whitespace-nowrap tabular-nums">
                         {emp.hire_date
                           ? new Date(emp.hire_date).toLocaleDateString('th-TH')
                           : '-'}
                       </td>
-                      <td className="py-3 px-3 text-sm text-gray-600">
+                      <td className="py-3 px-3 text-sm text-gray-600 whitespace-nowrap">
                         {getTenureLabel(emp.hire_date)}
                       </td>
                       <td className="py-3 px-3 text-sm text-gray-600 whitespace-nowrap">

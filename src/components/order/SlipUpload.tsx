@@ -147,10 +147,7 @@ export default function SlipUpload({
             orderRow.requires_confirm_design,
           )
 
-          const { error: updateError } = await supabase
-            .from('or_orders')
-            .update({ status: nextStatus })
-            .eq('id', orderId)
+          const { error: updateError } = await supabase.rpc('or_apply_payment_review_status', { p_order_id: orderId, p_status: nextStatus, p_source: 'easyslip' })
 
           if (updateError) throw updateError
 

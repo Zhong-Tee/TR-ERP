@@ -137,9 +137,9 @@ function cancellerDisplayName(req: HRLeaveRequest): string {
   return req.cancelled_by_name?.trim() || '-'
 }
 
-function EmergencyBadge({ request }: { request: HRLeaveRequest }) {
+function EmergencyBadge({ request, className = 'ml-2' }: { request: HRLeaveRequest; className?: string }) {
   if (!request.is_emergency) return null
-  return <span className="ml-2 inline-flex shrink-0 rounded-full border border-red-200 bg-red-100 px-2 py-0.5 text-[10px] font-bold text-red-700">ฉุกเฉิน</span>
+  return <span className={`${className} inline-flex shrink-0 whitespace-nowrap rounded-full border border-red-200 bg-red-100 px-2 py-0.5 text-[10px] font-bold text-red-700`}>ฉุกเฉิน</span>
 }
 
 /** แสดงจำนวนวันทศนิยมเป็นหน่วยที่อ่านง่าย โดย 1 วันทำงาน = 8 ชั่วโมง */
@@ -217,7 +217,7 @@ export default function LeaveManagement() {
   const [requests, setRequests] = useState<HRLeaveRequest[]>([])
   const [otRequests, setOtRequests] = useState<HROTRequest[]>([])
   const [wfhRequests, setWfhRequests] = useState<HRWFHRequest[]>([])
-  const [wfhStatusFilter, setWfhStatusFilter] = useState<StatusFilter>('all')
+  const [wfhStatusFilter, setWfhStatusFilter] = useState<StatusFilter | 'cancelled'>('all')
   const [wfhTypeFilter, setWfhTypeFilter] = useState<HRWFHRequestType | 'all'>('all')
   const [otStatusFilter, setOtStatusFilter] = useState<StatusFilter>('all')
   const [otRejectingId, setOtRejectingId] = useState<string | null>(null)
@@ -240,6 +240,9 @@ export default function LeaveManagement() {
   const [employeeById, setEmployeeById] = useState<Record<string, HREmployee>>({})
   const [detailRequest, setDetailRequest] = useState<HRLeaveRequest | null>(null)
   const [cancelLeaveTarget, setCancelLeaveTarget] = useState<HRLeaveRequest | null>(null)
+  const [wfhActionTarget, setWfhActionTarget] = useState<{ request: HRWFHRequest; action: 'cancelled' | 'rejected' } | null>(null)
+  const [wfhActionReason, setWfhActionReason] = useState('')
+  const [wfhActionError, setWfhActionError] = useState<string | null>(null)
   const [rejectingId, setRejectingId] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState('')
   const [actionLoading, setActionLoading] = useState(false)
@@ -575,8 +578,41 @@ export default function LeaveManagement() {
     }
   }
 
+  const openWFHAction = (request: HRWFHRequest, action: 'cancelled' | 'rejected') => {
+    setWfhActionReason('')
+    setWfhActionError(null)
+    setWfhActionTarget({ request, action })
+  }
+
+  const closeWFHAction = () => {
+    if (actionLoading) return
+    setWfhActionTarget(null)
+    setWfhActionReason('')
+    setWfhActionError(null)
+  }
+
+  const handleCancelWFH = async () => {
+    if (!wfhActionTarget || actionLoading || !canApproveOT || wfhActionTarget.request.status !== 'approved') return
+    const req = wfhActionTarget.request
+    const reason = wfhActionReason.trim()
+    if (!reason) return
+    setActionLoading(true)
+    setError(null)
+    try {
+      await updateWFHRequest(req.id, { status: 'cancelled', cancel_reason: reason })
+      setWfhActionTarget(null)
+      setSuccessMessage('ยกเลิกคำขอ WFH สำเร็จ พนักงานสามารถส่งคำขอใหม่ได้')
+      await loadData()
+    } catch (e) {
+      setWfhActionError(e instanceof Error ? e.message : 'ยกเลิกคำขอ WFH ไม่สำเร็จ')
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
   const handleWFHStatus = async (id: string, status: 'approved' | 'rejected') => {
-    const reason = status === 'rejected' ? window.prompt('ระบุเหตุผลที่ไม่อนุมัติ WFH')?.trim() : ''
+    const reason = status === 'rejected' ? wfhActionReason.trim() : ''
+    if (actionLoading) return
     if (status === 'rejected' && !reason) return
     setActionLoading(true)
     setError(null)
@@ -587,10 +623,13 @@ export default function LeaveManagement() {
         approved_at: new Date().toISOString(),
         reject_reason: reason || undefined,
       })
+      setWfhActionTarget(null)
       setSuccessMessage(status === 'approved' ? 'อนุมัติคำขอ WFH สำเร็จ' : 'ไม่อนุมัติคำขอ WFH แล้ว')
       await loadData()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'ดำเนินการคำขอ WFH ไม่สำเร็จ')
+      const message = e instanceof Error ? e.message : 'ดำเนินการคำขอ WFH ไม่สำเร็จ'
+      if (status === 'rejected') setWfhActionError(message)
+      else setError(message)
     } finally {
       setActionLoading(false)
     }
@@ -700,8 +739,9 @@ export default function LeaveManagement() {
           </div>
           {activeTab === 'wfh' && (
             <div className="flex items-center gap-3 flex-wrap">
-              <select value={wfhStatusFilter} onChange={(e) => setWfhStatusFilter(e.target.value as StatusFilter)} className="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm text-surface-800">
+              <select value={wfhStatusFilter} onChange={(e) => setWfhStatusFilter(e.target.value as StatusFilter | 'cancelled')} className="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm text-surface-800">
                 <option value="all">ทุกสถานะ</option><option value="pending">รออนุมัติ</option><option value="approved">อนุมัติ</option><option value="rejected">ไม่อนุมัติ</option>
+              <option value="cancelled">ยกเลิกแล้ว</option>
               </select>
               <select value={wfhTypeFilter} onChange={(e) => setWfhTypeFilter(e.target.value as HRWFHRequestType | 'all')} className="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm text-surface-800">
                 <option value="all">ทุกประเภท WFH</option>
@@ -1066,9 +1106,9 @@ export default function LeaveManagement() {
             <div className="animate-spin rounded-full h-10 w-10 border-2 border-surface-300 border-t-emerald-600" />
           </div>
         ) : activeTab === 'ot' ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
+          <div className="max-h-[70vh] overflow-auto" tabIndex={0} role="region" aria-label="รายการคำขอ เลื่อนเพื่อดูคอลัมน์เพิ่มเติม">
+            <table className="w-full min-w-[1400px] text-left [&_th]:whitespace-nowrap [&_td]:align-middle [&_td:first-child]:whitespace-nowrap [&_td:first-child]:min-w-[240px]">
+              <thead className="sticky top-0 z-10 bg-surface-50 shadow-sm">
                 <tr className="bg-surface-50 border-b border-surface-200">
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">พนักงาน</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่ทำ OT</th>
@@ -1090,8 +1130,8 @@ export default function LeaveManagement() {
                   </tr>
                 ) : (
                   filteredOtRequests.map((req) => (
-                    <tr key={req.id} className="border-b border-surface-100 hover:bg-emerald-50/50 transition-colors">
-                      <td className="px-6 py-3 text-sm text-surface-800">{otEmployeeName(req)}</td>
+                    <tr key={req.id} className="border-b border-surface-100 odd:bg-white even:bg-surface-50/60 hover:bg-emerald-50 transition-colors">
+                      <td className="px-6 py-3 text-sm font-medium text-surface-800 whitespace-nowrap">{otEmployeeName(req)}</td>
                       <td className="px-6 py-3 text-sm text-surface-700">
                         {asDateOnly(req.request_date).toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' })}
                       </td>
@@ -1099,7 +1139,7 @@ export default function LeaveManagement() {
                         {req.ot_start.slice(0, 5)} – {req.ot_end.slice(0, 5)} น.
                       </td>
                       <td className="px-6 py-3 text-sm text-surface-700 font-mono">{hoursToHHMM(req.hours)}</td>
-                      <td className="px-6 py-3 text-sm text-surface-700 max-w-[240px] truncate" title={req.reason ?? ''}>
+                      <td className="px-6 py-3 text-sm text-surface-700 min-w-[240px] max-w-[320px] whitespace-normal break-words leading-relaxed" title={req.reason ?? ''}>
                         {req.reason ?? '-'}
                         {req.reject_reason && (
                           <div className="text-xs text-red-500 truncate" title={req.reject_reason}>
@@ -1149,38 +1189,40 @@ export default function LeaveManagement() {
             </table>
           </div>
         ) : activeTab === 'wfh' ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead><tr className="bg-surface-50 border-b border-surface-200">
+          <div className="max-h-[70vh] overflow-auto" tabIndex={0} role="region" aria-label="รายการคำขอ เลื่อนเพื่อดูคอลัมน์เพิ่มเติม">
+            <table className="w-full min-w-[1400px] text-left [&_th]:whitespace-nowrap [&_td]:align-middle [&_td:first-child]:whitespace-nowrap [&_td:first-child]:min-w-[240px]">
+              <thead className="sticky top-0 z-10 bg-surface-50 shadow-sm"><tr className="bg-surface-50 border-b border-surface-200">
                 <th className="px-6 py-3 text-sm font-semibold text-surface-700">พนักงาน</th>
                 <th className="px-6 py-3 text-sm font-semibold text-surface-700 whitespace-nowrap">ประเภท WFH</th>
-                <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่เริ่ม–สิ้นสุด</th>
-                <th className="px-6 py-3 text-sm font-semibold text-surface-700">ช่วงเวลา</th>
+                <th className="min-w-[260px] px-6 py-3 text-sm font-semibold text-surface-700">วันที่เริ่ม–สิ้นสุด</th>
+                <th className="min-w-[190px] px-6 py-3 text-sm font-semibold text-surface-700">ช่วงเวลา</th>
                 <th className="px-6 py-3 text-sm font-semibold text-surface-700">เหตุผล</th>
-                <th className="px-6 py-3 text-sm font-semibold text-surface-700">สถานะ</th>
-                <th className="px-6 py-3 text-sm font-semibold text-surface-700">ผู้อนุมัติ</th>
+                <th className="min-w-[140px] px-6 py-3 text-sm font-semibold text-surface-700">สถานะ</th>
+                <th className="min-w-[240px] px-6 py-3 text-sm font-semibold text-surface-700">ผู้อนุมัติ</th>
                 {canApproveOT && <th className="px-6 py-3 text-sm font-semibold text-surface-700">ดำเนินการ</th>}
               </tr></thead>
               <tbody>
                 {filteredWfhRequests.length === 0 ? <tr><td colSpan={canApproveOT ? 8 : 7} className="px-6 py-12 text-center text-surface-500 text-sm">ไม่มีคำขอ WFH</td></tr> : filteredWfhRequests.map((req) => (
-                  <tr key={req.id} className="border-b border-surface-100 hover:bg-emerald-50/50 transition-colors">
-                    <td className="px-6 py-3 text-sm text-surface-800">{employeeName(req.employee)}</td>
+                  <tr key={req.id} className="border-b border-surface-100 odd:bg-white even:bg-surface-50/60 hover:bg-emerald-50 transition-colors">
+                    <td className="px-6 py-3 text-sm font-medium text-surface-800 whitespace-nowrap">{employeeName(req.employee)}</td>
                     <td className="px-6 py-3 text-sm font-medium text-surface-700 whitespace-nowrap">{wfhRequestTypeLabel(req.wfh_type)}</td>
-                    <td className="px-6 py-3 text-sm text-surface-700">{req.start_date} – {req.end_date}</td>
-                    <td className="px-6 py-3 text-sm text-surface-700">{req.start_time && req.end_time ? `${req.start_time.slice(0, 5)} – ${req.end_time.slice(0, 5)} น.` : 'ตามตารางงาน'}</td>
+                    <td className="min-w-[260px] px-6 py-3 text-sm text-surface-700 whitespace-nowrap tabular-nums">{req.start_date} – {req.end_date}</td>
+                    <td className="min-w-[190px] px-6 py-3 text-sm text-surface-700 whitespace-nowrap tabular-nums">{req.start_time && req.end_time ? `${req.start_time.slice(0, 5)} – ${req.end_time.slice(0, 5)} น.` : 'ตามตารางงาน'}</td>
                     <td className="px-6 py-3 text-sm text-surface-700 max-w-[260px]" title={req.reason}><div className="truncate">{req.reason || '-'}</div>{req.reject_reason && <div className="text-xs text-red-500 truncate">เหตุผลไม่อนุมัติ: {req.reject_reason}</div>}</td>
-                    <td className="px-6 py-3"><span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium border ${statusBadgeClass(req.status)}`}>{req.status === 'pending' ? 'รออนุมัติ' : statusLabel(req.status)}</span></td>
-                    <td className="px-6 py-3 text-sm text-surface-700">{req.approver ? [req.approver.first_name, req.approver.last_name].filter(Boolean).join(' ') || '-' : '-'}</td>
-                    {canApproveOT && <td className="px-6 py-3">{req.status === 'pending' ? <div className="flex gap-2"><button type="button" disabled={actionLoading} onClick={() => handleWFHStatus(req.id, 'approved')} className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-medium disabled:opacity-50">อนุมัติ</button><button type="button" disabled={actionLoading} onClick={() => handleWFHStatus(req.id, 'rejected')} className="px-3 py-1.5 rounded-lg bg-red-100 text-red-700 text-sm font-medium disabled:opacity-50">ไม่อนุมัติ</button></div> : <span className="text-surface-400">-</span>}</td>}
+                    <td className="min-w-[140px] whitespace-nowrap px-6 py-3"><span className={`inline-flex shrink-0 items-center justify-center whitespace-nowrap px-2.5 py-1 rounded-full text-xs leading-5 font-medium border ${statusBadgeClass(req.status)}`}>{req.status === 'pending' ? 'รออนุมัติ' : statusLabel(req.status)}</span></td>
+                    <td className="min-w-[240px] px-6 py-3 text-sm text-surface-700 whitespace-nowrap"><div>{req.approved_by_name || (req.approver ? [req.approver.first_name, req.approver.last_name].filter(Boolean).join(' ') || '-' : '-')}</div>
+                      {req.approved_at && <div className="text-xs text-surface-500">{new Date(req.approved_at).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' })}</div>}
+                      {req.cancelled_at && <div className="mt-2 whitespace-normal text-xs text-surface-600">ยกเลิกโดย: {req.cancelled_by_name || '-'}<br />{new Date(req.cancelled_at).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' })}<br />เหตุผล: {req.cancel_reason}</div>}</td>
+                    {canApproveOT && <td className="px-6 py-3">{req.status === 'pending' ? <div className="flex gap-2"><button type="button" disabled={actionLoading} onClick={() => handleWFHStatus(req.id, 'approved')} className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-medium disabled:opacity-50">อนุมัติ</button><button type="button" disabled={actionLoading} onClick={() => openWFHAction(req, 'rejected')} className="px-3 py-1.5 rounded-lg bg-red-100 text-red-700 text-sm font-medium disabled:opacity-50">ไม่อนุมัติ</button></div> : req.status === 'approved' ? <button type="button" disabled={actionLoading || req.start_date <= new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())} onClick={() => openWFHAction(req, 'cancelled')} className="px-3 py-1.5 rounded-lg bg-red-100 text-red-700 text-sm font-medium disabled:opacity-50" title="ยกเลิกได้เฉพาะวันในอนาคตและยังไม่มีการลงเวลา">ยกเลิก</button> : <span className="text-surface-400">-</span>}</td>}
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         ) : activeTab === 'list' ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
+          <div className="max-h-[70vh] overflow-auto" tabIndex={0} role="region" aria-label="รายการคำขอ เลื่อนเพื่อดูคอลัมน์เพิ่มเติม">
+            <table className="w-full min-w-[1400px] text-left [&_th]:whitespace-nowrap [&_td]:align-middle [&_td:first-child]:whitespace-nowrap [&_td:first-child]:min-w-[240px]">
+              <thead className="sticky top-0 z-10 bg-surface-50 shadow-sm">
                 <tr className="bg-surface-50 border-b border-surface-200">
                   <th className="px-3 py-3 text-sm font-semibold text-surface-700">พนักงาน</th>
                   <th className="px-3 py-3 text-sm font-semibold text-surface-700">ประเภทลา</th>
@@ -1205,18 +1247,21 @@ export default function LeaveManagement() {
                     <tr
                       key={req.id}
                       onClick={() => setDetailRequest(req)}
-                      className="border-b border-surface-100 hover:bg-emerald-50/50 cursor-pointer transition-colors"
+                      className="border-b border-surface-100 odd:bg-white even:bg-surface-50/60 hover:bg-emerald-50 cursor-pointer transition-colors"
                     >
-                      <td className="px-6 py-3 text-sm text-surface-800">{employeeDisplayName(req)}</td>
-                      <td className="px-6 py-3 text-sm text-surface-700">
-                        {(req.leave_type as { name?: string })?.name ?? '-'}<EmergencyBadge request={req}/>
+                      <td className="px-6 py-3 text-sm font-medium text-surface-800 whitespace-nowrap">{employeeDisplayName(req)}</td>
+                      <td className="px-6 py-3 text-sm text-surface-700 min-w-[180px]">
+                        <div className="flex items-center gap-2 whitespace-nowrap">
+                          <span>{(req.leave_type as { name?: string })?.name ?? '-'}</span>
+                          <EmergencyBadge request={req} className="" />
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-sm text-surface-700 whitespace-nowrap">
                         <div>{req.start_date} – {req.end_date}</div>
                         <div className="mt-1 text-xs text-surface-500">{leaveTimeRange(req) ?? 'เต็มวัน'}</div>
                       </td>
                       <td className="px-4 py-3 text-sm text-surface-700 whitespace-nowrap">{formatLeaveDuration(req)}</td>
-                      <td className="px-6 py-3 text-sm text-surface-700 max-w-[200px] truncate" title={req.reason ?? ''}>
+                      <td className="px-6 py-3 text-sm text-surface-700 min-w-[240px] max-w-[320px] whitespace-normal break-words leading-relaxed" title={req.reason ?? ''}>
                         {req.reason ?? '-'}
                       </td>
                       <td className="w-72 px-3 py-3 text-xs text-surface-700">
@@ -1225,12 +1270,12 @@ export default function LeaveManagement() {
                           const main = rows.filter((r) => isMainLeaveType(r.name))
                           return (
                             <div className="space-y-1 leading-5">
-                              <div className="whitespace-nowrap">
+                              <div className="space-y-1">
                                 {main.length
-                                  ? main.slice(0, 2).map((r) => `${r.name}: ${formatLeaveDays(r.remaining)}`).join(' | ')
+                                  ? main.slice(0, 2).map((r) => <div key={r.id} className="whitespace-nowrap">{r.name}: {formatLeaveDays(r.remaining)}</div>)
                                   : '-'}
                               </div>
-                              <div className="flex items-center gap-2 whitespace-nowrap">
+                              <div className="flex flex-wrap items-center gap-2">
                                 {main.slice(2).map((r) => <span key={r.id}>{r.name}: {formatLeaveDays(r.remaining)}</span>)}
                                 <button
                                   type="button"
@@ -1280,9 +1325,9 @@ export default function LeaveManagement() {
             </table>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
+          <div className="max-h-[70vh] overflow-auto" tabIndex={0} role="region" aria-label="รายการคำขอ เลื่อนเพื่อดูคอลัมน์เพิ่มเติม">
+            <table className="w-full min-w-[1400px] text-left [&_th]:whitespace-nowrap [&_td]:align-middle [&_td:first-child]:whitespace-nowrap [&_td:first-child]:min-w-[240px]">
+              <thead className="sticky top-0 z-10 bg-surface-50 shadow-sm">
                 <tr className="bg-surface-50 border-b border-surface-200">
                   <th className="px-4 py-3 text-xs font-semibold text-surface-700">พนักงาน</th>
                   <th className="px-4 py-3 text-xs font-semibold text-surface-700">ประเภทลา</th>
@@ -1302,19 +1347,22 @@ export default function LeaveManagement() {
                   </tr>
                 ) : (
                   filteredRequests.map((req) => (
-                    <tr key={req.id} className="border-b border-surface-100 hover:bg-emerald-50/50 transition-colors">
+                    <tr key={req.id} className="border-b border-surface-100 odd:bg-white even:bg-surface-50/60 hover:bg-emerald-50 transition-colors">
                       <td className="px-6 py-3 text-sm font-medium text-surface-800 whitespace-nowrap">
                         {employeeDisplayName(req)}
                       </td>
-                      <td className="px-6 py-3 text-sm text-surface-700 whitespace-nowrap">
-                        {(req.leave_type as { name?: string })?.name ?? '-'}<EmergencyBadge request={req}/>
+                      <td className="px-6 py-3 text-sm text-surface-700 min-w-[180px]">
+                        <div className="flex items-center gap-2 whitespace-nowrap">
+                          <span>{(req.leave_type as { name?: string })?.name ?? '-'}</span>
+                          <EmergencyBadge request={req} className="" />
+                        </div>
                       </td>
                       <td className="px-6 py-3 text-sm text-surface-700 whitespace-nowrap">
                         <div>{req.start_date} – {req.end_date}</div>
                         <div className="mt-1 text-xs text-surface-500">{leaveTimeRange(req) ?? 'เต็มวัน'}</div>
                       </td>
                       <td className="px-4 py-3 text-sm text-surface-700 whitespace-nowrap">{formatLeaveDuration(req)}</td>
-                      <td className="px-6 py-3 text-sm text-surface-700 max-w-[260px] truncate" title={req.reason ?? ''}>
+                      <td className="px-6 py-3 text-sm text-surface-700 min-w-[240px] max-w-[320px] whitespace-normal break-words leading-relaxed" title={req.reason ?? ''}>
                         {req.reason ?? '-'}
                       </td>
                       <td className="px-6 py-3">
@@ -1331,7 +1379,7 @@ export default function LeaveManagement() {
                         )}
                       </td>
                       <td className="px-6 py-3">
-                        <div className="flex items-center gap-2 whitespace-nowrap">
+                        <div className="flex flex-wrap items-center gap-2">
                           <button
                             type="button"
                             onClick={() => handleApprove(req.id)}
@@ -1418,6 +1466,41 @@ export default function LeaveManagement() {
               )}
             </div>
           </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={!!wfhActionTarget}
+        onClose={closeWFHAction}
+        closeOnBackdropClick={!actionLoading}
+        showCloseButton={!actionLoading}
+        contentClassName="max-w-md"
+        ariaLabelledby="wfh-action-title"
+      >
+        {wfhActionTarget && (
+          <form className="p-6" onSubmit={(event) => {
+            event.preventDefault()
+            if (wfhActionTarget.action === 'cancelled') void handleCancelWFH()
+            else void handleWFHStatus(wfhActionTarget.request.id, 'rejected')
+          }}>
+            <h3 id="wfh-action-title" className="pr-8 text-lg font-semibold text-surface-800">
+              {wfhActionTarget.action === 'cancelled' ? 'ยกเลิกคำขอ WFH' : 'ไม่อนุมัติคำขอ WFH'}
+            </h3>
+            <p className="mt-3 text-sm text-surface-700">{employeeName(wfhActionTarget.request.employee)}</p>
+            <p className="mt-1 text-sm text-surface-600">{wfhActionTarget.request.start_date} – {wfhActionTarget.request.end_date}</p>
+            {wfhActionTarget.action === 'cancelled' && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">เมื่อยกเลิกแล้ว วัน WFH เดิมจะไม่มีผล และคำขอใหม่ต้องได้รับการอนุมัติอีกครั้ง</p>}
+            <label htmlFor="wfh-action-reason" className="mt-4 block text-sm font-medium text-surface-700">
+              {wfhActionTarget.action === 'cancelled' ? 'เหตุผลที่ยกเลิก' : 'เหตุผลที่ไม่อนุมัติ'} (จำเป็น)
+            </label>
+            <textarea id="wfh-action-reason" value={wfhActionReason} onChange={(event) => setWfhActionReason(event.target.value)} rows={4} required autoFocus disabled={actionLoading} className="mt-2 w-full rounded-lg border border-surface-300 px-3 py-2 text-sm text-surface-800" placeholder="ระบุเหตุผล..." />
+            {wfhActionError && <p role="alert" className="mt-2 text-sm text-red-600">{wfhActionError}</p>}
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={closeWFHAction} disabled={actionLoading} className="rounded-lg border border-surface-300 px-4 py-2 text-sm text-surface-700 disabled:opacity-50">ย้อนกลับ</button>
+              <button type="submit" disabled={actionLoading || !wfhActionReason.trim()} className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50">
+                {actionLoading ? 'กำลังดำเนินการ…' : wfhActionTarget.action === 'cancelled' ? 'ยืนยันยกเลิก' : 'ยืนยันไม่อนุมัติ'}
+              </button>
+            </div>
+          </form>
         )}
       </Modal>
 
@@ -1538,7 +1621,7 @@ export default function LeaveManagement() {
             <p className="text-sm text-surface-500 mb-4">{balanceView.name}</p>
             <div className="overflow-hidden rounded-lg border border-surface-200">
               <table className="w-full text-sm">
-                <thead>
+                <thead className="sticky top-0 z-10 bg-surface-50 shadow-sm">
                   <tr className="bg-surface-50 text-surface-600">
                     <th className="px-4 py-2 text-left font-semibold">ประเภทลา</th>
                     <th className="px-4 py-2 text-center font-semibold">สิทธิ์</th>

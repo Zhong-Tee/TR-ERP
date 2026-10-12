@@ -238,6 +238,7 @@ export default function EmployeeDashboard() {
   const [resultById, setResultById] = useState<Map<string, ApprovalTarget>>(new Map())
   /** สิทธิ์อนุมัติจากมือถือ: เฉพาะ superadmin / admin / hr */
   const canApprove = ['superadmin', 'admin', 'hr'].includes(user?.role ?? '')
+  const canApproveWFH = ['superadmin', 'admin'].includes(user?.role ?? '')
   const [approvalTarget, setApprovalTarget] = useState<ApprovalTarget | null>(null)
   /** แจ้งเตือนที่กดดูรายละเอียด (พร้อมคำขอที่ผูกอยู่ ถ้าหาเจอ) */
   const [detailNotif, setDetailNotif] = useState<{ notif: HRNotification; target: ApprovalTarget | null } | null>(null)
@@ -263,7 +264,7 @@ export default function EmployeeDashboard() {
         // คำขอที่รออนุมัติ (ทั้งหมด) — โชว์เฉพาะเมื่อมีสิทธิ์อนุมัติ
         canApprove ? fetchLeaveRequests({ status: 'pending' }).catch(() => []) : Promise.resolve([]),
         canApprove ? fetchOTRequests({ status: 'pending' }).catch(() => []) : Promise.resolve([]),
-        canApprove ? fetchWFHRequests({ status: 'pending' }).catch(() => []) : Promise.resolve([]),
+        canApproveWFH ? fetchWFHRequests({ status: 'pending' }).catch(() => []) : Promise.resolve([]),
         // ผู้มีสิทธิ์เห็นผลของทุกคน ส่วนพนักงานทั่วไปเห็นเฉพาะของตัวเอง
         fetchLeaveRequests(canApprove ? undefined : { employee_id: emp.id }).catch(() => []),
         fetchOTRequests(canApprove ? undefined : { employee_id: emp.id }).catch(() => []),
@@ -293,7 +294,7 @@ export default function EmployeeDashboard() {
     } finally {
       setLoading(false)
     }
-  }, [user?.id, canApprove])
+  }, [user?.id, canApprove, canApproveWFH])
 
   useEffect(() => {
     load()

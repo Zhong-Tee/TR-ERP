@@ -917,6 +917,8 @@ export interface Refund {
   refund_recipient_account_number?: string | null
   /** เหตุผลโอนคืน (กรอกจากออเดอร์) — แสดงใต้บรรทัดยอดบิล/สลิป */
   refund_recipient_reason?: string | null
+  /** ลิงก์เพิ่มเติมที่แนบตอนส่งคำขอโอนคืน */
+  refund_request_link?: string | null
   /** path สลิปการโอนเงินคืนลูกค้า (หลายรูป) — บัญชีอัปโหลด, Sales เปิดดู */
   refund_slip_paths?: string[] | null
   /** เวลาที่บัญชียืนยันว่าส่งสลิปโอนคืนให้ลูกค้าแล้ว (NULL = ยังไม่ส่ง) */
@@ -1456,6 +1458,12 @@ export interface HRWFHRequest {
   status: 'pending' | 'approved' | 'rejected' | 'cancelled'
   approved_by?: string
   approved_at?: string
+  approved_by_user_id?: string | null
+  approved_by_name?: string | null
+  cancelled_by_user_id?: string | null
+  cancelled_by_name?: string | null
+  cancelled_at?: string | null
+  cancel_reason?: string | null
   reject_reason?: string
   created_at: string
   updated_at: string
