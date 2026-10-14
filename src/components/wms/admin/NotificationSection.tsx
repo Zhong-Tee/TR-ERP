@@ -90,7 +90,7 @@ export default function NotificationSection() {
           .neq('type', 'ยกเลิกบิล'),
         fetchAllSupabasePages<any>((from, to) => supabase
           .from('wms_notifications')
-          .select('id, order_id, picker_id, type, status, is_read, created_at, us_users!picker_id(username)')
+          .select('*, us_users!picker_id(username)')
           .eq('type', 'ยกเลิกบิล')
           .order('created_at', { ascending: false })
           .range(from, to)),
@@ -123,7 +123,7 @@ export default function NotificationSection() {
       if (isCancellationTab(tab)) {
         const allRows = await fetchAllSupabasePages<any>((from, to) => supabase
           .from('wms_notifications')
-          .select('id, order_id, picker_id, type, status, is_read, created_at, us_users!picker_id(username)')
+          .select('*, us_users!picker_id(username)')
           .eq('type', 'ยกเลิกบิล')
           .order('created_at', { ascending: false })
           .range(from, to))
@@ -135,7 +135,7 @@ export default function NotificationSection() {
       } else {
         const { data, error, count } = await supabase
           .from('wms_notifications')
-          .select('id, order_id, picker_id, type, status, is_read, created_at, us_users!picker_id(username)', { count: 'exact' })
+          .select('*, us_users!picker_id(username)', { count: 'exact' })
           .eq('status', tab)
           .neq('type', 'ยกเลิกบิล')
           .order('created_at', { ascending: false })

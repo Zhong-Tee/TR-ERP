@@ -43,7 +43,7 @@ export default function SentAlertsModal({ pickerId, onClose }: SentAlertsModalPr
     try {
       const { data, error } = await supabase
         .from('wms_notifications')
-        .select('id, type, order_id, created_at, is_read')
+        .select('*')
         .eq('picker_id', pickerId)
         .eq('status', 'unread') // ยังไม่ถูกกด "แก้ไขแล้ว"
         .order('created_at', { ascending: false })

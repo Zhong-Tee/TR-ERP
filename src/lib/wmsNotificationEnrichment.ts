@@ -1,5 +1,18 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
+/** Resolve the reported item, never an arbitrary first product in the job. */
+export function resolveWmsNotificationProduct(notification: any, rows: any[]) {
+  if (notification.product_name) return { product_name: notification.product_name, location: notification.location || '-' }
+  if (notification.wms_order_id) {
+    const linked = rows.find(row => row.id === notification.wms_order_id)
+    return { product_name: linked?.product_name || 'ไม่พบรายการสินค้าที่แจ้ง', location: linked?.location || '-' }
+  }
+  // Current status alone cannot identify a historical report: other items may
+  // have become out of stock since then. Only a single-line job is unambiguous.
+  if (rows.length === 1) return { product_name: rows[0].product_name, location: rows[0].location || '-' }
+  return { product_name: 'แจ้งเตือนเดิมไม่ได้ระบุรายการสินค้า', location: '-' }
+}
+
 /** แจ้งเตือน "ยกเลิกบิล" หลายแถวต่อใบงาน → แสดง/นับเป็น 1 รายการต่อ order_id (ลำดับเดิมของแถวแรกที่เจอ) */
 export function dedupeWmsNotificationsForDisplay<T extends { type?: string; order_id?: string }>(data: T[]): T[] {
   const seenCancelledOrder = new Set<string>()
@@ -137,7 +150,7 @@ export async function enrichWmsNotificationsWithOrderDetails(
     const notPickedActors = uniqueNames(filteredCancelledRows
       .filter((o: any) => o.stock_action === 'not_picked')
       .map((o: any) => o.stock_action_user?.username))
-    const first = rows[0] || { product_name: '---', location: '---' }
+    const reportedProduct = resolveWmsNotificationProduct(n, rows)
     const productName =
       n.type === 'ยกเลิกบิล'
         ? cancelledOrderItemCount > 0
@@ -145,8 +158,8 @@ export async function enrichWmsNotificationsWithOrderDetails(
           : filteredCancelledRows.length > 0
             ? `รวม ${filteredCancelledRows.length} รายการ`
             : 'บิลยกเลิก'
-        : first.product_name
-    const location = n.type === 'ยกเลิกบิล' ? '-' : first.location
+        : reportedProduct.product_name
+    const location = n.type === 'ยกเลิกบิล' ? '-' : reportedProduct.location
     return {
       ...n,
       product_name: productName,

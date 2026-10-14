@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
+import { withRequisitionStock, requisitionStockError } from '../../../lib/requisitionStock'
 import { buildIlikeOr } from '../../../lib/searchFilter'
 import { getProductImageUrl } from '../wmsUtils'
 import RequisitionDetailModal from './RequisitionDetailModal'
@@ -424,13 +425,17 @@ export default function RequisitionDashboard() {
   const loadCAllProducts = async (pt?: ProductType) => {
     setCLoadingProducts(true)
     try {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('pr_products')
-        .select('product_code, product_name, storage_location, unit_name')
+        .select('id, product_code, product_name, storage_location, unit_name')
         .eq('is_active', true)
         .eq('product_type', pt || cProductType)
         .order('product_name')
-      setCAllProducts(data || [])
+      if (error) throw error
+      setCAllProducts(await withRequisitionStock(data || []))
+    } catch (e: any) {
+      setCAllProducts([])
+      showMessage({ message: `โหลดยอดพร้อมเบิกไม่สำเร็จ: ${e.message}` })
     } finally {
       setCLoadingProducts(false)
     }
@@ -440,14 +445,18 @@ export default function RequisitionDashboard() {
     if (!cSearchTerm.trim()) { setCProducts([]); return }
     setCSearching(true)
     try {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('pr_products')
-        .select('product_code, product_name, storage_location, unit_name')
+        .select('id, product_code, product_name, storage_location, unit_name')
         .eq('is_active', true)
         .eq('product_type', cProductType)
         .or(buildIlikeOr(cSearchTerm, ['product_code', 'product_name']))
         .limit(20)
-      setCProducts(data || [])
+      if (error) throw error
+      setCProducts(await withRequisitionStock(data || []))
+    } catch (e: any) {
+      setCProducts([])
+      showMessage({ message: `โหลดยอดพร้อมเบิกไม่สำเร็จ: ${e.message}` })
     } finally {
       setCSearching(false)
     }
@@ -475,6 +484,9 @@ export default function RequisitionDashboard() {
   }, [cSearchTerm, cProductType, showCreate])
 
   const cAddItem = (product: any) => {
+    const quantity = (cSelectedItems.find((item: any) => item.product_code === product.product_code)?.qty || 0) + 1
+    const stockError = requisitionStockError([{ ...product, qty: quantity }], [product])
+    if (stockError) { showMessage({ message: stockError }); return }
     const existing = cSelectedItems.find((i: any) => i.product_code === product.product_code)
     if (existing) {
       setCSelectedItems(cSelectedItems.map((i: any) => i.product_code === product.product_code ? { ...i, qty: i.qty + 1 } : i))
@@ -486,6 +498,11 @@ export default function RequisitionDashboard() {
   const cRemoveItem = (code: string) => setCSelectedItems(cSelectedItems.filter((i: any) => i.product_code !== code))
 
   const cUpdateQty = (code: string, qty: number) => {
+    const item = cSelectedItems.find((item: any) => item.product_code === code)
+    if (item && qty >= 1) {
+      const stockError = requisitionStockError([{ ...item, qty }], [item])
+      if (stockError) { showMessage({ message: stockError }); return }
+    }
     if (qty < 1) { cRemoveItem(code); return }
     setCSelectedItems(cSelectedItems.map((i: any) => i.product_code === code ? { ...i, qty } : i))
   }
@@ -533,6 +550,7 @@ export default function RequisitionDashboard() {
   }
 
   const cSubmit = async () => {
+    if (cSubmitting) return
     if (cSelectedItems.length === 0) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้า' }); return }
     if (cSelectedItems.some((i: any) => !i.requisition_topic)) { showMessage({ message: 'กรุณาเลือกหัวข้อการเบิกให้ครบทุกรายการ' }); return }
     if (cSelectedItems.some((i: any) => requiresDamageEvidence(i.requisition_topic) && !i.item_note?.trim())) {
@@ -550,7 +568,12 @@ export default function RequisitionDashboard() {
 
     setCSubmitting(true)
     const uploadedPaths: string[] = []
+    let headerCreated = false
     try {
+      const freshProducts = await withRequisitionStock(cSelectedItems)
+      setCSelectedItems(freshProducts)
+      const stockError = requisitionStockError(cSelectedItems, freshProducts)
+      if (stockError) throw new Error(stockError)
       const { error: reqErr } = await supabase.from('wms_requisitions').insert({
         requisition_id: cRequisitionId,
         created_by: user?.id,
@@ -559,6 +582,7 @@ export default function RequisitionDashboard() {
         requisition_topic: null,
       })
       if (reqErr) throw reqErr
+      headerCreated = true
 
       const items = []
       for (const item of cSelectedItems) {
@@ -584,7 +608,7 @@ export default function RequisitionDashboard() {
       window.dispatchEvent(new Event('wms-data-changed'))
     } catch (e: any) {
       if (uploadedPaths.length) await supabase.storage.from(DAMAGE_BUCKET).remove(uploadedPaths)
-      await supabase.from('wms_requisitions').delete().eq('requisition_id', cRequisitionId)
+      if (headerCreated) await supabase.from('wms_requisitions').delete().eq('requisition_id', cRequisitionId)
       showMessage({ message: `สร้างใบเบิกไม่สำเร็จ: ${e.message}` })
     } finally {
       setCSubmitting(false)
@@ -862,6 +886,7 @@ export default function RequisitionDashboard() {
                             <div className="flex-1 min-w-0">
                               <div className="font-bold text-slate-800 text-sm truncate">{item.product_name}</div>
                               <div className="text-xs text-gray-500">รหัส: {item.product_code}</div>
+                              <div className="text-xs text-blue-600">พร้อมเบิก {item.available_qty.toLocaleString()} {item.unit_name || 'ชิ้น'}</div>
                             </div>
                             <button onClick={() => cRemoveItem(item.product_code)} className="text-red-500 hover:text-red-700 p-1"><i className="fas fa-trash"></i></button>
                           </div>
@@ -874,7 +899,7 @@ export default function RequisitionDashboard() {
                             <div className="flex items-center gap-1 shrink-0">
                               <button onClick={() => cUpdateQty(item.product_code, item.qty - 1)} className="w-8 h-8 rounded-lg bg-red-100 text-red-600 font-bold hover:bg-red-200">-</button>
                               <input type="number" value={item.qty} onChange={(e) => cUpdateQty(item.product_code, Number(e.target.value) || 0)}
-                                className="w-14 text-center border rounded-lg p-1.5 text-sm font-bold" min={1} />
+                                className="w-14 text-center border rounded-lg p-1.5 text-sm font-bold" min={1} max={item.available_qty} />
                               <span className="ml-1 text-xs font-semibold text-gray-600">{item.unit_name || 'ชิ้น'}</span>
                               <button onClick={() => cUpdateQty(item.product_code, item.qty + 1)} className="w-8 h-8 rounded-lg bg-green-100 text-green-600 font-bold hover:bg-green-200">+</button>
                             </div>

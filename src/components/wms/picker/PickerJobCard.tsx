@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
+import { wmsItemNotificationPayload } from '../../../lib/wmsItemNotification'
 import { getProductImageUrl } from '../wmsUtils'
 import PickerListModal from './PickerListModal'
 import AlertModal from './AlertModal'
@@ -178,15 +179,10 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
           onClose={() => setShowAlertModal(false)}
           onSubmit={async (topic) => {
             if (!user || !item) return
-            await supabase.from('wms_notifications').insert([
-              {
-                type: topic,
-                order_id: item.order_id,
-                picker_id: user.id,
-                status: 'unread',
-                is_read: false,
-              },
-            ])
+            const { error } = await supabase.from('wms_notifications').insert(
+              wmsItemNotificationPayload(item, user.id, topic),
+            )
+            if (error) { showMessage({ message: `ส่งแจ้งเตือนไม่สำเร็จ: ${error.message}` }); return }
             showMessage({ message: `ส่งแล้ว: ${topic}` })
             setShowAlertModal(false)
           }}

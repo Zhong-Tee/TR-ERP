@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
+import { withRequisitionStock, requisitionStockError } from '../../../lib/requisitionStock'
 import BarcodeScanner from './BarcodeScanner'
 import MobileProductPicker from './MobileProductPicker'
 import { getProductImageUrl, sortOrderItems } from '../wmsUtils'
@@ -11,6 +12,8 @@ interface ReqItem {
   product_code: string
   product_name: string
   storage_location?: string
+  id: string
+  available_qty: number
   qty: number
   unit_name?: string | null
   requisition_topic: string
@@ -84,13 +87,14 @@ export default function CreateRequisition() {
     try {
       const { data, error } = await supabase
         .from('pr_products')
-        .select('product_code, product_name, storage_location, unit_name')
+        .select('id, product_code, product_name, storage_location, unit_name')
         .eq('is_active', true)
         .eq('product_type', productTypeFilter)
         .order('product_name')
       if (error) throw error
-      setAllProducts(data || [])
+      setAllProducts(await withRequisitionStock(data || []))
     } catch (e: any) {
+      setAllProducts([])
       showMessage({ message: `โหลดสินค้าไม่สำเร็จ: ${e.message}` })
     } finally {
       setLoadingAllProducts(false)
@@ -152,6 +156,9 @@ export default function CreateRequisition() {
   }
 
   const addItem = (product: any) => {
+    const quantity = (selectedItems.find((item) => item.product_code === product.product_code)?.qty || 0) + 1
+    const stockError = requisitionStockError([{ ...product, qty: quantity }], [product])
+    if (stockError) { showMessage({ message: stockError }); return }
     const existing = selectedItems.find((i) => i.product_code === product.product_code)
     if (existing) {
       setSelectedItems(selectedItems.map((i) => i.product_code === product.product_code ? { ...i, qty: i.qty + 1 } : i))
@@ -197,11 +204,17 @@ export default function CreateRequisition() {
   const removeItem = (code: string) => setSelectedItems(selectedItems.filter((i) => i.product_code !== code))
 
   const updateQty = (code: string, qty: number) => {
+    const item = selectedItems.find((item) => item.product_code === code)
+    if (item && qty >= 1) {
+      const stockError = requisitionStockError([{ ...item, qty }], [item])
+      if (stockError) { showMessage({ message: stockError }); return }
+    }
     if (qty < 1) { removeItem(code); return }
     setSelectedItems(selectedItems.map((i) => i.product_code === code ? { ...i, qty } : i))
   }
 
   const submitRequisition = async () => {
+    if (submitting) return
     if (selectedItems.length === 0) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้า' }); return }
     if (selectedItems.some((i) => !i.requisition_topic)) { showMessage({ message: 'กรุณาเลือกหัวข้อการเบิกให้ครบทุกรายการ' }); return }
     if (selectedItems.some((i) => requiresDamageEvidence(i.requisition_topic) && !i.item_note?.trim())) {
@@ -219,7 +232,12 @@ export default function CreateRequisition() {
 
     setSubmitting(true)
     const uploadedPaths: string[] = []
+    let headerCreated = false
     try {
+      const freshProducts = await withRequisitionStock(selectedItems)
+      setSelectedItems(freshProducts)
+      const stockError = requisitionStockError(selectedItems, freshProducts)
+      if (stockError) throw new Error(stockError)
       const { error: reqError } = await supabase
         .from('wms_requisitions')
         .insert({
@@ -232,6 +250,7 @@ export default function CreateRequisition() {
         .select()
         .single()
       if (reqError) throw reqError
+      headerCreated = true
 
       const items = []
       for (const item of selectedItems) {
@@ -256,7 +275,7 @@ export default function CreateRequisition() {
       generateRequisitionId()
     } catch (e: any) {
       if (uploadedPaths.length) await supabase.storage.from(DAMAGE_BUCKET).remove(uploadedPaths)
-      await supabase.from('wms_requisitions').delete().eq('requisition_id', requisitionId)
+      if (headerCreated) await supabase.from('wms_requisitions').delete().eq('requisition_id', requisitionId)
       showMessage({ message: `สร้างใบเบิกไม่สำเร็จ: ${e.message}` })
     } finally {
       setSubmitting(false)
@@ -356,6 +375,7 @@ export default function CreateRequisition() {
                     <div className="min-w-0 flex-1">
                       <div className="text-xs font-bold text-gray-900 truncate">{item.product_code}</div>
                       <div className="text-[10px] text-gray-500 truncate">{item.product_name}</div>
+                      <div className="text-xs text-blue-600">พร้อมเบิก {item.available_qty.toLocaleString()} {item.unit_name || 'ชิ้น'}</div>
                     </div>
                     <button type="button" onClick={() => removeItem(item.product_code)} className="text-red-500 hover:text-red-600">
                       <i className="fas fa-trash text-sm" />
@@ -407,6 +427,7 @@ export default function CreateRequisition() {
                       onChange={(e) => updateQty(item.product_code, Number(e.target.value) || 0)}
                       className="w-12 text-center rounded border border-gray-300 bg-white text-gray-900 text-sm py-1"
                       min={1}
+                      max={item.available_qty}
                     />
                     <span className="ml-1 text-xs font-semibold text-gray-600">{item.unit_name || 'ชิ้น'}</span>
                     <button type="button" onClick={() => updateQty(item.product_code, item.qty + 1)} className="w-7 h-7 rounded bg-gray-200 text-gray-900 font-bold text-sm">+</button>

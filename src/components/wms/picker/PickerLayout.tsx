@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
+import { wmsItemNotificationPayload } from '../../../lib/wmsItemNotification'
 import { fetchPlanDeptSettings } from '../../../lib/planPickingDepartments'
 import type { PlanDeptSettings } from '../../../lib/planPickingDepartments'
 import {
@@ -290,6 +291,7 @@ export default function PickerLayout() {
   }
 
   const pickerSkipMovedItem = async (item: any) => {
+    if (!user) return
     try {
       const ids = getWmsConsolidatedRowIds(item)
       const { error } = await supabase
@@ -305,15 +307,10 @@ export default function PickerLayout() {
         return
       }
 
-      await supabase.from('wms_notifications').insert([
-        {
-          type: 'ข้ามรายการ (บิลถูกย้ายออก)',
-          order_id: item.order_id,
-          picker_id: user?.id,
-          status: 'unread',
-          is_read: false,
-        },
-      ])
+      const { error: notificationError } = await supabase.from('wms_notifications').insert(
+        wmsItemNotificationPayload(item, user.id, 'ข้ามรายการ (บิลถูกย้ายออก)'),
+      )
+      if (notificationError) throw new Error(`ข้ามรายการแล้ว แต่ส่งแจ้งเตือนไม่สำเร็จ: ${notificationError.message}`)
 
       await advanceAfterWorkableUpdate()
     } catch (error: any) {
@@ -322,6 +319,7 @@ export default function PickerLayout() {
   }
 
   const submitNoProduct = async (item: any) => {
+    if (!user) return
     const ok = await showConfirm({ title: 'สินค้าหมด', message: 'แจ้งสินค้าหมด?' })
     if (!ok) return
 
@@ -337,15 +335,10 @@ export default function PickerLayout() {
         return
       }
 
-      await supabase.from('wms_notifications').insert([
-        {
-          type: 'สินค้าหมด (X)',
-          order_id: item.order_id,
-          picker_id: user?.id,
-          status: 'unread',
-          is_read: false,
-        },
-      ])
+      const { error: notificationError } = await supabase.from('wms_notifications').insert(
+        wmsItemNotificationPayload(item, user.id, 'สินค้าหมด (X)'),
+      )
+      if (notificationError) throw new Error(`บันทึกสถานะสินค้าหมดแล้ว แต่ส่งแจ้งเตือนไม่สำเร็จ: ${notificationError.message}`)
 
       await advanceAfterWorkableUpdate()
     } catch (error: any) {
