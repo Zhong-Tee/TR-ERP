@@ -13,6 +13,7 @@ export default function CreateAuditForm() {
   const [saving, setSaving] = useState(false)
   const [note, setNote] = useState('')
   const [showSystemQty, setShowSystemQty] = useState(false)
+  const [requireFullCount, setRequireFullCount] = useState(true)
   const [dates, setDates] = useState(() => auditDateRange(1))
   const [movementCount, setMovementCount] = useState<number | null>(null)
   const [movementLoading, setMovementLoading] = useState(false)
@@ -108,6 +109,7 @@ export default function CreateAuditForm() {
         note,
         userId: user.id,
         showSystemQty,
+        requireFullCount,
       })
       showModal(
         'success',
@@ -204,6 +206,22 @@ export default function CreateAuditForm() {
             <span className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border border-gray-200 bg-gray-200 transition-colors after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-blue-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:ring-4 peer-focus:ring-blue-300" />
           </label>
         </div>
+      </div>
+
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+        <label className="flex items-center justify-between gap-4 cursor-pointer">
+          <div>
+            <div className="text-sm font-semibold text-gray-700">ต้องตรวจนับครบ 100% ก่อนส่งรีวิว</div>
+            <div className="text-sm text-gray-500 mt-1">{requireFullCount
+              ? 'พักและกลับมาตรวจต่อได้ แต่ต้องนับครบก่อนส่งรีวิว'
+              : 'ส่งรีวิวบางส่วนได้ โดยต้องระบุเหตุผลหากยังนับไม่ครบ'}</div>
+          </div>
+          <span className="flex items-center gap-3 flex-shrink-0">
+            <span className="text-sm font-medium text-gray-600">{requireFullCount ? 'เปิด' : 'ปิด'}</span>
+            <input type="checkbox" role="switch" aria-label="ต้องตรวจนับครบ 100% ก่อนส่งรีวิว" checked={requireFullCount} onChange={event => setRequireFullCount(event.target.checked)} className="peer sr-only" />
+            <span className="relative inline-flex h-6 w-11 rounded-full bg-gray-200 transition-colors after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all peer-checked:bg-blue-600 peer-checked:after:translate-x-full peer-focus:ring-4 peer-focus:ring-blue-300" />
+          </span>
+        </label>
       </div>
 
       {/* Assign Auditor */}

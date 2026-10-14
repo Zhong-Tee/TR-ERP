@@ -8,6 +8,7 @@ import { canClearAllChats, canUseIssueChat, isOperationalIssueRole, resolveMenuK
 import { dispatchIssueOnCount } from '../../lib/issueOnCountBroadcast'
 import { broadcastHrMyOpenTaskCount, loadHrMyOpenTaskCount } from '../../lib/hrTaskBadge'
 import ModeSwitchButton from '../ModeSwitchButton'
+import { useLateWarningCount } from '../../lib/useLateWarningCount'
 
 interface TopBarProps {
   sidebarOpen: boolean
@@ -35,10 +36,11 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const [hrWfhPending, setHrWfhPending] = useState(0)
   /** ประกาศที่ต้องดำเนินการ: รออนุมัติ + เผยแพร่แล้วแต่พนักงานรับทราบไม่ครบ */
   const [hrAnnouncementAttention, setHrAnnouncementAttention] = useState(0)
-  /** คำร้องใหม่ที่ HR ยังไม่ได้กดรับเรื่อง */
+  /** ข้อเสนอใหม่ที่ HR ยังไม่ได้กดรับเรื่อง */
   const [hrRequestPending, setHrRequestPending] = useState(0)
   /** คำทักท้วงคะแนนที่ HR ยังไม่ได้ตัดสิน */
   const [hrScoreAppealPending, setHrScoreAppealPending] = useState(0)
+  const hrLateWarningPending = useLateWarningCount(hasAccess('hr-work-score') && ['superadmin', 'admin', 'account', 'hr'].includes(user?.role ?? ''))
   /** งานที่ผู้ใช้ปัจจุบันเป็นผู้รับผิดชอบและยังไม่เสร็จ */
   const [hrMyOpenTaskCount, setHrMyOpenTaskCount] = useState(0)
   const [notifyCollapsed, setNotifyCollapsed] = useState(true)
@@ -393,7 +395,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const hrTabs = [
     { path: '/hr', label: 'ทะเบียนพนักงาน' },
     { path: '/hr/tasks', label: 'งาน' },
-    { path: '/hr/requests', label: 'คำร้อง' },
+    { path: '/hr/requests', label: 'ข้อเสนอ' },
     { path: '/hr/leave', label: 'ลางาน/OT/WFH' },
     { path: '/hr/interview', label: 'นัดสัมภาษณ์' },
     { path: '/hr/attendance', label: 'เวลาทำงาน' },
@@ -615,7 +617,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     }
   }, [canSeeHrAnnouncements])
 
-  // Badge เมนู HR "คำร้อง": นับเฉพาะเรื่องใหม่ที่ยังไม่ได้รับเรื่อง
+  // Badge เมนู HR "ข้อเสนอ": นับเฉพาะเรื่องใหม่ที่ยังไม่ได้รับเรื่อง
   const canSeeHrRequests = hasAccess('hr-requests')
   useEffect(() => {
     if (!canSeeHrRequests) return
@@ -749,8 +751,8 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                                 ? hrAnnouncementAttention
                                 : tab.path === '/hr/requests' && hrRequestPending > 0
                                   ? hrRequestPending
-                                  : tab.path === '/hr/work-score' && hrScoreAppealPending > 0
-                                    ? hrScoreAppealPending
+                                  : tab.path === '/hr/work-score' && (hrScoreAppealPending + hrLateWarningPending) > 0
+                                    ? hrScoreAppealPending + hrLateWarningPending
                                   : null
                   return (
                     <Link

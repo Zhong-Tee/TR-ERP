@@ -75,7 +75,7 @@ const MOBILE_ROLE_ACCESS = [
   },
   {
     role: 'employee', label: 'พนักงาน', path: '/employee', tone: 'slate',
-    menus: ['หน้าหลัก', 'งาน', 'ลงเวลา', 'ขอลา', 'ตารางงาน', 'คะแนน', 'ขอ WFH (Hybrid)', 'เตือน/รับรอง', 'ทรัพย์สิน', 'คำร้อง', 'เอกสาร', 'เส้นทางเงินเดือน', 'Onboarding'],
+    menus: ['หน้าหลัก', 'งาน', 'ลงเวลา', 'ขอลา', 'ตารางงาน', 'คะแนน', 'ขอ WFH (Hybrid)', 'เตือน/รับรอง', 'ทรัพย์สิน', 'ข้อเสนอ', 'เอกสาร', 'เส้นทางเงินเดือน', 'Onboarding'],
     note: 'เห็นข้อมูลของตนเองตาม Employee Portal; WFH แสดงเฉพาะพนักงาน Hybrid',
   },
 ] as const
@@ -841,7 +841,7 @@ export default function Settings() {
     { key: 'hr', label: 'HR', group: '' },
     { key: 'hr-employees', label: 'ทะเบียนพนักงาน', group: 'hr' },
     { key: 'hr-tasks', label: 'งาน', group: 'hr' },
-    { key: 'hr-requests', label: 'คำร้อง', group: 'hr' },
+    { key: 'hr-requests', label: 'ข้อเสนอ', group: 'hr' },
     { key: 'hr-announcements', label: 'ประกาศ', group: 'hr' },
     { key: 'hr-leave', label: 'ลางาน/OT/WFH', group: 'hr' },
     { key: 'hr-work-calendar', label: 'ตารางวันทำงานและวันหยุด', group: 'hr' },

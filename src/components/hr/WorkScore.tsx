@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FiRefreshCw, FiDownload, FiLock, FiSearch, FiPlus, FiTrash2, FiAlertCircle, FiChevronDown } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import Modal from '../ui/Modal'
+import LateAccumulation from './LateAccumulation'
+import { useLateWarningCount } from '../../lib/useLateWarningCount'
 import PhotoLightbox from './PhotoLightbox'
 import { useWmsModal } from '../wms/useWmsModal'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -150,13 +152,15 @@ interface ScoreRow {
   events: ScoreEventDraft[]
 }
 
-type TabKey = 'summary' | 'annual' | 'appeals'
+type TabKey = 'summary' | 'annual' | 'appeals' | 'late'
 type ScoreSortKey = 'code' | 'deduction' | 'total' | `group:${string}`
 
 const SORTABLE_SCORE_GROUPS = new Set(['attendance', 'time_entry', 'leave', ABSENCE_GROUP, 'attendance_cumulative'])
 
 export default function WorkScore() {
   const { user } = useAuthContext()
+  const canManageLate = ['superadmin', 'admin', 'account', 'hr'].includes(user?.role ?? '')
+  const lateWarningCount = useLateWarningCount(canManageLate)
   const { showConfirm, ConfirmModal } = useWmsModal({ showCancelButton: false })
   const [activeTab, setActiveTab] = useState<TabKey>('summary')
   const [month, setMonth] = useState(monthStr())
@@ -603,7 +607,7 @@ export default function WorkScore() {
       )}
 
       <div className="flex gap-2 border-b border-surface-200 flex-wrap">
-        {([['summary', 'คะแนนรายเดือน'], ['annual', 'สรุปรายปี'], ['appeals', 'คำทักท้วง']] as const).map(([key, label]) => (
+        {([['summary', 'คะแนนรายเดือน'], ['annual', 'สรุปรายปี'], ['appeals', 'คำทักท้วง'], ...(canManageLate ? [['late', 'สะสมการมาสาย'] as const] : [])] as const).map(([key, label]) => (
           <button
             key={key}
             type="button"
@@ -615,6 +619,7 @@ export default function WorkScore() {
             }`}
           >
             {label}
+            {key === 'late' && lateWarningCount > 0 && <span className="ml-1.5 rounded-full bg-red-500 px-1.5 py-0.5 text-xs text-white">{lateWarningCount}</span>}
             {key === 'appeals' && appeals.filter((a) => a.status === 'pending').length > 0 && (
               <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-red-500 text-white text-xs">
                 {appeals.filter((a) => a.status === 'pending').length}
@@ -623,6 +628,8 @@ export default function WorkScore() {
           </button>
         ))}
       </div>
+
+      {activeTab === 'late' && canManageLate && <LateAccumulation />}
 
       {activeTab === 'summary' && (
         <div className="bg-white rounded-xl shadow p-4 space-y-4">

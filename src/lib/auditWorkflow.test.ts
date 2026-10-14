@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createAudit, createAdjustmentFromAudit, fetchMovementAuditProductIds } from './auditApi'
+import { createAudit, createAdjustmentFromAudit, fetchMovementAuditProductIds, submitAuditForReview, getAuditKPI } from './auditApi'
 import type { AuditType } from '../types'
 
 type Row = Record<string, unknown>
@@ -88,6 +88,7 @@ describe('Audit creation across scopes', () => {
     const items = backend.rows.inv_audit_items
     expect(items.map(row => row.product_id)).toEqual(expected)
     expect(audit.total_items).toBe(expected.length)
+    expect(audit.require_full_count).toBe(true)
     expect(items.every(row => row.count_mode === 'separate')).toBe(true)
     const st = items.find(row => row.product_id === 'st')
     if (st) expect(st).toMatchObject({ product_type: 'ST', system_qty: 120, system_safety_stock: null, system_reserved: 7 })
@@ -118,5 +119,55 @@ describe('Audit creation across scopes', () => {
     await createAdjustmentFromAudit('audit')
     expect(backend.adjustmentItems).toEqual([{ product_id: 'rm', target_on_hand: 100, target_safety: 15 }])
     expect(backend.rows.inv_audits[0].adjustment_id).toBe('adjustment')
+  })
+})
+
+describe('Audit review completeness', () => {
+  async function makeAudit(requireFullCount = true) {
+    const audit = await createAudit({ auditType: 'full', assignedTo: ['auditor'], userId: 'store', requireFullCount })
+    backend.rows.inv_audits[0].created_at = '2026-10-14T00:00:00Z'
+    const items = backend.rows.inv_audit_items
+    Object.assign(items[0], { is_counted: true, counted_qty: 100, variance: 0, location_match: true, safety_stock_match: true })
+    return { audit, items }
+  }
+
+  it('blocks incomplete required counts even with a reason', async () => {
+    const { audit } = await makeAudit()
+    await expect(submitAuditForReview(audit.id, 'หมดเวลา')).rejects.toThrow('ต้องตรวจนับครบ 100%')
+    expect(backend.rows.inv_audits[0].status).toBe('in_progress')
+  })
+
+  it('allows a complete required count without a reason', async () => {
+    const { audit, items } = await makeAudit()
+    items.forEach(row => Object.assign(row, { is_counted: true, variance: 0 }))
+    await submitAuditForReview(audit.id)
+    expect(backend.rows.inv_audits[0]).toMatchObject({ status: 'review', total_items: 3, counted_items: 3, partial_count_reason: null })
+  })
+
+  it('requires a nonblank reason for partial review when allowed', async () => {
+    const { audit } = await makeAudit(false)
+    await expect(submitAuditForReview(audit.id)).rejects.toThrow('กรุณาระบุเหตุผล')
+    await expect(submitAuditForReview(audit.id, '   ')).rejects.toThrow('กรุณาระบุเหตุผล')
+    expect(backend.rows.inv_audits[0].status).toBe('in_progress')
+  })
+
+  it('preserves the full scope and reports only counted products in KPI', async () => {
+    const { audit } = await makeAudit(false)
+    await submitAuditForReview(audit.id, '  เข้าถึงพื้นที่ไม่ได้  ')
+    expect(backend.rows.inv_audits[0]).toMatchObject({ status: 'review', total_items: 3, counted_items: 1, partial_count_reason: 'เข้าถึงพื้นที่ไม่ได้', accuracy_percent: 100 })
+    expect((await getAuditKPI()).totalItemsAudited).toBe(1)
+    expect(backend.rows.inv_audit_items.filter(row => !row.is_counted)).toHaveLength(2)
+  })
+
+  it('rejects empty submissions even when partial review is allowed', async () => {
+    const { audit, items } = await makeAudit(false)
+    items[0].is_counted = false
+    await expect(submitAuditForReview(audit.id, 'หมดเวลา')).rejects.toThrow('ยังไม่มีรายการที่ถูกนับ')
+  })
+
+  it('does not submit a closed or already submitted audit again', async () => {
+    const { audit } = await makeAudit(false)
+    backend.rows.inv_audits[0].status = 'closed'
+    await expect(submitAuditForReview(audit.id, 'หมดเวลา')).rejects.toThrow('ไม่อยู่ในสถานะกำลังนับ')
   })
 })

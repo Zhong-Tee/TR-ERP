@@ -38,11 +38,11 @@ export const HR_REQUEST_STATUS: Record<HRRequestStatus, { label: string; color: 
   submitted: { label: 'ส่งเรื่องแล้ว', color: 'bg-slate-100 text-slate-700' },
   accepted: { label: 'รับเรื่องแล้ว', color: 'bg-blue-100 text-blue-700' },
   more_info: { label: 'ขอข้อมูลเพิ่มเติม', color: 'bg-amber-100 text-amber-800' },
-  approved_waiting: { label: 'อนุมัติคำร้อง (รอแก้ไข)', color: 'bg-violet-100 text-violet-700' },
+  approved_waiting: { label: 'อนุมัติข้อเสนอ (รอแก้ไข)', color: 'bg-violet-100 text-violet-700' },
   in_progress: { label: 'กำลังแก้ไข', color: 'bg-cyan-100 text-cyan-700' },
   resolved: { label: 'แก้ไขแล้ว', color: 'bg-emerald-100 text-emerald-700' },
   cannot_resolve: { label: 'แก้ไขไม่ได้', color: 'bg-orange-100 text-orange-800' },
-  rejected: { label: 'ปฏิเสธคำร้อง', color: 'bg-red-100 text-red-700' },
+  rejected: { label: 'ปฏิเสธข้อเสนอ', color: 'bg-red-100 text-red-700' },
 }
 
 /** แปลงค่าที่จัดเก็บแบบ DD:HH:MM เป็นข้อความอ่านง่าย */

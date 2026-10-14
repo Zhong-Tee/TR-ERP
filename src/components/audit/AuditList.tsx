@@ -124,7 +124,11 @@ export default function AuditList({
                 >
                   <td className="p-3 font-medium">{audit.audit_no}</td>
                   <td className="p-3 text-xs text-gray-600">{auditTypeBadge(audit.audit_type)}{audit.audit_type === 'movement' && <div className="mt-1 text-gray-500">{audit.scope_filter?.dates?.join(' ถึง ')}</div>}</td>
-                  <td className="p-3">{statusBadge(audit.status)}</td>
+                  <td className="p-3">{statusBadge(audit.status)}
+                    {audit.counted_items != null && audit.counted_items < Number(audit.total_items || 0) && (
+                      <div className="text-xs text-orange-700 mt-1">ตรวจบางส่วน {audit.counted_items}/{audit.total_items}</div>
+                    )}
+                  </td>
                   <td className="p-3 text-right font-medium">
                     {audit.accuracy_percent != null ? `${audit.accuracy_percent.toFixed(1)}%` : '-'}
                   </td>

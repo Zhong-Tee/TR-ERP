@@ -887,7 +887,7 @@ export default function PurchasePO() {
       </div>
 
       {/* ── Create PO from PR Modal ── */}
-      <Modal open={createOpen} onClose={() => setCreateOpen(false)} closeOnBackdropClick={false} contentClassName="max-w-6xl">
+      <Modal open={createOpen} onClose={() => setCreateOpen(false)} closeOnBackdropClick={false} contentClassName="max-w-[1400px]">
         <div className="p-6 space-y-5">
           <h2 className="pr-12 text-xl font-bold text-gray-900">สร้างใบสั่งซื้อ (PO) จาก PR</h2>
 
@@ -944,7 +944,7 @@ export default function PurchasePO() {
                       {canSeeFinancial && (
                         <>
                           <th className="px-3 py-2.5 text-left font-semibold text-gray-600 min-w-48">ราคาซื้อล่าสุด / อ้างอิง</th>
-                          <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">ราคาต่อหน่วยครั้งนี้</th>
+                          <th className="w-44 min-w-44 whitespace-nowrap px-3 py-2.5 text-right font-semibold text-gray-600">ราคาต่อหน่วยครั้งนี้</th>
                           <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">รวม</th>
                         </>
                       )}

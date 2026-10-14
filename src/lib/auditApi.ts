@@ -157,6 +157,7 @@ interface CreateAuditInput {
   note?: string
   userId: string
   showSystemQty?: boolean
+  requireFullCount?: boolean
 }
 
 type AuditStockSnapshot = { systemQty: number; systemSafetyStock: number | null; systemReserved?: number }
@@ -255,6 +256,7 @@ export async function createAudit(input: CreateAuditInput) {
       created_by: input.userId,
       note: input.note?.trim() || null,
       show_system_qty: input.showSystemQty ?? false,
+      require_full_count: input.requireFullCount ?? true,
     })
     .select('*')
     .single()
@@ -442,12 +444,16 @@ export async function saveCount(input: SaveCountInput) {
 
 // ── Complete Audit (คำนวณ KPI) ───────────────────────────────
 
-export async function submitAuditForReview(auditId: string) {
-  const items = await fetchAuditItems(auditId)
+export async function submitAuditForReview(auditId: string, partialCountReason?: string) {
+  const [audit, items] = await Promise.all([fetchAuditById(auditId), fetchAuditItems(auditId)])
+  if (audit.status !== 'in_progress') throw new Error('ใบ Audit ไม่อยู่ในสถานะกำลังนับ')
   const countedItems = items.filter((i) => i.is_counted)
 
   const totalItems = countedItems.length
   if (totalItems === 0) throw new Error('ยังไม่มีรายการที่ถูกนับ')
+  const isPartial = totalItems < items.length
+  if (isPartial && audit.require_full_count) throw new Error(`ต้องตรวจนับครบ 100% ก่อนส่งรีวิว (เหลือ ${items.length - totalItems} รายการ)`)
+  if (isPartial && !partialCountReason?.trim()) throw new Error('กรุณาระบุเหตุผลที่ส่งรีวิวทั้งที่ยังนับไม่ครบ')
 
   // Quantity accuracy
   const qtyMatched = countedItems.filter((i) => !hasAuditStockDifference(i)).length
@@ -474,7 +480,9 @@ export async function submitAuditForReview(auditId: string) {
     .from('inv_audits')
     .update({
       status: 'review',
-      total_items: totalItems,
+      total_items: items.length,
+      counted_items: totalItems,
+      partial_count_reason: isPartial ? partialCountReason!.trim() : null,
       total_variance: totalVariance,
       accuracy_percent: Number.isFinite(accuracyPercent) ? accuracyPercent : 0,
       location_accuracy_percent: locationAccuracy != null && Number.isFinite(locationAccuracy) ? locationAccuracy : null,
@@ -483,6 +491,9 @@ export async function submitAuditForReview(auditId: string) {
       total_safety_stock_mismatches: safetyMismatches,
     })
     .eq('id', auditId)
+    .eq('status', 'in_progress')
+    .select('id')
+    .single()
   if (error) throw error
 }
 
@@ -617,7 +628,7 @@ export interface AuditKPI {
 export async function getAuditKPI(): Promise<AuditKPI> {
   const { data: audits, error } = await supabase
     .from('inv_audits')
-    .select('id, status, accuracy_percent, location_accuracy_percent, safety_stock_accuracy_percent, total_items, created_at')
+    .select('id, status, accuracy_percent, location_accuracy_percent, safety_stock_accuracy_percent, total_items, counted_items, created_at')
     .in('status', ['completed', 'closed', 'review'])
     .order('created_at', { ascending: false })
   if (error) throw error
@@ -640,7 +651,7 @@ export async function getAuditKPI(): Promise<AuditKPI> {
     ? withSafetyAccuracy.reduce((sum, a) => sum + Number(a.safety_stock_accuracy_percent), 0) / withSafetyAccuracy.length
     : null
 
-  const totalItemsAudited = completedAudits.reduce((sum, a) => sum + Number(a.total_items || 0), 0)
+  const totalItemsAudited = completedAudits.reduce((sum, a) => sum + Number(a.counted_items ?? a.total_items ?? 0), 0)
 
   // Group by month
   const monthMap: Record<string, { count: number; totalAccuracy: number; items: number }> = {}

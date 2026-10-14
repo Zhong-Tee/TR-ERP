@@ -572,6 +572,9 @@ export interface InventoryAudit {
   total_variance?: number | null
   note?: string | null
   show_system_qty?: boolean | null
+  require_full_count?: boolean
+  partial_count_reason?: string | null
+  counted_items?: number | null
 }
 
 export interface InventoryAuditItem {

@@ -33,7 +33,7 @@ export default function EmployeeRequests() {
 
   const load = useCallback(async () => {
     try { setItems(await fetchMyHRRequests()) }
-    catch (e) { setMessage(e instanceof Error ? e.message : 'โหลดคำร้องไม่สำเร็จ') }
+    catch (e) { setMessage(e instanceof Error ? e.message : 'โหลดข้อเสนอไม่สำเร็จ') }
     finally { setLoading(false) }
   }, [])
   useEffect(() => { load() }, [load])
@@ -57,12 +57,12 @@ export default function EmployeeRequests() {
       })
       if (error) throw error
       setForm(EMPTY); setFiles([]); if (fileRef.current) fileRef.current.value = ''
-      setMessage('ส่งคำร้องเรียบร้อยแล้ว')
+      setMessage('ส่งข้อเสนอเรียบร้อยแล้ว')
       await load()
       setActiveView('list')
     } catch (e) {
       for (const file of uploaded) await supabase.storage.from('hr-requests').remove([file.path]).catch(() => {})
-      setMessage(e instanceof Error ? e.message : 'ส่งคำร้องไม่สำเร็จ')
+      setMessage(e instanceof Error ? e.message : 'ส่งข้อเสนอไม่สำเร็จ')
     } finally { setSaving(false) }
   }
 
@@ -83,11 +83,11 @@ export default function EmployeeRequests() {
 
   return <div className="space-y-4">
     <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-      <h2 className="flex items-center gap-2 text-lg font-bold"><FiFileText className="text-emerald-600" /> คำร้อง</h2>
+      <h2 className="flex items-center gap-2 text-lg font-bold"><FiFileText className="text-emerald-600" /> ข้อเสนอ</h2>
       <p className="mt-1 text-xs text-gray-500">เสนอปัญหาและแนวทางปรับปรุงบริษัท</p>
       <div className="mt-4 grid grid-cols-2 rounded-xl bg-gray-100 p-1">
-        <button type="button" onClick={() => { setActiveView('write'); setMessage('') }} className={`flex items-center justify-center gap-1.5 rounded-lg px-2 py-2.5 text-sm font-semibold transition-colors ${activeView === 'write' ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-500'}`}><FiEdit3 />เขียนคำร้อง</button>
-        <button type="button" onClick={() => { setActiveView('list'); setMessage('') }} className={`relative flex items-center justify-center gap-1.5 rounded-lg px-2 py-2.5 text-sm font-semibold transition-colors ${activeView === 'list' ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-500'}`}><FiList />รายการคำร้อง{items.length > 0 && <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-700">{items.length}</span>}</button>
+        <button type="button" onClick={() => { setActiveView('write'); setMessage('') }} className={`flex items-center justify-center gap-1.5 rounded-lg px-2 py-2.5 text-sm font-semibold transition-colors ${activeView === 'write' ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-500'}`}><FiEdit3 />เขียนข้อเสนอ</button>
+        <button type="button" onClick={() => { setActiveView('list'); setMessage('') }} className={`relative flex items-center justify-center gap-1.5 rounded-lg px-2 py-2.5 text-sm font-semibold transition-colors ${activeView === 'list' ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-500'}`}><FiList />รายการข้อเสนอ{items.length > 0 && <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-700">{items.length}</span>}</button>
       </div>
       {message && <div className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{message}</div>}
       {activeView === 'write' && (
@@ -109,12 +109,12 @@ export default function EmployeeRequests() {
           <input ref={fileRef} type="file" multiple onChange={(e) => setFiles(Array.from(e.target.files || []))} className="mt-1 block w-full text-sm" />
           {files.length > 0 && <span className="mt-1 block text-xs text-gray-500">เลือกแล้ว {files.length} ไฟล์</span>}
         </label>
-        <button disabled={saving} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-3 text-sm font-bold text-white disabled:opacity-50"><FiSend />{saving ? 'กำลังส่ง…' : 'ส่งคำร้อง'}</button>
+        <button disabled={saving} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-3 text-sm font-bold text-white disabled:opacity-50"><FiSend />{saving ? 'กำลังส่ง…' : 'ส่งข้อเสนอ'}</button>
       </form>
       )}
     </section>
-    {activeView === 'list' && <section><h3 className="mb-2 font-bold">รายการคำร้องของฉัน</h3>
-      {loading ? <p className="text-center text-sm text-gray-500">กำลังโหลด…</p> : <div className="space-y-3">{items.length === 0 ? <div className="rounded-2xl bg-white p-5 text-center text-sm text-gray-500">ยังไม่มีคำร้อง</div> : items.map((item) => {
+    {activeView === 'list' && <section><h3 className="mb-2 font-bold">รายการข้อเสนอของฉัน</h3>
+      {loading ? <p className="text-center text-sm text-gray-500">กำลังโหลด…</p> : <div className="space-y-3">{items.length === 0 ? <div className="rounded-2xl bg-white p-5 text-center text-sm text-gray-500">ยังไม่มีข้อเสนอ</div> : items.map((item) => {
         const status = HR_REQUEST_STATUS[item.status]
         return <article key={item.id} role="button" tabIndex={0} onClick={() => setSelectedRequest(item)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setSelectedRequest(item) }} className="cursor-pointer rounded-2xl border border-gray-200 bg-white p-4 shadow-sm transition-colors active:bg-gray-50">
           <div className="flex items-start justify-between gap-2"><h4 className="font-semibold text-gray-900">{item.problem_title}</h4><span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-bold ${status.color}`}>{status.label}</span></div>
@@ -126,7 +126,7 @@ export default function EmployeeRequests() {
       })}</div>}
     </section>}
     {selectedRequest && <Modal open onClose={() => setSelectedRequest(null)} closeOnBackdropClick contentClassName="max-w-md">
-      <div className="flex items-center border-b px-4 py-3 pr-16"><h3 className="font-bold text-gray-900">รายละเอียดคำร้อง</h3></div>
+      <div className="flex items-center border-b px-4 py-3 pr-16"><h3 className="font-bold text-gray-900">รายละเอียดข้อเสนอ</h3></div>
       <div className="space-y-3 overflow-y-auto p-4 text-sm">
         <div className="flex items-start justify-between gap-2"><h4 className="text-base font-bold text-gray-900">{selectedRequest.problem_title}</h4><span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-bold ${HR_REQUEST_STATUS[selectedRequest.status].color}`}>{HR_REQUEST_STATUS[selectedRequest.status].label}</span></div>
         <RequestDetail label="การเสียเวลากับปัญหานี้" value={formatHRRequestDuration(selectedRequest.time_lost)} mono />

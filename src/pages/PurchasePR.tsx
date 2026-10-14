@@ -660,12 +660,12 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
   ]
 
   return (
-    <div className="space-y-4 mt-12">
+    <div className="min-w-0 space-y-4 mt-12">
       {/* ── Filter Bar ── */}
       <div className="bg-white rounded-xl shadow-sm border p-4">
         <div className="flex flex-wrap items-center gap-3">
           {/* status tabs */}
-          <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+          <div className="flex max-w-full flex-wrap gap-1 bg-gray-100 rounded-lg p-1">
             {statusTabs.map((t) => (
               <button
                 key={t.key}
@@ -679,7 +679,7 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
             ))}
           </div>
           {/* type filter */}
-          {!fixedPrType && <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+          {!fixedPrType && <div className="flex max-w-full flex-wrap gap-1 bg-gray-100 rounded-lg p-1">
             {[
               { key: 'all', label: 'ทุกประเภท' },
               { key: 'normal', label: 'ปกติ', color: 'text-blue-700' },
@@ -714,7 +714,7 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
       </div>
 
       {/* ── PR List ── */}
-      <div className="bg-white rounded-xl shadow-sm border">
+      <div className="min-w-0 overflow-hidden bg-white rounded-xl shadow-sm border">
         {loading ? (
           <div className="flex justify-center items-center py-16">
             <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-500" />
@@ -722,8 +722,21 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
         ) : prs.length === 0 ? (
           <div className="text-center py-16 text-gray-400">ไม่พบรายการ PR</div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+          <div className="max-w-full overflow-x-auto">
+            <table className={`w-full table-fixed text-sm [&_th]:px-2 [&_th]:py-3 [&_th]:text-[13px] [&_td]:px-2 [&_td]:py-3 ${canSeePrice ? 'min-w-[1240px]' : 'min-w-[1060px]'}`}>
+              <colgroup>
+                <col className="w-[140px]" />
+                <col className="w-[94px]" />
+                <col />
+                <col className="w-[98px]" />
+                <col className="w-[100px]" />
+                <col className="w-[80px]" />
+                <col className="w-[68px]" />
+                {canSeePrice && <><col className="w-[92px]" /><col className="w-[88px]" /></>}
+                <col />
+                <col className="w-[154px]" />
+                <col className="w-[180px]" />
+              </colgroup>
               <thead>
                 <tr className="bg-gray-50 border-b">
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">เลขที่ PR</th>
@@ -732,7 +745,7 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">วันที่สร้าง</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้สร้าง</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้อนุมัติ</th>
-                  <th className="px-4 py-3 text-center font-semibold text-gray-600">จำนวนรายการ</th>
+                  <th className="px-4 py-3 text-center font-semibold text-gray-600">จำนวน<br />รายการ</th>
                   {canSeePrice && (
                     <>
                       <th className="px-4 py-3 text-right font-semibold text-gray-600">ยอดรวม</th>
@@ -771,39 +784,39 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
                   const pricePerUnit = totalQty > 0 ? totalAmount / totalQty : null
                   return (
                     <tr key={pr.id} className="hover:bg-gray-50/50 transition-colors">
-                      <td className="px-4 py-3 font-medium text-gray-900">{pr.pr_no}</td>
+                      <td className="px-4 py-3 truncate font-medium text-gray-900" title={pr.pr_no}>{pr.pr_no}</td>
                       <td className="px-4 py-3">
-                        <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${isUrgent ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>
+                        <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${isUrgent ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>
                         {pr.pr_type === 'machinery' ? 'Machinery' : isUrgent ? 'ด่วน' : 'ปกติ'}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-gray-600 max-w-[120px] truncate">{pr.supplier_name || '-'}</td>
-                      <td className="px-4 py-3 text-gray-600">
-                        {pr.requested_at ? new Date(pr.requested_at).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}
+                      <td className="px-4 py-3 text-gray-600"><div className="truncate" title={pr.supplier_name || undefined}>{pr.supplier_name || '-'}</div></td>
+                      <td className="px-4 py-3 whitespace-nowrap text-gray-600">
+                        {pr.requested_at ? new Date(pr.requested_at).toLocaleDateString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '-'}
                       </td>
-                      <td className="px-4 py-3 text-gray-600">{pr.requested_by ? userMap[pr.requested_by] || '-' : '-'}</td>
-                      <td className="px-4 py-3 text-gray-600">{pr.approved_by ? userMap[pr.approved_by] || '-' : '-'}</td>
+                      <td className="px-4 py-3 text-gray-600"><div className="truncate" title={pr.requested_by ? userMap[pr.requested_by] : undefined}>{pr.requested_by ? userMap[pr.requested_by] || '-' : '-'}</div></td>
+                      <td className="px-4 py-3 text-gray-600"><div className="truncate" title={pr.approved_by ? userMap[pr.approved_by] : undefined}>{pr.approved_by ? userMap[pr.approved_by] || '-' : '-'}</div></td>
                       <td className="px-4 py-3 text-center text-gray-600">{(pr as any)._itemCount || '-'}</td>
                       {canSeePrice && (
                         <>
-                          <td className="px-4 py-3 text-right text-gray-700">
+                          <td className="px-4 py-3 truncate text-right text-gray-700 tabular-nums" title={totalAmount > 0 ? totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : undefined}>
                             {totalAmount > 0 ? totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}
                           </td>
-                          <td className="px-4 py-3 text-right text-gray-700">
+                          <td className="px-4 py-3 truncate text-right text-gray-700 tabular-nums" title={pricePerUnit != null && totalAmount > 0 ? pricePerUnit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ฿' : undefined}>
                             {pricePerUnit != null && totalAmount > 0
                               ? pricePerUnit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ฿'
                               : '-'}
                           </td>
                         </>
                       )}
-                      <td className="px-4 py-3 text-gray-500 max-w-[200px] truncate">{pr.note || '-'}</td>
+                      <td className="px-4 py-3 text-gray-500"><div className="line-clamp-2 break-words [overflow-wrap:anywhere]" title={pr.note || undefined}>{pr.note || '-'}</div></td>
                       <td className="px-4 py-3">
-                        <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${st.color}`}>
-                          {st.label}
+                        <span className={`inline-block max-w-full px-2.5 py-1 rounded-lg text-xs font-semibold ${st.color}`} title={st.label}>
+                          {linkedPO ? <><span className="block whitespace-nowrap">สร้าง PO แล้ว</span><span className="block whitespace-nowrap text-[11px]">{linkedPO.po_no}</span></> : st.label}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <div className="flex items-center justify-end gap-2">
+                        <div className="flex flex-wrap items-center justify-end gap-2 [&_button]:whitespace-nowrap [&_button]:px-2">
                           {!fixedPrType && pr.status === 'approved' && !linkedPO && (
                             <button
                               onClick={() => navigate(`/purchase/po?pr=${encodeURIComponent(pr.id)}`)}
@@ -815,9 +828,10 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
                           {linkedPO && (
                             <button
                               onClick={() => navigate(`/purchase/po?search=${encodeURIComponent(linkedPO.po_no)}`)}
+                              title={`ดู ${linkedPO.po_no}`}
                               className="px-3 py-1.5 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 text-xs font-semibold transition-colors"
                             >
-                              ดู {linkedPO.po_no}
+                              ดู PO
                             </button>
                           )}
                           <button

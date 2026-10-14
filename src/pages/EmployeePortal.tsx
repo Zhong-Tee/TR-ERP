@@ -82,7 +82,7 @@ const TABS = [
   { id: 'wfh', label: 'ขอ WFH', icon: FiWifi, Component: EmployeeWFH },
   { id: 'warnings-certs', label: 'เตือน/รับรอง', icon: FiAward, Component: EmployeeWarningsCerts },
   { id: 'assets', label: 'ทรัพย์สิน', icon: FiBox, Component: EmployeeAssets },
-  { id: 'requests', label: 'คำร้อง', icon: FiMessageSquare, Component: EmployeeRequests },
+  { id: 'requests', label: 'ข้อเสนอ', icon: FiMessageSquare, Component: EmployeeRequests },
   { id: 'documents', label: 'เอกสาร', icon: FiFileText, Component: EmployeeDocuments },
   { id: 'salary', label: 'เส้นทาง', icon: FiTrendingUp, Component: EmployeeSalaryPath },
   { id: 'onboarding', label: 'Onboarding', icon: FiBookOpen, Component: EmployeeOnboarding },
@@ -365,7 +365,7 @@ export default function EmployeePortal() {
               ))}
               {resultNotifications.map((item) => (
                 <button key={`result-${item.id}`} type="button" onClick={() => openNotificationTarget('result')} className="w-full px-4 py-3 text-left hover:bg-blue-50">
-                  <div className="text-xs font-semibold text-blue-600">ผลคำร้อง</div>
+                  <div className="text-xs font-semibold text-blue-600">ผลข้อเสนอ</div>
                   <div className="mt-0.5 text-sm font-medium text-gray-900 line-clamp-2">{item.title}</div>
                 </button>
               ))}

@@ -247,6 +247,13 @@ export default function AuditReviewView() {
       </div>
 
       {/* Summary Stats */}
+      <div className="bg-white p-4 rounded-xl border space-y-2 text-sm text-gray-700">
+        <p>ขอบเขตทั้งหมด {items.length} รายการ / นับแล้ว {stats.totalItems} / ยังไม่นับ {items.length - stats.totalItems}</p>
+        <p>ตรวจครบ {items.length > 0 ? ((stats.totalItems / items.length) * 100).toFixed(1) : '0'}% — ค่าความแม่นยำด้านล่างคิดเฉพาะรายการที่ตรวจแล้ว</p>
+        <p>เงื่อนไข: {audit.require_full_count ? 'ต้องนับครบ 100% ก่อนส่งรีวิว' : 'ส่งรีวิวบางส่วนได้'}</p>
+        {stats.totalItems < items.length && <p className="text-orange-700 font-semibold">ผลตรวจบางส่วน — รายการที่ยังไม่นับจะไม่ถูกนำไปปรับยอด</p>}
+        {audit.partial_count_reason && <p className="whitespace-pre-wrap">เหตุผลที่ตรวจนับไม่ครบ: {audit.partial_count_reason}</p>}
+      </div>
       <AuditSummaryStats {...stats} />
 
       {/* Tabs */}

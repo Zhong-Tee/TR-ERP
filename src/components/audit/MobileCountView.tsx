@@ -8,7 +8,7 @@ import type { InventoryAudit, InventoryAuditItem } from '../../types'
 import BarcodeScanner from './BarcodeScanner'
 import CountProgress from './CountProgress'
 import ProductCountCard from './ProductCountCard'
-import ModalCloseButton from '../ui/ModalCloseButton'
+import Modal from '../ui/Modal'
 
 type Mode = 'list' | 'scan'
 type ToastType = 'success' | 'error' | 'warning'
@@ -32,9 +32,11 @@ export default function MobileCountView() {
   const [scannerOpen, setScannerOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [toast, setToast] = useState<Toast | null>(null)
-  const [confirmModal, setConfirmModal] = useState<{ message: string; onConfirm: () => void } | null>(null)
+  const [confirmModal, setConfirmModal] = useState<{ message: string } | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [groupFilter, setGroupFilter] = useState('')
+  const [partialCountReason, setPartialCountReason] = useState('')
+  const [submitError, setSubmitError] = useState('')
 
   function showToast(type: ToastType, message: string) {
     setToast({ type, message })
@@ -62,6 +64,8 @@ export default function MobileCountView() {
 
   const countedCount = useMemo(() => items.filter((i) => i.is_counted).length, [items])
   const totalCount = items.length
+  const isPartial = countedCount < totalCount
+  const requiresFullCount = audit?.require_full_count === true
 
   const productCodeMap = useMemo(() => {
     const map: Record<string, InventoryAuditItem> = {}
@@ -85,6 +89,7 @@ export default function MobileCountView() {
 
   function handleScanResult(code: string) {
     setScannerOpen(false)
+    if (audit?.status !== 'in_progress') return
     const item = productCodeMap[code]
     if (item) {
       setSelectedItem(item)
@@ -123,18 +128,26 @@ export default function MobileCountView() {
   }
 
   function requestSubmitForReview() {
+    if (requiresFullCount && isPartial) return
+    setPartialCountReason('')
+    setSubmitError('')
     setConfirmModal({
-      message: 'ยืนยันส่งผลตรวจนับเพื่อรีวิว?',
-      onConfirm: doSubmitForReview,
+      message: isPartial
+        ? `ยืนยันส่งรีวิวบางส่วน ${countedCount}/${totalCount} รายการ? อีก ${totalCount - countedCount} รายการจะยังไม่ได้ตรวจ และหลังส่งจะไม่สามารถนับต่อในใบนี้ได้`
+        : 'ยืนยันส่งผลตรวจนับเพื่อรีวิว? หลังส่งจะไม่สามารถนับต่อในใบนี้ได้',
     })
   }
 
   async function doSubmitForReview() {
     if (!id) return
+    if (isPartial && !partialCountReason.trim()) {
+      setSubmitError('กรุณาระบุเหตุผลที่ส่งรีวิวทั้งที่ยังนับไม่ครบ')
+      return
+    }
     setConfirmModal(null)
     setSubmitting(true)
     try {
-      await submitAuditForReview(id)
+      await submitAuditForReview(id, partialCountReason)
       showToast('success', 'ส่งผลตรวจนับเรียบร้อย')
       setTimeout(() => navigate('/warehouse/audit'), 1500)
     } catch (e: any) {
@@ -204,6 +217,10 @@ export default function MobileCountView() {
           </div>
           <div className="mt-3">
             <CountProgress counted={countedCount} total={totalCount} />
+            <p className="text-xs text-slate-200 mt-2">
+              {requiresFullCount ? `ใบนี้ต้องนับครบ 100% ก่อนส่งรีวิว — เหลือ ${totalCount - countedCount} รายการ` : 'ใบนี้ส่งรีวิวบางส่วนได้ โดยต้องระบุเหตุผลหากนับไม่ครบ'}
+            </p>
+            <p className="text-xs text-slate-200 mt-1">บันทึกรายการแล้วกดกลับ เพื่อพักและกลับมาตรวจต่อ</p>
           </div>
         </div>
       </div>
@@ -390,10 +407,10 @@ export default function MobileCountView() {
           {countedCount > 0 && audit.status === 'in_progress' && (
             <button
               onClick={requestSubmitForReview}
-              disabled={submitting}
+              disabled={submitting || (requiresFullCount && isPartial)}
               className={`${mode === 'scan' ? '' : 'flex-1'} py-3.5 px-6 bg-orange-500 text-white rounded-xl font-bold disabled:opacity-50 active:scale-95 transition-all`}
             >
-              {submitting ? 'กำลังส่ง...' : `ส่งรีวิว (${countedCount}/${totalCount})`}
+              {submitting ? 'กำลังส่ง...' : `${isPartial && !requiresFullCount ? 'ส่งรีวิวบางส่วน' : 'ส่งรีวิว'} (${countedCount}/${totalCount})`}
             </button>
           )}
         </div>
@@ -412,26 +429,31 @@ export default function MobileCountView() {
 
       {/* Confirm Modal */}
       {confirmModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setConfirmModal(null)} />
-          <div className="relative bg-white rounded-2xl shadow-xl max-w-sm w-full p-6 text-center">
-            <ModalCloseButton onClick={() => setConfirmModal(null)} className="absolute right-3 top-3" />
+        <Modal open={true} onClose={() => setConfirmModal(null)} contentClassName="max-w-sm">
+          <div className="p-6 text-center">
             <div className="mx-auto w-14 h-14 rounded-full bg-orange-100 flex items-center justify-center mb-4">
               <svg className="w-7 h-7 text-orange-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
             </div>
             <p className="text-gray-800 font-semibold">{confirmModal.message}</p>
+            {isPartial && (
+              <label className="block text-sm text-left text-gray-700 mt-4">
+                เหตุผลที่ตรวจนับไม่ครบ <span className="text-red-600">*</span>
+                <textarea value={partialCountReason} onChange={event => { setPartialCountReason(event.target.value); setSubmitError('') }} rows={3} className="mt-2 w-full border rounded-lg p-2" />
+              </label>
+            )}
+            {submitError && <p role="alert" className="text-sm text-red-600 mt-2">{submitError}</p>}
             <div className="flex gap-3 mt-6">
               <button
-                onClick={confirmModal.onConfirm}
+                onClick={doSubmitForReview}
                 className="ml-auto px-6 py-2.5 bg-orange-500 text-white rounded-xl font-semibold hover:bg-orange-600"
               >
                 ยืนยัน
               </button>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   )
