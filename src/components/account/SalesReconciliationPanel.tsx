@@ -5,11 +5,12 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
 import ReconciliationDateFilter from './ReconciliationDateFilter'
 import { bangkokToday } from '../../lib/reconciliationDate'
+import OverpaymentRefundModal from './OverpaymentRefundModal'
 
-type Bill = { id: string; bill_no: string; created_at: string; channel_code: string; payment_method: string | null; total_amount: number; bank_received: number; certified_received: number; evidence_amount: number; reconciliation_state: string; statement_coverage: string }
+type Bill = { id: string; bill_no: string; created_at: string; channel_code: string; payment_method: string | null; total_amount: number; bank_received: number; certified_received: number; evidence_amount: number; reconciliation_state: string; statement_coverage: string; refund_matched_amount?: number }
 type Receipt = { id: string; amount: number; receipt_method: string; received_on: string; reason: string; evidence_reference: string | null; certified_by: string; certified_at: string; revoked_at: string | null; revoked_by: string | null; revoke_reason: string | null; actor?: string; revoker?: string }
 type Workspace = { rows: Bill[]; count: number; channels: string[]; summary: { cash: number; other_certified: number; bills: number; sales: number; bank: number; certified: number; outstanding: number }; states: Record<string, number> }
-const states: Record<string, string> = { pending: 'ค้างดำเนินการ', no_evidence: 'ยังไม่มีหลักฐานรับเงิน', waiting_bank: 'รอพบเงินเข้า', partial: 'รับเงินบางส่วน', matched: 'กระทบยอดธนาคารครบ', certified: 'รับเงินครบ มีการรับรอง', overpaid: 'รับเกิน', all: 'ทั้งหมด' }
+const states: Record<string, string> = { pending: 'ค้างดำเนินการ', no_evidence: 'ยังไม่มีหลักฐานรับเงิน', waiting_bank: 'รอพบเงินเข้า', partial: 'รับเงินบางส่วน', matched: 'กระทบยอดธนาคารครบ', certified: 'รับเงินครบ มีการรับรอง', overpaid: 'รับเกิน', no_payment: 'ไม่ต้องชำระเงิน', all: 'ทั้งหมด' }
 const methods: Record<string, string> = { cash: 'เงินสด', other: 'ช่องทางอื่น', transfer_exception: 'โอน: รับรองกรณีพิเศษ' }
 const money = (value: number) => Number(value || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
@@ -24,8 +25,10 @@ export default function SalesReconciliationPanel({ openOrder, refreshKey, onChan
   const [offset, setOffset] = useState(0)
   const [data, setData] = useState<Workspace | null>(null)
   const [loading, setLoading] = useState(false)
+  const [autoMatchCount, setAutoMatchCount] = useState(0)
   const [error, setError] = useState('')
   const [bill, setBill] = useState<Bill | null>(null)
+  const [refundBill, setRefundBill] = useState<Bill | null>(null)
   const [receipts, setReceipts] = useState<Receipt[]>([])
   const [receiptLoading, setReceiptLoading] = useState(false)
   const [amount, setAmount] = useState('')
@@ -41,11 +44,28 @@ export default function SalesReconciliationPanel({ openOrder, refreshKey, onChan
   const cancelLoad = useCallback(() => { generation.current++ }, [])
   const load = useCallback(async () => {
     const request = ++generation.current
-    setLoading(true); setError('')
+    setLoading(true); setError(''); setAutoMatchCount(0)
     if (from && to && from > to) { setError('วันที่เริ่มต้องไม่เกินวันที่สิ้นสุด'); setLoading(false); return }
     const result = await supabase.rpc('bank_sales_workspace', { p_from: from || null, p_to: to || null, p_status: status, p_search: search.trim(), p_channel: channel.trim(), p_method: method, p_offset: offset })
     if (request !== generation.current) return
-    if (result.error) { setError(result.error.message); setData(null) } else setData(result.data as Workspace)
+    if (result.error) { setError(result.error.message); setData(null) } else {
+      const workspace = result.data as Workspace
+      const overpaidIds = workspace.rows.filter(row => row.reconciliation_state === 'overpaid').map(row => row.id)
+      if (overpaidIds.length) {
+        try {
+          const matched = await supabase.rpc('bank_auto_match_overpayment_refunds', { p_order_ids: overpaidIds })
+          if (request !== generation.current) return
+          if (matched.error) throw matched.error
+          const info = matched.data as { matched_count: number; amounts: Record<string, number> }
+          workspace.rows = workspace.rows.map(row => ({ ...row, refund_matched_amount: Number(info.amounts[row.id] || 0) }))
+          setAutoMatchCount(info.matched_count)
+        } catch (caught) {
+          if (request !== generation.current) return
+          setError(`จับคู่อัตโนมัติไม่สำเร็จ: ${(caught as { message?: string }).message || String(caught)}`)
+        }
+      }
+      setData(workspace)
+    }
     setLoading(false)
   }, [from, to, status, search, channel, method, offset])
   useEffect(() => { const timer = window.setTimeout(() => void load(), 250); return () => { window.clearTimeout(timer); cancelLoad() } }, [load, refreshKey, cancelLoad])
@@ -99,7 +119,7 @@ export default function SalesReconciliationPanel({ openOrder, refreshKey, onChan
   }
   const field = 'rounded-lg border border-gray-300 px-3 py-2 text-sm'
   return <section className="space-y-4 rounded-xl border bg-white p-5">
-    <div className="flex flex-wrap justify-between gap-2"><div><h3 className="font-semibold">ติดตามเงินรับจากบิลขาย ตั้งแต่ 1 ต.ค. 2569</h3><p className="text-xs text-gray-500">กรองตามวันที่สร้างบิล · รวมเงินรับตลอดอายุบิล · ติดตามเฉพาะบิลตั้งแต่ 1 ต.ค. 2569 เป็นต้นไป</p></div><div className="flex gap-2"><button disabled={busy || loading} onClick={() => void exportBills()} className={field}>ดาวน์โหลด Excel</button><button onClick={() => void load()} className={field}>รีเฟรช</button></div></div>
+    <div className="flex flex-wrap justify-between gap-2"><div><h3 className="font-semibold">ติดตามเงินรับจากบิลขาย ตั้งแต่ 1 ต.ค. 2569</h3><p className="text-xs text-gray-500">กรองตามวันที่สร้างบิล · รวมเงินรับตลอดอายุบิล · ติดตามเฉพาะบิลตั้งแต่ 1 ต.ค. 2569 เป็นต้นไป · จับคู่โอนคืนอัตโนมัติเมื่อบิลและยอดตรงกัน</p></div><div className="flex gap-2"><button disabled={busy || loading} onClick={() => void exportBills()} className={field}>ดาวน์โหลด Excel</button><button onClick={() => void load()} className={field}>รีเฟรช</button></div></div>
     <ReconciliationDateFilter from={from} to={to} onChange={(a,b) => { setFrom(a && a > '2026-10-01' ? a : '2026-10-01'); setTo(b); setOffset(0) }} />
     <div className="flex flex-wrap gap-2">
       <select aria-label="สถานะบิล" value={status} onChange={e => { setStatus(e.target.value); setOffset(0) }} className={field}>{Object.entries(states).map(([key,label]) => <option key={key} value={key}>{label}</option>)}</select>
@@ -108,12 +128,14 @@ export default function SalesReconciliationPanel({ openOrder, refreshKey, onChan
       <select aria-label="วิธีชำระเงิน" value={method} onChange={e => { setMethod(e.target.value); setOffset(0) }} className={field}><option value="">ทุกวิธีชำระ</option>{['โอน','เงินสด','เก็บเงินปลายทาง','เครดิต'].map(m => <option key={m}>{m}</option>)}</select>
     </div>
     {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+    {autoMatchCount > 0 && <p role="status" className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">จับคู่โอนคืนอัตโนมัติแล้ว {autoMatchCount} รายการ (บิลเดียวกันและยอดเงินตรงกัน)</p>}
     {data && <><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{[['ยอดบิล',data.summary.sales],['จับคู่ธนาคาร',data.summary.bank],['เงินสดรับรองแล้ว',data.summary.cash],['รับรองช่องทางอื่น',data.summary.other_certified],['ยอดค้าง',data.summary.outstanding]].map(([label,value]) => <div key={label} className="rounded-lg bg-blue-50 p-3"><div className="text-xs text-gray-600">{label}</div><div className="font-bold">฿{money(Number(value))}</div></div>)}</div>
-    <p className="text-xs text-gray-500">ยอดสรุปจาก {data.summary.bills} บิลตามวันที่ ช่องทาง และวิธีชำระที่เลือก · จำนวนในตารางแยกตามสถานะ</p><div className="flex flex-wrap gap-2">{Object.entries(data.states).map(([key,count]) => <button key={key} onClick={() => { setStatus(key); setOffset(0) }} className={`rounded-full border px-3 py-1.5 text-xs ${status===key ? 'bg-blue-100 text-blue-800' : ''}`}>{states[key]} ({count})</button>)}</div></>}
+    <p className="text-xs text-gray-500">ยอดสรุปจาก {data.summary.bills} บิลตามวันที่ ช่องทาง และวิธีชำระที่เลือก · จำนวนในตารางแยกตามสถานะ</p><div className="flex flex-wrap gap-2">{Object.entries(data.states).map(([key,count]) => <button key={key} onClick={() => { setStatus(key); setOffset(0) }} className={`rounded-full border px-3 py-1.5 text-xs ${key === 'overpaid' ? (status === key ? 'border-red-300 bg-red-100 text-red-700' : 'text-red-600') : status===key ? 'bg-blue-100 text-blue-800' : ''}`}>{states[key]} ({count})</button>)}</div></>}
     <div className="overflow-x-auto"><table className="w-full min-w-[950px] text-sm"><thead className="bg-gray-50"><tr>{['วันที่บิล','เลขบิล / ช่องทาง','วิธีชำระ','ยอดบิล','ธนาคาร','รับรอง','ยอดค้าง','สถานะ','จัดการ'].map(label => <th key={label} className="p-3 text-left">{label}</th>)}</tr></thead><tbody>
-      {loading ? <tr><td colSpan={9} className="p-8 text-center">กำลังโหลด...</td></tr> : !data?.rows.length ? <tr><td colSpan={9} className="p-8 text-center text-gray-500">ไม่พบบิลตามตัวกรอง</td></tr> : data.rows.map(row => <tr key={row.id} className="border-t align-top"><td className="p-3 whitespace-nowrap">{new Date(row.created_at).toLocaleDateString('th-TH',{timeZone:'Asia/Bangkok'})}</td><td className="p-3"><button onClick={() => openOrder(row.id)} className="font-semibold text-blue-700 hover:underline">{row.bill_no}</button><div className="text-xs text-gray-500">{row.channel_code}</div></td><td className="p-3">{row.payment_method || '–'}</td>{[row.total_amount,row.bank_received,row.certified_received,Math.max(0,Number(row.total_amount)-Number(row.bank_received)-Number(row.certified_received))].map((v,i) => <td key={i} className="p-3 whitespace-nowrap">฿{money(v)}</td>)}<td className="p-3"><span className={`text-xs font-semibold ${['matched','certified'].includes(row.reconciliation_state) ? 'text-emerald-700' : 'text-amber-700'}`}>{states[row.reconciliation_state]}</span>{row.reconciliation_state==='waiting_bank' && <div className="mt-1 text-xs text-gray-500">{row.statement_coverage==='not_uploaded' ? 'ยังไม่มี Statement ครอบคลุมวันรับเงิน' : row.statement_coverage==='covered' ? 'มี Statement ครอบคลุมแล้ว ยังไม่จับคู่' : 'ยังระบุช่วง Statement ไม่ได้'}</div>}</td><td className="p-3"><button onClick={() => openReceipt(row)} className="text-xs font-medium text-violet-700 hover:underline">{user?.role==='superadmin' ? 'รับรอง / ประวัติ' : 'ประวัติรับรอง'}</button></td></tr>)}
+      {loading ? <tr><td colSpan={9} className="p-8 text-center">กำลังโหลด...</td></tr> : !data?.rows.length ? <tr><td colSpan={9} className="p-8 text-center text-gray-500">ไม่พบบิลตามตัวกรอง</td></tr> : data.rows.map(row => <tr key={row.id} className="border-t align-top"><td className="p-3 whitespace-nowrap">{new Date(row.created_at).toLocaleDateString('th-TH',{timeZone:'Asia/Bangkok'})}</td><td className="p-3"><button onClick={() => openOrder(row.id)} className="font-semibold text-blue-700 hover:underline">{row.bill_no}</button><div className="text-xs text-gray-500">{row.channel_code}</div></td><td className="p-3">{row.payment_method || '–'}</td>{[row.total_amount,row.bank_received,row.certified_received,Math.max(0,Number(row.total_amount)-Number(row.bank_received)-Number(row.certified_received))].map((v,i) => <td key={i} className="p-3 whitespace-nowrap">฿{money(v)}</td>)}<td className="p-3"><span className={`text-xs font-semibold ${row.reconciliation_state === 'overpaid' ? 'text-red-600' : ['matched','certified','no_payment'].includes(row.reconciliation_state) ? 'text-emerald-700' : 'text-amber-700'}`}>{states[row.reconciliation_state]}</span>{Number(row.refund_matched_amount) > 0 && <div className="mt-1 text-xs text-emerald-700">จับคู่โอนคืนแล้ว ฿{money(row.refund_matched_amount!)}</div>}{row.reconciliation_state==='waiting_bank' && <div className="mt-1 text-xs text-gray-500">{row.statement_coverage==='not_uploaded' ? 'ยังไม่มี Statement ครอบคลุมวันรับเงิน' : row.statement_coverage==='covered' ? 'มี Statement ครอบคลุมแล้ว ยังไม่จับคู่' : 'ยังระบุช่วง Statement ไม่ได้'}</div>}</td><td className="p-3"><div className="flex flex-col items-start gap-2">{row.reconciliation_state === 'overpaid' && <button onClick={() => setRefundBill(row)} className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100">จับคู่ / ดูโอนคืน</button>}<button onClick={() => openReceipt(row)} className="text-xs font-medium text-violet-700 hover:underline">{user?.role==='superadmin' ? 'รับรอง / ประวัติ' : 'ประวัติรับรอง'}</button></div></td></tr>)}
     </tbody></table></div>
     <div className="flex items-center justify-between text-sm"><span>{data?.count || 0} บิล · หน้า {offset/50+1}</span><div className="flex gap-2"><button disabled={offset===0 || loading} onClick={() => setOffset(offset-50)} className={`${field} disabled:opacity-40`}>ก่อนหน้า</button><button disabled={loading || offset+50 >= (data?.count || 0)} onClick={() => setOffset(offset+50)} className={`${field} disabled:opacity-40`}>ถัดไป</button></div></div>
+    {refundBill && <OverpaymentRefundModal order={refundBill} onClose={() => setRefundBill(null)} onChanged={() => { void load(); onChanged() }} />}
     <Modal open={!!bill} onClose={() => { if (!busy) { receiptGeneration.current++; setBill(null) } }} contentClassName="max-w-2xl w-full">
       {bill && <div className="space-y-4 p-5"><h3 className="text-lg font-bold">รับรองเงินรับ · {bill.bill_no}</h3>{error && <p role="alert" className="text-sm text-red-700">{error}</p>}
         <p className="text-sm">ยอดค้าง ฿{money(Math.max(0,Number(bill.total_amount)-Number(bill.bank_received)-Number(bill.certified_received)))}</p>

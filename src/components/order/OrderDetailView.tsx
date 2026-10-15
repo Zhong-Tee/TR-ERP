@@ -799,7 +799,7 @@ export default function OrderDetailView({
               ) : paymentProofsError ? (
                 <p className="text-sm text-red-600">{paymentProofsError}</p>
               ) : paymentProofs.length === 0 ? (
-                <InfoRow label="ตรวจการชำระ" value="ยังไม่พบสลิปในระบบ" />
+                <InfoRow label="ตรวจการชำระ" value={isClaimOrder && Number(order.total_amount) <= 0.01 ? 'ไม่ต้องชำระเงิน' : 'ยังไม่พบสลิปในระบบ'} />
               ) : (() => {
                 const acceptedProofs = paymentProofs.filter((proof) => proof.accepted)
                 const acceptedTotal = acceptedProofs.reduce((sum, proof) => sum + proof.amount, 0)

@@ -804,17 +804,17 @@ export default function RequisitionDashboard() {
       {isModalOpen && selectedRequisition && <RequisitionDetailModal requisition={selectedRequisition} onClose={closeModal} />}
 
       {/* Create Requisition Modal */}
-      <Modal open={showCreate} onClose={() => setShowCreate(false)} closeOnBackdropClick={false} contentClassName="max-w-5xl">
-        <div className="bg-white rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
-          <div className="p-6 pr-16 border-b flex items-center bg-gradient-to-r from-blue-600 to-blue-700">
+      <Modal open={showCreate} onClose={() => setShowCreate(false)} closeOnBackdropClick={false} contentClassName="max-w-5xl h-[860px]" scrollable={false}>
+        <div className="bg-white rounded-2xl w-full h-full min-h-0 overflow-hidden flex flex-col shadow-2xl">
+          <div className="shrink-0 p-6 pr-16 border-b flex items-center bg-gradient-to-r from-blue-600 to-blue-700">
             <div>
               <h2 className="text-2xl font-black text-white">สร้างใบเบิกสินค้า</h2>
               <span className="text-sm font-bold text-blue-200">{cRequisitionId}</span>
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-6 bg-gray-50">
-            <div className="grid grid-cols-2 gap-6">
+          <div className="min-h-0 flex-1 overflow-y-auto p-6 bg-gray-50">
+            <div className="grid min-h-full grid-cols-2 gap-6">
               {/* Left: product search & select */}
               <div className="space-y-4">
                 <div className="bg-white p-5 rounded-xl border shadow-sm space-y-3">
@@ -943,7 +943,7 @@ export default function RequisitionDashboard() {
             </div>
           </div>
 
-          <div className="p-4 border-t bg-white flex justify-end gap-3">
+          <div className="shrink-0 p-4 border-t bg-white flex justify-end gap-3">
             <button onClick={cSubmit} disabled={cSubmitting || cSelectedItems.length === 0}
               className="bg-green-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-green-700 disabled:opacity-50 transition flex items-center gap-2">
               {cSubmitting ? <><i className="fas fa-spinner fa-spin"></i>กำลังบันทึก...</> : <><i className="fas fa-check-circle"></i>สร้างใบเบิก ({cSelectedItems.length} รายการ)</>}

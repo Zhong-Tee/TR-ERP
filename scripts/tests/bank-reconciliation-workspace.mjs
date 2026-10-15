@@ -12,7 +12,8 @@ await db.exec(`
  INSERT INTO us_users VALUES(auth.uid(),'superadmin','tester');
  CREATE TABLE bank_settings(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),bank_code TEXT,bank_name TEXT,account_number TEXT,account_name TEXT,is_active BOOLEAN DEFAULT true);
  CREATE TABLE bank_settings_channels(bank_setting_id UUID,channel_code TEXT);
- CREATE TABLE or_orders(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),bill_no TEXT,status TEXT,channel_code TEXT,payment_method TEXT,total_amount NUMERIC,created_at TIMESTAMPTZ DEFAULT now());
+ CREATE TABLE or_orders(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),bill_no TEXT,status TEXT,channel_code TEXT,payment_method TEXT,total_amount NUMERIC,created_at TIMESTAMPTZ DEFAULT now(),price NUMERIC DEFAULT 0,shipping_cost NUMERIC DEFAULT 0,discount NUMERIC DEFAULT 0,updated_at TIMESTAMPTZ DEFAULT now());
+ CREATE TABLE or_claim_requests(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),created_claim_order_id UUID REFERENCES or_orders(id),status TEXT,proposed_snapshot JSONB,reviewed_at TIMESTAMPTZ,created_at TIMESTAMPTZ DEFAULT now());
  CREATE TABLE ac_verified_slips(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),order_id UUID,verified_amount NUMERIC,easyslip_date TIMESTAMPTZ,easyslip_receiver_bank_id TEXT,easyslip_receiver_account TEXT,easyslip_response JSONB,expected_bank_code TEXT,expected_bank_account TEXT,is_deleted BOOLEAN DEFAULT false,validation_status TEXT DEFAULT 'passed');
  CREATE TABLE ac_manual_slip_checks(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),order_id UUID,transfer_date TEXT,transfer_time TEXT,transfer_amount NUMERIC,status TEXT);
  INSERT INTO bank_settings(id,bank_code,bank_name,account_number) VALUES('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','004','KBANK','12349552');
@@ -149,5 +150,69 @@ assert.equal((await scalar(`SELECT bank_statement_workspace('2026-10-03','2026-1
 await db.exec(`GRANT USAGE ON SCHEMA auth TO authenticated; GRANT SELECT ON us_users TO authenticated; GRANT ALL ON ac_order_receipt_certifications TO authenticated; SET ROLE authenticated`)
 await assert.rejects(db.exec(`INSERT INTO ac_order_receipt_certifications(order_id,amount,receipt_method,received_on,reason,certified_by) VALUES('${bill}',1,'cash','2026-10-01','direct write',auth.uid())`), /row-level security/)
 await db.exec('RESET ROLE')
+// REQ bills must retain the approved claim charge, including an explicit zero.
+const reqZero = 'eeeeeeee-eeee-eeee-eeee-000000000001'
+const reqPaid = 'eeeeeeee-eeee-eeee-eeee-000000000002'
+const reqPending = 'eeeeeeee-eeee-eeee-eeee-000000000003'
+await db.exec(`
+ INSERT INTO or_orders(id,bill_no,status,channel_code,payment_method,price,shipping_cost,total_amount,created_at) VALUES
+ ('${reqZero}','REQFBTR26100044','จัดส่งแล้ว','FBTR','โอน',55,30,85,'2026-10-10 10:00+07'),
+ ('${reqPaid}','REQFBTR-PAID','ตรวจสอบแล้ว','FBTR','โอน',55,30,85,'2026-10-10 10:00+07'),
+ ('${reqPending}','REQFBTR-PENDING','ตรวจสอบแล้ว','FBTR','โอน',69,30,99,'2026-10-10 10:00+07');
+ INSERT INTO or_claim_requests(created_claim_order_id,status,proposed_snapshot,reviewed_at) VALUES
+ ('${reqZero}','approved','{"order":{"price":0,"shipping_cost":0,"discount":0,"total_amount":0}}',now()),
+ ('${reqPaid}','approved','{"order":{"price":25,"shipping_cost":10,"discount":5,"total_amount":30}}',now()),
+ ('${reqPending}','pending','{"order":{"price":0,"shipping_cost":0,"total_amount":0}}',NULL);
+`)
+const beforeAllocations = await scalar('SELECT count(*) value FROM ac_bank_reconciliation_allocations')
+const beforeClaimRepair = (await scalar("SELECT bank_sales_workspace(NULL,NULL,'all') value")).summary
+await db.exec(await fs.readFile('supabase/migrations/664_approved_claim_receivable.sql','utf8'))
+const reqRow = async (id, status='all') => (await scalar(`SELECT bank_sales_workspace(NULL,NULL,'${status}') value`)).rows.find(r => r.id===id)
+assert.equal(Number((await reqRow(reqZero)).total_amount),0)
+assert.equal((await reqRow(reqZero)).reconciliation_state,'no_payment')
+assert.equal(await reqRow(reqZero,'pending'),undefined,'Free claims must not appear as outstanding work')
+assert.equal((await scalar("SELECT bank_sales_workspace(NULL,NULL,'no_payment') value")).count,1)
+assert.equal(Number((await reqRow(reqPaid)).total_amount),30)
+assert.equal(Number((await reqRow(reqPending)).total_amount),99,'Unapproved proposals must not become receivables')
+const afterClaimRepair = (await scalar("SELECT bank_sales_workspace(NULL,NULL,'all') value")).summary
+assert.equal(Number(beforeClaimRepair.sales)-Number(afterClaimRepair.sales),140)
+assert.equal(Number(beforeClaimRepair.outstanding)-Number(afterClaimRepair.outstanding),140)
+const zeroAvailability = await scalar("SELECT bank_reconciliation_bill_match_availability('REQFBTR26100044') value")
+assert.equal(Number(zeroAvailability.bill_amount),0)
+assert.equal(Number(zeroAvailability.remaining_amount),0)
+assert.equal(zeroAvailability.available,false)
+assert.equal(Number((await scalar("SELECT bank_reconciliation_bill_match_availability('REQFBTR-PAID') value")).bill_amount),30)
+const repair = await scalar(`SELECT previous_amounts value FROM ac_claim_financial_repairs WHERE order_id='${reqZero}'`)
+assert.equal(Number(repair.total_amount),85,'Keep the incorrect old amount for audit')
+assert.equal(Number(await scalar(`SELECT count(*) value FROM ac_claim_financial_repairs`)),2)
+assert.equal(await scalar('SELECT count(*) value FROM ac_bank_reconciliation_allocations'),beforeAllocations)
+await db.exec(`UPDATE or_orders SET price=55,shipping_cost=30,total_amount=85 WHERE id='${reqZero}'`)
+assert.equal(Number((await reqRow(reqZero)).total_amount),0,'Regular form recalculation cannot overwrite an approved claim')
+await assert.rejects(db.exec(`SELECT bank_certify_receipt('${reqZero}',85,'cash','2026-10-10','invalid charge')`),/ยอดค้าง/)
+await assert.rejects(db.exec(`SELECT bank_certify_receipt('${reqPaid}',31,'cash','2026-10-10','too much')`),/ยอดค้าง/)
+await db.exec(`SELECT bank_certify_receipt('${reqPaid}',30,'cash','2026-10-10','approved claim charge')`)
+assert.equal((await reqRow(reqPaid)).reconciliation_state,'certified')
+// A free claim with actual money received still needs overpayment review.
+await db.exec(`INSERT INTO ac_order_receipt_certifications(order_id,amount,receipt_method,received_on,reason,certified_by)
+ VALUES('${reqZero}',5,'cash','2026-10-10','unexpected receipt',auth.uid())`)
+assert.equal((await reqRow(reqZero)).reconciliation_state,'overpaid')
+// Reapproval updates the canonical bill only when the new claim is approved.
+await db.exec(`UPDATE or_claim_requests SET proposed_snapshot='{"order":{"price":20,"shipping_cost":5,"discount":0,"total_amount":25}}' WHERE created_claim_order_id='${reqPending}'`)
+assert.equal(Number((await reqRow(reqPending)).total_amount),99)
+await db.exec(`UPDATE or_claim_requests SET status='approved',reviewed_at=now() WHERE created_claim_order_id='${reqPending}'`)
+assert.equal(Number((await reqRow(reqPending)).total_amount),25)
+await db.exec(`UPDATE or_claim_requests SET status='pending',proposed_snapshot='{"order":{"price":90,"shipping_cost":0,"total_amount":90}}' WHERE created_claim_order_id='${reqPending}';
+ UPDATE or_orders SET price=90,total_amount=90 WHERE id='${reqPending}'`)
+assert.equal(Number((await reqRow(reqPending)).total_amount),25,'Pending revisions retain the last approved bill charge')
+await db.exec(`UPDATE or_claim_requests SET status='approved',reviewed_at=now() WHERE created_claim_order_id='${reqPending}'`)
+assert.equal(Number((await reqRow(reqPending)).total_amount),90)
+// Missing total can use approved components, while explicit zero is never replaced.
+await db.exec(`UPDATE or_claim_requests SET proposed_snapshot='{"order":{"price":15,"shipping_cost":5,"discount":2}}' WHERE created_claim_order_id='${reqPending}'`)
+assert.equal(Number((await reqRow(reqPending)).total_amount),18)
+await db.exec(`UPDATE or_claim_requests SET proposed_snapshot='{"order":{"total_amount":0}}' WHERE created_claim_order_id='${reqPending}'`)
+assert.equal(Number((await reqRow(reqPending)).total_amount),0)
+assert.equal(Number(await scalar(`SELECT price value FROM or_orders WHERE id='${reqPending}'`)),0)
+assert.equal(Number(await scalar(`SELECT shipping_cost value FROM or_orders WHERE id='${reqPending}'`)),0)
+console.log('Passed: approved REQ repair/audit, zero-payment state, overpayment visibility, canonical claim amount, preserved pending revisions and reapproval synchronization.')
 await db.close()
 console.log('Passed: bill-first listing, date filters, pagination totals, partial receipts, superadmin-only certification/revocation, retained audit, double-count guard, literal rules, rule edit/disable recovery, combined bank rows, nearby candidates and automatic matching.')

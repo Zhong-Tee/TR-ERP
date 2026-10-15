@@ -165,7 +165,7 @@ export default function RefundReturnList() {
     }
   }
 
-  const canSee = isAdminOrSuperadmin(user?.role) || user?.role === 'sales-tr' || isSalesPumpOwnerScopedRole(user?.role)
+  const canSee = isAdminOrSuperadmin(user?.role) || user?.role === 'account' || user?.role === 'sales-tr' || isSalesPumpOwnerScopedRole(user?.role)
   if (!canSee) {
     return <div className="text-center py-12 text-gray-500">ไม่มีสิทธิ์เข้าถึงรายการโอนคืน</div>
   }
@@ -230,6 +230,7 @@ export default function RefundReturnList() {
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
                 <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">เลขบิล</th>
+                <th className="px-4 py-3 text-center font-semibold text-gray-700 text-sm whitespace-nowrap">หลักฐาน</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">ชื่อลูกค้า</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">ผู้สร้าง</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">ชื่อบัญชีรับคืน</th>
@@ -245,9 +246,15 @@ export default function RefundReturnList() {
                 <tr key={r.id} className="border-b border-gray-100 hover:bg-emerald-50/40 transition-colors">
                   <td className="px-4 py-3 font-medium text-gray-800 whitespace-nowrap">
                     <span>{r.or_orders?.bill_no || '–'}</span>
-                    <RefundRequestLink value={r.refund_request_link} />
                     {(r.or_orders?.bill_no || '').startsWith('REQ') && (
                       <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-center whitespace-nowrap">
+                    {r.refund_request_link?.trim() ? (
+                      <RefundRequestLink value={r.refund_request_link} iconOnly />
+                    ) : (
+                      <span className="text-gray-400">–</span>
                     )}
                   </td>
                   <td className="px-4 py-3 text-gray-700">{r.or_orders?.customer_name || '–'}</td>
@@ -275,7 +282,7 @@ export default function RefundReturnList() {
                           <span className="absolute bottom-0 right-0 px-1 text-[10px] font-bold bg-emerald-600 text-white rounded-tl">{r.refund_slip_paths!.length}</span>
                         )}
                       </button>
-                      {subTab === 'approved' && (
+                      {subTab === 'approved' && user?.role !== 'account' && (
                         <button
                           type="button"
                           onClick={() => setSlipSentModal({ refund: r, submitting: false, error: '' })}

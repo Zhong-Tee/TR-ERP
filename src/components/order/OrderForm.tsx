@@ -1955,7 +1955,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   }
 
   function updateSelectedPromotions(nextIds: string[], requestedCounts = promotionApplicationCounts) {
-    if (order?.prebill_price_locked) return
+    if (claimFinancialLocked || order?.prebill_price_locked) return
     setLegacyPromotionToRestore(null)
     const nextCounts = Object.fromEntries(nextIds.map((id) => {
       const promotion = promotions.find((item) => item.id === id)
@@ -2042,7 +2042,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     [items, products, promotions, selectedPromotionIds, promotionApplicationCounts, formData.channel_code, formData.price],
   )
   const approvedPrebillPriceLocked = order?.prebill_price_locked === true
-  const promotionDiscountLocked = approvedPrebillPriceLocked || selectedPromotionIds.some((id) => {
+  const claimFinancialLocked = order?.bill_no?.toUpperCase().startsWith('REQ') === true
+  const promotionDiscountLocked = claimFinancialLocked || approvedPrebillPriceLocked || selectedPromotionIds.some((id) => {
     const promotion = promotions.find((item) => item.id === id)
     return !!promotion && promotion.rule_type !== 'legacy'
   })
@@ -2096,16 +2097,17 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   )
 
   useEffect(() => {
-    if (order?.prebill_price_locked || legacyPickupFinancialLocked) return
+    if (claimFinancialLocked || order?.prebill_price_locked || legacyPickupFinancialLocked) return
     if (!selectedPromotionIds.length) return
     const selected = selectedPromotionIds.map((id) => promotions.find((promotion) => promotion.id === id)).filter(Boolean) as PromotionDefinition[]
     if (!selected.some((promotion) => promotion.rule_type !== 'legacy')) return
     const expected = totalPromotionDiscount(livePromotionResults)
     setDiscountType('baht')
     setFormData((current) => current.discount === expected ? current : { ...current, discount: expected })
-  }, [livePromotionResults, promotions, selectedPromotionIds, order?.prebill_price_locked, legacyPickupFinancialLocked])
+  }, [livePromotionResults, promotions, selectedPromotionIds, order?.prebill_price_locked, legacyPickupFinancialLocked, claimFinancialLocked])
 
   useEffect(() => {
+    if (claimFinancialLocked) return
     if (legacyPickupFinancialLocked) return
     if (isCurrentBillSelfPickup()) {
       setFormData((current) => current.shipping_cost === 0 ? current : { ...current, shipping_cost: 0 })
@@ -2120,7 +2122,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     }
     if (nextShipping == null) return
     setFormData((current) => current.shipping_cost === nextShipping ? current : { ...current, shipping_cost: nextShipping })
-  }, [hasFreeShippingPromotion, shippingFeeSettings.auto_calculate_enabled, shippingFeeSettings.special_area_enabled, baseShippingWaived, shippingCharge.total_shipping_fee, shippingCharge.special_area_surcharge, order?.prebill_price_locked, formData.channel_code, order?.fulfillment_method, channelMeta, conversionShippingLocked, legacyPickupFinancialLocked])
+  }, [hasFreeShippingPromotion, shippingFeeSettings.auto_calculate_enabled, shippingFeeSettings.special_area_enabled, baseShippingWaived, shippingCharge.total_shipping_fee, shippingCharge.special_area_surcharge, order?.prebill_price_locked, formData.channel_code, order?.fulfillment_method, channelMeta, conversionShippingLocked, legacyPickupFinancialLocked, claimFinancialLocked])
 
   const isManualPriceChannel = CHANNELS_MANUAL_PRICE.includes(formData.channel_code || '')
 
@@ -2160,6 +2162,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
   // คำนวณยอดสุทธิ
   function calculateTotal() {
+    if (claimFinancialLocked) return
     const itemsTotal = calculateItemsTotal()
     
     setFormData(prev => {
@@ -2184,7 +2187,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
   useEffect(() => {
     calculateTotal()
-  }, [items, formData.shipping_cost, formData.discount, discountType, showTaxInvoice, formData.price, formData.channel_code])
+  }, [items, formData.shipping_cost, formData.discount, discountType, showTaxInvoice, formData.price, formData.channel_code, claimFinancialLocked])
 
   useEffect(() => {
     void loadChannelPricesForCode(formData.channel_code || '')
@@ -2192,7 +2195,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
   useEffect(() => {
     const currentChannel = formData.channel_code || ''
-    if (order?.prebill_price_locked || !currentChannel || CHANNELS_MANUAL_PRICE.includes(currentChannel)) return
+    if (claimFinancialLocked || order?.prebill_price_locked || !currentChannel || CHANNELS_MANUAL_PRICE.includes(currentChannel)) return
 
     setItems((prev) => {
       let changed = false
@@ -2210,7 +2213,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       })
       return changed ? next : prev
     })
-  }, [formData.channel_code, productChannelPriceMap, order?.prebill_price_locked])
+  }, [formData.channel_code, productChannelPriceMap, order?.prebill_price_locked, claimFinancialLocked])
 
   useEffect(() => {
     if (undoingRef.current) return
@@ -2486,15 +2489,15 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     setLoading(true)
     try {
       // คำนวณราคารวมจากรายการสินค้า หรือใช้ราคาที่กรอกเอง
-      const calculatedPrice = isManualPriceChannel
+      const calculatedPrice = claimFinancialLocked ? Number(order?.price || 0) : isManualPriceChannel
         ? (formData.price || 0)
         : calculateChargeableItemsTotal(itemsToSave.filter(item => item.product_id), isCondoSubRow)
       
       // คำนวณยอดสุทธิ (เหมือนกับ calculateTotal)
-      const discountBahtForSave = getDiscountInBaht(calculatedPrice, formData.discount, discountType)
+      const discountBahtForSave = claimFinancialLocked ? Number(order?.discount || 0) : getDiscountInBaht(calculatedPrice, formData.discount, discountType)
       let calculatedTotal: number
       // ใช้ยอดเดียวกับหน้าจอ: รวมภาษีแล้ว ไม่บวก VAT เพิ่ม
-      calculatedTotal = calculatedPrice + (isCurrentBillSelfPickup() && !legacyPickupFinancialLocked ? 0 : formData.shipping_cost) - discountBahtForSave
+      calculatedTotal = claimFinancialLocked ? Number(order?.total_amount || 0) : calculatedPrice + (isCurrentBillSelfPickup() && !legacyPickupFinancialLocked ? 0 : formData.shipping_cost) - discountBahtForSave
       
       // ปัดเศษให้เป็น 2 ทศนิยมเพื่อหลีกเลี่ยง floating point error
       calculatedTotal = Math.round(calculatedTotal * 100) / 100
@@ -2610,7 +2613,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           .map((id) => promotions.find((promotion) => promotion.id === id)?.name)
           .filter(Boolean)
           .join(', ') || (order?.prebill_price_locked ? order.promotion : null),
-        shipping_cost: selfPickupForSave && !legacyPickupFinancialLocked ? 0 : formData.shipping_cost,
+        shipping_cost: claimFinancialLocked ? Number(order?.shipping_cost || 0) : selfPickupForSave && !legacyPickupFinancialLocked ? 0 : formData.shipping_cost,
         fulfillment_method: selfPickupForSave ? 'self_pickup' : 'shipping',
         // ช่องทางรับสินค้าเองต้องไม่มีเลขพัสดุ แม้บิลเก่าจะเคยมีค่าค้างอยู่
         channel_order_no: marketplaceOrderNumberLocked ? order?.channel_order_no : formDataForDb.channel_order_no,
@@ -6593,16 +6596,16 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   setFormData({ ...formData, price: parseFloat(value) || 0 })
                 }}
                 onWheel={(e) => (e.target as HTMLInputElement).blur()}
-                readOnly={formDisabled || !isManualPriceChannel}
+                readOnly={formDisabled || claimFinancialLocked || !isManualPriceChannel}
                 step="0.01"
                 className={`w-full px-3 py-2 border rounded-lg font-semibold ${
                   isManualPriceChannel ? '' : 'bg-gray-100 text-gray-500'
                 } ${reviewErrorFields?.unit_price ? 'ring-2 ring-red-500 border-red-500' : ''}`}
               />
               <p className="text-xs text-gray-500 mt-1">
-                {isManualPriceChannel ? 'กรอกยอดเองสำหรับช่องทางที่รองรับ' : 'คำนวณจากรายการสินค้า'}
+                {claimFinancialLocked ? 'ใช้ยอดเคลมที่อนุมัติแล้ว หากเปลี่ยนยอดให้แก้ผ่านคำขอเคลม' : isManualPriceChannel ? 'กรอกยอดเองสำหรับช่องทางที่รองรับ' : 'คำนวณจากรายการสินค้า'}
               </p>
-              {isManualPriceChannel && (!formData.price || formData.price <= 0) && !formDisabled && (
+              {!claimFinancialLocked && isManualPriceChannel && (!formData.price || formData.price <= 0) && !formDisabled && (
                 <p className="text-xs text-amber-600 font-medium mt-1">กรุณากรอกราคาก่อนบันทึก</p>
               )}
             </div>
@@ -6623,8 +6626,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 onBlur={() => setShippingInput(null)}
                 step="0.01"
                 placeholder="0"
-                disabled={formDisabled || automaticShippingActive || conversionShippingLocked}
-                className={`w-full px-3 py-2 border rounded-lg ${(formDisabled || automaticShippingActive || conversionShippingLocked) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${
+                disabled={formDisabled || claimFinancialLocked || automaticShippingActive || conversionShippingLocked}
+                className={`w-full px-3 py-2 border rounded-lg ${(formDisabled || claimFinancialLocked || automaticShippingActive || conversionShippingLocked) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${
                   formData.shipping_cost === 0 ? 'text-gray-400' : ''
                 }`}
               />
@@ -6667,7 +6670,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   formData.discount === 0 ? 'text-gray-400' : ''
                 }`}
               />
-              {promotionDiscountLocked && <p className="mt-1 text-xs font-medium text-blue-600">{approvedPrebillPriceLocked ? 'คงส่วนลดโปรโมชั่นและส่วนลดพิเศษตามเอกสาร QT/PC ที่อนุมัติแล้ว' : 'คำนวณอัตโนมัติจากโปรโมชั่นที่เลือก'}</p>}
+              {promotionDiscountLocked && <p className="mt-1 text-xs font-medium text-blue-600">{claimFinancialLocked ? 'คงส่วนลดตามยอดเคลมที่อนุมัติแล้ว' : approvedPrebillPriceLocked ? 'คงส่วนลดโปรโมชั่นและส่วนลดพิเศษตามเอกสาร QT/PC ที่อนุมัติแล้ว' : 'คำนวณอัตโนมัติจากโปรโมชั่นที่เลือก'}</p>}
               {discountType === 'percent' && formData.discount > 0 && (
                 <p className="text-xs text-gray-500 mt-1">
                   = {getDiscountInBaht(formData.price || 0, formData.discount, 'percent').toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท
@@ -6955,7 +6958,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               }
 
               // ตรวจสอบว่ารายการสินค้ามีราคา/หน่วยหรือไม่
-              if (isManualPriceChannel) {
+              if (!claimFinancialLocked && isManualPriceChannel) {
                 if (!formData.price || formData.price <= 0) {
                   setMessageModal({
                     open: true,
@@ -6964,7 +6967,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   })
                   return
                 }
-              } else {
+              } else if (!claimFinancialLocked) {
                 const itemsWithoutPrice = itemsWithProduct.filter(item => (!item.unit_price || item.unit_price <= 0) && !isCondoSubRow(item) && !(item as { is_free?: boolean }).is_free)
                 if (itemsWithoutPrice.length > 0) {
                   const itemNames = itemsWithoutPrice.map(item => item.product_name || 'สินค้า').join(', ')
@@ -7011,7 +7014,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 if (!(order?.source_marketplace_order_id && item.no_name_line)) requireWhenEmpty('line_2', 'บรรทัด 2', !item.line_2?.trim())
                 if (!(order?.source_marketplace_order_id && item.no_name_line)) requireWhenEmpty('line_3', 'บรรทัด 3', !item.line_3?.trim())
                 requireWhenEmpty('quantity', 'จำนวน', !item.quantity || item.quantity <= 0)
-                requireWhenEmpty('unit_price', 'ราคา/หน่วย', !isCondoSubRow(item) && !(item as { is_free?: boolean }).is_free && (!item.unit_price || item.unit_price <= 0))
+                requireWhenEmpty('unit_price', 'ราคา/หน่วย', !claimFinancialLocked && !isCondoSubRow(item) && !(item as { is_free?: boolean }).is_free && (!item.unit_price || item.unit_price <= 0))
                 requireWhenEmpty('notes', 'หมายเหตุ', !item.notes?.trim())
                 requireWhenEmpty('attachment', 'ไฟล์แนบ', !item.file_attachment?.trim())
                 if (missing.length > 0) {
