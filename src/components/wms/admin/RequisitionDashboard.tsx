@@ -868,16 +868,16 @@ export default function RequisitionDashboard() {
               </div>
 
               {/* Right: selected items */}
-              <div className="space-y-4">
-                <div className="bg-white p-5 rounded-xl border shadow-sm">
-                  <h3 className="font-bold text-slate-800 text-base mb-3">รายการที่เลือก ({cSelectedItems.length})</h3>
+              <div className="relative min-h-0">
+                <div className="absolute inset-0 flex min-h-0 flex-col overflow-hidden bg-white p-5 rounded-xl border shadow-sm">
+                  <h3 className="shrink-0 font-bold text-slate-800 text-base mb-3">รายการที่เลือก ({cSelectedItems.length})</h3>
                   {cSelectedItems.length === 0 ? (
                     <div className="text-center py-10 text-gray-400">
                       <i className="fas fa-inbox text-3xl mb-2"></i>
                       <div>ยังไม่มีรายการ</div>
                     </div>
                   ) : (
-                    <div className="space-y-3 max-h-[400px] overflow-y-auto">
+                    <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
                       {cSelectedItems.map((item: any) => (
                         <div key={item.product_code} className="p-3 bg-gray-50 rounded-lg border space-y-2">
                           <div className="flex items-center gap-3">

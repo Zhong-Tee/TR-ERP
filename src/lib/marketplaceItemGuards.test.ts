@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isMarketplaceReviewLocked, mergeBilledMarketplaceItems, normalizeMarketplaceItem, shouldReviewMarketplaceField } from './marketplaceItemGuards'
+import { isMarketplaceImportedFieldLocked, isMarketplaceReviewLocked, mergeBilledMarketplaceItems, normalizeMarketplaceItem, shouldReviewMarketplaceField } from './marketplaceItemGuards'
 import { resolveFieldEnabled, type FieldRuleMaps } from './productFieldRules'
 import type { MpOrderItem } from '../types/marketplace'
 
@@ -13,6 +13,16 @@ const draft = (id: string, product_id: string, line_index: number, variation: st
 } as MpOrderItem)
 
 describe('Marketplace safeguards', () => {
+  it('locks order numbers and quantities on returned Marketplace bills, while allowing tracking corrections', () => {
+    const returned = { source_marketplace_order_id: 'mp', status: 'ลงข้อมูลผิด' }
+    expect(isMarketplaceImportedFieldLocked(returned, 'channel_order_no')).toBe(true)
+    expect(isMarketplaceImportedFieldLocked(returned, 'quantity')).toBe(true)
+    expect(isMarketplaceImportedFieldLocked(returned, 'tracking_number')).toBe(false)
+    expect(isMarketplaceImportedFieldLocked({ status: 'ลงข้อมูลผิด' }, 'quantity')).toBe(false)
+    expect(isMarketplaceImportedFieldLocked({ source_marketplace_order_id: 'mp', status: 'รอลงข้อมูล' }, 'quantity')).toBe(false)
+    expect(isMarketplaceImportedFieldLocked(null, 'channel_order_no')).toBe(false)
+  })
+
   it('locks only Marketplace bills in the review queue, regardless of channel', () => {
     expect(isMarketplaceReviewLocked({ source_marketplace_order_id: 'mp', status: 'รอตรวจคำสั่งซื้อ' })).toBe(true)
     expect(isMarketplaceReviewLocked({ status: 'รอตรวจคำสั่งซื้อ' })).toBe(false)

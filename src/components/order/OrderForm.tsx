@@ -1,5 +1,6 @@
+import { canCorrectMarketplaceItem, preserveUnflaggedMarketplaceFields } from '../../lib/marketplaceCorrections'
 import { resolveFieldEnabled } from '../../lib/productFieldRules'
-import { isMarketplaceReviewLocked, normalizeMarketplaceItem } from '../../lib/marketplaceItemGuards'
+import { isMarketplaceImportedFieldLocked, isMarketplaceReviewLocked, normalizeMarketplaceItem } from '../../lib/marketplaceItemGuards'
 import { itemUidSequence, sortOrderItemsForEditing } from '../../lib/orderItemExportSort'
 import { parseWebOrderRows } from '../../lib/webOrderImport'
 import React, { useState, useEffect, useRef, useMemo, forwardRef, useImperativeHandle } from 'react'
@@ -802,6 +803,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const billEditTargetStatusRef = useRef<OrderStatus | null>(null)
   readOnly = readOnly || isMarketplaceReviewLocked(order)
   viewOnly = viewOnly || isMarketplaceReviewLocked(order)
+  const marketplaceOrderNumberLocked = isMarketplaceImportedFieldLocked(order, 'channel_order_no')
+  const marketplaceQuantityLocked = isMarketplaceImportedFieldLocked(order, 'quantity')
+  const marketplaceCorrectionMode = !!order?.source_marketplace_order_id && order.status === 'ลงข้อมูลผิด'
+  const marketplaceOriginalItems = useRef<Partial<OrderItem>[]>([])
   const nameLinesOnlyMode = billEditScope === 'nameLinesOnly'
   const [loading, setLoading] = useState(false)
   const [products, setProducts] = useState<Product[]>([])
@@ -920,7 +925,20 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   /** เมื่อออเดอร์สถานะ "ลงข้อมูลผิด": ฟิลด์ระดับบิลที่ติ๊กผิดจาก review (แสดงกรอบแดง) */
   const [reviewErrorFields, setReviewErrorFields] = useState<Record<string, boolean> | null>(null)
   /** ฟิลด์ระดับรายการที่ผิดต่อ index (error_fields.items) — ถ้ามีใช้แยกรายการ ไม่ใช่ทั้งบิล */
-  const [reviewErrorFieldsByItem, setReviewErrorFieldsByItem] = useState<Record<number, Record<string, boolean>> | null>(null)
+  const [reviewErrorFieldsBySourceIndex, setReviewErrorFieldsByItem] = useState<Record<number, Record<string, boolean>> | null>(null)
+  const [reviewItemIds, setReviewItemIds] = useState<string[] | null>(null)
+  const reviewErrorFieldsByItem = useMemo(() => {
+    if (!marketplaceCorrectionMode || !reviewItemIds) return reviewErrorFieldsBySourceIndex
+    const result: Record<number, Record<string, boolean>> = {}
+    items.forEach((item, index) => {
+      const sourceIndex = reviewItemIds.indexOf(String(item.id))
+      if (sourceIndex >= 0 && reviewErrorFieldsBySourceIndex?.[sourceIndex]) result[index] = reviewErrorFieldsBySourceIndex[sourceIndex]
+    })
+    return result
+  }, [items, marketplaceCorrectionMode, reviewItemIds, reviewErrorFieldsBySourceIndex])
+  function itemCorrectionLocked(index: number, key: string) {
+    return marketplaceCorrectionMode && !canCorrectMarketplaceItem(key, reviewErrorFieldsByItem?.[index], reviewErrorFields)
+  }
   /** หมายเหตุจาก review (ลงข้อมูลผิด) */
   const [reviewRemarks, setReviewRemarks] = useState<string | null>(null)
   /** ตั้งค่าฟิลด์ที่อนุญาตให้กรอกต่อหมวดหมู่สินค้า */
@@ -1244,6 +1262,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
         if (orderItems && orderItems.length > 0) {
           const loadedItems = sortOrderItemsForEditing(orderItems).map(item => ({ ...item }))
+          marketplaceOriginalItems.current = loadedItems.map((item) => ({ ...item }))
           setItems(loadedItems)
           const searchTerms: { [key: number]: string } = {}
           loadedItems.forEach((item, idx) => {
@@ -1307,6 +1326,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       return
     }
     let cancelled = false
+    setReviewErrorFields(null)
+    setReviewErrorFieldsByItem(null)
+    setReviewItemIds(null)
     ;(async () => {
       const { data, error } = await supabase
         .from('or_order_reviews')
@@ -1331,10 +1353,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         setReviewErrorFieldsByItem(null)
         return
       }
+      setReviewItemIds(Array.isArray(raw.item_ids) ? raw.item_ids.map(String) : null)
       const itemsArr = raw.items
       if (Array.isArray(itemsArr)) {
         const orderLevel: Record<string, boolean> = {}
-        const orderKeys = ['channel_name', 'customer_name', 'address', 'channel_order_no', 'tracking_number', 'unit_price']
+        const orderKeys = ['channel_name', 'customer_name', 'address', 'channel_order_no', 'tracking_number', 'express_receipt_number', 'unit_price']
         orderKeys.forEach((k) => {
           if (raw[k] === true) orderLevel[k] = true
         })
@@ -1812,7 +1835,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   }
 
   useEffect(() => {
-    if (!order?.source_marketplace_order_id || readOnly || viewOnly || !products.length) return
+    if (marketplaceCorrectionMode || !order?.source_marketplace_order_id || readOnly || viewOnly || !products.length) return
     const next = normalizeMarketplaceFormItems(items)
     if (next.some((item, index) => item !== items[index])) setItems(next)
   }, [items, products, categoryFieldSettings, productFieldOverrides, order?.source_marketplace_order_id, readOnly, viewOnly]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -1872,7 +1895,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   }, [fonts, defaultFontCode])
 
   useEffect(() => {
-    if (nameLinesOnlyMode || !defaultFontName || items.length === 0) return
+    if (marketplaceCorrectionMode || nameLinesOnlyMode || !defaultFontName || items.length === 0) return
     const nextItems = items.map((item, index) => {
       if (!isFieldEnabled(index, 'font')) return item
       if (String(item.font || '').trim()) return item
@@ -1884,7 +1907,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
   // ซิงก์ของแถมอัตโนมัติให้ตรงกับสินค้าต้นทางเสมอ
   useEffect(() => {
-    if (readOnly || viewOnly || nameLinesOnlyMode || products.length === 0) return
+    if (marketplaceCorrectionMode || readOnly || viewOnly || nameLinesOnlyMode || products.length === 0) return
     const tubeReconciled = reconcileTubeGiftItems(items, products)
     const nextItems = reconcileJumboSharpenerGiftItems(tubeReconciled, products)
     if (nextItems === items) return
@@ -2276,7 +2299,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     // พยายาม match สินค้าที่ไม่มี product_id แต่มี product_name หรือรหัสสินค้า
     let hasUpdates = false
     const updatedItems = items.map((item, index) => {
-      if (!item.product_id && item.product_name?.trim()) {
+      if (!order?.source_marketplace_order_id && !item.product_id && item.product_name?.trim()) {
         const searchName = item.product_name.toLowerCase().trim().replace(/\s+/g, ' ')
         
         // พยายาม match จากรหัสสินค้า (ตรงทุกตัว)
@@ -2342,6 +2365,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
     if (isMarketplaceReviewLocked(order)) return
     if (order?.source_marketplace_order_id) {
+      if (!itemsToSave.length || itemsToSave.some((item) => !item.product_id)) {
+        setMessageModal({ open: true, title: 'บันทึกไม่สำเร็จ', message: 'กรุณาตรวจสอบรายการสินค้าและ SKU ต้นทางก่อนบันทึก' })
+        return
+      }
       itemsToSave = normalizeMarketplaceFormItems(itemsToSave)
       setItems(itemsToSave)
     }
@@ -2366,8 +2393,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       return
     }
 
-    const tubeReconciledItems = reconcileTubeGiftItems(itemsToSave, products)
-    const reconciledItems = reconcileJumboSharpenerGiftItems(tubeReconciledItems, products)
+    const tubeReconciledItems = marketplaceCorrectionMode ? itemsToSave : reconcileTubeGiftItems(itemsToSave, products)
+    const reconciledItems = marketplaceCorrectionMode ? tubeReconciledItems : reconcileJumboSharpenerGiftItems(tubeReconciledItems, products)
     if (reconciledItems !== itemsToSave) {
       itemsToSave = reconciledItems
       setItems(reconciledItems)
@@ -2572,6 +2599,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         }
       }
 
+      if (marketplaceCorrectionMode && targetStatus === 'รอลงข้อมูล') statusToSave = 'ลงข้อมูลผิด'
+
       const { address_line: _al, sub_district: _sd, district: _d, province: _p, postal_code: _pc, mobile_phone: _mp, scheduled_pickup_at: _spForm, ...formDataForDb } = formData
       const currentUserName = user.username || user.email
       const orderData = {
@@ -2584,6 +2613,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         shipping_cost: selfPickupForSave && !legacyPickupFinancialLocked ? 0 : formData.shipping_cost,
         fulfillment_method: selfPickupForSave ? 'self_pickup' : 'shipping',
         // ช่องทางรับสินค้าเองต้องไม่มีเลขพัสดุ แม้บิลเก่าจะเคยมีค่าค้างอยู่
+        channel_order_no: marketplaceOrderNumberLocked ? order?.channel_order_no : formDataForDb.channel_order_no,
         tracking_number: isCurrentBillSelfPickup(channelCodeForSave) ? null : formDataForDb.tracking_number,
         requires_confirm_design: requiresConfirmDesign,
         customer_address: customerAddressToSave,
@@ -2603,7 +2633,12 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       let orderId: string
       let reusedApprovedPayment = false
       let currentBillNo: string | null = null
-      if (order) {
+      let marketplaceItemsToSave: Record<string, unknown>[] = []
+      if (order?.source_marketplace_order_id) {
+        // Save header + items atomically below; setting review status here would lock item writes.
+        orderId = order.id
+        currentBillNo = order.bill_no || null
+      } else if (order) {
         // แก้ไขบิล: คง admin_user (ผู้สร้างบิล) ไว้ตามเดิม — บันทึกเฉพาะผู้แก้ไขล่าสุด
         const { data: updatedOrder, error } = await supabase
           .from('or_orders')
@@ -2686,7 +2721,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         
         // บันทึกรายการสินค้า
         if (itemsToInsert.length > 0) {
-          const { error: itemsError } = await saveReservationOrderItems(orderId, itemsToInsert)
+          if (order?.source_marketplace_order_id) marketplaceItemsToSave = itemsToInsert
+          const { error: itemsError } = order?.source_marketplace_order_id
+            ? { error: null }
+            : await saveReservationOrderItems(orderId, itemsToInsert)
           if (itemsError) {
             console.error('Error inserting order items:', itemsError)
             console.error('Items that failed to insert:', itemsToInsert)
@@ -2707,21 +2745,41 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               has_product_id: !!item.product_id
             }))
             console.warn('Items without product_id:', itemsWithoutProductId)
-            alert('คำเตือน: ไม่มีรายการสินค้าที่จะบันทึก กรุณาเลือกสินค้าจาก dropdown ก่อนบันทึก\n\nตรวจสอบ Console (F12) เพื่อดูรายละเอียด')
+            setMessageModal({ open: true, title: 'ไม่มีรายการสินค้า', message: order?.source_marketplace_order_id ? 'กรุณาตรวจสอบ SKU ต้นทาง' : 'กรุณาเลือกสินค้าก่อนบันทึก' })
           }
         }
       } else {
-        if (order) {
+        if (order && !order.source_marketplace_order_id) {
           const result = await saveReservationOrderItems(orderId, [])
           if (result.error) throw result.error
         }
         console.warn('No items in the form')
         // แจ้งเตือนเฉพาะ "ข้อมูลครบ" — "รอลงข้อมูล" ไม่ต้องบังคับมีสินค้า
         if (targetStatus !== 'รอลงข้อมูล') {
-          alert('กรุณาเพิ่มรายการสินค้าก่อนบันทึก')
+          setMessageModal({ open: true, title: 'ไม่มีรายการสินค้า', message: 'กรุณาเพิ่มรายการสินค้าก่อนบันทึก' })
         }
       }
 
+      if (order?.source_marketplace_order_id) {
+        const { data: savedStatus, error: marketplaceSaveError } = await supabase.rpc('rpc_save_marketplace_bill', {
+          p_order_id: orderId,
+          p_order_data: marketplaceCorrectionMode ? {
+            status: statusToSave, last_edited_by: currentUserName,
+            ...(reviewErrorFields?.tracking_number ? { tracking_number: orderData.tracking_number } : {}),
+            ...(reviewErrorFields?.express_receipt_number ? { express_receipt_number: orderData.express_receipt_number } : {}),
+          } : { ...orderData, last_edited_by: currentUserName },
+          p_items: marketplaceCorrectionMode ? marketplaceItemsToSave.map((item, index) => {
+            const original = marketplaceOriginalItems.current.find((row) => row.id === item.id)
+            if (!original) throw new Error('ไม่สามารถเพิ่มรายการสินค้าในบิล Marketplace ที่ลงข้อมูลผิดได้')
+            return preserveUnflaggedMarketplaceFields(original, item, reviewErrorFieldsByItem?.[index], reviewErrorFields)
+          }) : marketplaceItemsToSave,
+        })
+        if (marketplaceSaveError) throw marketplaceSaveError
+        reusedApprovedPayment = statusToSave === 'ลงข้อมูลเสร็จสิ้น'
+          && ['รอตรวจคำสั่งซื้อ', 'ตรวจสอบแล้ว', 'ไม่ต้องออกแบบ'].includes(String(savedStatus))
+      }
+
+      if (!marketplaceCorrectionMode) {
       // บันทึกโปรโมชั่นหลายรายการที่เลือกเป็นข้อมูลปัจจุบันของบิล
       const selectedPromotions = selectedPromotionIds
         .map((id) => promotions.find((promotion) => promotion.id === id))
@@ -2776,6 +2834,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           }),
         )
         if (promotionAuditError) throw promotionAuditError
+      }
+
       }
 
       // ถ้าเป็น "ลงข้อมูลเสร็จสิ้น" ให้ตรวจสอบสลิป (เฉพาะเมื่อช่องทางมีในข้อมูลธนาคารสำหรับตรวจสลิป)
@@ -2862,7 +2922,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       const statusText = targetStatus === 'ลงข้อมูลเสร็จสิ้น'
         ? 'บันทึกข้อมูลครบ'
         : targetStatus === 'รอลงข้อมูล'
-          ? 'บันทึก (รอลงข้อมูล)'
+          ? marketplaceCorrectionMode ? 'บันทึกการแก้ไข (ลงข้อมูลผิด)' : 'บันทึก (รอลงข้อมูล)'
           : 'บันทึกการแก้ไข'
       const successMessage = order ? `อัปเดตข้อมูลสำเร็จ (${statusText})` : `บันทึกสำเร็จ! (${statusText})`
 
@@ -2893,7 +2953,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       })
     } catch (error: any) {
       console.error('Error saving order:', error)
-      alert('เกิดข้อผิดพลาด: ' + error.message)
+      setMessageModal({ open: true, title: 'บันทึกไม่สำเร็จ', message: error.message })
     } finally {
       setLoading(false)
     }
@@ -4696,6 +4756,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   }
 
   function addItem() {
+    if (marketplaceCorrectionMode) return
     let insertAt = items.length
     while (insertAt > 0 && isSystemAutoGiftItem(items[insertAt - 1])) insertAt -= 1
     const lastItem = items.slice(0, insertAt).reverse().find((item) => !isSystemAutoGiftItem(item)) || null
@@ -4984,6 +5045,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   }
 
   function removeItem(index: number) {
+    if (marketplaceCorrectionMode) return
     const item = items[index]
     const allBonusNames = new Set(Object.values(PLASTIC_INK_BONUS_MAP).map(b => b.product_name))
 
@@ -5066,6 +5128,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   }
 
   function updateItem(index: number, field: keyof OrderItem, value: any) {
+    if (itemCorrectionLocked(index, field)) return
+    if (marketplaceQuantityLocked && field === 'quantity') return
+    if (order?.source_marketplace_order_id && (field === 'product_id' || field === 'product_name')) return
     setItems((prev) => {
       const newItems = [...prev]
     const nextItem = { ...newItems[index], [field]: value }
@@ -5081,7 +5146,13 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   function updateItemFields(index: number, fields: Partial<OrderItem>) {
     setItems((prev) => {
       const newItems = [...prev]
-    const nextItem = { ...newItems[index], ...fields }
+    const proposedItem = { ...newItems[index], ...fields }
+    const nextItem = marketplaceCorrectionMode ? preserveUnflaggedMarketplaceFields(newItems[index], proposedItem, reviewErrorFieldsByItem?.[index], reviewErrorFields) : proposedItem
+    if (marketplaceQuantityLocked) nextItem.quantity = newItems[index].quantity
+    if (order?.source_marketplace_order_id) {
+      nextItem.product_id = newItems[index].product_id
+      nextItem.product_name = newItems[index].product_name
+    }
     // กันไม่ให้แถวของฟรีถูกเซ็ตราคาเป็นค่ามากกว่า 0 จาก flow อื่น
     if ((nextItem as { is_free?: boolean }).is_free) {
       nextItem.unit_price = 0
@@ -5122,6 +5193,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   }
 
   function applyLineCountToItem(index: number, lineCount: number | null) {
+    if (marketplaceCorrectionMode) return
     if (lineCount == null) return
     const updates: Partial<OrderItem> = {}
     if (lineCount === 0) {
@@ -5149,7 +5221,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     if (lines.length <= 1) return false
 
     // กันกรณีฟอร์มเป็นโหมดอ่านอย่างเดียว
-    if (readOnly || viewOnly || billEditScope === 'nameLinesOnly') return true
+    if (marketplaceCorrectionMode || readOnly || viewOnly || billEditScope === 'nameLinesOnly') return true
 
     const newItems = [...items]
     let rowIndex = startIndex
@@ -5193,9 +5265,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   }
 
   /** โหมดดูอย่างเดียว (ตรวจสอบแล้ว/ยกเลิก): บล็อกทุกฟิลด์และป้องกันการลบสลิป */
-  const formDisabled = readOnly || viewOnly || nameLinesOnlyMode
-  const limitedReferenceFieldsEnabled = nameLinesOnlyMode && !readOnly && !viewOnly
-  const limitedProductionFieldsEnabled = nameLinesOnlyMode && !readOnly && !viewOnly
+  const formDisabled = readOnly || viewOnly || nameLinesOnlyMode || marketplaceCorrectionMode
+  const limitedReferenceFieldsEnabled = (nameLinesOnlyMode || marketplaceCorrectionMode) && !readOnly && !viewOnly
+  const limitedProductionFieldsEnabled = (nameLinesOnlyMode || marketplaceCorrectionMode) && !readOnly && !viewOnly
   const limitedShippingFieldsEnabled = nameLinesOnlyMode && !readOnly && !viewOnly
   const shippingFieldDisabled = isCustomerAddressDisabled() || (formDisabled && !limitedShippingFieldsEnabled)
   const showExpressReceiptField = Boolean(
@@ -5221,7 +5293,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             line_3: it.line_3 != null && String(it.line_3).trim() !== '' ? String(it.line_3) : null,
           })),
       getLimitedEditPayload: (): OrderFormLimitedEditPayload => ({
-        channel_order_no: formData.channel_order_no.trim() || null,
+        channel_order_no: marketplaceOrderNumberLocked ? order?.channel_order_no ?? null : formData.channel_order_no.trim() || null,
         tracking_number: isCurrentBillSelfPickup() ? null : formData.tracking_number.trim() || null,
         express_receipt_number: formData.express_receipt_number.trim() || null,
         shipping: {
@@ -5250,7 +5322,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           })),
       }),
     }),
-    [channelMeta, formData.channel_code, formData.channel_order_no, formData.express_receipt_number, formData.tracking_number, items, order?.fulfillment_method],
+    [channelMeta, formData.channel_code, formData.channel_order_no, formData.express_receipt_number, formData.tracking_number, items, marketplaceOrderNumberLocked, order?.channel_order_no, order?.tracking_number, order?.fulfillment_method],
   )
 
   return (
@@ -5577,7 +5649,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 <input
                   type="text"
                   value={formData.channel_order_no}
-                  onChange={(e) => setFormData({ ...formData, channel_order_no: e.target.value })}
+                  onChange={(e) => { if (!marketplaceOrderNumberLocked) setFormData({ ...formData, channel_order_no: e.target.value }) }}
                   onBlur={() => {
                     const channelCode = (formData.channel_code || '').trim()
                     if (!CHANNELS_SHOW_ORDER_NO.includes(channelCode)) return
@@ -5593,8 +5665,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       })
                     }
                   }}
-                  disabled={formDisabled && !limitedReferenceFieldsEnabled}
-                  className={`w-full px-3 py-2 border rounded-lg ${(formDisabled && !limitedReferenceFieldsEnabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.channel_order_no ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                  disabled={marketplaceOrderNumberLocked || (formDisabled && !limitedReferenceFieldsEnabled)}
+                  className={`w-full px-3 py-2 border rounded-lg ${(marketplaceOrderNumberLocked || (formDisabled && !limitedReferenceFieldsEnabled)) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.channel_order_no ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                 />
               </div>
             )}
@@ -5657,8 +5729,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   value={formData.tracking_number}
                   onChange={(e) => setFormData({ ...formData, tracking_number: e.target.value })}
                   placeholder="กรอกเลขพัสดุ"
-                  disabled={!limitedReferenceFieldsEnabled && (!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled)}
-                  className={`w-full px-3 py-2 border rounded-lg ${(!limitedReferenceFieldsEnabled && (!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled)) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.tracking_number ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                  disabled={(marketplaceCorrectionMode && !reviewErrorFields?.tracking_number) || !limitedReferenceFieldsEnabled && (!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled)}
+                  className={`w-full px-3 py-2 border rounded-lg ${((marketplaceCorrectionMode && !reviewErrorFields?.tracking_number) || !limitedReferenceFieldsEnabled && (!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled)) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.tracking_number ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                 />
               </div>
             )}
@@ -5669,8 +5741,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   type="text"
                   value={formData.express_receipt_number}
                   onChange={(e) => setFormData({ ...formData, express_receipt_number: e.target.value })}
-                  disabled={formDisabled && !limitedReferenceFieldsEnabled}
-                  className={`w-full rounded-lg border border-cyan-300 px-3 py-2 font-mono ${(formDisabled && !limitedReferenceFieldsEnabled) ? 'cursor-not-allowed bg-gray-100 text-gray-500' : 'bg-cyan-50/40'} ${reviewErrorFields?.express_receipt_number ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                  disabled={(marketplaceCorrectionMode && !reviewErrorFields?.express_receipt_number) || formDisabled && !limitedReferenceFieldsEnabled}
+                  className={`w-full rounded-lg border border-cyan-300 px-3 py-2 font-mono ${((marketplaceCorrectionMode && !reviewErrorFields?.express_receipt_number) || formDisabled && !limitedReferenceFieldsEnabled) ? 'cursor-not-allowed bg-gray-100 text-gray-500' : 'bg-cyan-50/40'} ${reviewErrorFields?.express_receipt_number ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                 />
               </div>
             )}
@@ -5761,6 +5833,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             Import Order (WY)
           </button>
         </div>
+        {order?.source_marketplace_order_id && (
+          <p className="mb-3 text-xs text-slate-500">สินค้าอ้างอิงจาก SKU และแก้ไขในหน้านี้ไม่ได้ หากสินค้าไม่ถูกต้อง กรุณาแจ้งแก้ไข SKU ต้นทาง</p>
+        )}
         <div className="overflow-x-auto" style={{ overflowY: 'hidden' }}>
           <table className="w-full border-collapse text-sm" style={{ position: 'relative' }}>
             <thead>
@@ -5825,9 +5900,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         showAllQueries={[...inkTypes.map(ink => ink.ink_name), ...fonts.map(font => font.font_name)]}
                         minDropdownWidth={520}
                         value={productSearchTerm[index] !== undefined ? productSearchTerm[index] : (item.product_name || '')}
-                        disabled={formDisabled || isCondoSubRow(item) || isSystemAutoGift}
-                        title={isSystemAutoGift ? 'รายการนี้เพิ่มอัตโนมัติจากระบบ' : undefined}
+                        disabled={formDisabled || !!order?.source_marketplace_order_id || isCondoSubRow(item) || isSystemAutoGift}
+                        title={order?.source_marketplace_order_id ? 'สินค้าอ้างอิงจาก SKU หากไม่ถูกต้อง กรุณาแจ้งแก้ไข SKU ต้นทาง' : isSystemAutoGift ? 'รายการนี้เพิ่มอัตโนมัติจากระบบ' : undefined}
                         onChange={(e) => {
+                          if (order?.source_marketplace_order_id) return
                           const searchTerm = e.target.value
                           setProductSearchTerm({ ...productSearchTerm, [index]: searchTerm })
                           
@@ -5864,6 +5940,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                           }
                         }}
                         onBlur={(e) => {
+                          if (order?.source_marketplace_order_id) return
                           const inputValue = e.target.value.trim()
                           
                           if (!inputValue) {
@@ -5900,7 +5977,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                           }
                         }}
                         placeholder="ค้นหาหรือเลือกสินค้า..."
-                        className={`w-full px-1.5 py-1 border rounded min-w-[160px] max-w-full ${(formDisabled || isCondoSubRow(item)) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['product_name'] ?? reviewErrorFields?.product_name) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                        className={`w-full px-1.5 py-1 border rounded min-w-[160px] max-w-full ${(formDisabled || !!order?.source_marketplace_order_id || isCondoSubRow(item)) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['product_name'] ?? reviewErrorFields?.product_name) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                         autoComplete="off"
                       />
                     </div>
@@ -5919,7 +5996,13 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       value={item.ink_color || ''}
                       onChange={(e) => {
                         const selectedInk = e.target.value
+                        if (marketplaceCorrectionMode &&
+                          PLASTIC_INK_BONUS_MAP[item.ink_color || '']?.product_name !== PLASTIC_INK_BONUS_MAP[selectedInk]?.product_name) {
+                          setMessageModal({ open: true, title: 'ไม่สามารถเปลี่ยนรายการของแถม', message: 'หมึกที่เลือกต้องเปลี่ยนรายการสินค้าของแถม แต่บิล Marketplace ที่ลงข้อมูลผิดไม่อนุญาตให้เพิ่ม ลบ หรือเปลี่ยนสินค้า กรุณาประสานผู้ตรวจ' })
+                          return
+                        }
                         updateItem(index, 'ink_color', selectedInk)
+                        if (marketplaceCorrectionMode) return
 
                         // โหมดแก้ไขแบบจำกัดเปลี่ยนเฉพาะข้อมูลผลิต ห้ามเพิ่ม/ลบแถวสินค้าแถม
                         if (nameLinesOnlyMode) return
@@ -5982,8 +6065,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                           }
                         }
                       }}
-                      disabled={(formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'ink_color')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs ${((formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'ink_color')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['ink_color'] ?? reviewErrorFields?.ink_color) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      disabled={itemCorrectionLocked(index, 'ink_color') || (formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'ink_color')}
+                      className={`w-full px-1.5 py-1 border rounded text-xs ${(itemCorrectionLocked(index, 'ink_color') || (formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'ink_color')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['ink_color'] ?? reviewErrorFields?.ink_color) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     >
                       <option value="">เลือกสี</option>
                       {inkTypes.map((ink) => (
@@ -5998,7 +6081,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       <select
                         value={item.product_type || 'ชั้น1'}
                         onChange={(e) => updateItem(index, 'product_type', e.target.value)}
-                        className="w-full px-1 py-1 border rounded text-xs bg-white"
+                        disabled={itemCorrectionLocked(index, 'product_type')}
+                        className={`w-full px-1 py-1 border rounded text-xs ${itemCorrectionLocked(index, 'product_type') ? 'bg-gray-100 text-gray-500' : 'bg-white'} ${marketplaceCorrectionMode && !itemCorrectionLocked(index, 'product_type') ? 'ring-2 ring-red-500' : ''}`}
                         title="แก้ไขชั้นได้เฉพาะตรายางคอนโด"
                       >
                         {getCondoLayerOptions(item).map((layer) => (
@@ -6061,8 +6145,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                             setPatternSearchTerm({ ...patternSearchTerm, [index]: '' })
                           }
                         }}
-                        disabled={(formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'cartoon_pattern')}
-                        className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[12rem] ${((formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'cartoon_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['cartoon_pattern'] ?? reviewErrorFields?.cartoon_pattern) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                        disabled={itemCorrectionLocked(index, 'cartoon_pattern') || (formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'cartoon_pattern')}
+                        className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[12rem] ${(itemCorrectionLocked(index, 'cartoon_pattern') || (formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'cartoon_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['cartoon_pattern'] ?? reviewErrorFields?.cartoon_pattern) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                         placeholder="ลาย"
                         autoComplete="off"
                       />
@@ -6074,8 +6158,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       type="text"
                       value={item.line_pattern || ''}
                       onChange={(e) => updateItem(index, 'line_pattern', e.target.value)}
-                      disabled={formDisabled || !isFieldEnabled(index, 'line_pattern')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[4rem] ${(formDisabled || !isFieldEnabled(index, 'line_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['line_art'] ?? reviewErrorFields?.line_art) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      disabled={(formDisabled && !(marketplaceCorrectionMode && !itemCorrectionLocked(index, 'line_pattern'))) || !isFieldEnabled(index, 'line_pattern')}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[4rem] ${((formDisabled && !(marketplaceCorrectionMode && !itemCorrectionLocked(index, 'line_pattern'))) || !isFieldEnabled(index, 'line_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['line_art'] ?? reviewErrorFields?.line_art) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                       placeholder="เส้น"
                     />
                   </td> */}
@@ -6127,8 +6211,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                             setFontSearchTerm({ ...fontSearchTerm, [index]: '' })
                           }
                         }}
-                        disabled={(formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'font')}
-                        className={`w-full min-w-0 max-w-[12rem] px-1.5 py-1 border rounded text-xs ${((formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'font')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['font'] ?? reviewErrorFields?.font) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                        disabled={itemCorrectionLocked(index, 'font') || (formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'font')}
+                        className={`w-full min-w-0 max-w-[12rem] px-1.5 py-1 border rounded text-xs ${(itemCorrectionLocked(index, 'font') || (formDisabled && !limitedProductionFieldsEnabled) || !isFieldEnabled(index, 'font')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['font'] ?? reviewErrorFields?.font) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                         placeholder="ฟอนต์"
                         autoComplete="off"
                       />
@@ -6140,7 +6224,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         type="checkbox"
                         checked={!!(item as { no_name_line?: boolean }).no_name_line}
                         onChange={(e) => updateItem(index, 'no_name_line', e.target.checked)}
-                        disabled={(formDisabled && !limitedProductionFieldsEnabled) || (!!order?.source_marketplace_order_id && !isFieldEnabled(index, 'line_1'))}
+                        disabled={marketplaceCorrectionMode || (formDisabled && !limitedProductionFieldsEnabled) || (!!order?.source_marketplace_order_id && !isFieldEnabled(index, 'line_1'))}
                         title="ติ๊ก = ไม่รับข้อความบรรทัด 1–3"
                         className={`w-4 h-4 rounded border-gray-300 ${order?.source_marketplace_order_id && (reviewErrorFieldsByItem?.[index]?.no_name_line ?? reviewErrorFields?.no_name_line) ? 'ring-2 ring-red-500' : ''}`}
                       />
@@ -6151,7 +6235,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       const line1Disabled =
                         readOnly ||
                         viewOnly ||
-                        !isFieldEnabled(index, 'line_1') ||
+                        itemCorrectionLocked(index, 'line_1') || !isFieldEnabled(index, 'line_1') ||
                         !!(item as { no_name_line?: boolean }).no_name_line ||
                         (lineLimit != null && lineLimit < 1)
                       const line1Max = getEffectiveLineCharLimit(patternForLimits, 1)
@@ -6192,7 +6276,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       const line2Disabled =
                         readOnly ||
                         viewOnly ||
-                        !isFieldEnabled(index, 'line_2') ||
+                        itemCorrectionLocked(index, 'line_2') || !isFieldEnabled(index, 'line_2') ||
                         !!(item as { no_name_line?: boolean }).no_name_line ||
                         (lineLimit != null && lineLimit < 2)
                       const line2Max = getEffectiveLineCharLimit(patternForLimits, 2)
@@ -6229,7 +6313,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       const line3Disabled =
                         readOnly ||
                         viewOnly ||
-                        !isFieldEnabled(index, 'line_3') ||
+                        itemCorrectionLocked(index, 'line_3') || !isFieldEnabled(index, 'line_3') ||
                         !!(item as { no_name_line?: boolean }).no_name_line ||
                         (lineLimit != null && lineLimit < 3)
                       const line3Max = getEffectiveLineCharLimit(patternForLimits, 3)
@@ -6275,9 +6359,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       }}
                       onWheel={(e) => (e.target as HTMLInputElement).blur()}
                       min="1"
-                      disabled={formDisabled || isCondoSubRow(item) || isSystemAutoGift || !isFieldEnabled(index, 'quantity')}
+                      disabled={marketplaceQuantityLocked || formDisabled || isCondoSubRow(item) || isSystemAutoGift || !isFieldEnabled(index, 'quantity')}
                       title={isSystemAutoGift ? 'จำนวนของแถมควบคุมอัตโนมัติโดยระบบ' : (isCondoSubRow(item) ? 'แถวรายละเอียดชั้น ไม่นับจำนวนสินค้าเพิ่ม' : undefined)}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'quantity')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['quantity'] ?? reviewErrorFields?.quantity) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(marketplaceQuantityLocked || formDisabled || !isFieldEnabled(index, 'quantity')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['quantity'] ?? reviewErrorFields?.quantity) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-1.5">
@@ -6509,7 +6593,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   setFormData({ ...formData, price: parseFloat(value) || 0 })
                 }}
                 onWheel={(e) => (e.target as HTMLInputElement).blur()}
-                readOnly={!isManualPriceChannel}
+                readOnly={formDisabled || !isManualPriceChannel}
                 step="0.01"
                 className={`w-full px-3 py-2 border rounded-lg font-semibold ${
                   isManualPriceChannel ? '' : 'bg-gray-100 text-gray-500'
@@ -6699,6 +6783,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               <div className="flex flex-nowrap items-center justify-start gap-2 self-end border-t pt-4 md:col-start-1 md:row-start-2">
           <button
             type="button"
+            disabled={marketplaceCorrectionMode}
             onClick={() => setShowTaxInvoice(!showTaxInvoice)}
             className={`shrink-0 px-3 sm:px-6 py-2 text-xs sm:text-sm rounded-lg font-medium transition-colors ${
               showTaxInvoice
@@ -6719,7 +6804,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           disabled={loading}
           className="shrink-0 px-3 sm:px-6 py-2 text-xs sm:text-sm bg-yellow-500 text-white rounded hover:bg-yellow-600 disabled:opacity-50"
         >
-          {loading ? 'กำลังบันทึก...' : 'บันทึก (รอลงข้อมูล)'}
+          {loading ? 'กำลังบันทึก...' : marketplaceCorrectionMode ? 'บันทึกการแก้ไข' : 'บันทึก (รอลงข้อมูล)'}
         </button>
         <button
           type="button"
@@ -6823,7 +6908,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               // พยายาม match สินค้าก่อน (รองรับกรณีเลือกจาก dropdown หรือพิมพ์รหัส/ชื่อ)
               let hasUpdates = false
               const updatedItems = items.map((item, _index) => {
-                if (!item.product_id && item.product_name?.trim()) {
+                if (!order?.source_marketplace_order_id && !item.product_id && item.product_name?.trim()) {
                   const searchName = item.product_name.toLowerCase().trim().replace(/\s+/g, ' ')
                   let matchedProduct = products.find(
                     p => p.product_code && p.product_code.toLowerCase().trim() === searchName
@@ -7120,6 +7205,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 <label className="block text-sm font-medium mb-1">ชื่อลูกค้า/บริษัท</label>
                 <input
                   type="text"
+                  disabled={marketplaceCorrectionMode}
                   value={taxInvoiceData.company_name}
                   onChange={(e) => setTaxInvoiceData({ ...taxInvoiceData, company_name: e.target.value })}
                   className="w-full px-3 py-2 border rounded-lg"
@@ -7128,6 +7214,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               <div>
                 <label className="block text-sm font-medium mb-1">ที่อยู่</label>
                 <textarea
+                  disabled={marketplaceCorrectionMode}
                   value={taxInvoiceData.address}
                   onChange={(e) => setTaxInvoiceData({ ...taxInvoiceData, address: e.target.value })}
                   rows={3}
@@ -7138,6 +7225,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 <label className="block text-sm font-medium mb-1">เลขประจำตัวผู้เสียภาษี (TAX ID)</label>
                 <input
                   type="text"
+                  disabled={marketplaceCorrectionMode}
                   value={taxInvoiceData.tax_id}
                   onChange={(e) => setTaxInvoiceData({ ...taxInvoiceData, tax_id: e.target.value })}
                   className="w-full px-3 py-2 border rounded-lg"
@@ -7242,6 +7330,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   )}
                 </div>
                 <textarea
+                  disabled={marketplaceCorrectionMode}
                   value={taxInvoiceData.items_note}
                   onChange={(e) => setTaxInvoiceData({ ...taxInvoiceData, items_note: e.target.value })}
                   rows={2}

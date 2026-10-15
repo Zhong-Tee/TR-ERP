@@ -1,5 +1,13 @@
 import type { MpOrderItem } from '../types/marketplace'
 
+export function isMarketplaceImportedFieldLocked(order: {
+  source_marketplace_order_id?: string | null
+  status?: string | null
+} | null | undefined, field: string): boolean {
+  return !!order?.source_marketplace_order_id && order.status === 'ลงข้อมูลผิด' &&
+    (field === 'channel_order_no' || field === 'quantity')
+}
+
 export function isMarketplaceReviewLocked(order?: {
   source_marketplace_order_id?: string | null
   status?: string | null

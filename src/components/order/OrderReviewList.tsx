@@ -134,6 +134,23 @@ export function getVisibleFieldsForItem(
   return enabled
 }
 
+/** Review checkboxes exclude source-controlled product identity and the no-name control. */
+export function getReviewableFieldsForItem(
+  item: any,
+  categoryFieldSettings: Record<string, Record<string, boolean>>,
+  productCategoryByProductId: Record<string, string>,
+  productFieldOverrides?: Record<string, Record<string, boolean | null>>,
+  marketplace = false,
+): Set<ErrorFieldKey> {
+  const fields = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides, marketplace)
+  if (marketplace) {
+    fields.delete('product_name')
+    fields.delete('no_name_line')
+    fields.delete('quantity')
+  }
+  return fields
+}
+
 /** คืนรายการฟิลด์ที่แสดงในตัวเลือก "ลงข้อมูลผิด" ตามฟิลด์ที่ให้กรอก (pr_category_field_settings + product override) เหมือนฟอร์มลงออเดอร์ */
 function getVisibleErrorFieldsForOrder(
   order: Order | null,
@@ -171,7 +188,7 @@ function getVisibleErrorFieldsForOrder(
   // รวมฟิลด์จากทุก item (union) — ใช้สำหรับ order-level aggregation
   const enabledItemFields = new Set<ErrorFieldKey>()
   for (const item of items) {
-    const perItem = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides, !!order.source_marketplace_order_id)
+    const perItem = getReviewableFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides, !!order.source_marketplace_order_id)
     perItem.forEach((k) => enabledItemFields.add(k))
   }
 
@@ -182,19 +199,23 @@ function getVisibleErrorFieldsForOrder(
 /** ฟิลด์ระดับบิล (ไม่แยกรายการ) */
 const ORDER_LEVEL_KEYS: ErrorFieldKey[] = ['channel_name', 'customer_name', 'address', 'mobile_phone', 'express_receipt_number', 'channel_order_no', 'tracking_number']
 
+function getEffectiveReviewOrderKeys(order: Order | null): ErrorFieldKey[] {
+  return order?.source_marketplace_order_id || CHANNELS_ORDER_NO.includes(order?.channel_code || '')
+    ? [...ORDER_LEVEL_KEYS, 'unit_price']
+    : ORDER_LEVEL_KEYS
+}
+
 /** แยกรายการฟิลด์ที่แสดงเป็นระดับบิล vs ระดับรายการ */
-function getOrderLevelAndItemLevelErrorFields(
+export function getOrderLevelAndItemLevelErrorFields(
   order: Order | null,
   categoryFieldSettings: Record<string, Record<string, boolean>>,
   productCategoryByProductId: Record<string, string>,
   productFieldOverrides?: Record<string, Record<string, boolean | null>>
 ): { orderLevel: Array<{ key: ErrorFieldKey; label: string }>; itemLevel: Array<{ key: ErrorFieldKey; label: string }> } {
+  // Tracking stays reviewable because staff may edit it before billing; imported order numbers and prices do not.
   const allFields = getVisibleErrorFieldsForOrder(order, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
-  const channelCode = (order as any)?.channel_code || ''
-  // สำหรับช่องทาง SPTR, FSPTR, LZTR, TTTR: ย้าย unit_price ไประดับบิล (ไม่ได้กรอกราคา/หน่วยต่อรายการ)
-  const effectiveOrderKeys: ErrorFieldKey[] = CHANNELS_ORDER_NO.includes(channelCode)
-    ? [...ORDER_LEVEL_KEYS, 'unit_price']
-    : ORDER_LEVEL_KEYS
+    .filter(({ key }) => !order?.source_marketplace_order_id || (key !== 'channel_order_no' && key !== 'unit_price'))
+  const effectiveOrderKeys = getEffectiveReviewOrderKeys(order)
   const orderLevel = allFields.filter((f) => effectiveOrderKeys.includes(f.key))
   const itemLevel = allFields.filter((f) => !effectiveOrderKeys.includes(f.key))
   return { orderLevel, itemLevel }
@@ -449,11 +470,10 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
       const { orderLevel, itemLevel: _il } = getOrderLevelAndItemLevelErrorFields(selectedOrder, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
       setRejectErrorFieldsOrder(orderLevel.reduce((acc, { key }) => ({ ...acc, [key]: false }), {} as Record<string, boolean>))
       const orderItems: any[] = (selectedOrder as any).order_items || (selectedOrder as any).or_order_items || []
-      const channelCode = (selectedOrder as any)?.channel_code || ''
-      const effectiveOrderKeys: ErrorFieldKey[] = CHANNELS_ORDER_NO.includes(channelCode) ? [...ORDER_LEVEL_KEYS, 'unit_price'] : ORDER_LEVEL_KEYS
+      const effectiveOrderKeys = getEffectiveReviewOrderKeys(selectedOrder)
       const initItems: Record<number, Record<string, boolean>> = {}
       orderItems.forEach((item: any, index: number) => {
-        const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides, !!selectedOrder?.source_marketplace_order_id)
+        const perItemKeys = getReviewableFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides, !!selectedOrder?.source_marketplace_order_id)
         const perItemFields = ITEM_LEVEL_DEF.filter((d) => perItemKeys.has(d.key) && !effectiveOrderKeys.includes(d.key))
         const pk = item.cartoon_pattern || ''
         const lc = pk ? cartoonPatternImageMap[pk]?.line_count : null
@@ -547,10 +567,9 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     const allOrderChecked = [...visibleOrderKeys].every((key) => rejectErrorFieldsOrder[key])
 
     const checkItems: any[] = (selectedOrder as any).order_items || (selectedOrder as any).or_order_items || []
-    const channelCode = (selectedOrder as any)?.channel_code || ''
-    const effectiveOrderKeys: ErrorFieldKey[] = CHANNELS_ORDER_NO.includes(channelCode) ? [...ORDER_LEVEL_KEYS, 'unit_price'] : ORDER_LEVEL_KEYS
+    const effectiveOrderKeys = getEffectiveReviewOrderKeys(selectedOrder)
     const allItemsChecked = checkItems.every((item: any, i: number) => {
-      const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides, !!selectedOrder?.source_marketplace_order_id)
+      const perItemKeys = getReviewableFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides, !!selectedOrder?.source_marketplace_order_id)
       const perItemLevel = ITEM_LEVEL_DEF.filter((d) => perItemKeys.has(d.key) && !effectiveOrderKeys.includes(d.key))
       const pk = item.cartoon_pattern || ''
       const lc = pk ? cartoonPatternImageMap[pk]?.line_count : null
@@ -633,12 +652,14 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     if (!selectedOrder || !user?.id || !reviewMetadataReady) return
 
     // ช่องที่ไม่ได้ติ๊ก (ไม่ถูก) = ผิด
-    const hasOrderUnchecked = Object.keys(rejectErrorFieldsOrder).some((key) => !rejectErrorFieldsOrder[key])
+    const visibleOrderKeys = new Set(getOrderLevelAndItemLevelErrorFields(selectedOrder, categoryFieldSettings, productCategoryByProductId, productFieldOverrides).orderLevel.map(({ key }) => key))
+    const orderKeys = Object.keys(rejectErrorFieldsOrder).filter((key) => !selectedOrder.source_marketplace_order_id || visibleOrderKeys.has(key as ErrorFieldKey))
+    const hasOrderUnchecked = orderKeys.some((key) => !rejectErrorFieldsOrder[key])
     const items: any[] = (selectedOrder as any).order_items || (selectedOrder as any).or_order_items || []
-    const hasItemUnchecked = items.some((_, i) => {
-      const itemFields = rejectErrorFieldsByItem[i]
-      return itemFields && Object.keys(itemFields).some((k) => !itemFields[k])
-    })
+    const itemKeys = items.map((item, index) => selectedOrder.source_marketplace_order_id
+      ? getVisibleItemFieldsForReview(item).map(({ key }) => key)
+      : Object.keys(rejectErrorFieldsByItem[index] || {}))
+    const hasItemUnchecked = itemKeys.some((keys, index) => keys.some((key) => !rejectErrorFieldsByItem[index]?.[key]))
     const hasRemarks = (rejectRemarks || '').trim().length > 0
     if (!hasOrderUnchecked && !hasItemUnchecked && !hasRemarks) {
       setMessageModal({
@@ -652,7 +673,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
 
     // ฟิลด์ที่ไม่ได้ติ๊ก = error fields
     const errorFieldsObj: Record<string, unknown> = {}
-    Object.keys(rejectErrorFieldsOrder).forEach((key) => {
+    orderKeys.forEach((key) => {
       if (!rejectErrorFieldsOrder[key]) (errorFieldsObj as Record<string, boolean>)[key] = true
     })
     if (items.length > 0) {
@@ -660,12 +681,15 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
         const itemFields = rejectErrorFieldsByItem[i]
         if (!itemFields) return {}
         const out: Record<string, boolean> = {}
-        Object.keys(itemFields).forEach((k) => {
+        itemKeys[i].forEach((k) => {
           if (!itemFields[k]) out[k] = true
         })
         return out
       })
-      if (itemsArray.some((o) => Object.keys(o).length > 0)) errorFieldsObj.items = itemsArray
+      if (itemsArray.some((o) => Object.keys(o).length > 0)) {
+        errorFieldsObj.items = itemsArray
+        if (selectedOrder.source_marketplace_order_id) errorFieldsObj.item_ids = items.map((item) => item.id)
+      }
     }
     const errorFieldsToSave = Object.keys(errorFieldsObj).length > 0 ? errorFieldsObj : null
 
@@ -711,12 +735,9 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   }
 
   function getVisibleItemFieldsForReview(item: any): Array<{ key: ErrorFieldKey; label: string }> {
-    const channelCode = (selectedOrder as any)?.channel_code || ''
-    const effectiveOrderKeys: ErrorFieldKey[] = CHANNELS_ORDER_NO.includes(channelCode)
-      ? [...ORDER_LEVEL_KEYS, 'unit_price']
-      : ORDER_LEVEL_KEYS
+    const effectiveOrderKeys = getEffectiveReviewOrderKeys(selectedOrder)
 
-    const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides, !!selectedOrder?.source_marketplace_order_id)
+    const perItemKeys = getReviewableFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides, !!selectedOrder?.source_marketplace_order_id)
     const perItemLevel = ITEM_LEVEL_DEF.filter((d) => perItemKeys.has(d.key) && !effectiveOrderKeys.includes(d.key))
     const pk = item.cartoon_pattern || ''
     const lc = pk ? cartoonPatternImageMap[pk]?.line_count : null
@@ -1052,12 +1073,12 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                           { key: 'layer' as ErrorFieldKey, label: 'ชั้น', value: item.product_type || '-' },
                           { key: 'line_art' as ErrorFieldKey, label: 'ลายเส้น', value: item.line_pattern || '-' },
                           { key: 'font' as ErrorFieldKey, label: 'ฟอนต์', value: item.font || '-' },
-                          { key: 'no_name_line' as ErrorFieldKey, label: 'ไม่รับชื่อ', value: item.no_name_line ? 'ใช่' : 'ไม่ใช่' },
+                          { key: 'no_name_line' as ErrorFieldKey, label: 'ไม่รับชื่อ', value: 'ใช่' },
                           { key: 'line_1' as ErrorFieldKey, label: 'บรรทัด 1', value: item.line_1 || '-' },
                           { key: 'line_2' as ErrorFieldKey, label: 'บรรทัด 2', value: item.line_2 || '-' },
                           { key: 'line_3' as ErrorFieldKey, label: 'บรรทัด 3', value: item.line_3 || '-' },
                         ]
-                          .filter((row) => perItemKeys.has(row.key))
+                          .filter((row) => perItemKeys.has(row.key) && (row.key !== 'no_name_line' || !!item.no_name_line))
                           .filter((row) => {
                             if (itemLineCount == null) return true
                             if (row.key === 'line_1') return itemLineCount >= 1
@@ -1108,50 +1129,21 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                               </div>
 
                               <div className="flex-1 min-w-0">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <div className="font-semibold text-gray-900 truncate flex items-center gap-1.5">
-                                      {item.product_name}
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                  <div className="min-w-0 flex-1 basis-28">
+                                    <div className="font-semibold text-gray-900 flex flex-wrap items-start gap-1.5">
+                                      <span className="min-w-0 break-words [overflow-wrap:anywhere]">{item.product_name}</span>
                                       {item.is_free && (
                                         <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700 border border-green-300 whitespace-nowrap shrink-0">สินค้าแถม</span>
                                       )}
                                     </div>
                                     {item.cartoon_pattern && (
-                                      <div className="text-gray-600 mt-1">
+                                      <div className="text-gray-600 mt-1 break-words [overflow-wrap:anywhere]">
                                         ลายการ์ตูน: <span className="font-medium">{item.cartoon_pattern}</span>
                                       </div>
                                     )}
-                                    {/* Extra item details for checking */}
-                                    {detailRows.length > 0 && (
-                                      <div className="mt-3 space-y-1 text-gray-700">
-                                        {detailRows.map((row) => (
-                                          <div key={row.key} className="flex gap-3">
-                                            <div className="w-24 text-gray-600 font-medium">{row.label}</div>
-                                            <div className="flex-1">{row.value}</div>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    )}
-                                    {attachmentUrl && (
-                                      <div className="mt-3 flex items-start gap-3 text-sm">
-                                        <div className="w-24 shrink-0 font-medium text-gray-600">ลิงก์แนบ</div>
-                                        <a
-                                          href={attachmentUrl}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="inline-flex min-w-0 items-center gap-1.5 rounded-lg bg-cyan-50 px-2.5 py-1.5 text-cyan-700 transition-colors hover:bg-cyan-100 hover:text-cyan-800"
-                                          title={`เปิดลิงก์แนบ: ${attachmentLabel}`}
-                                        >
-                                          <svg className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 010 5.656l-2 2a4 4 0 01-5.656-5.656l1.1-1.1m3.9 2.756a4 4 0 010-5.656l2-2a4 4 0 015.656 5.656l-1.1 1.1" />
-                                          </svg>
-                                          <span className="break-all">{attachmentLabel}</span>
-                                        </a>
-                                      </div>
-                                    )}
                                   </div>
-
-                                  <div className="text-right shrink-0">
+                                  <div className="ml-auto shrink-0 text-right text-sm">
                                     {showQuantity && (
                                       <div className="text-gray-700">
                                         จำนวน: <span className="font-semibold">{qty || '-'}</span>
@@ -1167,6 +1159,34 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                                     )}
                                   </div>
                                 </div>
+                                {/* Extra item details for checking */}
+                                {detailRows.length > 0 && (
+                                  <div className="mt-3 space-y-1 text-gray-700">
+                                    {detailRows.map((row) => (
+                                      <div key={row.key} className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-start gap-x-2">
+                                        <div className="text-gray-600 font-medium">{row.label}</div>
+                                        <div className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{row.value}</div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {attachmentUrl && (
+                                  <div className="mt-3 grid grid-cols-[4.5rem_minmax(0,1fr)] items-start gap-x-2 text-sm">
+                                    <div className="font-medium text-gray-600">ลิงก์แนบ</div>
+                                    <a
+                                      href={attachmentUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-flex min-w-0 items-center gap-1.5 rounded-lg bg-cyan-50 px-2.5 py-1.5 text-cyan-700 transition-colors hover:bg-cyan-100 hover:text-cyan-800"
+                                      title={`เปิดลิงก์แนบ: ${attachmentLabel}`}
+                                    >
+                                      <svg className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 010 5.656l-2 2a4 4 0 01-5.656-5.656l1.1-1.1m3.9 2.756a4 4 0 010-5.656l2-2a4 4 0 015.656 5.656l-1.1 1.1" />
+                                      </svg>
+                                      <span className="break-all">{attachmentLabel}</span>
+                                    </a>
+                                  </div>
+                                )}
                               </div>
                             </div>
                           </div>

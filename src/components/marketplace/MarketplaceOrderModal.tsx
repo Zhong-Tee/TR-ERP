@@ -239,6 +239,7 @@ export default function MarketplaceOrderModal({
   function updateItem(id: string, patch: Partial<MpOrderItem>) {
     setItems((prev) => prev.map((it) => {
       if (it.id !== id) return it
+      if (patch.product_id !== undefined && patch.product_id !== it.product_id) return it
       const next = { ...it, ...patch }
       return normalizeMarketplaceItem(next, (key) => fieldEnabled(next, key))
     }))
@@ -469,15 +470,6 @@ export default function MarketplaceOrderModal({
     return list.slice().sort((a, b) => (a.pattern_name || '').localeCompare(b.pattern_name || ''))
   }
 
-  function matchProduct(input: string): ProductOption | undefined {
-    const q = input.trim().toLowerCase()
-    if (!q) return undefined
-    return (
-      products.find((p) => p.product_code.trim().toLowerCase() === q) ||
-      products.find((p) => p.product_name.trim().toLowerCase() === q)
-    )
-  }
-
   async function saveDrafts(sourceItems: MpOrderItem[] = items): Promise<boolean> {
     sourceItems = sourceItems.map((it) => normalizeMarketplaceItem(it, (key) => fieldEnabled(it, key)))
     setItems(sourceItems)
@@ -643,7 +635,7 @@ export default function MarketplaceOrderModal({
     sourceItems.forEach((it, idx) => {
       const label = `รายการที่ ${idx + 1} (${it.product_name_raw || it.sku_ref || '-'})`
       if (!it.product_id) {
-        problems.push(`${label}: ยังไม่ได้เลือกสินค้าในระบบ`)
+        problems.push(`${label}: ไม่พบสินค้าที่ตรงกับ SKU กรุณาแจ้งแก้ไข SKU ต้นทาง`)
         return
       }
       const missing: string[] = []
@@ -1001,6 +993,7 @@ export default function MarketplaceOrderModal({
           {/* รายการสินค้า — ตารางแบบเดียวกับหน้าเปิดบิล */}
           <div className="space-y-2">
             <h4 className="font-bold text-slate-800">รายการสินค้า ({items.length})</h4>
+            <p className="text-xs text-slate-500">สินค้าอ้างอิงจาก SKU และแก้ไขในหน้านี้ไม่ได้ หากสินค้าไม่ถูกต้อง กรุณาแจ้งแก้ไข SKU ต้นทาง</p>
             {loading && <div className="text-center text-gray-400 py-8">กำลังโหลด...</div>}
             {!loading && (
               <div className="overflow-x-auto border border-surface-200 rounded-lg">
@@ -1037,54 +1030,11 @@ export default function MarketplaceOrderModal({
                           <td className="border p-1.5">
                             <input
                               type="text"
-                              list={`mp-product-list-${it.id}`}
-                              value={productSearch[it.id]
-                                ?? (it.product_id ? productById.get(it.product_id)?.product_name : undefined)
-                                ?? it.product_name_raw
-                                ?? ''}
-                              disabled={readOnly || isTubeAutoGift}
-                              title={isTubeAutoGift ? 'ของแถมอัตโนมัติจากสินค้า TUBE' : undefined}
-                              onChange={(e) => {
-                                const v = e.target.value
-                                setProductSearch((prev) => ({ ...prev, [it.id]: v }))
-                                const matched = matchProduct(v)
-                                if (matched) {
-                                  updateItem(it.id, { product_id: matched.id })
-                                  setProductSearch((prev) => ({ ...prev, [it.id]: matched.product_name }))
-                                } else if (!v.trim()) {
-                                  updateItem(it.id, { product_id: null })
-                                }
-                              }}
-                              onBlur={(e) => {
-                                const matched = matchProduct(e.target.value)
-                                if (!matched && it.product_id) {
-                                  setProductSearch((prev) => ({
-                                    ...prev,
-                                    [it.id]: productById.get(it.product_id!)?.product_name || '',
-                                  }))
-                                }
-                              }}
-                              placeholder="ค้นหาหรือเลือกสินค้า..."
-                              className={cls(readOnly || isTubeAutoGift, it.product_id ? '' : 'border-red-300 bg-red-50/40')}
-                              autoComplete="off"
+                              value={(it.product_id ? productById.get(it.product_id)?.product_name : undefined) ?? it.product_name_raw ?? ''}
+                              disabled
+                              title="สินค้าอ้างอิงจาก SKU หากไม่ถูกต้อง กรุณาแจ้งแก้ไข SKU ต้นทาง"
+                              className={cls(true, it.product_id ? '' : 'border-red-300 bg-red-50/40')}
                             />
-                            <datalist id={`mp-product-list-${it.id}`}>
-                              {products
-                                .filter((p) => {
-                                  const q = (productSearch[it.id] || '').trim().toLowerCase()
-                                  if (!q) return true
-                                  return (
-                                    p.product_name.toLowerCase().includes(q) ||
-                                    p.product_code.toLowerCase().includes(q)
-                                  )
-                                })
-                                .slice(0, 50)
-                                .map((p) => (
-                                  <option key={p.id} value={p.product_name}>
-                                    {p.product_code}
-                                  </option>
-                                ))}
-                            </datalist>
                             {isTubeAutoGift && (
                               <div className="mt-0.5 text-[10px] font-medium text-green-700">ของแถมอัตโนมัติ 1:1 จาก TUBE</div>
                             )}
