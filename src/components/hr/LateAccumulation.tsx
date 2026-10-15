@@ -28,7 +28,7 @@ export default function LateAccumulation() {
   const [busy, setBusy] = useState(false)
   const [detailId, setDetailId] = useState<string | null>(null)
   const [confirmRow, setConfirmRow] = useState<LateAccumulationRow | null>(null)
-  const [confirmSettings, setConfirmSettings] = useState(false)
+  const [dateEditorOpen, setDateEditorOpen] = useState(false)
   const [exception, setException] = useState<{ incident: LateIncident; exempt: boolean; reason: string } | null>(null)
   const load = useCallback(async () => {
     try {
@@ -75,9 +75,8 @@ export default function LateAccumulation() {
     </div>
     {error && <div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{error}</div>}
     <div className="flex flex-wrap items-end gap-3">
-      <label className="text-sm">วันเริ่มใช้กฎ<input type="date" value={startDate} disabled={busy || data?.settings_locked} onChange={e => setStartDate(e.target.value)} className={`${inputClass} ml-2`} /></label>
-      {startDate && <span className="text-xs text-gray-500">{dateText(startDate)}</span>}
-      <button disabled={busy || !data || data.settings_locked || !startDate || startDate === data.start_date} onClick={() => setConfirmSettings(true)} className="rounded-lg bg-emerald-600 px-3 py-2 text-sm text-white disabled:opacity-40">บันทึกวันเริ่ม</button>
+      <div className="self-center text-sm">วันเริ่มใช้กฎ <span className="ml-2 font-semibold text-gray-800">{dateText(data?.start_date ?? null)}</span></div>
+      <button disabled={busy || !data || data.settings_locked} onClick={() => { if (data) { setStartDate(data.start_date); setError(''); setDateEditorOpen(true) } }} className="rounded-lg bg-emerald-600 px-3 py-2 text-sm text-white disabled:opacity-40">แก้ไขวันที่เริ่ม</button>
       <label className="flex items-center gap-2"><FiSearch /><input placeholder="ค้นหาพนักงาน / แผนก" value={search} onChange={e => setSearch(e.target.value)} className={inputClass} /></label>
       <span className="text-sm text-amber-700">รอสร้างใบเตือน {data?.ready_count ?? 0} คน</span>
     </div>
@@ -95,7 +94,24 @@ export default function LateAccumulation() {
       </tr>)}{!rows.length && <tr><td colSpan={7} className="p-10 text-center text-gray-400">{loading ? 'กำลังโหลด...' : 'ไม่มีรายการมาสายตั้งแต่วันเริ่มใช้กฎ'}</td></tr>}</tbody>
     </table></div>
     <Modal open={!!confirmRow} onClose={() => { if (!busy) setConfirmRow(null) }} contentClassName="max-w-lg"><div className="space-y-4 p-6"><h3 className="text-lg font-semibold">สร้างร่างใบเตือน</h3><p>{confirmRow?.employee_name} · {confirmRow ? lateLevelLabels[confirmRow.next_level] : ''}</p><p className="text-sm">สายสะสม {confirmRow?.late_count} ครั้ง รวม {confirmRow?.late_minutes} นาที ร่างจะเข้าสู่ระบบใบเตือนเพื่อให้ HR ตรวจและส่งอนุมัติ</p><button disabled={busy} className="rounded-lg bg-emerald-600 px-4 py-2 text-white disabled:opacity-50" onClick={() => { if (confirmRow) void perform(async () => { const id = await createLateWarning(confirmRow.employee_id); setConfirmRow(null); navigate(`/hr/warnings?case=${id}`) }) }}>{busy ? 'กำลังสร้าง...' : 'ยืนยันสร้างร่าง'}</button>{error && <p role="alert" className="text-sm text-red-700">{error}</p>}</div></Modal>
-    <Modal open={confirmSettings} onClose={() => { if (!busy) setConfirmSettings(false) }} contentClassName="max-w-lg"><div className="space-y-4 p-6"><h3 className="text-lg font-semibold">เปลี่ยนวันเริ่มใช้กฎ</h3><p>เริ่มนับเหตุวันที่ {dateText(startDate)} โดยจะคำนวณยอดใหม่ตามวันที่นี้</p><button disabled={busy} className="rounded-lg bg-emerald-600 px-4 py-2 text-white disabled:opacity-50" onClick={() => { void perform(async () => { await saveLateStartDate(startDate); setConfirmSettings(false) }) }}>ยืนยันบันทึก</button>{error && <p role="alert" className="text-sm text-red-700">{error}</p>}</div></Modal>
+    <Modal open={dateEditorOpen} onClose={() => { if (!busy) setDateEditorOpen(false) }} contentClassName="max-w-lg">
+      <form className="space-y-4 p-6" onSubmit={event => {
+        event.preventDefault()
+        if (busy || !data || data.settings_locked || !startDate || startDate === data.start_date) return
+        void perform(async () => { await saveLateStartDate(startDate); setDateEditorOpen(false) })
+      }}>
+        <h3 className="pr-10 text-lg font-semibold">แก้ไขวันที่เริ่มใช้กฎ</h3>
+        <label className="block text-sm">วันที่เริ่มใช้กฎ
+          <input type="date" required min="2000-01-01" max="2100-12-31" value={startDate} disabled={busy} onChange={event => setStartDate(event.target.value)} className={`${inputClass} mt-2 block w-full`} />
+        </label>
+        <p className="text-sm text-gray-500">ระบบจะคำนวณยอดสะสมใหม่ตั้งแต่วันที่เลือก</p>
+        {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+        <div className="flex justify-end gap-2">
+          <button type="button" disabled={busy} onClick={() => setDateEditorOpen(false)} className={`${inputClass} disabled:opacity-50`}>ยกเลิก</button>
+          <button type="submit" disabled={busy || !data || data.settings_locked || !startDate || startDate === data.start_date} className="rounded-lg bg-emerald-600 px-4 py-2 text-white disabled:opacity-50">{busy ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+        </div>
+      </form>
+    </Modal>
     <Modal open={!!detail} onClose={() => setDetailId(null)} contentClassName="max-w-4xl">{detail && <div className="space-y-4 p-6"><h3 className="text-lg font-semibold">ประวัติการมาสาย · {detail.employee_name}</h3><p className="text-sm text-gray-500">ยอดรอบปัจจุบัน {detail.late_count} ครั้ง · {detail.late_minutes} นาที — ประวัติเก่ายังคงอยู่หลังรีเซ็ต</p><div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr>{['วันที่', 'เริ่มงาน', 'เข้างาน', 'นาทีสาย', 'สถานะ / เหตุผล', 'ข้อยกเว้น'].map(x => <th key={x} className="p-2 text-left">{x}</th>)}</tr></thead><tbody>{detail.history.map(incident => <tr key={incident.work_date} className="border-t"><td className="p-2">{dateText(incident.work_date)}</td><td className="p-2">{clock(incident.expected_min)}</td><td className="p-2">{clock(incident.actual_min)}</td><td className="p-2">{incident.late_min}</td><td className="p-2">{incident.status === 'exempt' ? 'ยกเว้น' : incident.status === 'pending' ? 'รออนุมัติลาฉุกเฉิน' : detail.incidents.some(x => x.work_date === incident.work_date) ? 'สะสมรอบปัจจุบัน' : 'ประวัติรอบก่อน'}<div className="text-xs text-gray-500">{incident.reason}</div></td><td className="p-2"><button disabled={busy || incident.status === 'pending'} className="text-blue-700 disabled:opacity-40" onClick={() => setException({ incident, exempt: incident.status !== 'exempt', reason: '' })}>{incident.status === 'exempt' ? 'ทบทวนการยกเว้น' : 'ยกเว้นเหตุ'}</button></td></tr>)}</tbody></table></div></div>}</Modal>
     <Modal open={!!exception} onClose={() => { if (!busy) setException(null) }} contentClassName="max-w-lg"><div className="space-y-4 p-6"><h3 className="text-lg font-semibold">{exception?.exempt ? 'ยกเว้นเหตุการมาสาย' : 'ยกเลิกข้อยกเว้นที่ HR บันทึก'}</h3><p className="text-sm">ต้องระบุเหตุผล ระบบจะคำนวณยอดใหม่และให้ทบทวนเคสที่ได้รับผลกระทบ การลาที่อนุมัติแล้วต้องแก้ไขผ่านระบบลา</p><textarea className={`${inputClass} w-full`} rows={3} value={exception?.reason ?? ''} onChange={e => setException(previous => previous ? { ...previous, reason: e.target.value } : null)} placeholder="เหตุผล / หลักฐานประกอบ" /><button disabled={busy || !exception?.reason.trim()} className="rounded-lg bg-emerald-600 px-4 py-2 text-white disabled:opacity-50" onClick={() => { if (exception) void perform(async () => { await setLateException(exception.incident.employee_id, exception.incident.work_date, exception.exempt, exception.reason); setException(null) }) }}>บันทึกผลพิจารณา</button>{error && <p role="alert" className="text-sm text-red-700">{error}</p>}</div></Modal>
   </div>

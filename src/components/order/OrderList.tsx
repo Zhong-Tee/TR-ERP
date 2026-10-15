@@ -29,6 +29,7 @@ type ManualSlipEligibility = {
 }
 
 interface OrderListProps {
+  parcelReturnedOnly?: boolean
   /** กรองตามสถานะบิล (ไม่ใช้เมื่อ filterByRejectedOverpayRefund = true) */
   status?: OrderStatus | OrderStatus[]
   onOrderClick: (order: Order) => void
@@ -80,6 +81,7 @@ interface OrderListProps {
 }
 
 export default function OrderList({
+  parcelReturnedOnly = false,
   status,
   onOrderClick,
   searchTerm = '',
@@ -268,6 +270,7 @@ export default function OrderList({
     void loadOrders({ silent: isRealtimeRefresh, reportError: !isRealtimeRefresh })
   }, [
     status,
+    parcelReturnedOnly,
     searchTerm,
     channelFilter,
     adminUserFilter,
@@ -417,6 +420,10 @@ export default function OrderList({
         const statuses = status == null ? [] : Array.isArray(status) ? status : [status]
         const isFilteringShipped = statuses.includes('จัดส่งแล้ว')
         const dateField = isFilteringShipped ? 'shipped_time' : 'created_at'
+
+        if (parcelReturnedOnly) {
+          query = query.eq('has_parcel_return', true)
+        }
 
         if (status != null) {
           if (Array.isArray(status)) {
@@ -893,6 +900,11 @@ export default function OrderList({
                     ? 'ตรวจสอบแล้ว (โอนเกิน)'
                     : order.status}
                 </span>
+                {order.has_parcel_return && (
+                  <span className="px-2.5 py-1 rounded-full text-sm font-semibold bg-rose-100 text-rose-800 border border-rose-200">
+                    สินค้าตีกลับ
+                  </span>
+                )}
                 {order.failed_queue_archived_at && (
                   <span
                     className="px-2.5 py-1 rounded-full text-sm font-semibold bg-gray-200 text-gray-700 border border-gray-300"

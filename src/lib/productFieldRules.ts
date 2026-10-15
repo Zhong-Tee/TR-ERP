@@ -39,6 +39,8 @@ export async function loadFieldRuleMaps(): Promise<FieldRuleMaps> {
     supabase.from('pr_category_field_settings').select('*'),
     supabase.from('pr_product_field_overrides').select('*'),
   ])
+  if (categoryRes.error) throw categoryRes.error
+  if (overrideRes.error) throw overrideRes.error
 
   const categorySettings: FieldRuleMaps['categorySettings'] = {}
   ;(categoryRes.data || []).forEach((row: Record<string, unknown>) => {

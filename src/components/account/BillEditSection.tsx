@@ -1,3 +1,4 @@
+import { isMarketplaceReviewLocked } from '../../lib/marketplaceItemGuards'
 import { isSelfPickupBill } from '../../lib/channelBehavior'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
@@ -303,6 +304,10 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
       const order = data as Order & { order_items?: any[] }
       if ((data as any).or_order_items) {
         order.order_items = (data as any).or_order_items
+      }
+      if (isMarketplaceReviewLocked(order)) {
+        setSaveResultModal({ open: true, success: false, message: 'บิล Marketplace อยู่ระหว่างรอตรวจคำสั่งซื้อ กรุณาตีกลับก่อนแก้ไขข้อมูล' })
+        return
       }
       setSelectedOrder(order)
       setStatusOverride(order.status)

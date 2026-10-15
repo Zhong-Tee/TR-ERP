@@ -29,6 +29,7 @@ type ReconciliationStatus =
   | 'in_transit'
   | 'cancelled'
   | 'returned'
+  | 'parcel_returned'
   | 'not_found_order'
   | 'waiting_delivery'
   | 'needs_review'
@@ -177,6 +178,7 @@ const STATUS_META: Record<ReconciliationStatus, { label: string; className: stri
   in_transit: { label: 'กำลังจัดส่ง', className: 'bg-blue-100 text-blue-800' },
   cancelled: { label: 'ยกเลิก', className: 'bg-gray-200 text-gray-700' },
   returned: { label: 'คืนสินค้า/คืนเงิน', className: 'bg-rose-100 text-rose-800' },
+  parcel_returned: { label: 'สินค้าตีกลับ', className: 'bg-rose-100 text-rose-800' },
   not_found_order: { label: 'เปิดบิลแล้ว ไม่พบในไฟล์ Order', className: 'bg-red-100 text-red-800' },
   waiting_delivery: { label: 'รอจัดส่งสำเร็จ', className: 'bg-blue-100 text-blue-800' },
   needs_review: { label: 'ต้องตรวจสอบ', className: 'bg-yellow-100 text-yellow-900' },
@@ -1144,7 +1146,7 @@ export default function EcommerceSection() {
             <label className="text-xs font-medium text-slate-600">ถึงวันที่<input type="date" value={dateTo} onChange={(event) => { setDateTo(event.target.value); setPage(0) }} className="mt-1 block rounded-lg border border-slate-200 px-3 py-2 text-sm" /></label>
             <label className="text-xs font-medium text-slate-600">สถานะ
               <select value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value as typeof statusFilter); setPage(0) }} className="mt-1 block min-w-[190px] rounded-lg border border-slate-200 px-3 py-2 text-sm">
-                <option value="all">ทั้งหมด</option><option value="issues">เฉพาะที่ต้องติดตาม</option><option value="delivered">จัดส่งสำเร็จทั้งหมด</option><option value="income_found">พบใน Income</option><option value="balance_found">พบเงินเข้า {receivedSourceLabel}</option><option value="not_found_order">เปิดบิลแล้ว ไม่พบในไฟล์ Order</option><option value="waiting_delivery">รอจัดส่งสำเร็จ</option><option value="paid">รับเงินครบ</option><option value="waiting_settlement">ส่งสำเร็จ รอ Income</option><option value="waiting_wallet">พบ Income รอ {receivedSourceLabel}</option><option value="amount_mismatch">Income กับ {receivedSourceLabel} ไม่ตรง</option><option value="in_transit">กำลังจัดส่ง</option><option value="cancelled_returned">ยกเลิก/คืนสินค้า</option><option value="cancelled">ยกเลิก</option><option value="returned">คืนสินค้า/คืนเงิน</option>
+                <option value="all">ทั้งหมด</option><option value="issues">เฉพาะที่ต้องติดตาม</option><option value="delivered">จัดส่งสำเร็จทั้งหมด</option><option value="income_found">พบใน Income</option><option value="balance_found">พบเงินเข้า {receivedSourceLabel}</option><option value="not_found_order">เปิดบิลแล้ว ไม่พบในไฟล์ Order</option><option value="waiting_delivery">รอจัดส่งสำเร็จ</option><option value="paid">รับเงินครบ</option><option value="waiting_settlement">ส่งสำเร็จ รอ Income</option><option value="waiting_wallet">พบ Income รอ {receivedSourceLabel}</option><option value="amount_mismatch">Income กับ {receivedSourceLabel} ไม่ตรง</option><option value="in_transit">กำลังจัดส่ง</option><option value="cancelled_returned">ยกเลิก/คืนสินค้า</option><option value="cancelled">ยกเลิก</option><option value="returned">คืนสินค้า/คืนเงิน</option><option value="parcel_returned">สินค้าตีกลับ</option>
               </select>
             </label>
             <label className="text-xs font-medium text-slate-600">รอบรับเงิน

@@ -57,6 +57,8 @@ export type OrderStatus =
 
 export interface Order {
   shipping_conversion_pending?: boolean
+  /** มีใบรับคืน RTN อ้างอิงบิลนี้ โดยไม่เปลี่ยนสถานะจัดส่ง */
+  has_parcel_return?: boolean
   id: string
   channel_code: string
   bill_no: string
@@ -134,6 +136,8 @@ export interface Order {
   } | null
   created_at: string
   updated_at: string
+  /** งาน Marketplace ต้นทาง; ไม่อิงจากรหัสช่องทางขาย */
+  source_marketplace_order_id?: string | null
   /** เอกสาร QT/PC ต้นทาง; มีค่าเมื่อเปิดบิลจากเอกสารก่อนเปิดบิล */
   source_prebill_document_id?: string | null
   /** ชนิดเอกสารต้นทางที่บันทึกไว้ตอนเปิดบิล */
@@ -151,6 +155,7 @@ export interface Order {
 }
 
 export interface OrderItem {
+  source_mp_order_item_id?: string | null
   sort_order?: number | null
   id: string
   order_id: string

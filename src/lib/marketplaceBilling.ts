@@ -158,6 +158,7 @@ export async function openBillFromMpOrder(params: {
     .join(' ')
 
   const orderData = {
+    source_marketplace_order_id: mpOrder.id,
     channel_code: channelCode,
     status,
     price,
@@ -195,6 +196,7 @@ export async function openBillFromMpOrder(params: {
       .filter((it) => it.product_id)
       .map((it, index) => ({
         order_id: orderId,
+        source_mp_order_item_id: it.id,
         item_uid: `${billNo}-${index + 1}`,
         product_id: it.product_id!,
         product_name: productById.get(it.product_id!)?.product_name || it.product_name_raw || '',

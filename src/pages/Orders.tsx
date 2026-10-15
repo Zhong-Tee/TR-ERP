@@ -202,7 +202,7 @@ export default function Orders() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
   })
   const [allDateTo, setAllDateTo] = useState(() => new Date().toISOString().split('T')[0])
-  const [allStatusFilter, setAllStatusFilter] = useState<OrderStatus | ''>('')
+  const [allStatusFilter, setAllStatusFilter] = useState<OrderStatus | 'parcel_returned' | ''>('')
   const [salesTrAdminValues, setSalesTrAdminValues] = useState<string[]>([])
   const [salesTrTeamRows, setSalesTrTeamRows] = useState<{ username?: string | null; email?: string | null }[]>([])
   /** กรองตามสมาชิกทีม ('' = ทั้งทีม) — ใช้ร่วมหลายแท็บ */
@@ -866,10 +866,11 @@ export default function Orders() {
                 <>
                   <select
                     value={allStatusFilter}
-                    onChange={(e) => setAllStatusFilter((e.target.value || '') as OrderStatus | '')}
+                    onChange={(e) => setAllStatusFilter(e.target.value as typeof allStatusFilter)}
                     className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
                   >
                     <option value="">ทุกสถานะ</option>
+                    <option value="parcel_returned">สินค้าตีกลับ</option>
                     {ALL_STATUS_FILTER_OPTIONS.map((status) => (
                       <option key={status} value={status}>
                         {status}
@@ -984,7 +985,8 @@ export default function Orders() {
           />
         ) : activeTab === 'all' ? (
           <OrderList
-            status={allStatusFilter ? allStatusFilter : undefined}
+            status={allStatusFilter && allStatusFilter !== 'parcel_returned' ? allStatusFilter : undefined}
+            parcelReturnedOnly={allStatusFilter === 'parcel_returned'}
             searchTerm={searchTerm}
             channelFilter={channelFilter}
             adminUserFilter={adminUserFilter}

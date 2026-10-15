@@ -1,3 +1,5 @@
+import { resolveFieldEnabled } from '../../lib/productFieldRules'
+import { isMarketplaceReviewLocked, normalizeMarketplaceItem } from '../../lib/marketplaceItemGuards'
 import { itemUidSequence, sortOrderItemsForEditing } from '../../lib/orderItemExportSort'
 import { parseWebOrderRows } from '../../lib/webOrderImport'
 import React, { useState, useEffect, useRef, useMemo, forwardRef, useImperativeHandle } from 'react'
@@ -798,6 +800,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const { user } = useAuthContext()
   const formElementRef = useRef<HTMLFormElement>(null)
   const billEditTargetStatusRef = useRef<OrderStatus | null>(null)
+  readOnly = readOnly || isMarketplaceReviewLocked(order)
+  viewOnly = viewOnly || isMarketplaceReviewLocked(order)
   const nameLinesOnlyMode = billEditScope === 'nameLinesOnly'
   const [loading, setLoading] = useState(false)
   const [products, setProducts] = useState<Product[]>([])
@@ -1798,6 +1802,21 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     return v === true || v === 'true'
   }
 
+  function normalizeMarketplaceFormItems(source: Partial<OrderItem>[]) {
+    return source.map((item) => {
+      const product = products.find((p) => String(p.id) === String(item.product_id))
+      return normalizeMarketplaceItem(item, (key) => resolveFieldEnabled(product, key, {
+        categorySettings: categoryFieldSettings, productOverrides: productFieldOverrides,
+      }))
+    })
+  }
+
+  useEffect(() => {
+    if (!order?.source_marketplace_order_id || readOnly || viewOnly || !products.length) return
+    const next = normalizeMarketplaceFormItems(items)
+    if (next.some((item, index) => item !== items[index])) setItems(next)
+  }, [items, products, categoryFieldSettings, productFieldOverrides, order?.source_marketplace_order_id, readOnly, viewOnly]) // eslint-disable-line react-hooks/exhaustive-deps
+
   async function loadShippingFeeRules() {
     try {
       const [settingsResult, rangesResult, areaRulesResult] = await Promise.all([
@@ -2207,7 +2226,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     e.preventDefault()
     targetStatus = billEditTargetStatusRef.current ?? targetStatus
     billEditTargetStatusRef.current = null
-    if (!user) return
+    if (!user || isMarketplaceReviewLocked(order)) return
 
     // Validation สำหรับบันทึก "รอลงข้อมูล" — บังคับแค่เลือกช่องทาง + สร้างบิลแล้ว
     if (!formData.channel_code || formData.channel_code.trim() === '') {
@@ -2319,6 +2338,12 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       console.error('User not found')
       setLoading(false)
       return
+    }
+
+    if (isMarketplaceReviewLocked(order)) return
+    if (order?.source_marketplace_order_id) {
+      itemsToSave = normalizeMarketplaceFormItems(itemsToSave)
+      setItems(itemsToSave)
     }
 
     const tubeQuantity = getTubeEligibleQuantity(itemsToSave, products)
@@ -2631,6 +2656,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               id: item.id || crypto.randomUUID(),
               order_id: orderId,
               item_uid: itemUid,
+              ...(order?.source_marketplace_order_id ? { source_mp_order_item_id: item.source_mp_order_item_id || null } : {}),
               sort_order: index + 1,
               product_id: item.product_id!,
               product_name: item.product_name || '',
@@ -6114,9 +6140,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         type="checkbox"
                         checked={!!(item as { no_name_line?: boolean }).no_name_line}
                         onChange={(e) => updateItem(index, 'no_name_line', e.target.checked)}
-                        disabled={formDisabled && !limitedProductionFieldsEnabled}
+                        disabled={(formDisabled && !limitedProductionFieldsEnabled) || (!!order?.source_marketplace_order_id && !isFieldEnabled(index, 'line_1'))}
                         title="ติ๊ก = ไม่รับข้อความบรรทัด 1–3"
-                        className="w-4 h-4 rounded border-gray-300"
+                        className={`w-4 h-4 rounded border-gray-300 ${order?.source_marketplace_order_id && (reviewErrorFieldsByItem?.[index]?.no_name_line ?? reviewErrorFields?.no_name_line) ? 'ring-2 ring-red-500' : ''}`}
                       />
                     </div>
                   </td>
@@ -6896,9 +6922,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 requireWhenEmpty('cartoon_pattern', 'ลาย', !item.cartoon_pattern?.trim())
                 requireWhenEmpty('line_pattern', 'ลายเส้น', !item.line_pattern?.trim())
                 requireWhenEmpty('font', 'ฟอนต์', !item.font?.trim())
-                requireWhenEmpty('line_1', 'บรรทัด 1', !item.line_1?.trim())
-                requireWhenEmpty('line_2', 'บรรทัด 2', !item.line_2?.trim())
-                requireWhenEmpty('line_3', 'บรรทัด 3', !item.line_3?.trim())
+                if (!(order?.source_marketplace_order_id && item.no_name_line)) requireWhenEmpty('line_1', 'บรรทัด 1', !item.line_1?.trim())
+                if (!(order?.source_marketplace_order_id && item.no_name_line)) requireWhenEmpty('line_2', 'บรรทัด 2', !item.line_2?.trim())
+                if (!(order?.source_marketplace_order_id && item.no_name_line)) requireWhenEmpty('line_3', 'บรรทัด 3', !item.line_3?.trim())
                 requireWhenEmpty('quantity', 'จำนวน', !item.quantity || item.quantity <= 0)
                 requireWhenEmpty('unit_price', 'ราคา/หน่วย', !isCondoSubRow(item) && !(item as { is_free?: boolean }).is_free && (!item.unit_price || item.unit_price <= 0))
                 requireWhenEmpty('notes', 'หมายเหตุ', !item.notes?.trim())

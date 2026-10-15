@@ -69,9 +69,11 @@ export function buildMarketplaceOrderSummary(
     addDetail(lines, 'ลายเส้น', item.line_pattern)
     addDetail(lines, 'ฟอนต์', item.font)
     if (item.no_name_line) lines.push('ไม่รับชื่อ')
-    addDetail(lines, 'บรรทัด 1', item.line_1)
-    addDetail(lines, 'บรรทัด 2', item.line_2)
-    addDetail(lines, 'บรรทัด 3', item.line_3)
+    else {
+      addDetail(lines, 'บรรทัด 1', item.line_1)
+      addDetail(lines, 'บรรทัด 2', item.line_2)
+      addDetail(lines, 'บรรทัด 3', item.line_3)
+    }
 
     return lines.join('\n')
   })

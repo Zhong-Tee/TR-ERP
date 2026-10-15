@@ -67,7 +67,7 @@ describe('buildMarketplaceOrderSummary', () => {
       cartoon_pattern: 'CT1001',
       line_pattern: 'กรอบมน',
       font: 'F01',
-      line_1: null,
+      line_1: 'stale name',
       line_2: null,
       line_3: null,
       no_name_line: true,
@@ -80,6 +80,7 @@ describe('buildMarketplaceOrderSummary', () => {
     expect(text).toContain('ลายเส้น: กรอบมน')
     expect(text).toContain('ฟอนต์: F01')
     expect(text).toContain('ไม่รับชื่อ')
+    expect(text).not.toContain('stale name')
     expect(text).toContain('เวลาส่งผลิต: 20/09/2569 16:45 น.')
     expect(text).toContain('\n\n💖 โปรดอ่านและตรวจสอบรายละเอียดคำสั่งซื้ออีกครั้งนะคะ')
   })

@@ -1,3 +1,4 @@
+import { shouldReviewMarketplaceField } from '../../lib/marketplaceItemGuards'
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '../../lib/supabase'
 import { fetchAllSupabasePages } from '../../lib/supabasePagination'
@@ -26,6 +27,7 @@ export const ERROR_FIELD_KEYS = [
   { key: 'cartoon_pattern', label: 'ลายการ์ตูน' },
   { key: 'line_art', label: 'ลายเส้น' },
   { key: 'font', label: 'ฟอนต์' },
+  { key: 'no_name_line', label: 'ไม่รับชื่อ' },
   { key: 'line_1', label: 'บรรทัด 1' },
   { key: 'line_2', label: 'บรรทัด 2' },
   { key: 'line_3', label: 'บรรทัด 3' },
@@ -48,6 +50,7 @@ const ITEM_FIELD_TO_SETTINGS_KEY: Record<Exclude<ErrorFieldKey, 'channel_name' |
   cartoon_pattern: 'cartoon_pattern',
   line_art: 'line_pattern',
   font: 'font',
+  no_name_line: 'line_1',
   line_1: 'line_1',
   line_2: 'line_2',
   line_3: 'line_3',
@@ -62,6 +65,7 @@ const ITEM_LEVEL_DEF: Array<{ key: ErrorFieldKey; label: string }> = [
   { key: 'cartoon_pattern', label: 'ลายการ์ตูน' },
   { key: 'line_art', label: 'ลายเส้น' },
   { key: 'font', label: 'ฟอนต์' },
+  { key: 'no_name_line', label: 'ไม่รับชื่อ' },
   { key: 'line_1', label: 'บรรทัด 1' },
   { key: 'line_2', label: 'บรรทัด 2' },
   { key: 'line_3', label: 'บรรทัด 3' },
@@ -70,11 +74,12 @@ const ITEM_LEVEL_DEF: Array<{ key: ErrorFieldKey; label: string }> = [
 ]
 
 /** คืนฟิลด์ที่แสดงสำหรับ item เดียว โดยดู product override ก่อน แล้ว fallback ไปหมวดหมู่ */
-function getVisibleFieldsForItem(
+export function getVisibleFieldsForItem(
   item: any,
   categoryFieldSettings: Record<string, Record<string, boolean>>,
   productCategoryByProductId: Record<string, string>,
-  productFieldOverrides?: Record<string, Record<string, boolean | null>>
+  productFieldOverrides?: Record<string, Record<string, boolean | null>>,
+  marketplace = false,
 ): Set<ErrorFieldKey> {
   const enabled = new Set<ErrorFieldKey>()
   const hasSettings = Object.keys(categoryFieldSettings).length > 0
@@ -82,12 +87,21 @@ function getVisibleFieldsForItem(
   const productId = item.product_id != null ? String(item.product_id) : null
 
   if (!hasSettings && !hasOverrides) {
-    ITEM_LEVEL_DEF.forEach((d) => enabled.add(d.key))
+    ITEM_LEVEL_DEF.forEach((d) => {
+      if ((marketplace || d.key !== 'no_name_line') && (!marketplace || shouldReviewMarketplaceField(item, d.key))) enabled.add(d.key)
+    })
     return enabled
   }
 
   for (const def of ITEM_LEVEL_DEF) {
+    if (def.key === 'no_name_line' && !marketplace) continue
     const settingsKey = (ITEM_FIELD_TO_SETTINGS_KEY as Record<ErrorFieldKey, string>)[def.key]
+    if (marketplace && !shouldReviewMarketplaceField(item, def.key, !!productFieldOverrides?.[productId || '']?.[`${settingsKey}_required`])) continue
+
+    if (marketplace && productId && productFieldOverrides?.[productId]?.[`${settingsKey}_required`]) {
+      enabled.add(def.key)
+      continue
+    }
 
     // 1. ตรวจ product-level override ก่อน
     if (productId && hasOverrides) {
@@ -95,7 +109,7 @@ function getVisibleFieldsForItem(
       if (overrides) {
         const ov = overrides[settingsKey]
         if (ov !== undefined && ov !== null) {
-          if (ov === true) enabled.add(def.key)
+          if (ov === true || (marketplace && overrides[`${settingsKey}_required`])) enabled.add(def.key)
           continue
         }
       }
@@ -157,7 +171,7 @@ function getVisibleErrorFieldsForOrder(
   // รวมฟิลด์จากทุก item (union) — ใช้สำหรับ order-level aggregation
   const enabledItemFields = new Set<ErrorFieldKey>()
   for (const item of items) {
-    const perItem = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
+    const perItem = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides, !!order.source_marketplace_order_id)
     perItem.forEach((k) => enabledItemFields.add(k))
   }
 
@@ -223,6 +237,11 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
   const [loading, setLoading] = useState(true)
   const [updating, setUpdating] = useState(false)
+  const [fieldRulesLoaded, setFieldRulesLoaded] = useState(false)
+  const [reviewMetadataError, setReviewMetadataError] = useState('')
+  const [itemMetadataOrderId, setItemMetadataOrderId] = useState<string | null>(null)
+  const reviewMetadataReady = !selectedOrder?.source_marketplace_order_id ||
+    (fieldRulesLoaded && itemMetadataOrderId === selectedOrder.id)
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [channelFilter, setChannelFilter] = useState<string>('')
   const [search, setSearch] = useState('')
@@ -338,10 +357,20 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
               }
             })
           }
+          for (const row of overrideRes.data || []) {
+            for (const field of row.required_fields || []) {
+              if (overridesMap[row.product_id]) overridesMap[row.product_id][`${field}_required`] = true
+            }
+          }
           setProductFieldOverrides(overridesMap)
         }
+        setFieldRulesLoaded(!catRes.error && !overrideRes.error)
+        if (catRes.error || overrideRes.error) setReviewMetadataError('โหลดกติกาฟิลด์ไม่สำเร็จ กรุณาโหลดหน้าใหม่ก่อนตรวจรายการ')
       } catch (e) {
-        if (!cancelled) console.error('Error loading field settings:', e)
+        if (!cancelled) {
+          console.error('Error loading field settings:', e)
+          setReviewMetadataError('โหลดกติกาฟิลด์ไม่สำเร็จ กรุณาโหลดหน้าใหม่ก่อนตรวจรายการ')
+        }
       }
     })()
     return () => {
@@ -351,6 +380,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
 
   // Load product & cartoon pattern images + product_category สำหรับ selected order items
   useEffect(() => {
+    let cancelled = false
     async function loadItemImages() {
       const items: any[] =
         (selectedOrder as any)?.order_items ||
@@ -361,6 +391,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
         setProductImageMap({})
         setCartoonPatternImageMap({})
         setProductCategoryByProductId({})
+        setItemMetadataOrderId(selectedOrder?.id || null)
         return
       }
 
@@ -381,6 +412,9 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
             : Promise.resolve({ data: [] as any[] }),
         ])
 
+        if (cancelled) return
+        if ('error' in productsRes && productsRes.error) throw productsRes.error
+        if ('error' in patternsRes && patternsRes.error) throw patternsRes.error
         const nextProductMap: Record<string, { product_code?: string; product_name?: string }> = {}
         const nextCategoryMap: Record<string, string> = {}
         ;(productsRes as any)?.data?.forEach((p: any) => {
@@ -398,12 +432,15 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
           if (p.pattern_name) nextPatternMap[p.pattern_name] = { pattern_name: p.pattern_name, line_count: p.line_count ?? null }
         })
         setCartoonPatternImageMap(nextPatternMap)
+        setItemMetadataOrderId(selectedOrder.id)
       } catch (error) {
         console.error('Error loading item images:', error)
+        if (!cancelled) setReviewMetadataError('โหลดข้อมูลสินค้าไม่สำเร็จ กรุณาโหลดหน้าใหม่ก่อนตรวจรายการ')
       }
     }
 
     loadItemImages()
+    return () => { cancelled = true }
   }, [selectedOrder?.id])
 
   // รีเซ็ตกล่องติ๊กและหมายเหตุเมื่อเปลี่ยนบิลหรือ settings โหลดเสร็จ (เริ่มต้นไม่ติ๊ก)
@@ -416,7 +453,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
       const effectiveOrderKeys: ErrorFieldKey[] = CHANNELS_ORDER_NO.includes(channelCode) ? [...ORDER_LEVEL_KEYS, 'unit_price'] : ORDER_LEVEL_KEYS
       const initItems: Record<number, Record<string, boolean>> = {}
       orderItems.forEach((item: any, index: number) => {
-        const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
+        const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides, !!selectedOrder?.source_marketplace_order_id)
         const perItemFields = ITEM_LEVEL_DEF.filter((d) => perItemKeys.has(d.key) && !effectiveOrderKeys.includes(d.key))
         const pk = item.cartoon_pattern || ''
         const lc = pk ? cartoonPatternImageMap[pk]?.line_count : null
@@ -495,7 +532,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
       return visibleList
     } catch (error: any) {
       console.error('Error loading orders:', error)
-      alert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
+      setMessageModal({ open: true, title: 'เกิดข้อผิดพลาดในการโหลดข้อมูล', message: error.message })
       return []
     } finally {
       if (!silent) setLoading(false)
@@ -503,7 +540,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   }
 
   async function handleApproveConfirm() {
-    if (!selectedOrder) return
+    if (!selectedOrder || !reviewMetadataReady) return
 
     const { orderLevel, itemLevel: _il } = getOrderLevelAndItemLevelErrorFields(selectedOrder, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
     const visibleOrderKeys = new Set(orderLevel.map((f) => f.key))
@@ -513,7 +550,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     const channelCode = (selectedOrder as any)?.channel_code || ''
     const effectiveOrderKeys: ErrorFieldKey[] = CHANNELS_ORDER_NO.includes(channelCode) ? [...ORDER_LEVEL_KEYS, 'unit_price'] : ORDER_LEVEL_KEYS
     const allItemsChecked = checkItems.every((item: any, i: number) => {
-      const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
+      const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides, !!selectedOrder?.source_marketplace_order_id)
       const perItemLevel = ITEM_LEVEL_DEF.filter((d) => perItemKeys.has(d.key) && !effectiveOrderKeys.includes(d.key))
       const pk = item.cartoon_pattern || ''
       const lc = pk ? cartoonPatternImageMap[pk]?.line_count : null
@@ -556,7 +593,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   }
 
   async function handleMoveToDesign() {
-    if (!selectedOrder) return
+    if (!selectedOrder || selectedOrder.source_marketplace_order_id) return
 
     setUpdating(true)
     try {
@@ -593,7 +630,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   }
 
   async function handleRejectSubmit() {
-    if (!selectedOrder || !user?.id) return
+    if (!selectedOrder || !user?.id || !reviewMetadataReady) return
 
     // ช่องที่ไม่ได้ติ๊ก (ไม่ถูก) = ผิด
     const hasOrderUnchecked = Object.keys(rejectErrorFieldsOrder).some((key) => !rejectErrorFieldsOrder[key])
@@ -679,7 +716,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
       ? [...ORDER_LEVEL_KEYS, 'unit_price']
       : ORDER_LEVEL_KEYS
 
-    const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
+    const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides, !!selectedOrder?.source_marketplace_order_id)
     const perItemLevel = ITEM_LEVEL_DEF.filter((d) => perItemKeys.has(d.key) && !effectiveOrderKeys.includes(d.key))
     const pk = item.cartoon_pattern || ''
     const lc = pk ? cartoonPatternImageMap[pk]?.line_count : null
@@ -957,7 +994,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                   </div>
                 </div>
 
-                {(selectedOrder as any).requires_confirm_design !== true &&
+                {!selectedOrder.source_marketplace_order_id && (selectedOrder as any).requires_confirm_design !== true &&
                   (((selectedOrder as any).order_items || (selectedOrder as any).or_order_items) || []).some(
                     (item: any) => Boolean(item.file_attachment?.trim())
                   ) && (
@@ -978,7 +1015,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                       <button
                         type="button"
                         onClick={() => handleMoveToDesign()}
-                        disabled={updating}
+                        disabled={updating || !reviewMetadataReady}
                         className="mt-3 w-full rounded-lg bg-amber-500 px-4 py-2.5 font-medium text-white transition-colors hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {updating ? 'กำลังย้าย...' : 'ย้ายไปออกแบบ'}
@@ -996,7 +1033,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                           (selectedOrder as any).order_items || (selectedOrder as any).or_order_items || []
 
                         return orderItems.map((item: any) => {
-                        const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
+                        const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides, !!selectedOrder?.source_marketplace_order_id)
                         const product = productImageMap[item.product_id] || null
                         const productImageUrl = product?.product_code
                           ? getPublicUrl(PRODUCT_IMAGES_BUCKET, product.product_code, '.jpg')
@@ -1015,6 +1052,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                           { key: 'layer' as ErrorFieldKey, label: 'ชั้น', value: item.product_type || '-' },
                           { key: 'line_art' as ErrorFieldKey, label: 'ลายเส้น', value: item.line_pattern || '-' },
                           { key: 'font' as ErrorFieldKey, label: 'ฟอนต์', value: item.font || '-' },
+                          { key: 'no_name_line' as ErrorFieldKey, label: 'ไม่รับชื่อ', value: item.no_name_line ? 'ใช่' : 'ไม่ใช่' },
                           { key: 'line_1' as ErrorFieldKey, label: 'บรรทัด 1', value: item.line_1 || '-' },
                           { key: 'line_2' as ErrorFieldKey, label: 'บรรทัด 2', value: item.line_2 || '-' },
                           { key: 'line_3' as ErrorFieldKey, label: 'บรรทัด 3', value: item.line_3 || '-' },
@@ -1285,16 +1323,17 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
               </div>
             </div>
             <div className="p-4 border-t bg-gray-50 flex flex-col gap-3 shrink-0">
+              {!reviewMetadataReady && <p className="text-sm text-amber-700">{reviewMetadataError || 'กำลังโหลดข้อมูลสินค้าและกติกาตรวจสอบ...'}</p>}
               <button
                 onClick={() => handleRejectSubmit()}
-                disabled={updating}
+                disabled={updating || !reviewMetadataReady}
                 className="w-full px-6 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
               >
                 {updating ? 'กำลังอัพเดต...' : 'ผิด'}
               </button>
               <button
                 onClick={() => handleApproveConfirm()}
-                disabled={updating}
+                disabled={updating || !reviewMetadataReady}
                 className="w-full px-6 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
               >
                 {updating ? 'กำลังอัพเดต...' : 'ถูกต้อง'}
@@ -1389,7 +1428,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
             <button
               type="button"
               onClick={() => setApproveAllModalOpen(false)}
-              disabled={updating}
+              disabled={updating || !reviewMetadataReady}
               className="rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300 disabled:opacity-50"
             >
               ยกเลิก

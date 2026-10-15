@@ -1,3 +1,5 @@
+import { mergeBilledMarketplaceItems, normalizeMarketplaceItem, type BilledMarketplaceItem } from '../../lib/marketplaceItemGuards'
+import { sortOrderItemsForEditing } from '../../lib/orderItemExportSort'
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import Modal from '../ui/Modal'
@@ -44,7 +46,7 @@ const PLASTIC_INK_BONUS_NAMES = new Set(Object.values(PLASTIC_INK_BONUS_MAP))
 /**
  * งานที่เปิดบิลแล้ว: อ่านรายการจากบิลจริง (or_order_items) แทนร่างใน mp_order_items
  * เพื่อให้แถบ "เสร็จสิ้น" แสดงข้อมูลล่าสุดหลังบิลถูกแก้ในเมนูออเดอร์
- * ข้อมูลต้นทางจากไฟล์ (ชื่อ/SKU/ตัวเลือก) ไม่มีในบิล จึงจับคู่จากร่างตามลำดับแถว
+ * จับคู่ข้อมูลต้นทางจากไฟล์ด้วย source item ID; บิลเก่าใช้ UID และสินค้าเมื่อระบุคู่ได้ชัดเจน
  */
 async function loadBilledItems(billedOrderId: string, draftItems: MpOrderItem[]): Promise<MpOrderItem[]> {
   const { data, error } = await supabase
@@ -54,36 +56,7 @@ async function loadBilledItems(billedOrderId: string, draftItems: MpOrderItem[])
     .order('created_at', { ascending: true })
   if (error || !data || data.length === 0) return draftItems
 
-  return (data as Record<string, unknown>[]).map((row, idx) => {
-    const draft = draftItems[idx]
-    const qty = Number(row.quantity ?? 0)
-    const unitPrice = row.unit_price != null ? Number(row.unit_price) : null
-    return {
-      id: String(row.id),
-      mp_order_id: draft?.mp_order_id ?? '',
-      line_index: idx,
-      product_name_raw: (row.product_name as string) ?? draft?.product_name_raw ?? null,
-      sku_ref: draft?.sku_ref ?? null,
-      variation: draft?.variation ?? null,
-      qty,
-      unit_price: unitPrice,
-      line_total: unitPrice != null ? Math.round(qty * unitPrice * 100) / 100 : null,
-      raw_snapshot: draft?.raw_snapshot ?? null,
-      product_id: (row.product_id as string) ?? null,
-      product_type: (row.product_type as string) ?? null,
-      ink_color: (row.ink_color as string) ?? null,
-      cartoon_pattern: (row.cartoon_pattern as string) ?? null,
-      line_pattern: (row.line_pattern as string) ?? null,
-      font: (row.font as string) ?? null,
-      line_1: (row.line_1 as string) ?? null,
-      line_2: (row.line_2 as string) ?? null,
-      line_3: (row.line_3 as string) ?? null,
-      no_name_line: !!row.no_name_line,
-      is_free: !!row.is_free,
-      notes: (row.notes as string) ?? null,
-      created_at: (row.created_at as string) ?? draft?.created_at ?? '',
-    }
-  })
+  return mergeBilledMarketplaceItems(sortOrderItemsForEditing(data as BilledMarketplaceItem[]), draftItems)
 }
 
 export default function MarketplaceOrderModal({
@@ -221,6 +194,8 @@ export default function MarketplaceOrderModal({
             .range(from, to)),
         ])
         if (cancelled) return
+        if (itemsRes.error) throw itemsRes.error
+        if (productsRes.error) throw productsRes.error
         const draftItems = ((itemsRes.data || []) as MpOrderItem[]).map((it) => ({
           ...it,
           // รองรับรายการเก่าที่เคยคัดลอกตัวเลือกจากไฟล์มาใส่ช่องลายอัตโนมัติ
@@ -250,6 +225,7 @@ export default function MarketplaceOrderModal({
         setProductSearch(search)
       } catch (err) {
         console.error('Error loading marketplace order modal:', err)
+        if (!cancelled) showMessage({ title: 'โหลดข้อมูลไม่สำเร็จ', message: (err as Error).message })
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -261,7 +237,11 @@ export default function MarketplaceOrderModal({
   }, [mpOrder.id])
 
   function updateItem(id: string, patch: Partial<MpOrderItem>) {
-    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)))
+    setItems((prev) => prev.map((it) => {
+      if (it.id !== id) return it
+      const next = { ...it, ...patch }
+      return normalizeMarketplaceItem(next, (key) => fieldEnabled(next, key))
+    }))
   }
 
   /**
@@ -449,6 +429,14 @@ export default function MarketplaceOrderModal({
     return resolveFieldEnabled(product, fieldKey, fieldRules)
   }
 
+  useEffect(() => {
+    if (readOnly || loading) return
+    setItems((prev) => {
+      const next = prev.map((it) => normalizeMarketplaceItem(it, (key) => fieldEnabled(it, key)))
+      return next.some((it, i) => it !== prev[i]) ? next : prev
+    })
+  }, [readOnly, loading, productById, fieldRules]) // eslint-disable-line react-hooks/exhaustive-deps
+
   function fieldRequired(item: MpOrderItem, fieldKey: string): boolean {
     const product = item.product_id ? productById.get(item.product_id) : null
     return resolveFieldRequired(product, fieldKey, fieldRules)
@@ -491,6 +479,8 @@ export default function MarketplaceOrderModal({
   }
 
   async function saveDrafts(sourceItems: MpOrderItem[] = items): Promise<boolean> {
+    sourceItems = sourceItems.map((it) => normalizeMarketplaceItem(it, (key) => fieldEnabled(it, key)))
+    setItems(sourceItems)
     try {
       // 1) ลบแถวที่หายไป (เช่น ถูกรวมกลับ) ที่เคยมีอยู่ใน DB
       const currentIds = new Set(sourceItems.map((it) => it.id))
@@ -648,6 +638,7 @@ export default function MarketplaceOrderModal({
 
   function validateForBilling(sourceItems: MpOrderItem[] = items): string | null {
     if (sourceItems.length === 0) return 'ไม่มีรายการสินค้า'
+    sourceItems = sourceItems.map((it) => normalizeMarketplaceItem(it, (key) => fieldEnabled(it, key)))
     const problems: string[] = []
     sourceItems.forEach((it, idx) => {
       const label = `รายการที่ ${idx + 1} (${it.product_name_raw || it.sku_ref || '-'})`
@@ -670,9 +661,9 @@ export default function MarketplaceOrderModal({
       requireWhenEmpty('cartoon_pattern', 'ลาย', !it.cartoon_pattern?.trim())
       requireWhenEmpty('line_pattern', 'ลายเส้น', !it.line_pattern?.trim())
       requireWhenEmpty('font', 'ฟอนต์', !it.font?.trim())
-      requireWhenEmpty('line_1', 'บรรทัด 1', !it.line_1?.trim())
-      requireWhenEmpty('line_2', 'บรรทัด 2', !it.line_2?.trim())
-      requireWhenEmpty('line_3', 'บรรทัด 3', !it.line_3?.trim())
+      if (!it.no_name_line) requireWhenEmpty('line_1', 'บรรทัด 1', !it.line_1?.trim())
+      if (!it.no_name_line) requireWhenEmpty('line_2', 'บรรทัด 2', !it.line_2?.trim())
+      if (!it.no_name_line) requireWhenEmpty('line_3', 'บรรทัด 3', !it.line_3?.trim())
       requireWhenEmpty('quantity', 'จำนวน', !it.qty || Number(it.qty) <= 0)
       requireWhenEmpty('unit_price', 'ราคา/หน่วย', !it.is_free && (!it.unit_price || Number(it.unit_price) <= 0))
       requireWhenEmpty('notes', 'หมายเหตุ', !it.notes?.trim())
@@ -696,7 +687,7 @@ export default function MarketplaceOrderModal({
       return
     }
 
-    const synchronizedItems = prepareMarketplaceTubeGifts(items)
+    const synchronizedItems = prepareMarketplaceTubeGifts(items.map((it) => normalizeMarketplaceItem(it, (key) => fieldEnabled(it, key))))
     if (!synchronizedItems) return
 
     const problem = validateForBilling(synchronizedItems)
@@ -1173,7 +1164,7 @@ export default function MarketplaceOrderModal({
                           <td className="border p-1.5">
                             <input
                               type="text"
-                              value={it.line_1 || ''}
+                              value={it.no_name_line ? '' : it.line_1 || ''}
                               disabled={dis('line_1') || it.no_name_line}
                               onChange={(e) => updateItem(it.id, { line_1: e.target.value })}
                               className={cls(dis('line_1') || it.no_name_line)}
@@ -1182,7 +1173,7 @@ export default function MarketplaceOrderModal({
                           <td className="border p-1.5">
                             <input
                               type="text"
-                              value={it.line_2 || ''}
+                              value={it.no_name_line ? '' : it.line_2 || ''}
                               disabled={dis('line_2') || it.no_name_line}
                               onChange={(e) => updateItem(it.id, { line_2: e.target.value })}
                               className={cls(dis('line_2') || it.no_name_line)}
@@ -1191,7 +1182,7 @@ export default function MarketplaceOrderModal({
                           <td className="border p-1.5">
                             <input
                               type="text"
-                              value={it.line_3 || ''}
+                              value={it.no_name_line ? '' : it.line_3 || ''}
                               disabled={dis('line_3') || it.no_name_line}
                               onChange={(e) => updateItem(it.id, { line_3: e.target.value })}
                               className={cls(dis('line_3') || it.no_name_line)}
