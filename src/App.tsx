@@ -397,7 +397,7 @@ function AppRoutes() {
       <Route
         path="/transport"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'packing_staff']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'packing_staff', 'account']}>
             <Layout>
               <TransportVerification />
             </Layout>

@@ -113,7 +113,7 @@ const menuItems: MenuItem[] = [
     label: 'ทวนสอบขนส่ง',
     icon: <FiTruck className="w-6 h-6" />,
     path: '/transport',
-    roles: ['superadmin', 'admin', 'sales-tr', 'packing_staff'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'packing_staff', 'account'],
   },
   {
     key: 'account',

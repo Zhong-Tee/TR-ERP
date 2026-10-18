@@ -40,7 +40,6 @@ const SEARCH_DEBOUNCE_MS = 400
 const PAGE_SIZE = 50
 type ProductVisibilityFilter = 'active' | 'hold' | 'hidden' | 'all'
 /** PostgREST / payload size safety for bulk insert */
-const DB_CHUNK_SIZE = 500
 /** Keep PostgREST `.in(...)` URLs small enough for every proxy in front of Supabase. */
 const PRODUCT_ID_QUERY_CHUNK_SIZE = 100
 
@@ -157,7 +156,6 @@ async function uploadImageToBucket(file: File): Promise<void> {
   if (error) throw error
 }
 
-type ChannelPriceRow = { product_id: string; channel_code: string; sale_price: number }
 
 type ImportProgressState = {
   active: boolean
@@ -182,18 +180,6 @@ const emptyImportProgress = (): ImportProgressState => ({
   current: 0,
   total: 0,
 })
-
-async function insertChannelPricesInChunks(
-  rows: ChannelPriceRow[],
-  onProgress?: (done: number, total: number) => void,
-): Promise<void> {
-  for (let i = 0; i < rows.length; i += DB_CHUNK_SIZE) {
-    const chunk = rows.slice(i, i + DB_CHUNK_SIZE)
-    const { error } = await supabase.from('pr_product_channel_prices').insert(chunk)
-    if (error) throw error
-    onProgress?.(Math.min(i + chunk.length, rows.length), rows.length)
-  }
-}
 
 function ImportProgressModal({ progress }: { progress: ImportProgressState }) {
   if (!progress.active) return null
@@ -1151,115 +1137,17 @@ export default function Products() {
       })
       const dupInFile = toInsert.length - deduped.length
 
-      const importCodes = deduped.map((i) => i.product_code)
       patchImportProgress({
         total: deduped.length,
         current: 0,
-        phase: `กำลังตรวจสอบรหัสสินค้าในระบบ (${deduped.length.toLocaleString()} รายการ)...`,
+        phase: `กำลังบันทึกสินค้าและราคาช่องทาง (${deduped.length.toLocaleString()} รายการ)...`,
       })
-      // โหลดเฉพาะรหัสในไฟล์ (ไม่ดึงทั้งตาราง)
-      const { data: existingProducts } = await supabase
-        .from('pr_products')
-        .select('id, product_code')
-        .in('product_code', importCodes)
-      const existingCodes = new Set(
-        (existingProducts || []).map((p: { id: string; product_code: string }) => p.product_code.toLowerCase())
-      )
-      const productIdByCode = new Map(
-        (existingProducts || []).map((p: { id: string; product_code: string }) => [p.product_code.toLowerCase(), p.id])
-      )
-      const newItems = deduped.filter((item) => !existingCodes.has(item.product_code.toLowerCase()))
-      const updateItems = deduped.filter((item) => existingCodes.has(item.product_code.toLowerCase()))
-
-      if (!newItems.length && !updateItems.length) {
-        hideImportProgress()
-        showNotify('warning', 'ไม่มีข้อมูลที่จะนำเข้า', dupInFile > 0 ? `ซ้ำในไฟล์ ${dupInFile} รายการ` : '')
-        loadProducts()
-        loadCategories()
-        loadSellerOptions()
-        return
-      }
-
-      const totalProducts = deduped.length
-      let processedProducts = 0
-
-      let insertedCount = 0
-      let updatedCount = 0
-
-      if (newItems.length) {
-        const payload = newItems.map(({ channel_prices, ...rest }) => rest)
-        patchImportProgress({ phase: `กำลังเพิ่มสินค้าใหม่ (${newItems.length.toLocaleString()} รายการ)...` })
-        for (let i = 0; i < payload.length; i += DB_CHUNK_SIZE) {
-          const chunk = payload.slice(i, i + DB_CHUNK_SIZE)
-          const { error } = await supabase.from('pr_products').insert(chunk)
-          if (error) throw error
-          processedProducts += chunk.length
-          patchImportProgress({ current: processedProducts })
-        }
-        insertedCount = payload.length
-      }
-
-      if (updateItems.length) {
-        const updatePayload = updateItems.map(({ channel_prices, is_active: _a, ...rest }) => rest)
-        patchImportProgress({ phase: `กำลังอัปเดตสินค้า (${updateItems.length.toLocaleString()} รายการ)...` })
-        for (let i = 0; i < updatePayload.length; i += DB_CHUNK_SIZE) {
-          const chunk = updatePayload.slice(i, i + DB_CHUNK_SIZE)
-          const { error } = await supabase.from('pr_products').upsert(chunk, { onConflict: 'product_code' })
-          if (error) throw error
-          processedProducts += chunk.length
-          patchImportProgress({ current: processedProducts })
-        }
-        updatedCount = updateItems.length
-      }
-
-      patchImportProgress({ phase: 'กำลังเตรียมข้อมูลราคาช่องทาง...' })
-      const allCodes = deduped.map((i) => i.product_code)
-      if (allCodes.length > 0) {
-        const { data: productsWithIds, error: idErr } = await supabase
-          .from('pr_products')
-          .select('id, product_code')
-          .in('product_code', allCodes)
-        if (idErr) throw idErr
-        ;(productsWithIds || []).forEach((p: { id: string; product_code: string }) => {
-          productIdByCode.set(p.product_code.toLowerCase(), p.id)
-        })
-      }
-
-      const touchedProductIds = deduped
-        .map((item) => productIdByCode.get(item.product_code.toLowerCase()))
-        .filter((id): id is string => Boolean(id))
-
-      if (touchedProductIds.length > 0) {
-        for (let i = 0; i < touchedProductIds.length; i += DB_CHUNK_SIZE) {
-          const idChunk = touchedProductIds.slice(i, i + DB_CHUNK_SIZE)
-          const { error: delErr } = await supabase.from('pr_product_channel_prices').delete().in('product_id', idChunk)
-          if (delErr) throw delErr
-        }
-      }
-
-      const priceRows: ChannelPriceRow[] = []
-      for (const item of deduped) {
-        const productId = productIdByCode.get(item.product_code.toLowerCase())
-        if (!productId) continue
-        for (const [channelCode, price] of Object.entries(item.channel_prices || {})) {
-          priceRows.push({
-            product_id: productId,
-            channel_code: channelCode,
-            sale_price: Number(price) || 0,
-          })
-        }
-      }
-      if (priceRows.length > 0) {
-        patchImportProgress({ phase: `กำลังบันทึกราคาช่องทาง (${priceRows.length.toLocaleString()} รายการ)...` })
-        await insertChannelPricesInChunks(priceRows, (done, total) => {
-          patchImportProgress({
-            current: totalProducts,
-            phase: `กำลังบันทึกราคาช่องทาง ${done.toLocaleString()} / ${total.toLocaleString()} รายการ...`,
-          })
-        })
-      }
-
-      patchImportProgress({ current: totalProducts, phase: 'นำเข้าเสร็จสิ้น กำลังโหลดข้อมูลใหม่...' })
+      // Products and channel prices commit together; database checks the caller's role.
+      const { data, error } = await supabase.rpc('rpc_import_products', { p_items: deduped })
+      if (error) throw error
+      const insertedCount = Number(data?.inserted || 0)
+      const updatedCount = Number(data?.updated || 0)
+      patchImportProgress({ current: deduped.length, phase: 'นำเข้าเสร็จสิ้น กำลังโหลดข้อมูลใหม่...' })
       const msgs: string[] = []
       if (insertedCount > 0) msgs.push(`เพิ่มสินค้าใหม่ ${insertedCount} รายการ`)
       if (updatedCount > 0) msgs.push(`อัปเดตสินค้าเดิม ${updatedCount} รายการ`)
@@ -1675,7 +1563,7 @@ export default function Products() {
           >
             Download Template
           </button>}
-          {canSeeCost && <label className={`px-3 py-2 rounded-xl bg-yellow-500 text-white hover:bg-yellow-600 text-sm font-semibold inline-block ${isImportBusy ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
+          {isSuperAdmin && <label className={`px-3 py-2 rounded-xl bg-yellow-500 text-white hover:bg-yellow-600 text-sm font-semibold inline-block ${isImportBusy ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
             {importing ? 'กำลังนำเข้า...' : 'Import สินค้า'}
             <input
               ref={importInputRef}
