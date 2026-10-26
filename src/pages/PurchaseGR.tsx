@@ -1,6 +1,9 @@
 import { useSearchParams } from 'react-router-dom'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import ReceivingCaseForm from '../components/purchase/ReceivingCaseForm'
+import GRStockContext from '../components/purchase/GRStockContext'
+import { loadGRCurrentStock } from '../lib/grCurrentStock'
+import type { GRCurrentStock } from '../lib/grCurrentStock'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import Modal from '../components/ui/Modal'
 import { useWmsModal } from '../components/wms/useWmsModal'
@@ -62,6 +65,8 @@ interface ReceiveItem {
   qty_already_received: number
   shortage_note: string
   item_note?: string
+  current_stock?: GRCurrentStock
+  stock_unit_name: string
   images: ReceiveItemImageDraft[]
 }
 
@@ -355,6 +360,7 @@ export default function PurchaseGR() {
             product_code: item.pr_products?.product_code || '',
             product_name: item.pr_products?.product_name || '',
             unit_name: item.unit || item.pr_products?.unit_name || 'ชิ้น',
+            stock_unit_name: item.pr_products?.unit_name || item.unit || 'ชิ้น',
             qty_ordered: remaining,
             qty_received: remaining,
             qty_already_received: alreadyReceived,
@@ -363,7 +369,8 @@ export default function PurchaseGR() {
             images: [],
           }
         })
-      setReceiveItems(items)
+      const stock = await loadGRCurrentStock(items.map(item => item.product_id))
+      setReceiveItems(items.map(item => ({ ...item, current_stock: stock[item.product_id] })))
       setReceiveOpen(true)
     } catch (e) {
       console.error(e)
@@ -1588,9 +1595,7 @@ export default function PurchaseGR() {
                     <span className="text-sm font-semibold text-gray-900">{item.product_name}</span>{' '}
                     <span className="text-[11px] font-semibold text-blue-700">หน่วย: {item.unit_name}</span>
                   </div>
-                  {item.item_note && (
-                    <div className="text-[11px] text-amber-700 leading-snug line-clamp-2">* {item.item_note}</div>
-                  )}
+                  <GRStockContext note={item.item_note} stock={item.current_stock} unitName={item.stock_unit_name} />
                   <div className="flex items-start gap-2">
                     <button
                       type="button"
@@ -1795,9 +1800,7 @@ export default function PurchaseGR() {
                           <span className="font-medium text-gray-900">{item.product_name}</span>
                           <span className="ml-2 text-[11px] font-semibold text-blue-700">หน่วย: {item.unit_name}</span>
                         </div>
-                        {item.item_note && (
-                          <div className="text-xs text-amber-600 mt-0.5 break-words">* {item.item_note}</div>
-                        )}
+                        <GRStockContext note={item.item_note} stock={item.current_stock} unitName={item.stock_unit_name} />
                       </td>
                       {isFollowUp && (
                         <td className="px-3 py-2 text-right text-blue-600 font-medium">{item.qty_already_received.toLocaleString()}</td>

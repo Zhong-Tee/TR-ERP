@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../lib/supabase'
+import { formatBankImportWarning } from '../../lib/bankImportWarnings'
 import type { Order } from '../../types'
 import OrderDetailView from '../order/OrderDetailView'
 import Modal from '../ui/Modal'
@@ -39,7 +40,7 @@ type ImportRow = {
   source_row_count: number
   imported_row_count: number
   duplicate_row_count: number
-  warnings: string[] | null
+  warnings: unknown[] | null
   status: string
   uploaded_at: string
   bank_settings: {
@@ -735,12 +736,17 @@ export default function BankReconciliationSection() {
         })),
       })
       if (rpcError) throw rpcError
-      const result = data as { import_id?: string; inserted_count?: number; duplicate_count?: number; match_result?: { matched?: number; ambiguous?: number } }
+      const result = data as { import_id?: string; inserted_count?: number; duplicate_count?: number; match_result?: { matched?: number; ambiguous?: number; skipped?: number; requires_review?: boolean; warning?: string } }
+      const matchNotice = result.match_result?.requires_review
+        ? ' — นำเข้าข้อมูลแล้ว แต่จับคู่อัตโนมัติไม่สำเร็จ กรุณาตรวจสอบและลองจับคู่ใหม่'
+        : result.match_result?.skipped
+          ? ` — ข้ามการจับคู่ ${result.match_result.skipped} รายการ กรุณาตรวจสอบ`
+          : ''
       return {
         fileName: file.name,
         success: true,
         importId: result.import_id,
-        message: `นำเข้า ${result.inserted_count ?? 0} รายการ, ซ้ำ ${result.duplicate_count ?? 0}, จับคู่ ${result.match_result?.matched ?? 0}, รอตรวจ ${result.match_result?.ambiguous ?? 0}`,
+        message: `นำเข้า ${result.inserted_count ?? 0} รายการ, ซ้ำ ${result.duplicate_count ?? 0}, จับคู่ ${result.match_result?.matched ?? 0}, รอตรวจ ${result.match_result?.ambiguous ?? 0}${matchNotice}`,
       }
     } catch (caught) {
       return { fileName: file.name, success: false, message: readableError(caught) }
@@ -1335,7 +1341,7 @@ export default function BankReconciliationSection() {
 
             {Array.isArray(selectedImport.warnings) && selectedImport.warnings.length > 0 && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                {selectedImport.warnings.map((warning) => <p key={warning}>{warning}</p>)}
+                {selectedImport.warnings.map((warning, index) => <p key={index}>{formatBankImportWarning(warning)}</p>)}
               </div>
             )}
 

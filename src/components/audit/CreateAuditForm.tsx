@@ -189,8 +189,8 @@ export default function CreateAuditForm() {
           <div>
             <div className="text-sm font-semibold text-gray-700">แสดงตัวเลขสต๊อคคงเหลือ</div>
             <div className="text-sm text-gray-500 mt-1">
-              เปิดเพื่อให้ผู้ตรวจนับเห็นจำนวนสต๊อคในระบบ (snapshot ตอนสร้างใบ Audit)
-              ปิดเพื่อนับแบบไม่เห็นตัวเลข (Blind Count)
+              เปิดเพื่อแสดงยอดตามจุดจัดเก็บคลังหลัก, Safety, ยอดรวมคลังหลัก, ยอดจอง และยอดคลังย่อยแยกชื่อคลัง
+              <span className="block">(ยอด ณ สร้างใบ Audit) ปิดเพื่อซ่อนตัวเลขระบบทั้งหมด แต่ยังเห็นชื่อจุดจัดเก็บและชื่อคลังย่อย (Blind Count)</span>
             </div>
           </div>
           <label className="flex items-center gap-3 cursor-pointer flex-shrink-0">

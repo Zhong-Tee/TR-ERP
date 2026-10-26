@@ -11,7 +11,6 @@ import {
   approveOrder,
   rejectOrder,
   startProductionOrder,
-  completeProductionOrder,
   fetchFgRmProducts,
   fetchRecipe,
   fetchRecipeProductIds,
@@ -22,6 +21,7 @@ import ProductImageHover from '../ui/ProductImageHover'
 import Modal from '../ui/Modal'
 import ModalCloseButton from '../ui/ModalCloseButton'
 import PPProductPicker from './PPProductPicker'
+import ProductionCompletionModal from './ProductionCompletionModal'
 
 type TabKey = 'pp' | 'pending' | 'approved' | 'processing' | 'completed' | 'rejected'
 
@@ -86,6 +86,8 @@ export default function ProductionCreate() {
   const [viewItems, setViewItems] = useState<PpProductionOrderItem[]>([])
   const [viewRmItems, setViewRmItems] = useState<ViewRmItem[]>([])
   const [viewReturnedItems, setViewReturnedItems] = useState<ViewRmItem[]>([])
+
+  const [completingOrder, setCompletingOrder] = useState<PpProductionOrder | null>(null)
 
   // Reject modal
   const [rejectModal, setRejectModal] = useState<PpProductionOrder | null>(null)
@@ -384,16 +386,8 @@ export default function ProductionCreate() {
     }
   }
 
-  const handleCompleteProduction = async (order: PpProductionOrder) => {
-    if (!confirm(`ยืนยันว่าแปรรูป ${order.doc_no} สำเร็จแล้ว? ระบบจะอัปเดตสต๊อกหลังยืนยัน`)) return
-    try {
-      await completeProductionOrder(order.id)
-      setNotifyModal({ open: true, type: 'success', title: 'แปรรูปสำเร็จ', message: `${order.doc_no} เสร็จสมบูรณ์และอัปเดตสต๊อกแล้ว` })
-      loadOrders()
-      loadPPProducts()
-    } catch (err: unknown) {
-      setNotifyModal({ open: true, type: 'error', title: 'ไม่สามารถจบงานได้', message: err instanceof Error ? err.message : 'เกิดข้อผิดพลาด' })
-    }
+  const handleCompleteProduction = (order: PpProductionOrder) => {
+    setCompletingOrder(order)
   }
 
   const viewDetail = async (order: PpProductionOrder) => {
@@ -452,7 +446,7 @@ export default function ProductionCreate() {
   }
 
   const statusLabel = (s: string) => {
-    const map: Record<string, string> = { open: 'เปิด', pending: 'รออนุมัติ', approved: 'รอแปรรูป', processing: 'กำลังทำ', completed: 'แปรรูปสำเร็จ', rejected: 'ปฏิเสธ' }
+    const map: Record<string, string> = { open: 'เปิด', pending: 'รออนุมัติ', approved: 'รอแปรรูป', processing: 'กำลังทำ', completed: 'ผลิตเสร็จ', rejected: 'ปฏิเสธ' }
     return map[s] || s
   }
 
@@ -750,7 +744,7 @@ export default function ProductionCreate() {
             </div>
             <div className="grid grid-cols-2 gap-4 text-base">
               <div><span className="text-gray-500">หัวข้อ:</span> <span className="font-semibold">{viewingOrder.title || '-'}</span></div>
-              <div><span className="text-gray-500">สถานะ:</span> <span className={`px-3 py-1 rounded-full text-sm font-semibold ${statusColor(viewingOrder.status)}`}>{statusLabel(viewingOrder.status)}</span></div>
+              <div><span className="text-gray-500">สถานะ:</span> <span className={`px-3 py-1 rounded-full text-sm font-semibold ${statusColor(viewingOrder.status)}`}>{viewingOrder.completion_short ? 'ผลิตเสร็จ — ได้ไม่ครบ' : statusLabel(viewingOrder.status)}</span></div>
               <div><span className="text-gray-500">วันที่สร้าง:</span> {formatDate(viewingOrder.created_at)}</div>
               <div><span className="text-gray-500">ผู้สร้าง:</span> {viewingOrder.creator?.display_name || '-'}</div>
               {viewingOrder.approved_by && <div><span className="text-gray-500">ผู้อนุมัติ:</span> {viewingOrder.approver?.display_name || '-'}</div>}
@@ -767,7 +761,8 @@ export default function ProductionCreate() {
                     <th className="px-5 py-3 text-left rounded-tl-xl">รูป</th>
                     <th className="px-5 py-3 text-left">รหัส</th>
                     <th className="px-5 py-3 text-left">ชื่อสินค้า</th>
-                    <th className={`px-5 py-3 text-right ${canViewCosts ? '' : 'rounded-tr-xl'}`}>จำนวน</th>
+                    <th className={`px-5 py-3 text-right ${canViewCosts ? '' : 'rounded-tr-xl'}`}>จำนวนที่ขอผลิต</th>
+                    <th className="px-5 py-3 text-right">รับเข้าจริง</th><th className="px-5 py-3 text-right">ขาดจากแผน</th>
                     {canViewCosts && <th className="px-5 py-3 text-right">ต้นทุน/หน่วย</th>}
                     {canViewCosts && <th className="px-5 py-3 text-right rounded-tr-xl">ต้นทุนรวม</th>}
                   </tr>
@@ -781,6 +776,8 @@ export default function ProductionCreate() {
                       <td className="px-5 py-3 font-mono text-sm">{it.product?.product_code || '-'}</td>
                       <td className="px-5 py-3">{it.product?.product_name || '-'}</td>
                       <td className="px-5 py-3 text-right font-medium">{it.qty}</td>
+                      <td className="px-5 py-3 text-right">{it.actual_qty ?? (viewingOrder.status === 'completed' ? it.qty : '—')}</td>
+                      <td className="px-5 py-3 text-right">{it.actual_qty != null ? formatQty(it.qty - it.actual_qty) : '—'}</td>
                       {canViewCosts && <td className="px-5 py-3 text-right">{it.unit_cost != null ? it.unit_cost.toFixed(2) : '-'}</td>}
                       {canViewCosts && <td className="px-5 py-3 text-right font-semibold">{it.total_cost != null ? it.total_cost.toFixed(2) : '-'}</td>}
                     </tr>
@@ -789,6 +786,19 @@ export default function ProductionCreate() {
               </table>
             </div>
 
+            {viewingOrder.completed_at && <p className="text-sm text-gray-600">ปิดงานเมื่อ {formatDate(viewingOrder.completed_at)} · ผู้ยืนยัน {viewingOrder.completer?.display_name || viewingOrder.completed_by || '-'}</p>}
+            {viewItems.filter(it => it.completion_report).map(it => {
+              const report = it.completion_report!
+              return <div key={it.id} className="border rounded-lg p-4 space-y-3">
+                <h3 className="font-bold">ผลผลิตจริง {report.product_code} — {report.product_name}</h3>
+                {report.actual_qty < report.planned_qty && <p className="text-orange-700">ขาด {formatQty(report.planned_qty - report.actual_qty)} · {report.reason_code}: {report.reason}</p>}
+                <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="bg-orange-50">{['วัตถุดิบ', 'ตามเอกสาร', 'ใช้จริง', 'เหลือคืน', 'สูญเสีย', 'ขาดจากห่อ', 'เหตุผล'].map(label => <th key={label} className="p-2 text-left">{label}</th>)}</tr></thead><tbody>{report.materials.map(m => <tr key={m.product_id}>{[`${m.product_code} ${m.product_name}`, m.planned_qty, m.used_qty, m.returned_qty, m.waste_qty, m.shortage_qty, m.reason || '-'].map((value, i) => <td key={i} className="p-2 border-b">{typeof value === 'number' ? formatQty(value) : value}</td>)}</tr>)}</tbody></table></div>
+                {report.byproducts.map(b => <p key={b.product_id}>แยกคืนจริง: {b.product_code} {b.product_name} จำนวน {formatQty(b.qty)}</p>)}
+                {canViewCosts && <div className="text-sm space-y-1"><p>วัตถุดิบใช้จริงรวมสูญเสีย {report.material_cost.toFixed(2)} · หักสินค้าแยกคืน {report.byproduct_cost.toFixed(2)} · ต้นทุนผลผลิต {report.total_cost.toFixed(2)}</p><p>มูลค่าขาดจากห่อ (แยกจากต้นทุนผลิต) {report.shortage_cost.toFixed(2)} · สูญเสียทั้งงานกรณีผลิตได้ 0: {report.production_loss_cost.toFixed(2)}</p></div>}
+              </div>
+            })}
+
+            {viewItems.every(it => !it.completion_report) && <>
             <div className="space-y-3">
               <h3 className="text-base font-bold text-gray-700">
                 รายการสินค้า RM ที่ใช้
@@ -865,6 +875,8 @@ export default function ProductionCreate() {
               </div>
             </div>
 
+            </>}
+
             {canApprove && viewingOrder.status === 'pending' && (
               <div className="flex justify-end gap-3 pt-2">
                 <button
@@ -884,6 +896,13 @@ export default function ProductionCreate() {
           </div>
         </Modal>
       )}
+
+      {completingOrder && <ProductionCompletionModal order={completingOrder} onClose={() => setCompletingOrder(null)} onCompleted={() => {
+        setCompletingOrder(null)
+        setNotifyModal({ open: true, type: 'success', title: 'ปิดงานสำเร็จ', message: 'รับเข้าตามยอดจริงและบันทึกวัตถุดิบพร้อมต้นทุนแล้ว ยอดผลิตขาดไม่ค้างผลิต' })
+        void loadOrders()
+        void loadPPProducts()
+      }} />}
 
       {/* ── Reject Modal ── */}
       {rejectModal && (
@@ -998,7 +1017,7 @@ function OrderTable({
               {isRejected && <td className="px-5 py-3 text-red-600">{o.rejection_reason || '-'}</td>}
               <td className="px-5 py-3 text-center">
                 <span className={`px-3 py-1 rounded-full text-sm font-semibold ${statusColor(o.status)}`}>
-                  {statusLabel(o.status)}
+                  {o.completion_short ? 'ผลิตเสร็จ — ได้ไม่ครบ' : statusLabel(o.status)}
                 </span>
               </td>
               <td className="px-5 py-3 text-center">
@@ -1038,7 +1057,7 @@ function OrderTable({
                   )}
                   {showActions === 'processing' && o.status === 'processing' && canProcess && onComplete && (
                     <button onClick={() => onComplete(o)} className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700">
-                      แปรรูปสำเร็จ
+                      บันทึกผลผลิต / รับเข้า
                     </button>
                   )}
                 </div>

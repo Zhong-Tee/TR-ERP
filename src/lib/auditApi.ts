@@ -114,12 +114,31 @@ export async function fetchAuditById(id: string) {
   return data as InventoryAudit
 }
 
-export async function fetchAuditItems(auditId: string) {
+export async function fetchAuditItems(auditId: string, includeLegacySubWarehouses = false) {
   const data = await fetchAllSupabasePages<InventoryAuditItem>((from, to) => supabase
     .from('inv_audit_items')
     .select('*, pr_products(product_code, product_name, product_type, storage_location, product_category, unit_name)')
     .eq('audit_id', auditId)
     .order('id', { ascending: true }).range(from, to))
+  if (includeLegacySubWarehouses && data.some(item => item.sub_warehouse_snapshot == null)) {
+    try {
+      const legacy = await fetchAllSupabasePages<{ item_id: string; snapshot: NonNullable<InventoryAuditItem['sub_warehouse_snapshot']> }>((from, to) => supabase
+        .rpc('rpc_get_audit_legacy_sub_warehouse_snapshots', { p_audit_id: auditId })
+        .order('item_id').range(from, to))
+      const snapshots = new Map(legacy.map(row => [row.item_id, row.snapshot]))
+      data.forEach(item => {
+        if (item.sub_warehouse_snapshot == null && snapshots.has(item.id)) {
+          item.sub_warehouse_snapshot = snapshots.get(item.id)
+          item.sub_warehouse_snapshot_reconstructed = true
+        }
+      })
+    } catch {
+      // Supplementary balances must never prevent counting or saving main stock.
+      data.forEach(item => {
+        if (item.sub_warehouse_snapshot == null) item.sub_warehouse_snapshot_error = true
+      })
+    }
+  }
   return data.sort(compareAuditItems)
 }
 

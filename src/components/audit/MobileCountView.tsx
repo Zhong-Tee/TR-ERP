@@ -49,7 +49,7 @@ export default function MobileCountView() {
     try {
       const [auditData, itemsData] = await Promise.all([
         fetchAuditById(id),
-        fetchAuditItems(id),
+        fetchAuditItems(id, true),
       ])
       setAudit(auditData)
       setItems(itemsData)

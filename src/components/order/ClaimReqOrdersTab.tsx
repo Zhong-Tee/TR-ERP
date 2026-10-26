@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabase'
+import { fetchAllSupabasePages } from '../../lib/supabasePagination'
+import { countPendingClaimShipping } from '../../lib/claimShippingBadge'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { fetchClaimTypeLabelMap, claimTypeLabel } from '../../lib/claimTypeLabels'
 import { loadClaimCompareBundle } from '../../lib/claimRequestCompareLoad'
@@ -306,6 +308,7 @@ export default function ClaimReqOrdersTab({
   onCountsChange,
 }: ClaimReqOrdersTabProps) {
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [pendingClaims, setPendingClaims] = useState<PendingClaimRow[]>([])
   const [rejectedClaims, setRejectedClaims] = useState<RejectedClaimRow[]>([])
   const [approvedClaims, setApprovedClaims] = useState<ApprovedClaimRow[]>([])
@@ -441,6 +444,7 @@ export default function ClaimReqOrdersTab({
 
   const load = useCallback(async () => {
     setLoading(true)
+    setLoadError('')
     try {
       const { data: pending, error: e1 } = await supabase
         .from('or_claim_requests')
@@ -452,16 +456,13 @@ export default function ClaimReqOrdersTab({
         .limit(200)
       if (e1) throw e1
 
-      const { data: approved, error: e2 } = await supabase
+      const approved = await fetchAllSupabasePages<ClaimRow>((from, to) => supabase
         .from('or_claim_requests')
-        .select(
-          'id, status, created_at, reviewed_at, claim_type, ref_snapshot, created_claim_order_id, ref_order_id, submitted_by, supporting_url, claim_description, proposed_snapshot',
-        )
+        .select('id, status, created_at, reviewed_at, claim_type, ref_snapshot, created_claim_order_id, ref_order_id, submitted_by, supporting_url, claim_description, proposed_snapshot')
         .eq('status', 'approved')
         .not('created_claim_order_id', 'is', null)
-        .order('reviewed_at', { ascending: false })
-        .limit(200)
-      if (e2) throw e2
+        .order('reviewed_at', { ascending: false }).order('id').range(from, to)
+        .returns<ClaimRow[]>())
 
       const { data: rejected, error: eRej } = await supabase
         .from('or_claim_requests')
@@ -535,11 +536,11 @@ export default function ClaimReqOrdersTab({
           tracking_number?: string | null
         }
       > = {}
-      if (allRefIds.length > 0) {
+      for (let offset = 0; offset < allRefIds.length; offset += 100) {
         const { data: refRows, error: refErr } = await supabase
           .from('or_orders')
           .select('id, entry_date, created_at, admin_user, customer_name, customer_address, billing_details, channel_order_no, tracking_number')
-          .in('id', allRefIds)
+          .in('id', allRefIds.slice(offset, offset + 100))
         if (refErr) console.warn('ClaimReqOrdersTab: ref orders meta', refErr)
         for (const row of refRows || []) {
           const r = row as {
@@ -569,12 +570,12 @@ export default function ClaimReqOrdersTab({
       // วิดีโอแพคสินค้าของบิลอ้างอิง (ตาม order_id ก่อน แล้ว fallback เลขพัสดุ)
       const videoByOrder = new Map<string, string>()
       const videoByTracking = new Map<string, string>()
-      if (allRefIds.length > 0) {
+      for (let offset = 0; offset < allRefIds.length; offset += 100) {
         try {
           const { data: vrows, error: vErr } = await supabase
             .from('pk_packing_videos')
             .select('order_id, tracking_number, gdrive_url, created_at')
-            .in('order_id', allRefIds)
+            .in('order_id', allRefIds.slice(offset, offset + 100))
             .not('gdrive_url', 'is', null)
             .order('created_at', { ascending: false })
           if (vErr) throw vErr
@@ -592,11 +593,11 @@ export default function ClaimReqOrdersTab({
       }
 
       const submitterById: Record<string, { username?: string | null }> = {}
-      if (allSubmitterIds.length > 0) {
+      for (let offset = 0; offset < allSubmitterIds.length; offset += 100) {
         const { data: uRows, error: uErr } = await supabase
           .from('us_users')
           .select('id, username')
-          .in('id', allSubmitterIds)
+          .in('id', allSubmitterIds.slice(offset, offset + 100))
         if (uErr) console.warn('ClaimReqOrdersTab: us_users batch', uErr)
         for (const u of uRows || []) {
           submitterById[String((u as { id: string }).id)] = {
@@ -709,22 +710,15 @@ export default function ClaimReqOrdersTab({
       const orderIds = [
         ...new Set(aList.map((c) => c.created_claim_order_id).filter(Boolean) as string[]),
       ]
-      let ordersMap: Record<string, ReqOrderRow> = {}
-      if (orderIds.length > 0) {
-        let oq = supabase
-          .from('or_orders')
-          .select(
-            'id, bill_no, recipient_name, customer_address, billing_details, claim_shipping_confirmed_at, channel_code, admin_user, status, total_amount',
-          )
-          .in('id', orderIds)
-        if (narrowAdminUser?.trim()) {
-          oq = oq.eq('admin_user', narrowAdminUser.trim())
-        }
+      const ordersMap: Record<string, ReqOrderRow> = {}
+      for (let offset = 0; offset < orderIds.length; offset += 100) {
+        let oq = supabase.from('or_orders')
+          .select('id, bill_no, recipient_name, customer_address, billing_details, claim_shipping_confirmed_at, channel_code, admin_user, status, total_amount')
+          .in('id', orderIds.slice(offset, offset + 100))
+        if (narrowAdminUser?.trim()) oq = oq.eq('admin_user', narrowAdminUser.trim())
         const { data: ordRows, error: e3 } = await oq
         if (e3) throw e3
-        ordersMap = Object.fromEntries(
-          ((ordRows || []) as ReqOrderRow[]).map((o) => [o.id, o]),
-        )
+        for (const order of (ordRows || []) as ReqOrderRow[]) ordersMap[order.id] = order
       }
       setOrderById(ordersMap)
 
@@ -735,7 +729,7 @@ export default function ClaimReqOrdersTab({
 
     } catch (e: unknown) {
       console.error('ClaimReqOrdersTab load:', e)
-      alert('โหลดรายการบิลเคลมไม่สำเร็จ: ' + ((e as Error)?.message || String(e)))
+      setLoadError('โหลดรายการบิลเคลมไม่สำเร็จ: ' + ((e as Error)?.message || String(e)))
     } finally {
       setLoading(false)
     }
@@ -1049,11 +1043,7 @@ export default function ClaimReqOrdersTab({
 
   /** จำนวนบิลอนุมัติแล้วที่ยังไม่ได้บันทึกและยืนยันที่อยู่ */
   const needShippingCount = useMemo(
-    () => approvedClaims.filter(
-      (c) => c.created_claim_order_id
-        && orderById[c.created_claim_order_id]?.status !== 'ยกเลิก'
-        && !orderById[c.created_claim_order_id]?.claim_shipping_confirmed_at,
-    ).length,
+    () => countPendingClaimShipping(approvedClaims, orderById),
     [approvedClaims, orderById],
   )
   const unseenRejectedCount = useMemo(
@@ -1063,8 +1053,8 @@ export default function ClaimReqOrdersTab({
 
   /** ส่ง counts ให้แท็บแม่ — ปฏิเสธใช้จำนวนที่ยังไม่ได้เปิดดู (ลดลงทันทีเมื่อคลิกดู) */
   useEffect(() => {
-    onCountsChangeRef.current?.(pendingClaims.length, needShippingCount, unseenRejectedCount)
-  }, [pendingClaims.length, needShippingCount, unseenRejectedCount])
+    if (!loading && !loadError) onCountsChangeRef.current?.(pendingClaims.length, needShippingCount, unseenRejectedCount)
+  }, [loading, loadError, pendingClaims.length, needShippingCount, unseenRejectedCount])
 
   const filterActive =
     !!reqFilterSearch.trim() ||
@@ -1081,6 +1071,7 @@ export default function ClaimReqOrdersTab({
 
   return (
     <div className="space-y-6 px-2">
+      {loadError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{loadError}</p>}
       <div className="flex flex-wrap gap-2 border-b border-surface-200 pb-2">
         {(
           [

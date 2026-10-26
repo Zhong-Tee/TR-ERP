@@ -583,6 +583,9 @@ export interface InventoryAudit {
 }
 
 export interface InventoryAuditItem {
+  sub_warehouse_snapshot?: Array<{ sub_warehouse_id: string; name: string; qty: number }> | null
+  sub_warehouse_snapshot_reconstructed?: boolean
+  sub_warehouse_snapshot_error?: boolean
   count_mode?: 'legacy' | 'separate'
   product_type?: string | null
   system_reserved?: number | null
@@ -1025,6 +1028,8 @@ export interface PpProductionOrder {
   started_at: string | null
   completed_by: string | null
   completed_at: string | null
+  completer?: { display_name: string }
+  completion_short?: boolean
   created_at: string
   creator?: { display_name: string }
   approver?: { display_name: string }
@@ -1036,6 +1041,8 @@ export interface PpProductionOrderItem {
   order_id: string
   product_id: string
   qty: number
+  actual_qty?: number | null
+  completion_report?: import('../lib/productionCompletion').ProductionCompletionReport | null
   unit_cost: number | null
   total_cost: number | null
   created_at: string

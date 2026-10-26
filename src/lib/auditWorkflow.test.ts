@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createAudit, createAdjustmentFromAudit, fetchMovementAuditProductIds, submitAuditForReview, getAuditKPI } from './auditApi'
+import { createAudit, fetchAuditItems, createAdjustmentFromAudit, fetchMovementAuditProductIds, submitAuditForReview, getAuditKPI } from './auditApi'
 import type { AuditType } from '../types'
 
 type Row = Record<string, unknown>
-const backend = vi.hoisted(() => ({ rows: {} as Record<string, Row[]>, moved: [] as string[], failItems: false, adjustmentItems: [] as Row[] }))
+const backend = vi.hoisted(() => ({ rows: {} as Record<string, Row[]>, moved: [] as string[], failItems: false, failLegacy: false, adjustmentItems: [] as Row[] }))
 vi.mock('./supabase', () => {
   class Query {
     filters: Array<(row: Row) => boolean> = []
@@ -25,6 +25,7 @@ vi.mock('./supabase', () => {
     update(value: Row) { this.operation = 'update'; this.payload = [value]; return this }
     delete() { this.operation = 'delete'; return this }
     then(resolve: (value: { data: Row[] | Row | null; error: { message: string } | null }) => unknown) {
+      if (this.table === 'legacy_snapshots' && backend.failLegacy) return Promise.resolve(resolve({ data: null, error: { message: 'lookup failed' } }))
       const rows = backend.rows[this.table] ||= []
       if (this.operation === 'insert' && this.table === 'inv_audit_items' && backend.failItems) return Promise.resolve(resolve({ data: null, error: { message: 'item insert failed' } }))
       let result = rows.filter(row => this.filters.every(filter => filter(row)))
@@ -40,6 +41,7 @@ vi.mock('./supabase', () => {
   return { supabase: {
     from: (table: string) => new Query(table),
     rpc: (name: string, values: Row) => {
+      if (name === 'rpc_get_audit_legacy_sub_warehouse_snapshots') return new Query('legacy_snapshots')
       if (name === 'rpc_audit_movement_products') {
         backend.rows.movement_rpc = backend.moved.map(product_id => ({ product_id }))
         return new Query('movement_rpc')
@@ -71,6 +73,7 @@ beforeEach(() => {
     inv_stock_balances: [{ product_id: 'rm', on_hand: 100, safety_stock: 20, reserved: 7 }],
   }
   backend.moved = ['rm', 'derived', 'st']
+  backend.failLegacy = false
   backend.failItems = false
   backend.adjustmentItems = []
 })
@@ -169,5 +172,28 @@ describe('Audit review completeness', () => {
     const { audit } = await makeAudit(false)
     backend.rows.inv_audits[0].status = 'closed'
     await expect(submitAuditForReview(audit.id, 'หมดเวลา')).rejects.toThrow('ไม่อยู่ในสถานะกำลังนับ')
+  })
+})
+
+
+describe('Sub-warehouse audit context loading', () => {
+  it('loads legacy context without replacing saved snapshots or changing main quantities', async () => {
+    const saved = [{ sub_warehouse_id: 'saved', name: 'คลังเดิม', qty: 19 }]
+    backend.rows.inv_audit_items = [
+      { id: 'a', audit_id: 'audit', product_id: 'rm', system_qty: 35, sub_warehouse_snapshot: saved },
+      { id: 'b', audit_id: 'audit', product_id: 'fg', system_qty: 40, sub_warehouse_snapshot: null },
+    ]
+    backend.rows.legacy_snapshots = [
+      { item_id: 'a', snapshot: [{ name: 'must not replace', qty: 999 }] },
+      { item_id: 'b', snapshot: [{ sub_warehouse_id: 'sub', name: 'คลังผลิต', qty: 82 }] },
+    ]
+    const rows = await fetchAuditItems('audit', true)
+    expect(rows.find(r => r.id === 'a')?.sub_warehouse_snapshot).toEqual(saved)
+    expect(rows.find(r => r.id === 'b')).toMatchObject({ system_qty: 40, sub_warehouse_snapshot_reconstructed: true, sub_warehouse_snapshot: [{ name: 'คลังผลิต', qty: 82 }] })
+  })
+  it('keeps counting available when supplementary loading fails', async () => {
+    backend.rows.inv_audit_items = [{ id: 'a', audit_id: 'audit', product_id: 'rm', system_qty: 35 }]
+    backend.failLegacy = true
+    expect(await fetchAuditItems('audit', true)).toMatchObject([{ system_qty: 35, sub_warehouse_snapshot_error: true }])
   })
 })

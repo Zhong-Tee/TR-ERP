@@ -430,9 +430,7 @@ export async function fetchLeaveRequests(filters?: { status?: string; employee_i
     .order('created_at', { ascending: false })
   if (filters?.status) q = q.eq('status', filters.status)
   if (filters?.employee_id) q = q.eq('employee_id', filters.employee_id)
-  const { data, error } = await q
-  if (error) pgError(error)
-  return data as HRLeaveRequest[]
+  return fetchAllSupabasePages<HRLeaveRequest>((from, to) => q.order('id').range(from, to).returns<HRLeaveRequest[]>())
 }
 
 export async function createLeaveRequest(req: Partial<HRLeaveRequest>) {
@@ -1555,9 +1553,8 @@ export async function fetchEmployeeOpeningData(employeeId: string, year: number)
 }
 
 export async function fetchAllOpeningLeaveBalances() {
-  const { data, error } = await supabase.from('hr_employee_opening_leave_balances').select('*')
-  if (error) pgError(error)
-  return data ?? []
+  return fetchAllSupabasePages<import('../types').HREmployeeOpeningBalance>((from, to) => supabase
+    .from('hr_employee_opening_leave_balances').select('*').order('id').range(from, to))
 }
 
 export async function fetchOpeningAttendance(filters?: { employeeId?: string; year?: number }) {

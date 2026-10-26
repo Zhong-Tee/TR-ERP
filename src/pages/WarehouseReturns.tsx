@@ -6,9 +6,13 @@ import { useAuthContext } from '../contexts/AuthContext'
 import { InventoryReturn, InventoryReturnItem } from '../types'
 import { getProductImageUrl } from '../components/wms/wmsUtils'
 import { useWmsModal } from '../components/wms/useWmsModal'
-import * as ExcelJS from 'exceljs'
+import { fetchAllSupabasePages } from '../lib/supabasePagination'
+import { buildReturnsWorkbook } from '../lib/warehouseReturnsExport'
+import type { ReturnExportItem } from '../lib/warehouseReturnsExport'
+import { filterReturnsByDate, filterReturnsByStatus, returnDateBounds, returnExportFilename, returnStatusLabel, formatReturnDate } from '../lib/warehouseReturnFilters'
+import type { ReturnDateRange, ReturnStatusFilter } from '../lib/warehouseReturnFilters'
 
-type StatusFilter = 'all' | 'pending' | 'return_to_stock' | 'waste'
+type StatusFilter = ReturnStatusFilter
 type ItemDisposition = 'return_to_stock' | 'waste' | 'lost'
 
 interface MatchedOrder {
@@ -61,6 +65,9 @@ export default function WarehouseReturns() {
   const [updating, setUpdating] = useState<string | null>(null)
   const [lightboxImg, setLightboxImg] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [draftDates, setDraftDates] = useState<ReturnDateRange>({ start: '', end: '' })
+  const [appliedDates, setAppliedDates] = useState<ReturnDateRange>({ start: '', end: '' })
+  const [dateError, setDateError] = useState('')
   const [exporting, setExporting] = useState(false)
   const [wasteCostMap, setWasteCostMap] = useState<Record<string, number>>({})
   const [itemDispositions, setItemDispositions] = useState<Record<string, ItemDisposition>>({})
@@ -84,12 +91,11 @@ export default function WarehouseReturns() {
   async function loadAll() {
     setLoading(true)
     try {
-      const { data, error } = await supabase
+      const list = await fetchAllSupabasePages<InventoryReturn>((from, to) => supabase
         .from('inv_returns')
         .select('*')
         .order('created_at', { ascending: false })
-      if (error) throw error
-      const list = (data || []) as InventoryReturn[]
+        .order('id').range(from, to))
       setReturnsList(list)
       if (canSeeCost) loadWasteCosts(list)
     } catch (e) {
@@ -280,28 +286,29 @@ export default function WarehouseReturns() {
     }
   }
 
-  const filteredReturns = useMemo(() => {
-    if (statusFilter === 'all') return returnsList
-    if (statusFilter === 'pending') return returnsList.filter((r) => r.status === 'pending')
-    if (statusFilter === 'return_to_stock') return returnsList.filter((r) => r.status === 'received' && r.disposition === 'return_to_stock')
-    if (statusFilter === 'waste') return returnsList.filter((r) => r.status === 'received' && r.disposition === 'waste')
-    return returnsList
-  }, [returnsList, statusFilter])
-
+  const dateFilteredReturns = useMemo(() => filterReturnsByDate(returnsList, appliedDates), [returnsList, appliedDates])
+  const filteredReturns = useMemo(() => filterReturnsByStatus(dateFilteredReturns, statusFilter), [dateFilteredReturns, statusFilter])
   const stats = useMemo(() => ({
-    all: returnsList.length,
-    pending: returnsList.filter((r) => r.status === 'pending').length,
-    return_to_stock: returnsList.filter((r) => r.status === 'received' && r.disposition === 'return_to_stock').length,
-    waste: returnsList.filter((r) => r.status === 'received' && r.disposition === 'waste').length,
-  }), [returnsList])
+    all: dateFilteredReturns.length,
+    pending: filterReturnsByStatus(dateFilteredReturns, 'pending').length,
+    return_to_stock: filterReturnsByStatus(dateFilteredReturns, 'return_to_stock').length,
+    waste: filterReturnsByStatus(dateFilteredReturns, 'waste').length,
+  }), [dateFilteredReturns])
 
-  const statusLabel = (ret: InventoryReturn) => {
-    if (ret.status === 'received' && ret.disposition === 'return_to_stock') return 'คืนกลับสต๊อค'
-    if (ret.status === 'received' && ret.disposition === 'waste') return 'ตีเป็นของเสีย'
-    if (ret.status === 'received' && ret.disposition === 'lost') return 'สูญหาย'
-    if (ret.status === 'received' && ret.disposition === 'mixed') return 'แยกผลรายสินค้าแล้ว'
-    if (ret.status === 'received') return 'รับแล้ว'
-    return 'รอดำเนินการ'
+  const statusLabel = returnStatusLabel
+  function applyDateFilter() {
+    try {
+      returnDateBounds(draftDates)
+      setAppliedDates({ ...draftDates })
+      setDateError('')
+    } catch (e) {
+      setDateError(e instanceof Error ? e.message : 'กรุณาเลือกช่วงวันที่ให้ถูกต้อง')
+    }
+  }
+  function clearDateFilter() {
+    setDraftDates({ start: '', end: '' })
+    setAppliedDates({ start: '', end: '' })
+    setDateError('')
   }
 
   const statusColor = (ret: InventoryReturn) => {
@@ -312,16 +319,7 @@ export default function WarehouseReturns() {
     return 'bg-amber-500 text-white'
   }
 
-  const formatDate = (dateString: string) => {
-    if (!dateString) return '-'
-    return new Date(dateString).toLocaleString('th-TH', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    })
-  }
+  const formatDate = formatReturnDate
 
   const exportToExcel = async () => {
     if (filteredReturns.length === 0) {
@@ -335,128 +333,26 @@ export default function WarehouseReturns() {
       const itemSelect = canSeeCost
         ? 'return_id, qty, disposition, pr_products(product_code, product_name, unit_cost)'
         : 'return_id, qty, disposition, pr_products(product_code, product_name)'
-      const { data, error } = await supabase
-        .from('inv_return_items')
-        .select(itemSelect)
-        .in('return_id', returnIds)
-      if (error) throw error
-
-      const itemsByReturn = new Map<string, any[]>()
-      ;(data || []).forEach((item: any) => {
-        const items = itemsByReturn.get(item.return_id) || []
-        items.push(item)
-        itemsByReturn.set(item.return_id, items)
-      })
-
-      const dispositionLabel = (value?: string | null) => {
-        if (value === 'return_to_stock') return 'คืนกลับสต๊อค'
-        if (value === 'waste') return 'ของเสีย'
-        if (value === 'lost') return 'สูญหาย'
-        return '-'
+      const data: ReturnExportItem[] = []
+      for (let index = 0; index < returnIds.length; index += 100) {
+        const batchIds = returnIds.slice(index, index + 100)
+        const batch = await fetchAllSupabasePages<ReturnExportItem>((from, to) => supabase
+          .from('inv_return_items')
+          .select(itemSelect)
+          .in('return_id', batchIds)
+          .order('id').range(from, to)
+          .returns<ReturnExportItem[]>())
+        data.push(...batch)
       }
 
-      const workbook = new ExcelJS.Workbook()
-      workbook.creator = 'TR-ERP'
-      workbook.created = new Date()
-      const worksheet = workbook.addWorksheet('รับสินค้าตีกลับ', {
-        views: [{ state: 'frozen', ySplit: 1 }],
-      })
-
-      const columns: Partial<ExcelJS.Column>[] = [
-        { header: 'เลขที่รับคืน', key: 'return_no', width: 22 },
-        { header: 'เลขบิลอ้างอิง', key: 'ref_bill_no', width: 20 },
-        { header: 'เลขพัสดุ', key: 'tracking_number', width: 22 },
-        { header: 'วันที่รับคืน', key: 'created_at', width: 20 },
-        { header: 'วันที่ดำเนินการ', key: 'received_at', width: 20 },
-        { header: 'สถานะ', key: 'status', width: 20 },
-        { header: 'เหตุผลตีกลับ', key: 'reason', width: 28 },
-        { header: 'หมายเหตุ', key: 'note', width: 28 },
-        { header: 'รหัสสินค้า', key: 'product_code', width: 18 },
-        { header: 'ชื่อสินค้า', key: 'product_name', width: 35 },
-        { header: 'จำนวน', key: 'qty', width: 12 },
-        { header: 'ผลตรวจสินค้า', key: 'item_disposition', width: 18 },
-      ]
-      if (canSeeCost) {
-        columns.push(
-          { header: 'ต้นทุนต่อหน่วย', key: 'unit_cost', width: 16 },
-          { header: 'ต้นทุนรวม', key: 'total_cost', width: 16 },
-        )
-      }
-      worksheet.columns = columns
-
-      filteredReturns.forEach((ret) => {
-        const items = itemsByReturn.get(ret.id) || []
-        const rows = items.length > 0 ? items : [null]
-        rows.forEach((item: any) => {
-          const qty = item ? Number(item.qty) || 0 : null
-          const unitCost = item ? Number(item.pr_products?.unit_cost) || 0 : null
-          worksheet.addRow({
-            return_no: ret.return_no,
-            ref_bill_no: ret.ref_bill_no || '-',
-            tracking_number: ret.tracking_number || '-',
-            created_at: formatDate(ret.created_at),
-            received_at: ret.received_at ? formatDate(ret.received_at) : '-',
-            status: statusLabel(ret),
-            reason: ret.reason || '-',
-            note: ret.note || '-',
-            product_code: item?.pr_products?.product_code || '-',
-            product_name: item?.pr_products?.product_name || '-',
-            qty: qty ?? '-',
-            item_disposition: dispositionLabel(item?.disposition),
-            ...(canSeeCost ? {
-              unit_cost: unitCost ?? '-',
-              total_cost: qty !== null && unitCost !== null ? qty * unitCost : '-',
-            } : {}),
-          })
-        })
-      })
-
-      const headerRow = worksheet.getRow(1)
-      headerRow.height = 26
-      headerRow.eachCell((cell) => {
-        cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2563EB' } }
-        cell.alignment = { vertical: 'middle', horizontal: 'center' }
-      })
-      worksheet.autoFilter = { from: 'A1', to: `${worksheet.getColumn(columns.length).letter}1` }
-
-      let previousReturnNo = ''
-      let useBlueFill = false
-      worksheet.eachRow((row, rowNumber) => {
-        if (rowNumber === 1) return
-        const returnNo = String(row.getCell(1).value || '')
-        if (returnNo !== previousReturnNo) {
-          previousReturnNo = returnNo
-          useBlueFill = !useBlueFill
-        }
-        row.eachCell((cell) => {
-          cell.fill = {
-            type: 'pattern',
-            pattern: 'solid',
-            fgColor: { argb: useBlueFill ? 'FFEFF6FF' : 'FFFFFFFF' },
-          }
-          cell.border = {
-            top: { style: 'thin', color: { argb: 'FFE5E7EB' } },
-            left: { style: 'thin', color: { argb: 'FFE5E7EB' } },
-            bottom: { style: 'thin', color: { argb: 'FFE5E7EB' } },
-            right: { style: 'thin', color: { argb: 'FFE5E7EB' } },
-          }
-          cell.alignment = { vertical: 'top', wrapText: true }
-        })
-      })
-      worksheet.getColumn('qty').numFmt = '#,##0.##'
-      if (canSeeCost) {
-        worksheet.getColumn('unit_cost').numFmt = '#,##0.00'
-        worksheet.getColumn('total_cost').numFmt = '#,##0.00'
-      }
+      const workbook = buildReturnsWorkbook(filteredReturns, data, canSeeCost)
 
       const buffer = await workbook.xlsx.writeBuffer()
       const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
-      const date = new Date().toISOString().slice(0, 10)
       link.href = url
-      link.download = `รับสินค้าตีกลับ_${statusFilter}_${date}.xlsx`
+      link.download = returnExportFilename(statusFilter, appliedDates)
       link.click()
       window.URL.revokeObjectURL(url)
     } catch (error: any) {
@@ -478,39 +374,43 @@ export default function WarehouseReturns() {
 
   return (
     <div className="space-y-6 mt-12">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-2">
-          {filterTabs.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => setStatusFilter(tab.key)}
-              className={`px-4 py-2 rounded-xl text-sm font-bold border transition ${
-                statusFilter === tab.key ? tab.activeColor : tab.color
-              }`}
-            >
-              {tab.label} ({tab.count})
+      <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
+        <div className="overflow-x-auto">
+          <form onSubmit={e => { e.preventDefault(); applyDateFilter() }} className="flex min-w-max items-end gap-3">
+            <label className="shrink-0 text-sm font-semibold text-gray-700">วันที่สร้างใบรับคืน — เริ่มต้น
+              <input type="date" value={draftDates.start} disabled={exporting} onChange={e => setDraftDates(old => ({ ...old, start: e.target.value }))} className="mt-1 block h-10 rounded-lg border px-3 text-sm" />
+            </label>
+            <label className="shrink-0 text-sm font-semibold text-gray-700">วันที่สิ้นสุด
+              <input type="date" value={draftDates.end} disabled={exporting} onChange={e => setDraftDates(old => ({ ...old, end: e.target.value }))} className="mt-1 block h-10 rounded-lg border px-3 text-sm" />
+            </label>
+            <button type="submit" title="กรองรายการ" aria-label="กรองรายการ" disabled={exporting} className="flex h-10 w-10 shrink-0 items-center justify-center bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+              <i aria-hidden="true" className="fas fa-filter" />
             </button>
-          ))}
+            <button type="button" title="ล้างตัวกรองวันที่" aria-label="ล้างตัวกรองวันที่" disabled={exporting} onClick={clearDateFilter} className="flex h-10 w-10 shrink-0 items-center justify-center border rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+              <i aria-hidden="true" className="fas fa-undo" />
+            </button>
+            <div className="flex shrink-0 gap-2">
+              {filterTabs.map((tab) => (
+                <button key={tab.key} type="button" onClick={() => setStatusFilter(tab.key)} disabled={exporting}
+                  className={`h-10 whitespace-nowrap px-4 rounded-xl text-sm font-bold border transition ${statusFilter === tab.key ? tab.activeColor : tab.color}`}>
+                  {tab.label} ({tab.count})
+                </button>
+              ))}
+            </div>
+            <div className="ml-auto flex shrink-0 gap-2">
+              <button type="button" onClick={exportToExcel} disabled={exporting || loading || filteredReturns.length === 0}
+                title={exporting ? 'กำลังสร้างไฟล์...' : 'Export Excel'} aria-label={exporting ? 'กำลังสร้างไฟล์...' : 'Export Excel'} aria-busy={exporting}
+                className="flex h-10 w-10 items-center justify-center bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50 transition">
+                <i aria-hidden="true" className={`fas ${exporting ? 'fa-spinner fa-spin' : 'fa-file-excel'}`} />
+              </button>
+              <button type="button" onClick={() => { resetCreateForm(); setCreateOpen(true) }} title="เปิดใบรับสินค้าตีกลับ" aria-label="เปิดใบรับสินค้าตีกลับ"
+                className="flex h-10 w-10 items-center justify-center bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+                <i aria-hidden="true" className="fas fa-plus" />
+              </button>
+            </div>
+          </form>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={exportToExcel}
-            disabled={exporting || loading || filteredReturns.length === 0}
-            className="px-4 py-2 bg-green-600 text-white rounded-xl hover:bg-green-700 font-semibold disabled:cursor-not-allowed disabled:opacity-50 transition flex items-center gap-2"
-          >
-            <i className={`fas ${exporting ? 'fa-spinner fa-spin' : 'fa-file-excel'}`}></i>
-            {exporting ? 'กำลังสร้างไฟล์...' : 'Export Excel'}
-          </button>
-          <button
-            type="button"
-            onClick={() => { resetCreateForm(); setCreateOpen(true) }}
-            className="px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold"
-          >
-            + เปิดใบรับสินค้าตีกลับ
-          </button>
-        </div>
+        {dateError && <p role="alert" className="mt-2 text-sm text-red-600">{dateError}</p>}
       </div>
 
       <div className="bg-white p-6 rounded-lg shadow">

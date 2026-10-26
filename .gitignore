@@ -34,3 +34,10 @@ google api key/
 .reservation-test-runtime/
 dist-delivery-review/
 .tmp/late-accumulation-validation/
+.tmp/production-actual-tests/
+.tmp/production-actual-build/
+.tmp/audit-sub-warehouse-build/
+.tmp/returns-date-filter-build/
+
+.tmp/hr-entitlement-review/
+.tmp/bank-import-671-review/

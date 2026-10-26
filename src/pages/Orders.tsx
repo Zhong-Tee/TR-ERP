@@ -15,6 +15,7 @@ import Modal from '../components/ui/Modal'
 import { Order, OrderStatus } from '../types'
 import type { PreBillDocument } from '../types/prebill'
 import { supabase } from '../lib/supabase'
+import { loadPendingClaimShippingCount } from '../lib/claimShippingBadge'
 import { fetchAllSupabasePages } from '../lib/supabasePagination'
 import {
   canSeeOfficeChannel,
@@ -140,38 +141,18 @@ export default function Orders() {
   /** นับบิล REQ ที่รอกรอกที่อยู่ ตั้งแต่เข้าหน้าออเดอร์ (ไม่ต้องเปิดแท็บบิลเคลมก่อน) + อัปเดตเรียลไทม์ */
   useEffect(() => {
     let cancelled = false
+    let loadVersion = 0
     const loadClaimReqBadge = async () => {
+      const version = ++loadVersion
       try {
-        const { data: approved, error } = await supabase
-          .from('or_claim_requests')
-          .select('created_claim_order_id')
-          .eq('status', 'approved')
-          .not('created_claim_order_id', 'is', null)
-          .order('reviewed_at', { ascending: false })
-          .limit(200)
-        if (error) throw error
-        const ids = [
-          ...new Set((approved || []).map((r) => String(r.created_claim_order_id || '')).filter(Boolean)),
-        ]
-        if (ids.length === 0) {
-          if (!cancelled) setClaimReqNeedShippingCount(0)
-          return
-        }
         const narrow =
           user?.role === 'sales-tr'
             ? narrowSalesTrAdminUserForTab()
             : isSalesPumpOwnerScopedRole(user?.role)
               ? resolveSalesPumpOwnerAdminName(user?.role, user?.username, user?.email) || undefined
               : undefined
-        let q = supabase
-          .from('or_orders')
-          .select('id')
-          .in('id', ids)
-          .is('claim_shipping_confirmed_at', null)
-        if (narrow?.trim()) q = q.eq('admin_user', narrow.trim())
-        const { data: rows, error: e2 } = await q
-        if (e2) throw e2
-        if (!cancelled) setClaimReqNeedShippingCount((rows || []).length)
+        const count = await loadPendingClaimShippingCount(narrow)
+        if (!cancelled && version === loadVersion) setClaimReqNeedShippingCount(count)
       } catch (e) {
         console.warn('Orders: claim REQ badge', e)
       }
@@ -179,6 +160,9 @@ export default function Orders() {
     void loadClaimReqBadge()
     const channel = supabase
       .channel('orders-claim-req-badge')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
+        void loadClaimReqBadge()
+      })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_claim_requests' }, () => {
         void loadClaimReqBadge()
       })

@@ -82,6 +82,7 @@ export default function ProductCountCard({ item, showSystemQty = false, onSave, 
         <div>
           <div className="text-lg font-bold text-gray-900">{productCode}</div>
           <div className="text-sm text-gray-600 mt-0.5">{productName}</div>
+          <div className="mt-2 text-xs font-semibold text-gray-600">จุดจัดเก็บคลังหลัก / Safety</div>
           {locationSnapshot.length > 0 ? (
             <div className="mt-2 grid grid-cols-1 gap-1 rounded-lg border border-surface-200 bg-surface-50 p-2 text-xs">
               {locationSnapshot.map((location) => (
@@ -102,8 +103,22 @@ export default function ProductCountCard({ item, showSystemQty = false, onSave, 
           )}
         </div>
 
-        {/* Counted Qty - Blind Count */}
         {showSystemQty && separate && <div className="text-sm text-blue-700">Safety: {item.system_safety_stock ?? '-'} · รวม: {Number(item.system_qty) + Number(item.system_safety_stock || 0)} · จอง: {Number(item.system_reserved || 0)}<div className="text-xs">ยอดจองเป็นข้อมูลประกอบ ให้นับสินค้าที่จองแต่ยังอยู่ในคลังด้วย</div></div>}
+        <section aria-label="ยอดคลังย่อย ข้อมูลประกอบ" className="rounded-xl border border-violet-200 bg-violet-50 p-3 space-y-2">
+          <h3 className="text-sm font-semibold text-violet-900">ยอดคลังย่อย — ข้อมูลประกอบ</h3>
+          <p className="text-xs text-violet-800">ยอด ณ สร้างใบ Audit แยกจากคลังหลัก ไม่รวมในยอดรวมและจำนวนที่ต้องนับในหน้านี้</p>
+          {item.sub_warehouse_snapshot_error ? <p role="alert" className="text-xs text-red-700">ไม่สามารถโหลดข้อมูลคลังย่อย กรุณาโหลดหน้าใหม่ ยังบันทึกยอดนับคลังหลักได้ตามปกติ</p>
+            : item.sub_warehouse_snapshot == null ? <p className="text-xs text-violet-700">ไม่มีข้อมูลยอดคลังย่อยสำหรับใบนี้</p>
+            : item.sub_warehouse_snapshot.length === 0 ? <p className="text-xs text-violet-700">ไม่มีรายการสินค้านี้ในคลังย่อย ณ สร้างใบ Audit</p>
+            : item.sub_warehouse_snapshot.map(warehouse => <div key={warehouse.sub_warehouse_id} className="flex justify-between gap-3 text-sm">
+              <span className="min-w-0 break-words text-violet-900">{warehouse.name}</span>
+              {showSystemQty && <span className="shrink-0 font-semibold tabular-nums text-violet-900">{Number(warehouse.qty).toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}</span>}
+            </div>)}
+          {!showSystemQty && <p className="text-xs text-violet-700">ซ่อนจำนวนตามตัวเลือกแสดงยอดระบบ</p>}
+          {item.sub_warehouse_snapshot_reconstructed && <p className="text-xs text-violet-700">ใบเดิม: อ้างอิงประวัติคลังย่อยที่บันทึกไว้ถึงเวลาสร้างใบ ชื่อคลังใช้ชื่อปัจจุบัน</p>}
+        </section>
+
+        {/* Counted Qty - Blind Count */}
         <div>
           <label className="block text-sm font-semibold text-gray-700 mb-1">
             {separate && item.system_safety_stock != null ? 'สต๊อคปกติที่นับได้ (ไม่รวม Safety)' : separate ? 'จำนวนจริงรวมที่นับได้ (ST)' : 'จำนวนที่นับได้'} ({item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}) <span className="text-red-500">*</span>

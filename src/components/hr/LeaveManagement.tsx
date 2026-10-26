@@ -19,6 +19,7 @@ import {
 } from '../../lib/hrApi'
 import type { HRCompanyHoliday, HREmployee, HREmployeeWorkCalendar, HRLeaveRequest, HROTRequest, HRWFHRequest, HRWFHRequestType } from '../../types'
 import Modal from '../ui/Modal'
+import { calculateEmployeeLeaveBalances } from '../../lib/leaveEntitlement'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { supabase } from '../../lib/supabase'
 import { WFH_REQUEST_TYPE_OPTIONS, wfhRequestTypeLabel } from '../../lib/wfhRequestType'
@@ -425,24 +426,11 @@ export default function LeaveManagement() {
   const selectedDateDayOffs = dayOffsByDate[selectedDateKey] ?? []
   const selectedDateHoliday = holidayByDate[selectedDateKey]
 
-  const approvedUsedByEmpYearType = requests.reduce<Record<string, number>>((acc, req) => {
-    if (req.status !== 'approved') return acc
-    const year = new Date(req.start_date).getFullYear()
-    const key = `${req.employee_id}|${year}|${req.leave_type_id}`
-    acc[key] = (acc[key] ?? 0) + Number(req.total_days ?? 0)
-    return acc
-  }, {})
-
   const getLeaveBalanceRows = (employeeId: string, dateForYear: string) => {
-    const year = new Date(dateForYear).getFullYear()
-    return leaveTypes.map((t) => {
-      const opening = openingBalances.find((row) => row.employee_id === employeeId && row.leave_type_id === t.id && row.year === year)
-      const entitled = opening ? Number(opening.opening_remaining_days) : Number(t.max_days_per_year ?? 0)
-      const used = opening
-        ? requests.filter((req) => req.employee_id === employeeId && req.leave_type_id === t.id && req.status === 'approved' && new Date(req.start_date).getFullYear() === year && req.start_date >= opening.effective_date).reduce((sum, req) => sum + Number(req.total_days ?? 0), 0)
-        : (approvedUsedByEmpYearType[`${employeeId}|${year}|${t.id}`] ?? 0)
-      return { id: t.id, name: t.name, entitled, used, remaining: Math.max(0, entitled - used), excess: Math.max(0, used - entitled) }
-    })
+    const year = dateForYear.slice(0, 4)
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' })
+    const asOf = today.startsWith(year) ? today : `${year}-12-31`
+    return calculateEmployeeLeaveBalances(employeeId, asOf, leaveTypes, requests, openingBalances)
   }
 
   const handleApprove = async (id: string) => {

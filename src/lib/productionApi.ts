@@ -1,5 +1,6 @@
 import { supabase } from './supabase'
 import { fetchAllSupabasePages } from './supabasePagination'
+import type { ProductionActual } from './productionCompletion'
 import type {
   Product,
   PpRecipe,
@@ -101,7 +102,7 @@ export async function fetchRecipe(productId: string) {
   if (rErr) throw rErr
   if (!recipe) return null
 
-  const [{ data: includes }, { data: removes }] = await Promise.all([
+  const [includeResult, removeResult] = await Promise.all([
     supabase
       .from('pp_recipe_includes')
       .select('*, product:pr_products(*)')
@@ -111,6 +112,10 @@ export async function fetchRecipe(productId: string) {
       .select('*, product:pr_products(*)')
       .eq('recipe_id', recipe.id),
   ])
+  if (includeResult.error) throw includeResult.error
+  if (removeResult.error) throw removeResult.error
+  const includes = includeResult.data
+  const removes = removeResult.data
 
   return {
     recipe: recipe as PpRecipe,
@@ -242,7 +247,7 @@ export async function fetchProductionOrders(status?: ProductionOrderStatus) {
   const orders = (data ?? []) as PpProductionOrder[]
 
   const userIds = [...new Set(
-    orders.flatMap(o => [o.created_by, o.approved_by, o.rejected_by].filter(Boolean) as string[])
+    orders.flatMap(o => [o.created_by, o.approved_by, o.rejected_by, o.completed_by].filter(Boolean) as string[])
   )]
   if (userIds.length > 0) {
     const { data: users } = await supabase
@@ -255,6 +260,7 @@ export async function fetchProductionOrders(status?: ProductionOrderStatus) {
     orders.forEach(o => {
       if (o.created_by) o.creator = { display_name: userMap.get(o.created_by) || '-' }
       if (o.approved_by) o.approver = { display_name: userMap.get(o.approved_by) || '-' }
+      if (o.completed_by) o.completer = { display_name: userMap.get(o.completed_by) || '-' }
       if (o.rejected_by) o.rejector = { display_name: userMap.get(o.rejected_by) || '-' }
     })
   }
@@ -332,8 +338,8 @@ export async function startProductionOrder(orderId: string) {
   if (error) throw error
 }
 
-export async function completeProductionOrder(orderId: string) {
-  const { error } = await supabase.rpc('rpc_complete_production_order', { p_order_id: orderId })
+export async function completeProductionOrder(orderId: string, items: ProductionActual[]) {
+  const { error } = await supabase.rpc('rpc_complete_production_order_actual', { p_order_id: orderId, p_items: items })
   if (error) throw error
 }
 

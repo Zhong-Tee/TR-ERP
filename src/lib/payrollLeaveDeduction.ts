@@ -1,4 +1,5 @@
 import type { HREmployeeOpeningBalance, HRLeaveRequest, HRLeaveType } from '../types'
+import { resolveLeaveEntitlement } from './leaveEntitlement'
 
 export type LeaveDeductionRequest = Pick<HRLeaveRequest, 'id' | 'employee_id' | 'leave_type_id' | 'start_date' | 'total_days' | 'status' | 'created_at'>
 export type LeaveDeductionType = Pick<HRLeaveType, 'id' | 'name' | 'max_days_per_year' | 'is_paid'>
@@ -13,7 +14,7 @@ export function calculateMonthlyLeaveOverage(
 ): Map<string, Map<string, number>> {
   const year = Number(month.slice(0, 4))
   const typesById = new Map(types.map((type) => [type.id, type]))
-  const openingByKey = new Map(openings.filter((row) => row.year === year).map((row) => [`${row.employee_id}|${row.leave_type_id}`, row]))
+  const monthEnd = `${month}-${new Date(Date.UTC(year, Number(month.slice(5, 7)), 0)).getUTCDate()}`
   const cumulative = new Map<string, number>()
   const details = new Map<string, Map<string, number>>()
   const approved = requests.filter((row) => row.status === 'approved' && row.start_date.startsWith(String(year)) && row.start_date.slice(0, 7) <= month)
@@ -22,10 +23,10 @@ export function calculateMonthlyLeaveOverage(
     const type = typesById.get(request.leave_type_id)
     if (!type) throw new Error('ไม่พบประเภทลา ไม่สามารถคำนวณยอดหักเงินเดือนได้')
     const key = `${request.employee_id}|${request.leave_type_id}`
-    const opening = openingByKey.get(key)
-    if (opening && request.start_date < opening.effective_date) continue
+    const basis = resolveLeaveEntitlement(request.employee_id, type, monthEnd, openings)
+    if (request.start_date < basis.effectiveDate) continue
     // Unpaid leave has no paid entitlement, even if a leave-day limit is configured.
-    const entitled = type.is_paid ? Math.max(0, Number(opening?.opening_remaining_days ?? type.max_days_per_year ?? 0)) : 0
+    const entitled = type.is_paid ? basis.entitled : 0
     const usedBefore = cumulative.get(key) || 0
     const usedAfter = usedBefore + Math.max(0, Number(request.total_days) || 0)
     cumulative.set(key, usedAfter)
