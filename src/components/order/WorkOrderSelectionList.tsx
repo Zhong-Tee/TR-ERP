@@ -231,14 +231,16 @@ export default function WorkOrderSelectionList({
       .from('or_order_items')
       .select('product_id, product_type, is_detail_row')
       .in('order_id', orderIds)
-    if (itemsErr || !items?.length) return qty
+    if (itemsErr) throw itemsErr
+    if (!items?.length) return qty
 
     const productIds = [...new Set((items as { product_id: string }[]).map((r) => r.product_id).filter(Boolean))]
     const { data: products, error: prodErr } = await supabase
       .from('pr_products')
       .select('id, product_category')
       .in('id', productIds)
-    if (prodErr || !products?.length) return qty
+    if (prodErr) throw prodErr
+    if (!products?.length) return qty
 
     const categoryByProductId: Record<string, string> = {}
     ;(products as { id: string; product_category: string | null }[]).forEach((p) => {
@@ -266,6 +268,8 @@ export default function WorkOrderSelectionList({
     }
 
     setCreating(true)
+    let createStage = 'ตรวจเงื่อนไขเข้าใบงาน'
+    let currentWorkOrderName = ''
     try {
       const { data: blocks, error: blockError } = await supabase.rpc('or_work_order_refund_blocks', { p_order_ids: selectedOrders.map((o) => o.id) })
       if (blockError) throw blockError
@@ -283,14 +287,18 @@ export default function WorkOrderSelectionList({
       const datePart = today.toLocaleDateString('th-TH', { year: '2-digit', month: '2-digit', day: '2-digit' }).replace(/\//g, '')
       const dateISO = localISODate(today)
 
-      const { data: maxOrder } = await supabase
+      createStage = 'อ่านลำดับแผนผลิต'
+      const { data: maxOrder, error: maxOrderError } = await supabase
         .from('plan_jobs')
         .select('order_index')
         .order('order_index', { ascending: false })
         .limit(1)
+      if (maxOrderError) throw maxOrderError
       let nextOrderIndex = (maxOrder?.[0]?.order_index ?? -1) + 1
 
       for (const [channelCode, channelOrders] of Object.entries(byChannel)) {
+        currentWorkOrderName = ''
+        createStage = `ออกเลขใบงาน (${channelCode}, ${channelOrders.length} บิล)`
         const claimPrefix = '(Claim)'
         const prefix = channelCode.startsWith(claimPrefix)
           ? `${claimPrefix}${woPrefix(channelCode.slice(claimPrefix.length))}`
@@ -302,10 +310,13 @@ export default function WorkOrderSelectionList({
         if (nameErr) throw nameErr
         const workOrderName = String(nextName || '').trim()
         if (!workOrderName) throw new Error('สร้างเลขใบงานไม่สำเร็จ')
+        currentWorkOrderName = workOrderName
 
         const orderIds = channelOrders.map((o) => o.id)
         const cutTime = `${String(today.getHours()).padStart(2, '0')}:${String(today.getMinutes()).padStart(2, '0')}`
+        createStage = `คำนวณจำนวนงาน (${channelOrders.length} บิล)`
         const qty = await computeQtyFromOrders(orderIds)
+        createStage = `บันทึกใบงาน แผนผลิต และ WMS (${channelOrders.length} บิล)`
         const { data: createResult, error: createError } = await supabase.rpc('rpc_create_work_order_with_plan', {
           p_work_order_name: workOrderName,
           p_order_ids: orderIds,
@@ -325,10 +336,10 @@ export default function WorkOrderSelectionList({
       onCreateWorkOrder?.()
       setSuccessPopup({ count: Object.keys(byChannel).length })
     } catch (error: any) {
-      console.error('Error creating work order:', error)
+      console.error('Error creating work order:', { stage: createStage, workOrderName: currentWorkOrderName, error })
       setErrorPopup({
         title: 'สร้างใบงานไม่สำเร็จ',
-        message: await readableWorkOrderCreateError(error),
+        message: `ขั้นตอน: ${createStage}${currentWorkOrderName ? `\nใบงาน: ${currentWorkOrderName}` : ''}\n${await readableWorkOrderCreateError(error)}`,
       })
     } finally {
       setCreating(false)
