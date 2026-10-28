@@ -8,6 +8,7 @@ import IssueBoard from '../components/order/IssueBoard'
 import ClaimReqOrdersTab from '../components/order/ClaimReqOrdersTab'
 import RefundReturnList from '../components/order/RefundReturnList'
 import PreBillWorkspace from '../components/order/PreBillWorkspace'
+import DiscountApprovalWorkspace from '../components/order/DiscountApprovalWorkspace'
 import { useShippingConversionCount } from '../hooks/useShippingConversionCount'
 import ShippingConversionPanel from '../components/order/ShippingConversionPanel'
 import OrderDetailView from '../components/order/OrderDetailView'
@@ -29,6 +30,7 @@ import { getBangkokCalendarDayUtcBoundsISO } from '../lib/utils'
 import { cancelOrderWithAudit, isZeroValueOrder } from '../lib/orderCancellation'
 
 type Tab =
+  | 'discount-approval'
   | 'shipping-conversion'
   | 'all'
   | 'prebill'
@@ -46,7 +48,7 @@ type Tab =
 
 type FailureArchiveFilter = 'active' | 'archived' | 'all'
 
-const ALL_TABS: Tab[] = ['all', 'prebill', 'shipping-conversion', 'create', 'claim-req', 'waiting', 'data-error', 'complete', 'verified', 'refund-return', 'confirm', 'shipped', 'cancelled', 'issue']
+const ALL_TABS: Tab[] = ['discount-approval', 'all', 'prebill', 'shipping-conversion', 'create', 'claim-req', 'waiting', 'data-error', 'complete', 'verified', 'refund-return', 'confirm', 'shipped', 'cancelled', 'issue']
 
 /** แท็บที่ sales-tr มี dropdown + ปุ่มเฉพาะฉัน กรอง admin_user */
 const SALES_TR_FILTER_TABS: Tab[] = ['all', 'waiting', 'data-error', 'complete', 'verified', 'shipped', 'issue', 'claim-req']
@@ -82,6 +84,8 @@ export default function Orders() {
   const { hasAccess, menuAccessLoading } = useMenuAccess()
   const { user } = useAuthContext()
   const shippingConversionCount = useShippingConversionCount()
+  const [orderMessage, setOrderMessage] = useState('')
+  const [discountPendingCount, setDiscountPendingCount] = useState(0)
   const [activeTab, setActiveTab] = useState<Tab>('prebill')
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
   const [prebillDetailOrder, setPrebillDetailOrder] = useState<Order | null>(null)
@@ -123,8 +127,8 @@ export default function Orders() {
     let cancelled = false
     const refresh = async () => {
       const [quotation, productionConfirmation] = await Promise.all([
-        supabase.from('or_prebill_documents').select('id', { count: 'exact', head: true }).eq('status', 'pending_discount').eq('document_type', 'quotation'),
-        supabase.from('or_prebill_documents').select('id', { count: 'exact', head: true }).eq('status', 'pending_discount').eq('document_type', 'production_confirmation'),
+        supabase.from('or_prebill_documents').select('id', { count: 'exact', head: true }).eq('status', 'pending_discount').gte('valid_until', new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10)).eq('document_type', 'quotation'),
+        supabase.from('or_prebill_documents').select('id', { count: 'exact', head: true }).eq('status', 'pending_discount').gte('valid_until', new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10)).eq('document_type', 'production_confirmation'),
       ])
       if (!cancelled && !quotation.error && !productionConfirmation.error) {
         setPrebillPendingCounts({
@@ -137,6 +141,21 @@ export default function Orders() {
     const channel = supabase.channel('prebill-menu-badge').on('postgres_changes', { event: '*', schema: 'public', table: 'or_prebill_documents' }, refresh).subscribe()
     return () => { cancelled = true; void supabase.removeChannel(channel) }
   }, [prebillAllowed])
+
+  useEffect(() => {
+    if (user?.role !== 'superadmin') return
+    let cancelled = false
+    const refresh = async () => {
+      const { data, error } = await supabase.rpc('rpc_discount_approval_queue', { p_status: 'pending', p_type: 'all', p_offset: 0 })
+      if (!cancelled && !error) setDiscountPendingCount(data.pending_count || 0)
+    }
+    void refresh()
+    const channel = supabase.channel('discount-approval-badge')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_sales_discount_requests' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_prebill_documents' }, refresh).subscribe()
+    window.addEventListener('discount-approval-refresh', refresh)
+    return () => { cancelled = true; void supabase.removeChannel(channel); window.removeEventListener('discount-approval-refresh', refresh) }
+  }, [user?.role, listRefreshKey])
 
   /** นับบิล REQ ที่รอกรอกที่อยู่ ตั้งแต่เข้าหน้าออเดอร์ (ไม่ต้องเปิดแท็บบิลเคลมก่อน) + อัปเดตเรียลไทม์ */
   useEffect(() => {
@@ -261,13 +280,13 @@ export default function Orders() {
       setTabStatusFilter('')
     } catch (error) {
       console.error('Open bill from QT/PC:', error)
-      alert(`เปิดบิลไม่สำเร็จ: ${(error as Error).message || String(error)}`)
+      setOrderMessage(`เปิดบิลไม่สำเร็จ: ${(error as Error).message || String(error)}`)
     }
   }
 
   async function handleViewConvertedPreBillOrder(document: PreBillDocument) {
     if (!document.converted_order_id) {
-      alert('ไม่พบข้อมูลบิลที่เชื่อมกับเอกสารนี้')
+      setOrderMessage('ไม่พบข้อมูลบิลที่เชื่อมกับเอกสารนี้')
       return
     }
     try {
@@ -280,7 +299,7 @@ export default function Orders() {
       setPrebillDetailOrder({ ...data, order_items: data.order_items || [] } as Order)
     } catch (error) {
       console.error('View converted bill from QT/PC:', error)
-      alert(`เปิดรายละเอียดบิลไม่สำเร็จ: ${(error as Error).message || String(error)}`)
+      setOrderMessage(`เปิดรายละเอียดบิลไม่สำเร็จ: ${(error as Error).message || String(error)}`)
     }
   }
 
@@ -720,6 +739,7 @@ export default function Orders() {
           <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
             {[
               { id: 'all', label: 'ทั้งหมด' },
+              { id: 'discount-approval', label: 'อนุมัติส่วนลด', count: discountPendingCount, countColor: 'text-amber-600' },
               { id: 'prebill', label: `QT/PC${prebillPendingCount > 0 ? ` (${prebillPendingCount})` : ''}` },
               { id: 'create', label: 'สร้าง/แก้ไข' },
               { id: 'shipping-conversion', label: 'เปลี่ยนเป็นจัดส่ง', count: shippingConversionCount, countColor: 'text-amber-600' },
@@ -733,7 +753,7 @@ export default function Orders() {
               { id: 'shipped', label: 'จัดส่งแล้ว' },
               { id: 'cancelled', label: `ยกเลิก (${cancelledCount})`, labelColor: 'text-orange-600' },
               { id: 'issue', label: 'Issue', count: issueCount, countColor: 'text-blue-600' },
-            ].filter((tab) => tab.id === 'prebill' ? prebillAllowed && hasAccess('orders-prebill') : hasAccess(`orders-${tab.id}`)).map((tab) => (
+            ].filter((tab) => tab.id === 'discount-approval' ? user?.role === 'superadmin' : tab.id === 'prebill' ? prebillAllowed && hasAccess('orders-prebill') : hasAccess(`orders-${tab.id}`)).map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => {
@@ -769,7 +789,7 @@ export default function Orders() {
         </div>
 
         {/* Search and Filter - แสดงเมื่อไม่ใช่แท็บสร้าง/แก้ไข */}
-        {activeTab !== 'shipping-conversion' && activeTab !== 'create' && activeTab !== 'prebill' && activeTab !== 'confirm' && activeTab !== 'claim-req' && activeTab !== 'refund-return' && (
+        {activeTab !== 'discount-approval' && activeTab !== 'shipping-conversion' && activeTab !== 'create' && activeTab !== 'prebill' && activeTab !== 'confirm' && activeTab !== 'claim-req' && activeTab !== 'refund-return' && (
           <div className="w-full px-4 sm:px-6 lg:px-8 py-3 bg-surface-100 border-t border-surface-200">
             <div className="flex flex-wrap gap-3">
               <div className="relative flex-1 min-w-[200px]">
@@ -952,11 +972,12 @@ export default function Orders() {
         className="w-full pb-6 min-h-0 pt-4"
         aria-label="เนื้อหาออเดอร์"
       >
-        {activeTab === 'shipping-conversion' ? (<ShippingConversionPanel />) : activeTab === 'prebill' ? (
+        {activeTab === 'discount-approval' ? (<DiscountApprovalWorkspace onChanged={() => setListRefreshKey(k => k + 1)} />) : activeTab === 'shipping-conversion' ? (<ShippingConversionPanel />) : activeTab === 'prebill' ? (
           <PreBillWorkspace
             onOpenBill={handleOpenPreBill}
             onViewConvertedOrder={handleViewConvertedPreBillOrder}
             pendingCounts={prebillPendingCounts}
+            onReviewDiscounts={() => setActiveTab('discount-approval')}
           />
         ) : selectedOrder ? (
           <OrderForm
@@ -1111,6 +1132,9 @@ export default function Orders() {
           />
         )}
       </main>
+      <Modal open={!!orderMessage} onClose={() => setOrderMessage('')} contentClassName="max-w-md" stackClassName="z-[80]" ariaLabelledby="order-message-title">
+        <div className="p-6"><h3 id="order-message-title" className="pr-8 text-lg font-bold">แจ้งเตือน</h3><p className="mt-3 whitespace-pre-wrap">{orderMessage}</p><button onClick={() => setOrderMessage('')} className="mt-5 rounded-xl bg-blue-600 px-4 py-2 text-white">ตกลง</button></div>
+      </Modal>
       <Modal
         open={prebillDetailOrder !== null}
         onClose={() => setPrebillDetailOrder(null)}

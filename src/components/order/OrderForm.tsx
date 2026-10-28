@@ -20,6 +20,7 @@ import {
 } from '../../lib/postSlipVerificationStatus'
 import { mapWyCustomerFields } from '../../lib/wyCustomerMapping'
 import Modal from '../ui/Modal'
+import { checkSalesDiscount, discountBlocksCompletion, maySkipSlip, DISCOUNT_STATUS, type DiscountCheck, type DiscountPreview } from '../../lib/salesDiscountApproval'
 import * as XLSX from 'xlsx'
 import * as Papa from 'papaparse'
 import { countThaiBillChars } from '../../lib/thaiBillCharCount'
@@ -864,6 +865,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   /** Popup ยกเลิกบิลแบบยืนยันข้อความสองชั้น */
   const [cancelOrderModalOpen, setCancelOrderModalOpen] = useState(false)
   /** Modal แจ้งเตือนทั่วไป (แทน alert เช่น กรุณาอัพโหลดสลิปโอนเงิน) */
+  const [discountCheck, setDiscountCheck] = useState<DiscountCheck | null>(null)
+  const [discountCheckError, setDiscountCheckError] = useState('')
+  const [discountRequestOpen, setDiscountRequestOpen] = useState(false)
+  const [discountReason, setDiscountReason] = useState('')
   const [messageModal, setMessageModal] = useState<{ open: boolean; title: string; message: string }>({
     open: false,
     title: '',
@@ -2248,6 +2253,28 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
 
+  const usesDiscountApproval = !claimFinancialLocked && !order?.source_marketplace_order_id
+    && !(order as (Order & { web_import_snapshot?: unknown }) | undefined)?.web_import_snapshot
+  function discountPreview(sourceItems = items): DiscountPreview {
+    const price = isManualPriceChannel ? Number(formData.price || 0) : calculateChargeableItemsTotal(sourceItems.filter(i => i.product_id), isCondoSubRow)
+    const discount = getDiscountInBaht(price, Number(formData.discount || 0), discountType)
+    const shipping = isCurrentBillSelfPickup() && !legacyPickupFinancialLocked ? 0 : Number(formData.shipping_cost || 0)
+    return {
+      header: { price, shipping_cost: shipping, discount, total_amount: Math.round((price + shipping - discount) * 100) / 100,
+        channel_code: formData.channel_code?.trim(), payment_method: formData.payment_method, fulfillment_method: isCurrentBillSelfPickup() ? 'self_pickup' : 'shipping' },
+      items: sourceItems.filter(i => i.product_id).map(i => ({ product_id: i.product_id, quantity: i.quantity || 1,
+        unit_price: isCondoSubRow(i) || i.is_free ? 0 : (i.unit_price || 0), is_free: !!i.is_free, is_detail_row: isCondoSubRow(i) })),
+      promotions: selectedPromotionIds.map(id => ({ promotion_id: id, application_count: promotionApplicationCounts[id] || 1 })),
+    }
+  }
+  async function validateDiscountCompletion(sourceItems = items) {
+    if (!usesDiscountApproval || Number(formData.discount || 0) <= 0) return null
+    const result = await checkSalesDiscount(order?.id || null, discountPreview(sourceItems))
+    setDiscountCheck(result)
+    if (discountBlocksCompletion(result)) throw new Error('ส่วนลดต้องได้รับอนุมัติจาก superadmin และตรงกับรายการปัจจุบันก่อนยืนยันบิล กรุณาบันทึกและส่งขออนุมัติส่วนลด')
+    return result
+  }
+
   async function handleSubmit(e: React.FormEvent, targetStatus: OrderStatus = 'รอลงข้อมูล') {
     e.preventDefault()
     targetStatus = billEditTargetStatusRef.current ?? targetStatus
@@ -2359,6 +2386,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     itemsToSave: typeof items,
     targetStatus: OrderStatus = 'รอลงข้อมูล',
     skipDesignAttachmentConfirmation = false,
+    requestDiscountReason?: string,
   ) {
     if (!user) {
       console.error('User not found')
@@ -2501,6 +2529,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       
       // ปัดเศษให้เป็น 2 ทศนิยมเพื่อหลีกเลี่ยง floating point error
       calculatedTotal = Math.round(calculatedTotal * 100) / 100
+      if (requestDiscountReason && (!formData.channel_code?.trim() || !itemsToSave.some(item => item.product_id)
+        || !Number.isFinite(calculatedTotal) || !Number.isFinite(discountBahtForSave) || discountBahtForSave <= 0 || calculatedTotal < 0)) {
+        throw new Error('กรุณาเลือกช่องทางและสินค้า พร้อมระบุส่วนลดที่มากกว่า 0 และไม่เกินยอดที่ต้องชำระ ก่อนส่งขออนุมัติ')
+      }
+      const completionDiscount = targetStatus === 'ลงข้อมูลเสร็จสิ้น' ? await validateDiscountCompletion(itemsToSave) : null
+      const skipSlipForZero = !!completionDiscount && maySkipSlip(completionDiscount, calculatedTotal)
+      const stageDiscountCompletion = usesDiscountApproval && targetStatus === 'ลงข้อมูลเสร็จสิ้น' && discountBahtForSave > 0
+
       
       // แก้ไขปัญหา date field - ถ้าเป็น empty string ให้เป็น null
       const paymentDate = formData.payment_date && formData.payment_date.trim() !== '' 
@@ -2552,7 +2588,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       let statusToSave: OrderStatus = targetStatus
       if (targetStatus === 'ลงข้อมูลเสร็จสิ้น') {
         const channelCode = formData.channel_code?.trim() || ''
-        if (CHANNELS_COMPLETE_TO_VERIFIED.includes(channelCode) && !CHANNELS_SHOW_SLIP_UPLOAD.includes(channelCode)) {
+        if (skipSlipForZero || (CHANNELS_COMPLETE_TO_VERIFIED.includes(channelCode) && !CHANNELS_SHOW_SLIP_UPLOAD.includes(channelCode))) {
           statusToSave = 'ตรวจสอบแล้ว'
         } else {
           let channelHasSlipVerification = false
@@ -2625,7 +2661,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         total_amount: calculatedTotal,
         payment_date: paymentDate,
         payment_time: paymentTime,
-        status: statusToSave,
+        status: stageDiscountCompletion ? 'รอลงข้อมูล' as OrderStatus : statusToSave,
         entry_date: new Date().toISOString().slice(0, 10),
         billing_details: (showTaxInvoice || hasAddressParts || Object.keys(existingBillingDetails).length > 0) ? billingDetails : null,
         scheduled_pickup_at: selfPickupForSave && formData.scheduled_pickup_at?.trim()
@@ -2841,10 +2877,27 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
       }
 
+      if (requestDiscountReason) {
+        const { error: requestError } = await supabase.rpc('rpc_request_sales_discount', { p_order_id: orderId, p_reason: requestDiscountReason })
+        if (requestError) throw requestError
+        setDiscountRequestOpen(false)
+        window.dispatchEvent(new CustomEvent('discount-approval-refresh'))
+        setVerificationModal({ type: 'save_success', accountMatch: null, bankCodeMatch: null, amountStatus: 'match',
+          orderId, orderAmount: calculatedTotal, totalAmount: 0, errors: [], validationErrors: [],
+          statusMessage: 'บันทึกบิลและส่งขออนุมัติส่วนลดแล้ว รอ superadmin พิจารณาที่ ออเดอร์ → อนุมัติส่วนลด' })
+        return
+      }
+      // Discounted bills stay drafts until header, lines and promotion links are all saved.
+      if (stageDiscountCompletion) {
+        const { data: finalized, error: finalizeError } = await supabase.from('or_orders').update({ status: statusToSave }).eq('id', orderId).select('status,payment_not_required').single()
+        if (finalizeError) throw finalizeError
+        if (skipSlipForZero && !finalized.payment_not_required) throw new Error('ไม่สามารถยืนยันสิทธิ์บิลที่ไม่ต้องชำระเงินได้')
+      }
+
       // ถ้าเป็น "ลงข้อมูลเสร็จสิ้น" ให้ตรวจสอบสลิป (เฉพาะเมื่อช่องทางมีในข้อมูลธนาคารสำหรับตรวจสลิป)
       // ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED บันทึกเป็น "ตรวจสอบแล้ว" แล้ว — ไม่ต้องรันตรวจสลิป
       // ยกเว้น SHOP/SHOPP ที่บังคับอัปโหลดสลิปและต้องนำข้อมูลเข้า EasySlip
-      if (targetStatus === 'ลงข้อมูลเสร็จสิ้น') {
+      if (targetStatus === 'ลงข้อมูลเสร็จสิ้น' && !skipSlipForZero) {
         const channelCodeForVerify = formData.channel_code?.trim() || ''
         if (CHANNELS_COMPLETE_TO_VERIFIED.includes(channelCodeForVerify) && !CHANNELS_SHOW_SLIP_UPLOAD.includes(channelCodeForVerify)) {
           // ข้ามการตรวจสลิป — สถานะถูกบันทึกเป็น "ตรวจสอบแล้ว" แล้วใน handleSubmitInternal
@@ -2889,7 +2942,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 return
               } catch (error: any) {
                 console.error('Error verifying slips:', error)
-                alert('เกิดข้อผิดพลาดในการตรวจสอบสลิป: ' + error.message)
+                setMessageModal({ open: true, title: 'ตรวจสอบสลิปไม่สำเร็จ', message: error.message })
                 onSave()
                 return
               }
@@ -2927,7 +2980,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         : targetStatus === 'รอลงข้อมูล'
           ? marketplaceCorrectionMode ? 'บันทึกการแก้ไข (ลงข้อมูลผิด)' : 'บันทึก (รอลงข้อมูล)'
           : 'บันทึกการแก้ไข'
-      const successMessage = order ? `อัปเดตข้อมูลสำเร็จ (${statusText})` : `บันทึกสำเร็จ! (${statusText})`
+      const successMessage = skipSlipForZero ? 'ไม่ต้องชำระเงิน — ส่วนลดอนุมัติแล้ว บันทึกข้อมูลครบสำเร็จ' : order ? `อัปเดตข้อมูลสำเร็จ (${statusText})` : `บันทึกสำเร็จ! (${statusText})`
 
       // โหลดรูปสลิปกลับมา (ถ้ามี bill_no) — ส่ง orderId เพื่อตัด path ที่ถูกลบแล้ว
       if (currentBillNo) {
@@ -5328,8 +5381,39 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     [channelMeta, formData.channel_code, formData.channel_order_no, formData.express_receipt_number, formData.tracking_number, items, marketplaceOrderNumberLocked, order?.channel_order_no, order?.tracking_number, order?.fulfillment_method],
   )
 
+  useEffect(() => {
+    if (!usesDiscountApproval || !order?.id) return
+    const channel = supabase.channel(`sales-discount-form-${order.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_sales_discount_requests', filter: `order_id=eq.${order.id}` }, () => window.dispatchEvent(new CustomEvent('discount-approval-refresh')))
+      .subscribe()
+    return () => { void supabase.removeChannel(channel) }
+  }, [order?.id, usesDiscountApproval])
+
+  const discountPreviewKey = JSON.stringify(discountPreview())
+  useEffect(() => {
+    let cancelled = false
+    const refresh = async () => {
+      if (!usesDiscountApproval || Number(formData.discount || 0) <= 0) { if (!cancelled) { setDiscountCheck(null); setDiscountCheckError('') }; return }
+      try {
+        const result = await checkSalesDiscount(order?.id || null, JSON.parse(discountPreviewKey) as DiscountPreview)
+        if (!cancelled) { setDiscountCheck(result); setDiscountCheckError('') }
+      } catch (error) { if (!cancelled) { setDiscountCheck(null); setDiscountCheckError((error as Error).message) } }
+    }
+    const timer = setTimeout(() => void refresh(), 300)
+    window.addEventListener('discount-approval-refresh', refresh)
+    return () => { cancelled = true; clearTimeout(timer); window.removeEventListener('discount-approval-refresh', refresh) }
+  }, [discountPreviewKey, order?.id, usesDiscountApproval, formData.discount])
+
   return (
     <>
+    <Modal open={discountRequestOpen} onClose={() => { if (!loading) setDiscountRequestOpen(false) }} contentClassName="max-w-lg" ariaLabelledby="sales-discount-request-title">
+      <div className="space-y-4 p-6"><h3 id="sales-discount-request-title" className="pr-8 text-xl font-bold">ขออนุมัติส่วนลดบิลขาย</h3>
+        <p>ส่วนลด {Number(discountPreview().header.discount).toLocaleString('th-TH')} บาท · ยอดสุทธิ {Number(discountPreview().header.total_amount).toLocaleString('th-TH')} บาท</p>
+        <label className="block">เหตุผลขอส่วนลด (บังคับ)<textarea disabled={loading} value={discountReason} onChange={e => setDiscountReason(e.target.value)} rows={3} className="mt-1 w-full rounded-xl border p-3" /></label>
+        <p className="text-sm text-slate-600">ระบบจะบันทึกข้อมูลปัจจุบันและส่งให้ superadmin อนุมัติ ก่อนยืนยันข้อมูลครบ</p>
+        <button type="button" disabled={loading || !discountReason.trim()} onClick={() => void handleSubmitInternal(items, 'รอลงข้อมูล', false, discountReason.trim())} className="rounded-xl bg-amber-500 px-4 py-2 font-bold text-white disabled:opacity-50">{loading ? 'กำลังส่ง...' : 'บันทึกและส่งคำขอ'}</button>
+      </div>
+    </Modal>
     <form ref={formElementRef} onSubmit={handleSubmit} className="relative space-y-6">
       {order && <button
         type="button"
@@ -6524,6 +6608,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               }
               const channelCode = formData.channel_code?.trim() || ''
               const channelRequiresSlip = formData.payment_method === 'โอน' && (channelCodesWithSlipVerification.has(channelCode) || CHANNELS_SHOW_SLIP_UPLOAD.includes(channelCode))
+              if (discountCheck && maySkipSlip(discountCheck, Number(discountPreview().header.total_amount))) {
+                return <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm font-semibold text-green-700">ไม่ต้องชำระเงิน — ส่วนลดอนุมัติแล้ว ไม่ต้องอัปโหลดหรือตรวจสลิป</div>
+              }
               const hasExistingSlips = uploadedSlipPaths.length > 0
               if (channelRequiresSlip || hasExistingSlips) {
                 return (
@@ -6670,6 +6757,15 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   formData.discount === 0 ? 'text-gray-400' : ''
                 }`}
               />
+              {usesDiscountApproval && Number(formData.discount || 0) > 0 && <div className="mt-2 space-y-1 text-xs">
+                {discountCheckError ? <p role="alert" className="text-red-700">ตรวจสอบสิทธิ์ส่วนลดไม่ได้: {discountCheckError}</p> : !discountCheck ? <p>กำลังตรวจสอบสิทธิ์ส่วนลด...</p> : <>
+                  <p className={discountCheck.approved ? 'font-semibold text-green-700' : 'font-semibold text-amber-700'}>{discountCheck.approved ? 'ส่วนลดอนุมัติแล้ว' : discountCheck.required ? DISCOUNT_STATUS[discountCheck.status] || discountCheck.status : discountCheck.legacy_unchanged ? 'ยอดเดิมก่อนใช้ระบบอนุมัติส่วนลด' : 'ส่วนลดตามกติกาโปรโมชั่น'}</p>
+                  {discountCheck.reason && <p>เหตุผล: {discountCheck.reason}</p>}
+                  {discountCheck.review_note && <p>ผลพิจารณา: {discountCheck.review_note}</p>}
+                  {maySkipSlip(discountCheck, Number(discountPreview().header.total_amount)) && <p className="font-bold text-green-700">ไม่ต้องชำระเงิน — ส่วนลดอนุมัติแล้ว ไม่ต้องตรวจสลิป</p>}
+                </>}
+                {!formDisabled && !approvedPrebillPriceLocked && !promotionDiscountLocked && <button type="button" disabled={loading} onClick={() => setDiscountRequestOpen(true)} className="rounded-lg bg-amber-500 px-3 py-2 font-bold text-white disabled:opacity-50">บันทึกและขออนุมัติส่วนลด</button>}
+              </div>}
               {promotionDiscountLocked && <p className="mt-1 text-xs font-medium text-blue-600">{claimFinancialLocked ? 'คงส่วนลดตามยอดเคลมที่อนุมัติแล้ว' : approvedPrebillPriceLocked ? 'คงส่วนลดโปรโมชั่นและส่วนลดพิเศษตามเอกสาร QT/PC ที่อนุมัติแล้ว' : 'คำนวณอัตโนมัติจากโปรโมชั่นที่เลือก'}</p>}
               {discountType === 'percent' && formData.discount > 0 && (
                 <p className="text-xs text-gray-500 mt-1">
@@ -6952,7 +7048,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 if (hasItems) {
                   setProductSelectAlertOpen(true)
                 } else {
-                  alert('กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ')
+                  setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ' })
                 }
                 return
               }
@@ -7057,8 +7153,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 return
               }
 
+              const completionDiscount = await validateDiscountCompletion()
+              const skipSlipForZero = !!completionDiscount && maySkipSlip(completionDiscount, Number(discountPreview().header.total_amount))
+
               // ตรวจสอบสลิปโอน — ช่องทาง SHOP PICKUP / SHOP SHIPPING บังคับอัพโหลดสลิปก่อนกด บันทึก(ข้อมูลครบ)
-              if (formData.payment_method === 'โอน') {
+              if (formData.payment_method === 'โอน' && !skipSlipForZero) {
                 const channelCode = formData.channel_code?.trim() || ''
                 // บล็อกการเปิดบิล: ช่องทาง "โอนเข้าบัญชีตรง" ต้องผูกบัญชีธนาคาร active ก่อน
                 // ไม่งั้นสลิปจะไม่ถูกตรวจยอดผ่าน EasySlip อย่างถูกต้อง (fallback ไปบัญชีผิดตัว)
@@ -7139,7 +7238,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
               // Show verification popup if there are slips to verify
               let verificationPopup: HTMLElement | null = null
-              if (uploadedSlipPaths.length > 0) {
+              if (uploadedSlipPaths.length > 0 && !skipSlipForZero) {
                 verificationPopup = document.createElement('div')
                 verificationPopup.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50'
                 verificationPopup.innerHTML = `
@@ -7182,7 +7281,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               }
             } catch (error: any) {
               console.error('[บันทึกข้อมูลครบ] Error:', error)
-              alert('เกิดข้อผิดพลาดในการบันทึก: ' + (error.message || error))
+              setMessageModal({ open: true, title: 'บันทึกไม่สำเร็จ', message: error.message || String(error) })
             }
           }}
           disabled={loading}

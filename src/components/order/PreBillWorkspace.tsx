@@ -10,6 +10,7 @@ type View = 'draft' | 'mine' | 'pending' | 'approved' | 'converted' | 'expired' 
 type Props = {
   onOpenBill: (document: PreBillDocument) => void
   onViewConvertedOrder: (document: PreBillDocument) => void
+  onReviewDiscounts: () => void
   pendingCounts: Record<PreBillDocumentType, number>
 }
 
@@ -23,7 +24,7 @@ const statusClass: Record<string, string> = {
   converted: 'bg-violet-100 text-violet-700', cancelled: 'bg-slate-200 text-slate-500',
 }
 
-export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder, pendingCounts }: Props) {
+export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder, pendingCounts, onReviewDiscounts }: Props) {
   const { user } = useAuthContext()
   const [documentType, setDocumentType] = useState<PreBillDocumentType>('quotation')
   const [view, setView] = useState<View>('mine')
@@ -37,8 +38,6 @@ export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder, pen
   const [ownerFilter, setOwnerFilter] = useState('')
   const [users, setUsers] = useState<Array<{ id: string; username: string | null; seller_name: string | null; email: string }>>([])
   const [message, setMessage] = useState('')
-  const [reviewing, setReviewing] = useState<PreBillDocument | null>(null)
-  const [review, setReview] = useState({ approve: true, amount: '', note: '' })
   const [cancelling, setCancelling] = useState<PreBillDocument | null>(null)
   const [selectedCancelledIds, setSelectedCancelledIds] = useState<string[]>([])
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
@@ -105,17 +104,6 @@ export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder, pen
     setSelectedCancelledIds(current => allVisibleCancelledSelected
       ? current.filter(id => !visibleCancelledIds.includes(id))
       : Array.from(new Set([...current, ...visibleCancelledIds])))
-  }
-
-  async function reviewDiscount() {
-    if (!reviewing) return
-    const { error } = await supabase.rpc('rpc_review_prebill_discount', {
-      p_document_id: reviewing.id, p_approve: review.approve,
-      p_approved_discount: review.approve ? Number(review.amount || reviewing.special_discount) : 0,
-      p_note: review.note || null,
-    })
-    if (error) { setMessage(error.message); return }
-    setReviewing(null); setReview({ approve: true, amount: '', note: '' }); await load()
   }
 
   async function cancelDocument() {
@@ -213,14 +201,13 @@ export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder, pen
               const selected = selectedCancelledIds.includes(doc.id)
               return <tr key={doc.id} className="border-t hover:bg-slate-50">
                 {view === 'cancelled' && user?.role === 'superadmin' && <td className="p-3 text-center"><input type="checkbox" aria-label={`เลือก ${doc.document_no}`} checked={selected} onChange={() => setSelectedCancelledIds(current => selected ? current.filter(id => id !== doc.id) : [...current, doc.id])} /></td>}
-                <td className="p-3 font-bold text-blue-700">{doc.document_no}</td><td className="p-3">{new Date(doc.created_at).toLocaleDateString('th-TH')}</td><td className="p-3">{doc.owner_name}</td><td className="p-3"><div className="font-semibold">{doc.customer_name}</div><div className="text-xs text-slate-500">{doc.or_prebill_items?.length || 0} รายการ</div></td><td className="p-3">{doc.channel_code}</td><td className="p-3 text-right font-bold">{money(doc.total_amount)}</td><td className="p-3">{new Date(`${doc.valid_until}T00:00:00`).toLocaleDateString('th-TH')}</td><td className="p-3"><span className={`rounded-full px-3 py-1 text-xs font-bold ${statusClass[displayStatus]}`}>{PREBILL_STATUS_LABEL[displayStatus as keyof typeof PREBILL_STATUS_LABEL]}</span>{doc.status === 'converted' && <div className="mt-1.5 whitespace-nowrap text-xs font-bold text-violet-700">เลขบิล: {doc.converted_order?.bill_no ? <button type="button" onClick={() => onViewConvertedOrder(doc)} className="underline decoration-violet-300 underline-offset-2 hover:text-violet-900 hover:decoration-violet-700" title="ดูรายละเอียดบิล">{doc.converted_order.bill_no}</button> : '-'}</div>}</td><td className="p-3"><div className="flex flex-wrap gap-2"><button onClick={() => setEditing(doc)} className="rounded-lg bg-blue-600 px-3 py-1.5 font-semibold text-white hover:bg-blue-700">{['converted','cancelled'].includes(doc.status) ? 'ดู' : 'แก้ไข'}</button>{displayStatus === 'expired' && <button onClick={() => setRenewing(doc)} className="rounded-lg bg-orange-500 px-3 py-1.5 font-semibold text-white hover:bg-orange-600">สร้างใหม่</button>}{user?.role === 'superadmin' && doc.status === 'pending_discount' && <button onClick={() => { setReviewing(doc); setReview({ approve: true, amount: String(doc.special_discount), note: '' }) }} className="rounded-lg bg-emerald-600 px-3 py-1.5 font-semibold text-white hover:bg-emerald-700">อนุมัติ</button>}{!['converted','cancelled'].includes(doc.status) && displayStatus !== 'expired' && ['active','approved'].includes(doc.status) && <button onClick={() => onOpenBill(doc)} className="rounded-lg bg-violet-600 px-3 py-1.5 font-semibold text-white hover:bg-violet-700">เปิดบิล</button>}{canCancel && <button onClick={() => setCancelling(doc)} className="rounded-lg bg-orange-600 px-3 py-1.5 font-semibold text-white hover:bg-orange-700">ยกเลิก</button>}</div></td>
+                <td className="p-3 font-bold text-blue-700">{doc.document_no}</td><td className="p-3">{new Date(doc.created_at).toLocaleDateString('th-TH')}</td><td className="p-3">{doc.owner_name}</td><td className="p-3"><div className="font-semibold">{doc.customer_name}</div><div className="text-xs text-slate-500">{doc.or_prebill_items?.length || 0} รายการ</div></td><td className="p-3">{doc.channel_code}</td><td className="p-3 text-right font-bold">{money(doc.total_amount)}</td><td className="p-3">{new Date(`${doc.valid_until}T00:00:00`).toLocaleDateString('th-TH')}</td><td className="p-3"><span className={`rounded-full px-3 py-1 text-xs font-bold ${statusClass[displayStatus]}`}>{PREBILL_STATUS_LABEL[displayStatus as keyof typeof PREBILL_STATUS_LABEL]}</span>{doc.status === 'converted' && <div className="mt-1.5 whitespace-nowrap text-xs font-bold text-violet-700">เลขบิล: {doc.converted_order?.bill_no ? <button type="button" onClick={() => onViewConvertedOrder(doc)} className="underline decoration-violet-300 underline-offset-2 hover:text-violet-900 hover:decoration-violet-700" title="ดูรายละเอียดบิล">{doc.converted_order.bill_no}</button> : '-'}</div>}</td><td className="p-3"><div className="flex flex-wrap gap-2"><button onClick={() => setEditing(doc)} className="rounded-lg bg-blue-600 px-3 py-1.5 font-semibold text-white hover:bg-blue-700">{['converted','cancelled'].includes(doc.status) ? 'ดู' : 'แก้ไข'}</button>{displayStatus === 'expired' && <button onClick={() => setRenewing(doc)} className="rounded-lg bg-orange-500 px-3 py-1.5 font-semibold text-white hover:bg-orange-600">สร้างใหม่</button>}{user?.role === 'superadmin' && doc.status === 'pending_discount' && <button onClick={onReviewDiscounts} className="rounded-lg bg-emerald-600 px-3 py-1.5 font-semibold text-white hover:bg-emerald-700">อนุมัติ</button>}{!['converted','cancelled'].includes(doc.status) && displayStatus !== 'expired' && ['active','approved'].includes(doc.status) && <button onClick={() => onOpenBill(doc)} className="rounded-lg bg-violet-600 px-3 py-1.5 font-semibold text-white hover:bg-violet-700">เปิดบิล</button>}{canCancel && <button onClick={() => setCancelling(doc)} className="rounded-lg bg-orange-600 px-3 py-1.5 font-semibold text-white hover:bg-orange-700">ยกเลิก</button>}</div></td>
               </tr>
             })}
           </tbody>
         </table>
       </div>
 
-      {reviewing && <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"><div className="w-full max-w-lg rounded-2xl bg-white p-6"><h3 className="text-xl font-bold">พิจารณาส่วนลด {reviewing.document_no}</h3><div className="mt-3 rounded-xl bg-amber-50 p-3"><div>ผู้ขอ: {reviewing.owner_name}</div><div>ขอส่วนลด: <b>{money(reviewing.special_discount)} บาท</b></div><div>หมายเหตุ: {reviewing.discount_request_note || '-'}</div></div><div className="mt-4 flex gap-3"><label><input type="radio" checked={review.approve} onChange={() => setReview(v => ({ ...v, approve: true }))} /> อนุมัติ</label><label><input type="radio" checked={!review.approve} onChange={() => setReview(v => ({ ...v, approve: false }))} /> ไม่อนุมัติ</label></div>{review.approve && <label className="mt-3 block text-sm font-semibold">จำนวนที่อนุมัติ<input type="number" min="0" value={review.amount} onChange={e => setReview(v => ({ ...v, amount: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5" /></label>}<textarea value={review.note} onChange={e => setReview(v => ({ ...v, note: e.target.value }))} placeholder="หมายเหตุผู้อนุมัติ" rows={3} className="mt-3 w-full rounded-xl border p-3" /><div className="mt-4 flex justify-end gap-2"><button onClick={() => setReviewing(null)} className="rounded-xl border px-4 py-2">ยกเลิก</button><button onClick={reviewDiscount} className={`rounded-xl px-4 py-2 font-bold text-white ${review.approve ? 'bg-emerald-600' : 'bg-red-600'}`}>ยืนยัน</button></div></div></div>}
       {cancelling && <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"><div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl"><h3 className="text-xl font-bold text-slate-900">ยืนยันการยกเลิกเอกสาร</h3><p className="mt-3 text-slate-600">ต้องการยกเลิก <b>{cancelling.document_no}</b> ของลูกค้า <b>{cancelling.customer_name}</b> ใช่หรือไม่?</p><p className="mt-2 text-sm text-orange-700">เอกสารจะย้ายไปแถบยกเลิกและไม่สามารถแก้ไขหรือเปิดบิลได้</p><div className="mt-5 flex justify-end gap-2"><button disabled={deleteBusy} onClick={() => setCancelling(null)} className="rounded-xl border px-4 py-2 font-semibold disabled:opacity-50">กลับ</button><button disabled={deleteBusy} onClick={cancelDocument} className="rounded-xl bg-orange-600 px-4 py-2 font-bold text-white hover:bg-orange-700 disabled:opacity-50">{deleteBusy ? 'กำลังยกเลิก...' : 'ยืนยันยกเลิก'}</button></div></div></div>}
       {deleteConfirmOpen && <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"><div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl"><h3 className="text-xl font-bold text-red-700">ยืนยันการลบถาวร</h3><p className="mt-3 text-slate-600">ต้องการลบเอกสารที่เลือก <b>{selectedVisibleCancelledIds.length} รายการ</b> ออกจากฐานข้อมูลใช่หรือไม่?</p><p className="mt-2 text-sm font-semibold text-red-600">เมื่อลบแล้วจะไม่สามารถเรียกคืนได้</p><div className="mt-5 flex justify-end gap-2"><button disabled={deleteBusy} onClick={() => setDeleteConfirmOpen(false)} className="rounded-xl border px-4 py-2 font-semibold disabled:opacity-50">กลับ</button><button disabled={deleteBusy || selectedVisibleCancelledIds.length === 0} onClick={deleteSelectedCancelled} className="rounded-xl bg-red-600 px-4 py-2 font-bold text-white hover:bg-red-700 disabled:opacity-50">{deleteBusy ? 'กำลังลบ...' : 'ลบถาวร'}</button></div></div></div>}
     </div>

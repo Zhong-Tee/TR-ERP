@@ -56,6 +56,8 @@ export type OrderStatus =
   | 'ยกเลิก'
 
 export interface Order {
+  discount_approval_enabled?: boolean
+  payment_not_required?: boolean
   shipping_conversion_pending?: boolean
   /** มีใบรับคืน RTN อ้างอิงบิลนี้ โดยไม่เปลี่ยนสถานะจัดส่ง */
   has_parcel_return?: boolean
