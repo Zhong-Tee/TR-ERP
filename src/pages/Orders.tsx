@@ -263,7 +263,7 @@ export default function Orders() {
     setSelectedOrder(order)
   }
 
-  async function handleOpenPreBill(document: PreBillDocument) {
+  async function handleOpenPreBill(document: Pick<PreBillDocument, 'id'>) {
     try {
       const { data, error } = await supabase.rpc('rpc_convert_prebill_to_order', { p_document_id: document.id })
       if (error) throw error
@@ -284,7 +284,7 @@ export default function Orders() {
     }
   }
 
-  async function handleViewConvertedPreBillOrder(document: PreBillDocument) {
+  async function handleViewConvertedPreBillOrder(document: Pick<PreBillDocument, 'converted_order_id'>) {
     if (!document.converted_order_id) {
       setOrderMessage('ไม่พบข้อมูลบิลที่เชื่อมกับเอกสารนี้')
       return

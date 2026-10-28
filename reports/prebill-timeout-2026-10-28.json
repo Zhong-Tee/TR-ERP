@@ -1,0 +1,59 @@
+{
+  "date": "2026-10-28",
+  "project": "zkzjbhvsltbwbtteihiy",
+  "source": "Supabase Dashboard: PostgreSQL logs, pg_stat_statements, EXPLAIN ANALYZE under authenticated sales-tr role",
+  "log": {
+    "id": "e213b979-8390-4d11-8602-8bc66f2627dc",
+    "timestamp_utc": "2026-10-28T03:35:14.837Z",
+    "timestamp_bangkok": "2026-10-28T10:35:14.837+07:00",
+    "sqlstate": "57014",
+    "message": "canceling statement due to statement timeout",
+    "context": "SQL function \"can_manage_prebill_document\" statement 1",
+    "query_id": "-5673937197844093613",
+    "operation": "QT/PC document list with embedded item details and converted order bill number"
+  },
+  "observed_data": {
+    "production_confirmation_documents": 644,
+    "quotation_documents": 11,
+    "items": 1690,
+    "authenticated_statement_timeout_seconds": 8,
+    "jit": "off",
+    "required_join_indexes_present": true
+  },
+  "finding": "Row-dependent document permission helper was repeatedly executed for document rows and twice through the item ALL policy's parent-document lookup. The original list loaded all item details, multiplying those checks. The matching log identifies that helper as the timeout context. Set-based owner and parent-document scopes remove that repeated work.",
+  "limits": "Historical lock and CPU waits were not captured in this error record. Current activity showed no blocking transaction. Statement statistics exclude canceled executions. Timings below measure a representative equivalent SELECT, not end-to-end HTTP latency or the exact historical load.",
+  "paired_read_benchmark": {
+    "role": "authenticated, representative sales-tr account",
+    "date_filter_bangkok": "2026-10-01 through 2026-10-28",
+    "rows_each_run": 306,
+    "before_ms": [485.687, 302.127, 454.610],
+    "after_ms": [33.034, 45.050, 43.262],
+    "before_shared_buffer_hits": [8750, 8720, 8720],
+    "after_shared_buffer_hits": [2064, 2061, 2061],
+    "transaction": "All benchmark policy changes rolled back"
+  },
+  "deployment": {
+    "migration": "677_prebill_set_based_rls.sql",
+    "status": "committed and independently verified on the live database",
+    "scope_equivalence": "Legacy helper and new owner scope compared for every actual account, plus no actor, inside the migration transaction; mismatch aborts the transaction",
+    "anon_can_execute_helper": false,
+    "authenticated_can_execute_helper": true,
+    "post_commit_read_ms": [23.751, 20.472, 20.460],
+    "post_commit_rows_each_run": 306,
+    "post_commit_shared_buffer_hits": [2087, 2061, 2061],
+    "frontend_pagination": "Subsequently deployed to production as dpl_9dx3UsBtnaqKLhAfa2WApz7kBTwW; see prebill-pagination-deployment-2026-10-28.json"
+  },
+  "isolated_validation": {
+    "script": "scripts/tests/prebill-set-based-rls.mjs",
+    "checks_passed": 13,
+    "coverage": [
+      "unchanged document/item visibility across superadmin, sales-tr, sales-pump, admin, account, production, missing actor and missing owner",
+      "inactive account semantics remain unchanged",
+      "same-team updates and deletes remain allowed",
+      "cross-owner insert, update, delete and owner reassignment remain denied",
+      "hashed statement-level scope replaces per-row permission helper",
+      "anonymous helper execution remains denied",
+      "migration reapplication"
+    ]
+  }
+}

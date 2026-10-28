@@ -83,6 +83,31 @@ const review=async(id,approve=true,note=null)=>{await q('SELECT rpc_review_sales
 const get=async id=>(await q('SELECT * FROM or_orders WHERE id=$1',[id]))[0]
 const state=async id=>(await q("SELECT rpc_check_order_discount(o.id,to_jsonb(o),or_discount_items(o.id),coalesce((SELECT jsonb_agg(to_jsonb(p)) FROM or_order_promotions p WHERE order_id=o.id),'[]')) s FROM or_orders o WHERE id=$1",[id]))[0].s
 const complete=async id=>{await q("UPDATE or_orders SET status='ลงข้อมูลเสร็จสิ้น' WHERE id=$1",[id])}
+// Reproduce the deployed schema without the optional web-import migration.
+await db.exec('ALTER TABLE or_orders DROP COLUMN web_import_snapshot')
+await test('674 reproduces opening failure when optional web snapshot column is missing',async()=>{
+ await assert.rejects(()=>bill(0),/record "new" has no field "web_import_snapshot"/)
+})
+const optionalWebFix=await fs.readFile('supabase/migrations/675_sales_discount_optional_web_snapshot.sql','utf8')
+await db.exec(optionalWebFix)
+await db.exec(optionalWebFix) // Safe to reapply on an already patched database.
+await test('direct sales open and complete without optional web import column',async()=>{
+ const id=await bill(0);await line(id);await complete(id)
+ assert.equal((await get(id)).status,'ลงข้อมูลเสร็จสิ้น')
+})
+await test('missing web import column still enforces discount approval',async()=>{
+ const id=await bill();await line(id);await assert.rejects(()=>complete(id),/superadmin/)
+ await review(await request(id));await complete(id)
+ assert.equal((await get(id)).payment_not_required,true)
+})
+await db.exec('ALTER TABLE or_orders ADD COLUMN web_import_snapshot jsonb')
+await test('web imported bills retain exemption when snapshot column exists',async()=>{
+ const id=(await q(`INSERT INTO or_orders(bill_no,status,price,shipping_cost,discount,total_amount,web_import_snapshot)
+ VALUES('WEB-test','ลงข้อมูลเสร็จสิ้น',100,0,100,0,'{}') RETURNING id`))[0].id
+ await q('UPDATE or_orders SET status=status WHERE id=$1',[id])
+ assert.equal((await get(id)).payment_not_required,false)
+ assert.equal((await get(id)).status,'ลงข้อมูลเสร็จสิ้น')
+})
 await test('manual discounted sales cannot complete without approved snapshot',async()=>{const id=await bill();await line(id);await assert.rejects(()=>complete(id),/superadmin/);assert.equal((await get(id)).status,'รอลงข้อมูล')})
 await test('seller requests, only active superadmin reviews; pending cannot complete',async()=>{const id=await bill();await line(id);await actor(seller);const req=await request(id);await assert.rejects(()=>complete(id),/superadmin/);for(const role of [seller,other,admin]){await actor(role);await assert.rejects(()=>review(req),/superadmin/)}await actor(root);await review(req);assert.equal((await state(id)).approved,true);await complete(id);const o=await get(id);assert.equal(o.status,'รอตรวจคำสั่งซื้อ');assert.equal(o.payment_not_required,true);assert.equal((await q('SELECT count(*)::int n FROM ac_verified_slips WHERE order_id=$1',[id]))[0].n,0)})
 await test('approved positive total stays on payment path, including shipping balance',async()=>{const id=await bill(100,30);await line(id);const req=await request(id);await review(req);await complete(id);assert.equal((await get(id)).payment_not_required,false);assert.equal((await get(id)).status,'ลงข้อมูลเสร็จสิ้น')})

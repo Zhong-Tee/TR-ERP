@@ -100,7 +100,8 @@ export default function ProductionCreate() {
 
   const canApprove = ['superadmin', 'admin', 'store'].includes(user?.role || '')
   const canCreate = ['superadmin', 'admin', 'store', 'production', 'packing_staff'].includes(user?.role || '')
-  const canProcess = ['superadmin', 'admin', 'production', 'packing_staff'].includes(user?.role || '')
+  const canStart = ['superadmin', 'admin', 'production', 'packing_staff'].includes(user?.role || '')
+  const canComplete = ['superadmin', 'admin', 'store'].includes(user?.role || '')
   const canViewCosts = !['store', 'production', 'packing_staff'].includes(user?.role || '')
 
   const tabs: { key: TabKey; label: string; color: string; activeColor: string }[] = [
@@ -377,6 +378,7 @@ export default function ProductionCreate() {
   }
 
   const handleStartProduction = async (order: PpProductionOrder) => {
+    if (!canStart) return
     try {
       await startProductionOrder(order.id)
       setNotifyModal({ open: true, type: 'success', title: 'เริ่มแปรรูปแล้ว', message: `${order.doc_no} อยู่ระหว่างการแปรรูป` })
@@ -387,6 +389,7 @@ export default function ProductionCreate() {
   }
 
   const handleCompleteProduction = (order: PpProductionOrder) => {
+    if (!canComplete) return
     setCompletingOrder(order)
   }
 
@@ -558,7 +561,8 @@ export default function ProductionCreate() {
               <OrderTable
                 orders={filteredOrders}
                 canApprove={canApprove}
-                canProcess={canProcess}
+                canStart={canStart}
+                canComplete={canComplete}
                 onView={viewDetail}
                 onApprove={handleApprove}
                 onReject={(o) => { setRejectModal(o); setRejectReason('') }}
@@ -897,7 +901,7 @@ export default function ProductionCreate() {
         </Modal>
       )}
 
-      {completingOrder && <ProductionCompletionModal order={completingOrder} onClose={() => setCompletingOrder(null)} onCompleted={() => {
+      {canComplete && completingOrder && <ProductionCompletionModal order={completingOrder} onClose={() => setCompletingOrder(null)} onCompleted={() => {
         setCompletingOrder(null)
         setNotifyModal({ open: true, type: 'success', title: 'ปิดงานสำเร็จ', message: 'รับเข้าตามยอดจริงและบันทึกวัตถุดิบพร้อมต้นทุนแล้ว ยอดผลิตขาดไม่ค้างผลิต' })
         void loadOrders()
@@ -959,7 +963,8 @@ export default function ProductionCreate() {
 function OrderTable({
   orders,
   canApprove,
-  canProcess,
+  canStart,
+  canComplete,
   onView,
   onEdit,
   onSubmit,
@@ -975,7 +980,8 @@ function OrderTable({
 }: {
   orders: PpProductionOrder[]
   canApprove: boolean
-  canProcess?: boolean
+  canStart?: boolean
+  canComplete?: boolean
   onView: (o: PpProductionOrder) => void
   onEdit?: (o: PpProductionOrder) => void
   onSubmit?: (o: PpProductionOrder) => void
@@ -1050,12 +1056,12 @@ function OrderTable({
                       <i className="fas fa-times-circle"></i>
                     </button>
                   )}
-                  {showActions === 'processing' && o.status === 'approved' && canProcess && onStart && (
+                  {showActions === 'processing' && o.status === 'approved' && canStart && onStart && (
                     <button onClick={() => onStart(o)} className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700">
                       กำลังทำ
                     </button>
                   )}
-                  {showActions === 'processing' && o.status === 'processing' && canProcess && onComplete && (
+                  {showActions === 'processing' && o.status === 'processing' && canComplete && onComplete && (
                     <button onClick={() => onComplete(o)} className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700">
                       บันทึกผลผลิต / รับเข้า
                     </button>

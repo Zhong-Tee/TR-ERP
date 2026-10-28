@@ -1,0 +1,42 @@
+{
+  "date": "2026-10-28",
+  "project": "tr-erp",
+  "deployment_id": "dpl_9dx3UsBtnaqKLhAfa2WApz7kBTwW",
+  "deployment_url": "https://tr-hflwiafs8-zhong-tees-projects.vercel.app",
+  "production_url": "https://tr-erp-umber.vercel.app",
+  "status": "READY",
+  "previous_deployment_id": "dpl_Baaf29ZodgwcfsP7fChiPftWQThF",
+  "previous_deployment_url": "https://tr-r9l0j6w3c-zhong-tees-projects.vercel.app",
+  "source": {
+    "base_commit": "2c322c56e94f546dcf56d79730a4da6fe824f59d",
+    "overlaid_files": [
+      "src/components/order/PreBillWorkspace.tsx",
+      "src/pages/Orders.tsx",
+      "src/lib/prebillWorkspace.ts",
+      "src/lib/prebillWorkspace.test.ts"
+    ],
+    "unrelated_uncommitted_production_changes_excluded": true,
+    "isolated_source_archive": ".reservation-test-runtime/prebill-production-deploy-20261028"
+  },
+  "validation": {
+    "pagination_tests": "14 passed in each of workspace and deployment source",
+    "isolated_typescript": "passed",
+    "vercel_build": "tsc -b && vite build passed",
+    "production_orders_http_status": 200,
+    "production_main_asset": "/assets/index-qewpucnM.js",
+    "production_main_asset_http_status": 200,
+    "live_pagination_and_lazy_detail_code_verified": true,
+    "browser_checks": {
+      "production_confirmation_list": "loads without error",
+      "converted_documents_total_observed": 513,
+      "first_page_documents": 25,
+      "second_page_documents": 25,
+      "second_page_range": "26-50",
+      "second_page_first_document_changed": true,
+      "document_number_search_from_page_two": "returns one document and resets to page one",
+      "open_document_detail": "item detail loaded; converted document fields remain read-only",
+      "product_name_search": "310 matching documents; first 25 shown without error",
+      "data_mutations": "none"
+    }
+  }
+}

@@ -15,7 +15,7 @@ CREATE TABLE pr_products(id uuid primary key,product_code text,product_name text
 CREATE TABLE pp_recipes(id uuid primary key,product_id uuid,max_stock numeric);
 CREATE TABLE pp_recipe_includes(id uuid primary key,recipe_id uuid,product_id uuid,qty numeric);
 CREATE TABLE pp_recipe_removes(id uuid primary key,recipe_id uuid,product_id uuid,qty numeric,unit_cost numeric);
-CREATE TABLE pp_production_orders(id uuid primary key,status text,completed_by uuid,completed_at timestamptz);
+CREATE TABLE pp_production_orders(id uuid primary key,status text,started_by uuid,started_at timestamptz,completed_by uuid,completed_at timestamptz);
 CREATE TABLE pp_production_order_items(id uuid primary key,order_id uuid references pp_production_orders(id),product_id uuid,qty numeric(12,2),unit_cost numeric(14,4),total_cost numeric(14,2));
 CREATE TABLE inv_stock_balances(product_id uuid primary key,on_hand numeric,reserved numeric,safety_stock numeric,updated_at timestamptz);
 CREATE TABLE inv_stock_movements(id uuid primary key default gen_random_uuid(),product_id uuid,movement_type text,qty numeric,ref_type text,ref_id uuid,note text,created_by uuid,unit_cost numeric(14,4),total_cost numeric(14,2));
@@ -33,11 +33,19 @@ const workflowSQL = await fs.readFile('supabase/migrations/402_internal_producti
 await db.exec(functionSQL(workflowSQL,'guard_pp_production_max_stock'))
 await db.exec(`CREATE TRIGGER trg_guard_pp_production_max_stock BEFORE UPDATE ON pp_production_orders FOR EACH ROW EXECUTE FUNCTION guard_pp_production_max_stock();`)
 await db.exec(await fs.readFile('supabase/migrations/668_internal_production_actual_completion.sql','utf8'))
+const accessSQL = await fs.readFile('supabase/migrations/620_packing_sub_warehouse_and_internal_production_access.sql','utf8')
+await db.exec(functionSQL(accessSQL,'guard_pp_production_status_roles'))
+await db.exec(functionSQL(accessSQL,'rpc_start_production_order'))
+await db.exec('CREATE TRIGGER trg_guard_pp_status_roles BEFORE UPDATE ON pp_production_orders FOR EACH ROW EXECUTE FUNCTION guard_pp_production_status_roles()')
+const receiptAccessSQL = await fs.readFile('supabase/migrations/676_internal_production_store_receipt.sql','utf8')
+await db.exec(receiptAccessSQL)
+await db.exec(receiptAccessSQL) // Reapplication must be safe.
+
 const q = async (sql,params=[]) => (await db.query(sql,params)).rows
 const scalar = async sql => Object.values((await q(sql))[0])[0]
 async function seed() {
  await db.exec(`TRUNCATE inv_lot_consumptions,inv_stock_movements,inv_stock_lots,inv_stock_balances,pp_recipe_removes,pp_recipe_includes,pp_recipes,pp_production_order_items,pp_production_orders,pr_products,us_users CASCADE;
- INSERT INTO us_users VALUES('${id(1)}','production',true);
+ INSERT INTO us_users VALUES('${id(1)}','store',true);
  SELECT set_config('request.jwt.claim.sub','${id(1)}',false);
  INSERT INTO pr_products VALUES('${id(2)}','PP','Finished',0,0),('${id(3)}','RM','Material',2,2),('${id(4)}','BY','Byproduct',1,1);
  INSERT INTO pp_recipes VALUES('${id(5)}','${id(2)}',10000);
@@ -105,7 +113,54 @@ await test('insufficient stock rejects entire receipt',async()=>{const x=await s
 await test('insufficient FIFO lots rolls back even after first consumption',async()=>{const x=await seed();await db.exec('UPDATE inv_stock_lots SET qty_remaining=100');await assert.rejects(()=>complete(x),/insufficient sellable lots/);assert.equal(Number(await scalar('SELECT sum(qty_remaining) FROM inv_stock_lots')),200);assert.equal(Number(await scalar('SELECT count(*) FROM inv_stock_movements')),0)})
 await test('max-stock failure rolls back prior FIFO writes',async()=>{const x=await seed();await db.exec('UPDATE pp_recipes SET max_stock=5000');await assert.rejects(()=>complete(x),/Max/);assert.equal(Number(await scalar('SELECT sum(qty_remaining) FROM inv_stock_lots')),10400);assert.equal(Number(await scalar('SELECT count(*) FROM inv_stock_movements')),0)})
 await test('byproduct value greater than consumed cost rejects entire transaction',async()=>{const x=await seed();await db.exec(`INSERT INTO pp_recipe_removes VALUES('${id(9)}','${id(5)}','${id(4)}',1,100)`);x[0].byproducts=[{product_id:id(4),qty:500}];await assert.rejects(()=>complete(x),/เกินต้นทุน/);assert.equal(Number(await scalar('SELECT count(*) FROM inv_stock_movements')),0)})
-await test('unauthorized user blocked',async()=>{const x=await seed();await db.exec("UPDATE us_users SET role='store'");await assert.rejects(()=>complete(x),/ไม่มีสิทธิ์/)})
+for (const role of ['production','packing_staff','account','sales-tr','manager','admin-tr','production_mb','picker']) {
+ await test(`${role} cannot receive via RPC or forge completed status`,async()=>{
+  const x=await seed();await q('UPDATE us_users SET role=$1',[role])
+  await assert.rejects(()=>complete(x),/ไม่มีสิทธิ์/)
+  await assert.rejects(()=>q("UPDATE pp_production_orders SET status='completed'"),/ไม่มีสิทธิ์/)
+  assert.equal(await scalar('SELECT status FROM pp_production_orders'),'processing')
+  assert.equal(Number(await scalar('SELECT count(*) FROM inv_stock_movements')),0)
+ })
+}
+for (const role of ['store','admin','superadmin']) {
+ await test(`${role} can receive as authenticated with actual stock and actor recorded`,async()=>{
+  const x=await seed();await q('UPDATE us_users SET role=$1',[role])
+  await db.exec('GRANT USAGE ON SCHEMA public,auth TO authenticated; GRANT SELECT,UPDATE ON ALL TABLES IN SCHEMA public TO authenticated; SET ROLE authenticated')
+  try { await complete(x) } finally { await db.exec('RESET ROLE') }
+  assert.equal(await scalar('SELECT status FROM pp_production_orders'),'completed')
+  assert.equal(await scalar('SELECT completed_by FROM pp_production_orders'),id(1))
+  assert.equal(Number(await scalar(`SELECT on_hand FROM inv_stock_balances WHERE product_id='${id(2)}'`)),5050)
+ })
+}
+for (const role of ['production','packing_staff','admin','superadmin','store','account']) {
+ const allowed=['production','packing_staff','admin','superadmin'].includes(role)
+ await test(`${role} ${allowed?'can':'cannot'} start processing`,async()=>{
+  await seed();await db.exec("UPDATE pp_production_orders SET status='approved'")
+  await q('UPDATE us_users SET role=$1',[role])
+  await db.exec('SET ROLE authenticated')
+  try {
+   if(allowed) await q('SELECT rpc_start_production_order($1)',[id(7)])
+   else {
+    await assert.rejects(()=>q('SELECT rpc_start_production_order($1)',[id(7)]),/ไม่มีสิทธิ์/)
+    await assert.rejects(()=>q("UPDATE pp_production_orders SET status='processing'"),/ไม่มีสิทธิ์/)
+   }
+  } finally { await db.exec('RESET ROLE') }
+  assert.equal(await scalar('SELECT status FROM pp_production_orders'),allowed?'processing':'approved')
+  if(allowed) assert.equal(await scalar('SELECT started_by FROM pp_production_orders'),id(1))
+ })
+}
+for (const role of ['store','admin','superadmin','production','packing_staff']) {
+ await test(`inactive ${role} cannot start or receive`,async()=>{
+  const x=await seed();await q('UPDATE us_users SET role=$1,is_active=false',[role])
+  await assert.rejects(()=>complete(x),/ไม่มีสิทธิ์/)
+  await assert.rejects(()=>q('SELECT rpc_start_production_order($1)',[id(7)]),/ไม่มีสิทธิ์/)
+ })
+}
+await test('unauthenticated caller cannot start or receive',async()=>{
+ const x=await seed();await q("SELECT set_config('request.jwt.claim.sub','',false)")
+ await assert.rejects(()=>complete(x),/ไม่มีสิทธิ์/)
+ await assert.rejects(()=>q('SELECT rpc_start_production_order($1)',[id(7)]),/ไม่มีสิทธิ์/)
+})
 await test('legacy completion fails closed',async()=>{await seed();await assert.rejects(()=>q('SELECT rpc_complete_production_order($1)',[id(7)]),/ผลผลิตจริง/)})
 await test('authenticated role can execute RPC but cannot forge completion',async()=>{
  const x=await seed();await db.exec('GRANT USAGE ON SCHEMA public,auth TO authenticated; GRANT SELECT,UPDATE ON ALL TABLES IN SCHEMA public TO authenticated; SET ROLE authenticated;')
