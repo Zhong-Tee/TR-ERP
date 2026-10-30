@@ -1173,6 +1173,8 @@ export interface HREmployee {
   position_allowance?: number
   /** รายการหักประจำเดือนสำหรับจัดทำเงินเดือน */
   monthly_personal_tax?: number
+  social_security_enabled?: boolean
+  social_security_start_date?: string | null
   monthly_social_security?: number
   monthly_savings?: number
   /** เพดานยอดเงินสะสมรวม; null/undefined = ไม่จำกัด */
@@ -1189,6 +1191,9 @@ export interface HREmployee {
   company_loan_opening_balance?: number
   company_loan_opening_installments?: number
   hire_date?: string
+  compensation_effective_date?: string | null
+  pay_schedule_id?: string | null
+  pay_schedule_effective_date?: string | null
   probation_end_date?: string
   /** วันที่สิ้นสุดสัญญาจ้าง ใช้สำหรับแจ้งเตือนและเรียงลำดับอายุสัญญา */
   contract_end_date?: string | null
@@ -2153,6 +2158,7 @@ export interface HRScorePeriod {
  * เพื่อให้ทักท้วงคะแนนที่ยังคำนวณสดอยู่ได้ โดยไม่ต้องรอ HR บันทึกลง ledger ก่อน
  */
 export interface HRScoreAppeal {
+  payroll_approval?: { id: string; payable_day: number; note: string; approved_at: string } | null
   id: string
   /** มีค่าเฉพาะเมื่อตอนยื่นมีแถวใน ledger อยู่แล้ว */
   score_event_id?: string | null

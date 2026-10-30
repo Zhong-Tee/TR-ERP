@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { calculateCappedSavings, calculateDailyWageSummary, calculateEmployeeEwf, calculateEwf, calculateOvertimePay, calculateSocialSecurity, type DailyWageDetail } from './payrollApi'
+import { calculateEmployeeSocialSecurity, isEmployeeSocialSecurityEnabled, calculateCappedSavings, calculateDailyWageSummary, calculateEmployeeEwf, calculateEwf, calculateOvertimePay, calculateSocialSecurity, type DailyWageDetail } from './payrollApi'
 
 describe('calculateOvertimePay', () => {
   it('calculates daily employee OT at 1.5x on workdays and 3x on holidays', () => {
@@ -113,5 +113,27 @@ describe('calculateCappedSavings', () => {
       priorSavings: 1000,
       maximumBalance: 15000,
     })).toBe(0)
+  })
+})
+
+
+describe('employee social security enrollment', () => {
+  const settings = { contribution_rate: 5, maximum_wage_base: 17500 }
+
+  it.each(['permanent', 'daily'] as const)('only deducts for enrolled %s employees', (contract_type) => {
+    const employee = { employee_code: 'EMP00024', contract_type }
+    expect(calculateEmployeeSocialSecurity({ ...employee, social_security_enabled: false }, 15000, settings)).toBe(0)
+    expect(calculateEmployeeSocialSecurity({ ...employee, social_security_enabled: true }, 15000, settings)).toBe(750)
+    expect(calculateEmployeeSocialSecurity({ ...employee, social_security_enabled: true }, 20000, settings)).toBe(875)
+  })
+
+  it('allows explicit enrollment to override the legacy code exemption', () => {
+    expect(calculateEmployeeSocialSecurity({ employee_code: 'EMP00001', social_security_enabled: true }, 15000, settings)).toBe(750)
+  })
+
+  it('preserves legacy enrollment when the switch is unavailable', () => {
+    expect(isEmployeeSocialSecurityEnabled({ employee_code: 'EMP00024', contract_type: 'permanent' })).toBe(true)
+    expect(isEmployeeSocialSecurityEnabled({ employee_code: 'EMP00024', contract_type: 'daily' })).toBe(false)
+    expect(isEmployeeSocialSecurityEnabled({ employee_code: 'EMP00001' })).toBe(false)
   })
 })

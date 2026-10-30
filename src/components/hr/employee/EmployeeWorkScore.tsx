@@ -17,6 +17,7 @@ import {
 } from '../../../lib/hrApi'
 import {
   ABSENCE_GROUP,
+  baseEventCode,
   buildMonthlyScores,
   buildOpeningAttendanceEvents,
   indexRules,
@@ -145,14 +146,14 @@ export default function EmployeeWorkScore() {
 
       if (isLocked && period) {
         // รอบปิดแล้ว — ใช้ตัวเลขที่บันทึกไว้ ไม่คำนวณสด
-        setTotal(Number(period.total_points))
+        setTotal(Math.min(Number(period.base_points), Number(period.total_points)))
         setEvents(saved.map((ev) => ({
           employee_id: ev.employee_id,
           event_date: ev.event_date,
           event_code: ev.event_code,
           rule_id: ev.rule_id ?? '',
           category_id: ev.category_id,
-          group_code: ruleByCode.get(ev.event_code)?.group_code ?? 'manual',
+          group_code: ruleByCode.get(baseEventCode(ev.event_code))?.group_code ?? 'manual',
           label: ruleByCode.get(ev.event_code)?.name ?? ev.note ?? ev.event_code,
           points: Number(ev.points),
           ref_table: ev.ref_table ?? null,
@@ -174,7 +175,7 @@ export default function EmployeeWorkScore() {
           event_code: ev.event_code,
           rule_id: ev.rule_id ?? '',
           category_id: ev.category_id,
-          group_code: ruleByCode.get(ev.event_code)?.group_code ?? 'manual',
+          group_code: ruleByCode.get(baseEventCode(ev.event_code))?.group_code ?? 'manual',
           label: ruleByCode.get(ev.event_code)?.name ?? ev.note ?? ev.event_code,
           points: Number(ev.points),
           ref_table: ev.ref_table ?? null,
@@ -394,7 +395,7 @@ export default function EmployeeWorkScore() {
       </>}
 
       {view === 'annual' && (() => {
-        const byMonth = new Map(annualPeriods.map((p) => [Number(p.period.slice(5, 7)), Number(p.total_points)]))
+        const byMonth = new Map(annualPeriods.map((p) => [Number(p.period.slice(5, 7)), Math.min(Number(p.base_points), Number(p.total_points))]))
         if (month.slice(0, 4) === String(new Date().getFullYear())) byMonth.set(Number(month.slice(5, 7)), total)
         const values = [...byMonth.values()]
         const average = values.length ? Math.round(values.reduce((a, b) => a + b, 0) / values.length * 100) / 100 : 0

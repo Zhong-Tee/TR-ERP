@@ -539,15 +539,40 @@ export function summarizeMonth(
     [...rules.values()].filter((r) => r.counts_event_prefix).map((r) => r.event_code),
   )
   const dailyEvents = inputEvents.filter((e) => !cumulativeCodes.has(e.event_code))
-  const events = [...dailyEvents, ...applyCumulativeRules(dailyEvents, rules)]
+  const recalculated = [...dailyEvents, ...applyCumulativeRules(dailyEvents, rules)]
+  // A reversal is credit against an existing penalty, never a free bonus. In
+  // particular, reversing an absence may already remove its cumulative penalty.
+  const remainingPenalty = new Map<string, number>()
+  for (const event of recalculated) {
+    if (event.points >= 0) continue
+    const key = `${event.event_date}|${event.event_code}`
+    remainingPenalty.set(key, (remainingPenalty.get(key) ?? 0) - event.points)
+  }
+  const events = recalculated.map((event) => {
+    if (!event.event_code.endsWith(REVERSED_SUFFIX)) return event
+    const requested = Number(event.detail.original_reversal_points ?? event.points)
+    if (requested <= 0) return event
+    const key = `${event.event_date}|${baseEventCode(event.event_code)}`
+    const available = remainingPenalty.get(key) ?? 0
+    const points = Math.min(requested, available)
+    remainingPenalty.set(key, available - points)
+    return points === event.points ? event : {
+      ...event, points,
+      detail: { ...event.detail, original_reversal_points: requested, reversal_adjustment: 'คืนได้ไม่เกินโทษที่ยังหักอยู่หลังคำนวณใหม่' },
+    }
+  })
   const deductionByCode = new Map<string, number>()
   const by_group: Record<string, number> = {}
   let gained = 0
+  const reversedByCode = new Map<string, number>()
 
   for (const ev of events) {
     by_group[ev.group_code] = round2((by_group[ev.group_code] ?? 0) + ev.points)
     if (ev.points < 0) {
       deductionByCode.set(ev.event_code, (deductionByCode.get(ev.event_code) ?? 0) + -ev.points)
+    } else if (ev.event_code.endsWith(REVERSED_SUFFIX)) {
+      const code = baseEventCode(ev.event_code)
+      reversedByCode.set(code, (reversedByCode.get(code) ?? 0) + ev.points)
     } else {
       gained += ev.points
     }
@@ -557,9 +582,10 @@ export function summarizeMonth(
   let capped_amount = 0
   for (const [code, amount] of deductionByCode) {
     const cap = rules.get(code)?.cap_per_month ?? null
-    const applied = cap !== null ? Math.min(amount, cap) : amount
+    const remaining = Math.max(0, amount - (reversedByCode.get(code) ?? 0))
+    const applied = cap !== null ? Math.min(remaining, cap) : remaining
     deduction += applied
-    capped_amount += amount - applied
+    capped_amount += remaining - applied
   }
 
   const net = category.base_points + gained - deduction
@@ -568,7 +594,7 @@ export function summarizeMonth(
     base_points: category.base_points,
     raw_deduction: round2(deduction),
     capped_amount: round2(capped_amount),
-    total_points: round2(Math.max(category.min_points, net)),
+    total_points: round2(Math.min(category.base_points, Math.max(category.min_points, net))),
     by_group,
     events,
   }

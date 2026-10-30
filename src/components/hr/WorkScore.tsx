@@ -29,6 +29,7 @@ import {
 } from '../../lib/hrApi'
 import {
   ABSENCE_GROUP,
+  baseEventCode,
   buildMonthlyScores,
   buildOpeningAttendanceEvents,
   indexRules,
@@ -103,7 +104,7 @@ function toDraft(ev: HRScoreEvent, ruleByCode: Map<string, ScoreRule>): ScoreEve
     event_code: ev.event_code,
     rule_id: ev.rule_id ?? '',
     category_id: ev.category_id,
-    group_code: rule?.group_code ?? 'manual',
+    group_code: rule?.group_code ?? ruleByCode.get(baseEventCode(ev.event_code))?.group_code ?? 'manual',
     label: rule?.name ?? ev.note ?? ev.event_code,
     points: Number(ev.points),
     ref_table: ev.ref_table ?? null,
@@ -190,7 +191,7 @@ export default function WorkScore() {
   const [annualPeriods, setAnnualPeriods] = useState<HRScorePeriod[]>([])
   const [annualLoading, setAnnualLoading] = useState(false)
   const [appealsLoading, setAppealsLoading] = useState(false)
-  const [reviewForm, setReviewForm] = useState<{ appeal: HRScoreAppeal; accept: boolean; note: string } | null>(null)
+  const [reviewForm, setReviewForm] = useState<{ appeal: HRScoreAppeal; accept: boolean; note: string; payableDay: '' | '0' | '0.5' | '1' } | null>(null)
   const [reviewError, setReviewError] = useState('')
 
   const category = useMemo(() => categories.find((c) => c.id === categoryId) ?? null, [categories, categoryId])
@@ -292,7 +293,7 @@ export default function WorkScore() {
             employeeId, ...who, locked: true,
             base: Number(locked.base_points),
             deduction: Number(locked.raw_deduction),
-            total: Number(locked.total_points),
+            total: Math.min(Number(locked.base_points), Number(locked.total_points)),
             byGroup: splitAbsenceGroup(byGroup, events), events,
           })
           continue
@@ -413,7 +414,7 @@ export default function WorkScore() {
         name: p.employee ? `${p.employee.first_name} ${p.employee.last_name}` : p.employee_id,
         months: {}, deduction: 0,
       }
-      item.months[Number(p.period.slice(5, 7))] = Number(p.total_points)
+      item.months[Number(p.period.slice(5, 7))] = Math.min(Number(p.base_points), Number(p.total_points))
       item.deduction += Number(p.raw_deduction)
       map.set(p.employee_id, item)
     })
@@ -582,10 +583,19 @@ export default function WorkScore() {
       setReviewError('ต้องระบุเหตุผลที่ปฏิเสธ')
       return
     }
+    const isAbsence = ['absent', 'absent_pending_leave'].includes(reviewForm.appeal.event_code)
+    if (reviewForm.accept && isAbsence && reviewForm.payableDay === '') {
+      setReviewError('กรุณาระบุสิทธิ์ค่าจ้างของวันที่ทักท้วง')
+      return
+    }
+    if (reviewForm.accept && Number(reviewForm.payableDay) > 0 && !note) {
+      setReviewError('กรุณาระบุหลักฐานหรือเหตุผลรับรองค่าจ้าง')
+      return
+    }
     setSaving(true)
     setReviewError('')
     try {
-      if (reviewForm.accept) await acceptScoreAppeal(reviewForm.appeal.id, note || undefined)
+      if (reviewForm.accept) await acceptScoreAppeal(reviewForm.appeal.id, note || undefined, Number(reviewForm.payableDay || 0) as 0 | 0.5 | 1)
       else await rejectScoreAppeal(reviewForm.appeal.id, myEmployeeId, note)
       setReviewForm(null)
       await loadAppeals()
@@ -866,18 +876,22 @@ export default function WorkScore() {
                         {a.status === 'pending' ? (
                           <div className="flex gap-2 justify-center">
                             <button type="button" disabled={saving}
-                              onClick={() => { setReviewError(''); setReviewForm({ appeal: a, accept: true, note: '' }) }}
+                              onClick={() => { setReviewError(''); setReviewForm({ appeal: a, accept: true, note: '', payableDay: '' }) }}
                               className="px-2 py-1 rounded-lg bg-emerald-100 text-emerald-700 text-xs hover:bg-emerald-200">
                               ยอมรับ
                             </button>
                             <button type="button" disabled={saving}
-                              onClick={() => { setReviewError(''); setReviewForm({ appeal: a, accept: false, note: '' }) }}
+                              onClick={() => { setReviewError(''); setReviewForm({ appeal: a, accept: false, note: '', payableDay: '0' }) }}
                               className="px-2 py-1 rounded-lg bg-red-100 text-red-700 text-xs hover:bg-red-200">
                               ปฏิเสธ
                             </button>
                           </div>
                         ) : (
-                          <span className="text-xs text-gray-400">{a.decision_note ?? '-'}</span>
+                          <div className="space-y-1">
+                            <span className="text-xs text-gray-400">{a.decision_note ?? '-'}</span>
+                            {a.payroll_approval ? <div className="text-xs text-emerald-700" title={a.payroll_approval.note}>รับรองค่าจ้าง {Number(a.payroll_approval.payable_day) === 1 ? 'เต็มวัน' : 'ครึ่งวัน'}</div>
+                              : a.status === 'accepted' && ['absent', 'absent_pending_leave'].includes(a.event_code) && <button type="button" disabled={saving} onClick={() => { setReviewError(''); setReviewForm({ appeal: a, accept: true, note: '', payableDay: '' }) }} className="block rounded-lg bg-blue-50 px-2 py-1 text-xs text-blue-700">รับรองค่าจ้าง</button>}
+                          </div>
                         )}
                       </td>
                     </tr>
@@ -895,7 +909,7 @@ export default function WorkScore() {
           <>
             <div className={`flex items-center px-4 py-3 pr-16 text-white ${reviewForm.accept ? 'bg-emerald-600' : 'bg-red-600'}`}>
               <span className="text-sm font-medium">
-                {reviewForm.accept ? 'ยอมรับคำทักท้วง' : 'ปฏิเสธคำทักท้วง'}
+                {reviewForm.appeal.status === 'accepted' ? 'รับรองค่าจ้างจากคำทักท้วง' : reviewForm.accept ? 'ยอมรับคำทักท้วง' : 'ปฏิเสธคำทักท้วง'}
               </span>
             </div>
             <div className="p-4 space-y-3">
@@ -917,12 +931,23 @@ export default function WorkScore() {
               <div className="rounded-lg bg-surface-50 border border-surface-200 px-3 py-2 text-sm text-gray-600">
                 {reviewForm.appeal.reason}
               </div>
+              {reviewForm.accept && ['absent', 'absent_pending_leave'].includes(reviewForm.appeal.event_code) && (
+                <label className="block text-sm">
+                  <span className="text-gray-600">สิทธิ์ค่าจ้างวันที่ทักท้วง</span>
+                  <select value={reviewForm.payableDay} onChange={(event) => setReviewForm({ ...reviewForm, payableDay: event.target.value as '0' | '0.5' | '1' })} className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2">
+                    <option value="" disabled>— เลือกผลการรับรอง —</option>
+                    {reviewForm.appeal.status === 'pending' && <option value="0">คืนคะแนนอย่างเดียว ไม่รับรองค่าจ้าง</option>}
+                    <option value="1">รับรองมาทำงานเต็มวัน</option>
+                    <option value="0.5">รับรองมาทำงานครึ่งวัน</option>
+                  </select>
+                </label>
+              )}
               {reviewError && (
                 <div className="rounded-lg bg-red-50 border border-red-200 text-red-800 px-3 py-2 text-sm">{reviewError}</div>
               )}
               <label className="block text-sm">
                 <span className="text-gray-600">
-                  เหตุผล{reviewForm.accept ? ' (ไม่บังคับ)' : ' (บังคับ)'}
+                  เหตุผล{reviewForm.accept && Number(reviewForm.payableDay) === 0 ? ' (ไม่บังคับ)' : ' (บังคับ)'}
                 </span>
                 <textarea
                   rows={3}
@@ -931,7 +956,7 @@ export default function WorkScore() {
                   className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2"
                 />
               </label>
-              {reviewForm.accept && (
+              {reviewForm.accept && reviewForm.appeal.status === 'pending' && (
                 <p className="text-xs text-gray-400">
                   ระบบจะคืนคะแนนด้วยเหตุการณ์ชดเชย โดยไม่ลบเหตุการณ์เดิม เพื่อให้ประวัติครบ
                 </p>
@@ -941,7 +966,7 @@ export default function WorkScore() {
                   className={`px-4 py-2 rounded-xl text-white text-sm disabled:opacity-50 ${
                     reviewForm.accept ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-red-600 hover:bg-red-700'
                   }`}>
-                  {saving ? 'กำลังบันทึก...' : reviewForm.accept ? 'ยอมรับและคืนคะแนน' : 'ปฏิเสธ'}
+                  {saving ? 'กำลังบันทึก...' : reviewForm.appeal.status === 'accepted' ? 'บันทึกการรับรองค่าจ้าง' : reviewForm.accept ? 'ยอมรับและคืนคะแนน' : 'ปฏิเสธ'}
                 </button>
               </div>
             </div>
@@ -1010,6 +1035,7 @@ export default function WorkScore() {
                               ไม่พบรายการต้นทาง
                             </span>
                           )}
+                          {Boolean(ev.detail.reversal_adjustment) && <span className="ml-1.5 text-xs text-amber-700">{String(ev.detail.reversal_adjustment)} (เดิม +{Number(ev.detail.original_reversal_points)})</span>}
                           {unlinkedManualCredit && (
                             <span className="ml-1.5 inline-flex max-w-full flex-wrap rounded-lg bg-gray-100 px-2 py-0.5 text-xs font-medium leading-5 text-gray-600">
                               เพิ่มเอง · ไม่มีรายการอ้างอิง

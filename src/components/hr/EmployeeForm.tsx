@@ -13,7 +13,9 @@ import {
   previewNextEmployeeCode,
 } from '../../lib/hrApi'
 import { supabase } from '../../lib/supabase'
-import { fetchHRCompanies } from '../../lib/payrollApi'
+import { fetchHRCompanies, isEmployeeSocialSecurityEnabled } from '../../lib/payrollApi'
+import { fetchPaySchedules } from '../../lib/payrollPaymentApi'
+import type { PaySchedule } from '../../lib/payrollSchedule'
 import SalaryHistoryPanel from './SalaryHistoryPanel'
 import PhotoLightbox from './PhotoLightbox'
 import EmployeeOpeningBalances from './EmployeeOpeningBalances'
@@ -179,12 +181,26 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
   const [department_id, setDepartmentId] = useState('')
   const [company_id, setCompanyId] = useState('')
   const [position_id, setPositionId] = useState('')
+  const [paySchedules, setPaySchedules] = useState<PaySchedule[]>([])
+  const [pay_schedule_id, setPayScheduleId] = useState('')
+  const [pay_schedule_effective_date, setPayScheduleEffectiveDate] = useState('')
+  const [payScheduleError, setPayScheduleError] = useState('')
+  useEffect(() => {
+    let active=true
+    fetchPaySchedules(company_id || undefined).then(rows=>{if(active){setPaySchedules(rows);setPayScheduleError('')}})
+      .catch(error=>{if(active)setPayScheduleError(error instanceof Error?error.message:'โหลดรอบจ่ายไม่สำเร็จ')})
+    return()=>{active=false}
+  }, [company_id])
   const [hire_date, setHireDate] = useState('')
   const [probation_end_date, setProbationEndDate] = useState('')
   const [contract_end_date, setContractEndDate] = useState('')
+  const [compensationDateEdited, setCompensationDateEdited] = useState(false)
+  const [compensation_effective_date, setCompensationEffectiveDate] = useState(() => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()))
   const [salary, setSalary] = useState<number | ''>('')
   const [position_allowance, setPositionAllowance] = useState<number | ''>('')
   const [monthly_personal_tax, setMonthlyPersonalTax] = useState<number | ''>('')
+  const [social_security_enabled, setSocialSecurityEnabled] = useState(false)
+  const [social_security_start_date, setSocialSecurityStartDate] = useState('')
   const [monthly_social_security, setMonthlySocialSecurity] = useState<number | ''>('')
   const [monthly_savings, setMonthlySavings] = useState<number | ''>('')
   const [savings_maximum, setSavingsMaximum] = useState<number | ''>('')
@@ -300,6 +316,8 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
       setDepartmentId(employee.department_id ?? '')
       setCompanyId(employee.company_id ?? '')
       setPositionId(employee.position_id ?? '')
+      setPayScheduleId(employee.pay_schedule_id || '')
+      setPayScheduleEffectiveDate(employee.pay_schedule_effective_date || employee.hire_date || '')
       setHireDate(employee.hire_date ? employee.hire_date.slice(0, 10) : '')
       setProbationEndDate(
         employee.probation_end_date ? employee.probation_end_date.slice(0, 10) : ''
@@ -310,6 +328,8 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
       setSalary(employee.salary ?? '')
       setPositionAllowance(employee.position_allowance ?? '')
       setMonthlyPersonalTax(employee.monthly_personal_tax ?? '')
+      setSocialSecurityEnabled(isEmployeeSocialSecurityEnabled(employee))
+      setSocialSecurityStartDate(employee.social_security_start_date ?? '')
       setMonthlySocialSecurity(employee.monthly_social_security ?? '')
       setMonthlySavings(employee.monthly_savings ?? '')
       setSavingsMaximum(employee.savings_maximum ?? '')
@@ -501,11 +521,16 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
         company_id: company_id || undefined,
         position_id: position_id || undefined,
         hire_date: hire_date || undefined,
+        pay_schedule_id: pay_schedule_id || null,
+        pay_schedule_effective_date: pay_schedule_effective_date || hire_date || null,
+        compensation_effective_date: employee ? compensation_effective_date : hire_date || compensation_effective_date,
         probation_end_date: probation_end_date || undefined,
         contract_end_date: contract_end_date || null,
         salary: typeof salary === 'number' ? salary : undefined,
         position_allowance: contract_type === 'daily' ? 0 : typeof position_allowance === 'number' ? position_allowance : undefined,
         monthly_personal_tax: typeof monthly_personal_tax === 'number' ? monthly_personal_tax : 0,
+        social_security_enabled,
+        social_security_start_date: social_security_start_date || null,
         monthly_social_security: typeof monthly_social_security === 'number' ? monthly_social_security : 0,
         monthly_savings: contract_type === 'daily' ? 0 : typeof monthly_savings === 'number' ? monthly_savings : 0,
         savings_maximum: contract_type === 'daily' ? null : typeof savings_maximum === 'number' ? savings_maximum : null,
@@ -529,6 +554,10 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
         documents: documents.length ? documents : undefined,
       }
 
+      if (employee && !compensationDateEdited && Number(salary || 0) === Number(employee.salary || 0)
+        && Number(position_allowance || 0) === Number(employee.position_allowance || 0) && contract_type === employee.contract_type) {
+        delete payload.salary; delete payload.position_allowance; delete payload.contract_type; delete payload.compensation_effective_date
+      }
       const saved = await upsertEmployee(payload)
 
       if (photoFile && saved?.id && !photoPath) {
@@ -1036,9 +1065,53 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
                   }
                   className={fieldClass}
                 >
-                  <option value="permanent">ประจำ</option>
+                  <option value="permanent">รายเดือน</option>
                   <option value="daily">รายวัน</option>
                 </select>
+              </label>
+              <div className="flex items-start gap-4">
+                <div className="shrink-0">
+                  <span id="social-security-label" className="mb-1 block text-sm font-medium text-gray-700">เข้า (สปส.)</span>
+                  <div className="flex h-[42px] items-center">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={social_security_enabled}
+                      aria-labelledby="social-security-label"
+                      onClick={() => setSocialSecurityEnabled((value) => !value)}
+                      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 ${social_security_enabled ? 'bg-emerald-600' : 'bg-gray-300'}`}
+                    >
+                      <span className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${social_security_enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
+                </div>
+                <label className="block min-w-0 flex-1">
+                  <span className="mb-1 block text-sm font-medium text-gray-700">วันที่เข้าประกันสังคม</span>
+                  <input
+                    type="date"
+                    value={social_security_start_date}
+                    onChange={(event) => setSocialSecurityStartDate(event.target.value)}
+                    className={fieldClass}
+                  />
+                </label>
+              </div>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">วันที่มีผลของประเภทสัญญา/ค่าจ้าง</span>
+                <input type="date" required max={employee ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()) : undefined} value={employee ? compensation_effective_date : hire_date || compensation_effective_date} onChange={event => { setCompensationEffectiveDate(event.target.value); setCompensationDateEdited(true) }} className={fieldClass} />
+                <span className="mt-1 block text-xs text-gray-500">ใช้แบ่งช่วงรายวัน/รายเดือน และเฉลี่ยเงินเดือนเมื่อทำงานไม่เต็มเดือน</span>
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">รอบจ่ายค่าจ้าง</span>
+                <select value={pay_schedule_id} onChange={event=>setPayScheduleId(event.target.value)} className={fieldClass}>
+                  <option value="">รายเดือน วันที่ 1–สิ้นเดือน (ค่าเริ่มต้น)</option>
+                  {paySchedules.filter(row=>(row.is_active || row.id===pay_schedule_id) && row.id!=='00000000-0000-4000-8000-000000000001').map(row=><option key={row.id} value={row.id}>{row.name}{!row.is_active?' (พักใช้งาน)':''}</option>)}
+                </select>
+                {payScheduleError&&<span className="mt-1 block text-xs text-red-600">{payScheduleError}</span>}
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">วันที่เริ่มใช้รอบจ่าย</span>
+                <input type="date" value={pay_schedule_effective_date || hire_date} onChange={event=>setPayScheduleEffectiveDate(event.target.value)} className={fieldClass}/>
+                <span className="mt-1 block text-xs text-gray-500">เก็บประวัติรอบเดิมตามวันที่มีผล และตรวจวันที่ยืนยัน/จ่ายแล้วเพื่อป้องกันจ่ายซ้ำ</span>
               </label>
               <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">รูปแบบการทำงาน</span>
@@ -1119,6 +1192,7 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
                     setSalary(latest.salary)
                     setPositionAllowance(latest.position_allowance ?? '')
                     setContractType(latest.pay_type)
+                    if (latest.effective_date) setCompensationEffectiveDate(latest.effective_date)
                   }
                 }}
               />

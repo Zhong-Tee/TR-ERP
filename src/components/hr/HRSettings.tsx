@@ -1,3 +1,4 @@
+import PayScheduleSettings from './PayScheduleSettings'
 import InterviewTemplateSettings from './InterviewTemplateSettings'
 import { useState, useEffect, useCallback } from 'react'
 import {
@@ -48,11 +49,12 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import ScoreSettings from './ScoreSettings'
 import CompanySettings from './CompanySettings'
 import SocialSecuritySettings from './SocialSecuritySettings'
+import WarningOffenseSettings from './WarningOffenseSettings'
 
 const TABS = [
   'รายละเอียดบริษัท', 'ชื่อแผนก', 'ชื่อตำแหน่งงาน', 'ประเภทการลา', 'คะแนนปฏิบัติงาน',
   'ประเภทประกาศ', 'ผู้อนุมัติประกาศ', 'ผู้สัมภาษณ์งาน', 'เกณฑ์คะแนนสัมภาษณ์งาน',
-  'เส้นทางเงินเดือน', 'Onboarding Templates', 'Telegram Config', 'การหัก สปส/EWF',
+  'เส้นทางเงินเดือน', 'ประเภทความผิด', 'Onboarding Templates', 'Telegram Config', 'การหัก สปส/EWF', 'รอบจ่ายค่าจ้าง',
 ] as const
 
 /** แท็บคะแนนปฏิบัติงาน — แยกเป็น component ลูก (ไฟล์นี้ยาวพอแล้ว) */
@@ -1229,8 +1231,11 @@ export default function HRSettings() {
         </div>
       )}
 
+      {/* ประเภทความผิด */}
+      {activeTab === 10 && <WarningOffenseSettings />}
+
       {/* Onboarding Templates */}
-      {activeTab === 10 && (
+      {activeTab === 11 && (
         <div className="grid gap-4 lg:grid-cols-[1fr_420px]">
           <div className="rounded-xl shadow-soft border border-surface-200 bg-surface-50 p-4">
             <ul className="space-y-2">
@@ -1309,7 +1314,7 @@ export default function HRSettings() {
       )}
 
       {/* Telegram */}
-      {activeTab === 11 && (
+      {activeTab === 12 && (
         <div className="rounded-xl border border-surface-200 bg-white p-4 max-w-lg space-y-3">
           <p className="text-xs text-gray-500">
             {notifSettings ? 'แก้ไขการตั้งค่า Telegram' : 'ตั้งค่า Telegram ครั้งแรก'}
@@ -1628,7 +1633,8 @@ export default function HRSettings() {
 
       {activeTab === INTERVIEW_CRITERIA_TAB_INDEX && <InterviewTemplateSettings departments={departments} positions={positions} />}
 
-      {activeTab === 12 && <SocialSecuritySettings />}
+      {activeTab === 13 && <SocialSecuritySettings />}
+      {activeTab === 14 && <PayScheduleSettings />}
       {activeTab === COMPANY_TAB_INDEX && <CompanySettings />}
     </div>
   )

@@ -372,14 +372,19 @@ export async function fetchEmployeeByUserId(userId: string) {
 }
 
 export async function upsertEmployee(emp: Partial<HREmployee>) {
+  const payload = { ...emp }
+  if (emp.salary !== undefined || emp.contract_type !== undefined || emp.position_allowance !== undefined) {
+    payload.compensation_effective_date = emp.compensation_effective_date
+      || (!emp.id && emp.hire_date ? emp.hire_date : new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()))
+  }
   if (emp.id) {
     const { data, error } = await supabase
-      .from('hr_employees').update(emp).eq('id', emp.id).select().single()
+      .from('hr_employees').update(payload).eq('id', emp.id).select().single()
     if (error) pgError(error)
     return data as HREmployee
   }
   const { data, error } = await supabase
-    .from('hr_employees').insert(emp).select().single()
+    .from('hr_employees').insert(payload).select().single()
   if (error) pgError(error)
   return data as HREmployee
 }
@@ -1118,6 +1123,7 @@ export async function fetchSalaryHistory(employeeId: string) {
 }
 
 export interface LatestSalary {
+  effective_date?: string
   /** ฐานเงินเดือน */
   salary: number
   /** เงินพิเศษ/ประจำตำแหน่ง */
@@ -1136,7 +1142,7 @@ export async function saveInterviewFollowup(interviewId: string, status: NonNull
 /** sync ข้อมูลค่าจ้างจากรายการล่าสุดที่ถึงวันที่มีผลแล้ว — รายการอนาคตต้องยังไม่เปลี่ยนค่าปัจจุบัน */
 async function syncEmployeeLatestSalary(employeeId: string): Promise<LatestSalary | null> {
   const { data, error } = await supabase.from('hr_salary_history')
-    .select('salary, position_allowance, pay_type')
+    .select('salary, position_allowance, pay_type, effective_date')
     .eq('employee_id', employeeId)
     .lte('effective_date', new Date().toISOString().slice(0, 10))
     .order('effective_date', { ascending: false })
@@ -1145,6 +1151,7 @@ async function syncEmployeeLatestSalary(employeeId: string): Promise<LatestSalar
   if (error) pgError(error)
   const latest: LatestSalary | null = data && data.length
     ? {
+        effective_date: data[0].effective_date,
         salary: Number(data[0].salary),
         pay_type: data[0].pay_type === 'daily' ? 'daily' : 'permanent',
         position_allowance:
@@ -1155,7 +1162,7 @@ async function syncEmployeeLatestSalary(employeeId: string): Promise<LatestSalar
     : null
   if (latest != null) {
     const { error: updErr } = await supabase.from('hr_employees')
-      .update({ salary: latest.salary, position_allowance: latest.position_allowance, contract_type: latest.pay_type })
+      .update({ salary: latest.salary, position_allowance: latest.position_allowance, contract_type: latest.pay_type, compensation_effective_date: data![0].effective_date })
       .eq('id', employeeId)
     if (updErr) pgError(updErr)
   }
@@ -1433,10 +1440,41 @@ function parseThaiDate(thai: string): string | undefined {
 
 const WARNING_SELECT = `*, employee:hr_employees!hr_warnings_employee_id_fkey(id,employee_code,first_name,last_name,nickname,department_id,position_id), issuer:hr_employees!hr_warnings_issued_by_fkey(id,first_name,last_name), witness:hr_employees!hr_warnings_witness_id_fkey(id,first_name,last_name), reviewer:hr_employees!hr_warnings_reviewer_id_fkey(id,first_name,last_name), approver:hr_employees!hr_warnings_approver_id_fkey(id,first_name,last_name), offense_type:hr_warning_offense_types(*), policy_links:hr_warning_policy_links(*,policy:hr_warning_policies(*)), approvals:hr_warning_approvals(*,actor:hr_employees!hr_warning_approvals_actor_id_fkey(id,first_name,last_name)), responses:hr_warning_employee_responses(*), acknowledgements:hr_warning_acknowledgements(*,witness:hr_employees!hr_warning_acknowledgements_witness_id_fkey(id,first_name,last_name)), decisions:hr_warning_decisions(*,approver:hr_employees!hr_warning_decisions_approved_by_fkey(id,first_name,last_name)), audit_logs:hr_warning_audit_logs(*,actor:hr_employees!hr_warning_audit_logs_actor_employee_id_fkey(id,first_name,last_name))`
 
-export async function fetchWarningOffenseTypes() {
-  const { data, error } = await supabase.from('hr_warning_offense_types').select('*').eq('is_active', true).order('name')
+export async function fetchWarningOffenseTypes(activeOnly = true) {
+  let query = supabase.from('hr_warning_offense_types').select('*').order('name')
+  if (activeOnly) query = query.eq('is_active', true)
+  const { data, error } = await query
   if (error) pgError(error)
   return (data ?? []) as HRWarningOffenseType[]
+}
+
+export async function saveWarningOffenseType(input: {
+  id?: string
+  name: string
+  lookback_days: number
+  is_active: boolean
+}) {
+  const name = input.name.trim()
+  if (!name) throw new Error('กรุณาระบุชื่อประเภทความผิด')
+  if (!Number.isInteger(input.lookback_days) || input.lookback_days < 1 || input.lookback_days > 2147483647) {
+    throw new Error('ระยะเวลาย้อนหลังต้องเป็นจำนวนเต็มตั้งแต่ 1 ถึง 2,147,483,647 วัน')
+  }
+  const payload = { name, lookback_days: input.lookback_days, is_active: input.is_active }
+  // Keep existing codes stable: automated warning workflows reference them.
+  const query = input.id
+    ? supabase.from('hr_warning_offense_types').update(payload).eq('id', input.id)
+    : supabase.from('hr_warning_offense_types').insert({ ...payload, code: `custom_${crypto.randomUUID()}` })
+  const { data, error } = await query.select('*').single()
+  if (error?.code === '23505') throw new Error('มีชื่อประเภทความผิดนี้แล้ว กรุณาใช้ชื่ออื่น')
+  if (error) pgError(error)
+  return data as HRWarningOffenseType
+}
+
+export async function setWarningOffenseTypeActive(id: string, isActive: boolean) {
+  const { data, error } = await supabase.from('hr_warning_offense_types')
+    .update({ is_active: isActive }).eq('id', id).select('*').single()
+  if (error) pgError(error)
+  return data as HRWarningOffenseType
 }
 
 export async function fetchWarningPolicies() {
@@ -2235,7 +2273,7 @@ export async function deleteTimeCertification(id: string) {
 
 export async function fetchScoreAppeals(filters?: { status?: string; employee_id?: string }) {
   let q = supabase.from('hr_score_appeals')
-    .select(`*, employee:hr_employees!employee_id(${SCORE_EMP_MINI}), reviewer:hr_employees!reviewed_by(${SCORE_EMP_MINI}), event:hr_score_events!score_event_id(*)`)
+    .select(`*, employee:hr_employees!employee_id(${SCORE_EMP_MINI}), reviewer:hr_employees!reviewed_by(${SCORE_EMP_MINI}), event:hr_score_events!score_event_id(*), payroll_approval:hr_daily_wage_approvals!appeal_id(id,payable_day,note,approved_at)`)
     .order('created_at', { ascending: false })
   if (filters?.status) q = q.eq('status', filters.status)
   if (filters?.employee_id) q = q.eq('employee_id', filters.employee_id)
@@ -2263,10 +2301,11 @@ export async function createScoreAppeal(input: {
 }
 
 /** ยอมรับคำทักท้วง = คืนคะแนนด้วยเหตุการณ์ชดเชย (RPC ทำให้ atomic) */
-export async function acceptScoreAppeal(appealId: string, note?: string) {
-  const { error } = await supabase.rpc('hr_score_accept_appeal', {
+export async function acceptScoreAppeal(appealId: string, note?: string, payableDay: 0 | 0.5 | 1 = 0) {
+  const { error } = await supabase.rpc('hr_score_review_appeal_payroll', {
     p_appeal: appealId,
     p_note: note ?? null,
+    p_payable_day: payableDay,
   })
   if (error) pgError(error)
   window.dispatchEvent(new Event('hr-score-appeals-changed'))

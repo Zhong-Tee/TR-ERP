@@ -157,7 +157,7 @@ function getStatusLabel(status: string): string {
 
 function getContractTypeLabel(t: HREmployee['contract_type']): string {
   if (t === 'daily') return 'รายวัน'
-  return 'ประจำ'
+  return 'รายเดือน'
 }
 
 function getTenureLabel(hireDate?: string): string {

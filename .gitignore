@@ -41,3 +41,7 @@ dist-delivery-review/
 
 .tmp/hr-entitlement-review/
 .tmp/bank-import-671-review/
+.tmp/hr-appeal-db-test/
+.tmp/hr-appeal-review/
+.tmp/hr-appeal-build/
+.tmp/hr-social-security-build-20261030/

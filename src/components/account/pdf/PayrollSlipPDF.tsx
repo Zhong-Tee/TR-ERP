@@ -63,7 +63,7 @@ export default function PayrollSlipPDF({ company, item, monthLabel, paymentDate,
     ? item.department_position.split(' / ').slice(1).join(' / ')
     : item.department_position || '-'
   const incomes = [
-    [isDaily ? `ค่าจ้างรายวัน (${fmt(Number(item.payable_days))} วัน)` : 'เงินเดือน', item.base_salary], ['เงินพิเศษ/ประจำตำแหน่ง', item.position_allowance],
+    [isDaily ? `ค่าจ้างรายวัน (${fmt(Number(item.payable_days))} วัน)` : item.monthly_payable_days != null ? `เงินเดือน (${fmt(item.monthly_payable_days)} วัน / ฐาน 30)` : 'เงินเดือน', item.base_salary], ['เงินพิเศษ/ประจำตำแหน่ง', item.position_allowance],
     [`OT (ปกติ ${fmt(item.ot_normal_hours)} ชม. / วันหยุด ${fmt(item.ot_holiday_hours)} ชม.)`, item.overtime_pay],
     ['รายได้อื่น', item.other_income],
   ].filter(([, value]) => Number(value) !== 0) as [string, number][]

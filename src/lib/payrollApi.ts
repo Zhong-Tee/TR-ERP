@@ -2,8 +2,15 @@ import { supabase } from './supabase'
 import type { HRCompany, HREmployee } from '../types'
 import { fetchAllSupabasePages } from './supabasePagination'
 import { calculateLeaveDeductionAmount, calculateMonthlyLeaveOverage, type LeaveDeductionRequest, type LeaveDeductionType, type LeaveDeductionOpening } from './payrollLeaveDeduction'
+import { calculateMonthlyWage, compensationAt, sortCompensationHistory, type CompensationRecord, type MonthlyWageDetail, type MonthlyWageSummary } from './payrollCompensation'
 
 export interface PayrollItem {
+  earning_dates?: string[] | null
+  deduction_allocations?: Record<string, Record<string, number>> | null
+  monthly_rate?: number | null
+  monthly_payable_days?: number | null
+  monthly_wage_details?: MonthlyWageDetail[] | null
+  social_security_enabled?: boolean | null
   id?: string
   payroll_run_id?: string
   employee_id: string
@@ -50,12 +57,21 @@ export interface PayrollItem {
   company_snapshot?: HRCompany
 }
 
+export type PayrollType = 'permanent' | 'monthly_uninsured' | 'daily'
+
 export interface PayrollRun {
   id: string
   payroll_month: string
   company_id: string
-  payroll_type?: 'permanent' | 'daily'
-  status: 'draft' | 'confirmed'
+  payroll_type?: PayrollType
+  status: 'draft' | 'confirmed' | 'cancelled'
+  schedule_id?: string | null
+  period_start?: string | null
+  period_end?: string | null
+  version?: number
+  payment_tracking_state?: 'legacy_unknown' | 'managed'
+  schedule_snapshot?: import('./payrollSchedule').PaySchedule | null
+  is_adjustment?: boolean
   payment_date?: string | null
   confirmed_by?: string | null
   confirmed_at?: string | null
@@ -76,6 +92,31 @@ export interface DailyWageDetail {
   dailyRate: number
   amount: number
   note: string
+  approvalId?: string
+  appealId?: string
+}
+
+export interface DailyWageApproval {
+  id: string
+  employee_id: string
+  work_date: string
+  appeal_id: string
+  payable_day: number
+  note: string
+}
+
+/** An explicit HR attendance decision establishes wages without inventing clock times. */
+export function applyDailyWageApproval(detail: DailyWageDetail, approval: DailyWageApproval): DailyWageDetail {
+  if (approval.work_date !== detail.workDate || ![0.5, 1].includes(Number(approval.payable_day))) {
+    throw new Error('ข้อมูลรับรองค่าจ้างไม่ถูกต้อง')
+  }
+  const payableDay = Number(approval.payable_day)
+  return {
+    ...detail, status: payableDay === 1 ? 'worked_full' : 'worked_half', payableDay,
+    amount: Math.round(detail.dailyRate * payableDay * 100) / 100,
+    approvalId: approval.id, appealId: approval.appeal_id,
+    note: `รับรองการทำงานจากคำทักท้วง (${payableDay === 1 ? 'เต็มวัน' : 'ครึ่งวัน'}): ${approval.note}`,
+  }
 }
 
 export interface DailyWageSummary {
@@ -160,6 +201,8 @@ function addDays(date: string, days: number): string {
 export async function fetchPayrollOvertime(
   month: string,
   employees: HREmployee[],
+  payrollKind?: 'permanent' | 'daily',
+  eligibleDates?: Record<string, string[]>,
 ): Promise<Record<string, PayrollOvertimeSummary>> {
   const empty = Object.fromEntries(employees.map((employee) => [employee.id, {
     normalHours: 0,
@@ -201,10 +244,10 @@ export async function fetchPayrollOvertime(
       .gte('work_date', monthStart)
       .lt('work_date', monthEndExclusive),
     supabase.from('hr_salary_history')
-      .select('employee_id, salary, pay_type, effective_date')
+      .select('id, employee_id, salary, pay_type, effective_date, created_at')
       .in('employee_id', employeeIds)
       .lt('effective_date', monthEndExclusive)
-      .order('effective_date', { ascending: false }),
+      .order('effective_date', { ascending: false }).order('created_at', { ascending: false }).order('id', { ascending: false }),
   ])
   throwIfError(requestsResult.error)
   throwIfError(entriesResult.error)
@@ -250,7 +293,7 @@ export async function fetchPayrollOvertime(
     const employeeId = key.slice(0, separator)
     const requestDate = key.slice(separator + 1)
     const employee = employeesById.get(employeeId)
-    if (!employee) return
+    if (!employee || (eligibleDates && !eligibleDates[employeeId]?.includes(requestDate))) return
     const employeeEntries = entriesByEmployee.get(employeeId) || []
     const otIn = employeeEntries.find((entry) => entry.entry_type === 'ot_in' && entry.work_date === requestDate)
     if (!otIn) return
@@ -276,6 +319,7 @@ export async function fetchPayrollOvertime(
       : compensation?.pay_type === 'permanent'
         ? 'permanent'
         : employee.contract_type === 'daily' ? 'daily' : 'permanent'
+    if (payrollKind && effectiveContractType !== payrollKind) return
     const isHoliday = holidayDates.has(requestDate)
       || (effectiveContractType !== 'daily' && (calendarDayType === 'weekly_off' || (!calendarDayType && !scheduledWorkday)))
     const pay = calculateOvertimePay({
@@ -331,7 +375,7 @@ export async function fetchDailyWageSummaries(
   const monthEnd = addDays(monthEndExclusive, -1)
   const employeeIds = employees.map((employee) => employee.id)
 
-  const [entriesResult, certificationsResult, holidaysResult, leavesResult, schedulesResult, calendarResult, salaryHistoryResult] = await Promise.all([
+  const [entriesResult, certificationsResult, holidaysResult, leavesResult, schedulesResult, calendarResult, salaryHistoryResult, approvalsResult] = await Promise.all([
     supabase.from('hr_time_entries')
       .select('employee_id, entry_type, work_date, entry_time')
       .in('employee_id', employeeIds)
@@ -363,16 +407,22 @@ export async function fetchDailyWageSummaries(
       .gte('work_date', monthStart)
       .lt('work_date', monthEndExclusive),
     supabase.from('hr_salary_history')
-      .select('employee_id, salary, pay_type, effective_date')
+      .select('id, employee_id, salary, pay_type, effective_date, created_at')
       .in('employee_id', employeeIds)
       .lt('effective_date', monthEndExclusive)
-      .order('effective_date', { ascending: false }),
+      .order('effective_date', { ascending: false }).order('created_at', { ascending: false }).order('id', { ascending: false }),
+    supabase.from('hr_daily_wage_approvals')
+      .select('id, employee_id, work_date, appeal_id, payable_day, note')
+      .in('employee_id', employeeIds)
+      .gte('work_date', monthStart)
+      .lt('work_date', monthEndExclusive),
   ])
-  ;[entriesResult, certificationsResult, holidaysResult, leavesResult, schedulesResult, calendarResult, salaryHistoryResult]
+  ;[entriesResult, certificationsResult, holidaysResult, leavesResult, schedulesResult, calendarResult, salaryHistoryResult, approvalsResult]
     .forEach((result) => throwIfError(result.error))
 
   const entries = entriesResult.data || []
   const certifications = certificationsResult.data || []
+  const approvalsByDate = new Map((approvalsResult.data || []).map((row) => [`${row.employee_id}:${row.work_date}`, row as DailyWageApproval]))
   const holidayByDate = new Map((holidaysResult.data || []).map((holiday) => [holiday.holiday_date, holiday.name]))
   const leaves = leavesResult.data || []
   const schedules = schedulesResult.data || []
@@ -389,13 +439,13 @@ export async function fetchDailyWageSummaries(
   const results: Record<string, DailyWageSummary> = {}
   employees.forEach((employee) => {
     const details: DailyWageDetail[] = []
+    const compensationHistory = sortCompensationHistory((historyByEmployee.get(employee.id) || []) as CompensationRecord[])
     for (let workDate = monthStart; workDate < monthEndExclusive; workDate = addDays(workDate, 1)) {
       if (employee.hire_date && workDate < employee.hire_date.slice(0, 10)) continue
       if (employee.contract_end_date && workDate > employee.contract_end_date.slice(0, 10)) continue
-      const compensation = historyByEmployee.get(employee.id)?.find((row) => row.effective_date <= workDate)
-      const payType = compensation?.pay_type || employee.contract_type || 'permanent'
-      if (payType !== 'daily') continue
-      const dailyRate = Math.max(0, Number(compensation?.salary ?? employee.salary) || 0)
+      const pay = compensationAt(employee, compensationHistory, workDate)
+      if (pay.payType !== 'daily') continue
+      const dailyRate = pay.salary
       const holidayName = holidayByDate.get(workDate)
       const leave = leaves.find((row) => row.employee_id === employee.id && row.start_date <= workDate && row.end_date >= workDate)
       const dayEntries = entries.filter((row) => row.employee_id === employee.id && row.work_date === workDate)
@@ -417,6 +467,11 @@ export async function fetchDailyWageSummaries(
 
       if (holidayName) {
         details.push({ ...base, status: 'paid_holiday', payableDay: 1, amount: dailyRate, note: `วันหยุดบริษัท: ${holidayName}` })
+        continue
+      }
+      const approval = approvalsByDate.get(`${employee.id}:${workDate}`)
+      if (approval) {
+        details.push(applyDailyWageApproval({ ...base, status: 'absent', payableDay: 0, amount: 0, note: '' }, approval))
         continue
       }
       if (leave?.status === 'pending') {
@@ -454,9 +509,21 @@ export async function fetchDailyWageSummaries(
       })
     }
 
-    results[employee.id] = calculateDailyWageSummary(Number(employee.salary) || 0, details)
+    results[employee.id] = calculateDailyWageSummary(details.at(-1)?.dailyRate ?? (Number(employee.salary) || 0), details)
   })
   return results
+}
+
+export async function fetchMonthlyWageSummaries(month: string, employees: HREmployee[]): Promise<Record<string, MonthlyWageSummary>> {
+  if (!employees.length) return {}
+  const end = new Date(`${month}-01T00:00:00Z`)
+  end.setUTCMonth(end.getUTCMonth() + 1)
+  const ids = employees.map(employee => employee.id)
+  const history = await fetchAllSupabasePages<CompensationRecord>((from, to) => supabase.from('hr_salary_history')
+    .select('id, employee_id, salary, position_allowance, pay_type, effective_date, created_at')
+    .in('employee_id', ids).lt('effective_date', end.toISOString().slice(0, 10))
+    .order('effective_date', { ascending: false }).order('created_at', { ascending: false }).order('id', { ascending: false }).range(from, to))
+  return Object.fromEntries(employees.map(employee => [employee.id, calculateMonthlyWage(month, employee, history.filter(row => row.employee_id === employee.id))]))
 }
 
 export function calculateCappedSavings(input: {
@@ -538,6 +605,22 @@ export async function upsertSocialSecuritySettings(
     contribution_rate: Number(data.contribution_rate),
     maximum_wage_base: Number(data.maximum_wage_base),
   } as SocialSecuritySettings
+}
+
+type SocialSecurityEmployee = Pick<HREmployee, 'employee_code' | 'contract_type' | 'social_security_enabled'>
+
+/** Preserve legacy enrollment only when the stored switch is unavailable. */
+export function isEmployeeSocialSecurityEnabled(employee: SocialSecurityEmployee): boolean {
+  return employee.social_security_enabled
+    ?? (employee.contract_type !== 'daily' && employee.employee_code.trim().toUpperCase() !== 'EMP00001')
+}
+
+export function calculateEmployeeSocialSecurity(
+  employee: SocialSecurityEmployee,
+  wage: number,
+  settings: Pick<SocialSecuritySettings, 'contribution_rate' | 'maximum_wage_base'>,
+): number {
+  return isEmployeeSocialSecurityEnabled(employee) ? calculateSocialSecurity(wage, settings) : 0
 }
 
 export function calculateSocialSecurity(
@@ -623,13 +706,14 @@ export async function fetchPayrollLeaveDeductions(month: string, employees: HREm
   return result
 }
 
-export async function fetchPayrollRun(month: string, companyId: string, payrollType: 'permanent' | 'daily' = 'permanent'): Promise<PayrollRun | null> {
+export async function fetchPayrollRun(month: string, companyId: string, payrollType: PayrollType = 'permanent'): Promise<PayrollRun | null> {
   const { data, error } = await supabase
     .from('hr_payroll_runs')
     .select('*, company:hr_companies!company_id(*), items:hr_payroll_items(*)')
     .eq('payroll_month', `${month}-01`)
     .eq('company_id', companyId)
     .eq('payroll_type', payrollType)
+    .is('schedule_id', null)
     .maybeSingle()
   throwIfError(error)
   return data as PayrollRun | null
@@ -642,62 +726,56 @@ export async function savePayrollRun(input: {
   items: PayrollItem[]
   confirm: boolean
   userId?: string
-  payrollType?: 'permanent' | 'daily'
+  payrollType?: PayrollType
+  expectedVersion?: number
+  scheduleId?: string | null
+  periodStart?: string
+  periodEnd?: string
 }): Promise<PayrollRun> {
-  const runPayload = {
-    payroll_month: `${input.month}-01`,
-    company_id: input.company.id,
-    payroll_type: input.payrollType || 'permanent',
-    payment_date: input.paymentDate || null,
-    status: input.confirm ? 'confirmed' : 'draft',
-    confirmed_by: input.confirm ? input.userId || null : null,
-    confirmed_at: input.confirm ? new Date().toISOString() : null,
-    updated_at: new Date().toISOString(),
-  }
-  const { data: run, error: runError } = await supabase
-    .from('hr_payroll_runs')
-    .upsert(runPayload, { onConflict: 'payroll_month,company_id,payroll_type' })
-    .select()
-    .single()
-  throwIfError(runError)
-
-  if (input.items.length) {
-    const rows = input.items.map((item) => {
-      // Generated and server-managed columns must be absent from the INSERT
-      // payload. Sending them as undefined can still become a non-DEFAULT
-      // value after PostgREST serialization.
-      const editable = { ...item } as PayrollItem & { created_at?: string; updated_at?: string }
-      delete editable.id
-      delete editable.payroll_run_id
-      delete editable.gross_income
-      delete editable.total_deduction
-      delete editable.net_pay
-      delete editable.created_at
-      delete editable.updated_at
-      return {
-        ...editable,
-        payroll_run_id: run.id,
-        company_snapshot: input.company,
-      }
-    })
-    // Write first so an INSERT/UPDATE failure never destroys the last saved
-    // draft. The unique key keeps one row per employee in a payroll run.
-    const { error: itemError } = await supabase.from('hr_payroll_items')
-      .upsert(rows, { onConflict: 'payroll_run_id,employee_id' })
-    throwIfError(itemError)
-
-    // Remove employees no longer present only after every new row is safe.
-    const employeeIds = input.items.map((item) => item.employee_id)
-    const { error: deleteError } = await supabase.from('hr_payroll_items')
-      .delete()
-      .eq('payroll_run_id', run.id)
-      .not('employee_id', 'in', `(${employeeIds.join(',')})`)
-    throwIfError(deleteError)
-  }
-  return (await fetchPayrollRun(input.month, input.company.id, input.payrollType || 'permanent')) as PayrollRun
+  const periodStart = input.periodStart || `${input.month}-01`
+  const last = new Date(`${input.month}-01T00:00:00Z`)
+  last.setUTCMonth(last.getUTCMonth()+1); last.setUTCDate(0)
+  const rows=input.items.map(item=>{
+    const row={...item} as PayrollItem & { created_at?: string; updated_at?: string }
+    delete row.id; delete row.payroll_run_id; delete row.gross_income; delete row.total_deduction; delete row.net_pay
+    delete row.created_at; delete row.updated_at
+    return row
+  })
+  const { data,error } = await supabase.rpc('hr_save_payroll_period', {
+    p_run: { company_id: input.company.id, payroll_type: input.payrollType || 'permanent',
+      schedule_id: input.scheduleId || null, period_start: periodStart, period_end: input.periodEnd || last.toISOString().slice(0,10),
+      payment_date: input.paymentDate || null },
+    p_items: rows, p_confirm: input.confirm, p_expected_version: input.expectedVersion || 0,
+  })
+  throwIfError(error)
+  return data as PayrollRun
 }
 
-export async function fetchPayrollHistory(companyId?: string, payrollType?: 'permanent' | 'daily'): Promise<PayrollRun[]> {
+export interface PayrollRevision {
+  id: string
+  reason: string
+  created_at: string
+  items_before: PayrollItem[]
+}
+
+export async function fetchPayrollRevisions(runId: string): Promise<PayrollRevision[]> {
+  const { data, error } = await supabase.from('hr_payroll_revisions')
+    .select('id, reason, created_at, items_before').eq('payroll_run_id', runId).order('created_at', { ascending: false })
+  throwIfError(error)
+  return (data || []) as PayrollRevision[]
+}
+
+export async function reopenDailyPayroll(runId: string, reason: string): Promise<void> {
+  const { error } = await supabase.rpc('hr_reopen_daily_payroll', { p_run: runId, p_reason: reason })
+  throwIfError(error)
+}
+
+export async function reopenMonthlyPayroll(runId: string, reason: string): Promise<void> {
+  const { error } = await supabase.rpc('hr_reopen_monthly_payroll', { p_run: runId, p_reason: reason })
+  throwIfError(error)
+}
+
+export async function fetchPayrollHistory(companyId?: string, payrollType?: PayrollType): Promise<PayrollRun[]> {
   let query = supabase
     .from('hr_payroll_runs')
     .select('*, company:hr_companies!company_id(*), items:hr_payroll_items(*)')
@@ -707,5 +785,16 @@ export async function fetchPayrollHistory(companyId?: string, payrollType?: 'per
   if (payrollType) query = query.eq('payroll_type', payrollType)
   const { data, error } = await query
   throwIfError(error)
-  return (data || []) as PayrollRun[]
+  let adjustmentsQuery=supabase.from('hr_payroll_adjustments')
+    .select('*, source:hr_payroll_items!source_item_id(*, run:hr_payroll_runs!payroll_run_id(*))').eq('status','approved').order('created_at',{ascending:false})
+  if(companyId)adjustmentsQuery=adjustmentsQuery.eq('company_id',companyId)
+  const { data: adjustments,error: adjustmentError }=await adjustmentsQuery
+  throwIfError(adjustmentError)
+  const supplements=(adjustments || []).filter(row=>!payrollType || row.source?.run?.payroll_type===payrollType).map(row=>{
+    const source=row.source as PayrollItem & {run:PayrollRun}
+    const item={...source,...Object.fromEntries(Object.entries(row.deltas as Record<string,number>).map(([key,value])=>[key,Number(value)])),
+      id:row.id,payroll_run_id:`adjustment-${row.id}`,gross_income:Number(row.income_delta),total_deduction:Number(row.deduction_delta),net_pay:Number(row.net_delta)}
+    return {...source.run,id:`adjustment-${row.id}`,payroll_month:row.earning_month,items:[item],is_adjustment:true} as PayrollRun
+  })
+  return [...(data || []) as PayrollRun[],...supplements].sort((a,b)=>b.payroll_month.localeCompare(a.payroll_month))
 }

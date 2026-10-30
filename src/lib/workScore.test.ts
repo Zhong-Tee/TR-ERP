@@ -710,3 +710,45 @@ describe('opening attendance score', () => {
     expect(summary.total_points).toBe(54)
   })
 })
+
+
+describe('appeal reversal limits', () => {
+  const event = (date: string, code: string, points: number): ScoreEventDraft => ({
+    employee_id: 'emp-1', event_date: date, event_code: code, points, rule_id: '',
+    category_id: CATEGORY.id, group_code: 'leave', label: code,
+    ref_table: code.endsWith('_reversed') ? 'hr_score_appeals' : null, ref_id: null, detail: {},
+  })
+  const rules = indexRules([...RULES, rule('absent_repeat', 'attendance_cumulative', -5, { counts_event_prefix: 'absent', threshold_min: 1 })])
+
+  it('reproduces EMP00024 and removes the obsolete +5 without hiding other penalties', () => {
+    const events = [event('2026-10-19', 'absent', -20), event('2026-10-19', 'absent_reversed', 20),
+      event('2026-10-20', 'absent', -20), event('2026-10-20', 'absent_repeat_reversed', 5), event('2026-10-20', 'absent_reversed', 20)]
+    const summary = summarizeMonth('emp-1', events, CATEGORY, rules)
+    expect(summary.total_points).toBe(100)
+    expect(summary.events.find(e => e.event_code === 'absent_repeat_reversed')).toMatchObject({ points: 0, detail: { original_reversal_points: 5 } })
+    expect(summarizeMonth('emp-1', [...events, event('2026-10-21', 'late_1_15', -1)], CATEGORY, rules).total_points).toBe(99)
+    expect(summarizeMonth('emp-1', summary.events, CATEGORY, rules)).toEqual(summary)
+    expect(events[3].points).toBe(5) // Original ledger entries remain intact.
+  })
+
+  it('still refunds a cumulative penalty when its underlying absences remain', () => {
+    const summary = summarizeMonth('emp-1', [event('2026-10-19', 'absent', -20), event('2026-10-20', 'absent', -20), event('2026-10-20', 'absent_repeat_reversed', 5)], CATEGORY, rules)
+    expect(summary.total_points).toBe(60)
+    expect(summary.events.find(e => e.event_code === 'absent_repeat_reversed')?.points).toBe(5)
+  })
+
+  it('does not refund the same daily penalty twice', () => {
+    const summary = summarizeMonth('emp-1', [event('2026-10-19', 'absent', -20), event('2026-10-19', 'absent_reversed', 20), event('2026-10-19', 'absent_reversed', 20), event('2026-10-20', 'late_1_15', -1)], CATEGORY, rules)
+    expect(summary.total_points).toBe(99)
+  })
+
+  it('applies the monthly cap after subtracting valid reversals', () => {
+    const cappedRules = indexRules([rule('absent', 'leave', -20, { cap_per_month: 20 }), rule('late_1_15', 'attendance', -1)])
+    const summary = summarizeMonth('emp-1', [event('2026-10-19', 'absent', -20), event('2026-10-20', 'absent', -20), event('2026-10-19', 'absent_reversed', 20)], CATEGORY, cappedRules)
+    expect(summary.total_points).toBe(80)
+  })
+
+  it('bounds manual bonus credits at the category full score', () => {
+    expect(summarizeMonth('emp-1', [event('2026-10-19', 'bonus', 10)], CATEGORY, rules).total_points).toBe(100)
+  })
+})
