@@ -1,6 +1,7 @@
 import { isSelfPickupBill } from '../../lib/channelBehavior'
 import OrderStatusHistory from './OrderStatusHistory'
 import ShippingConversionPanel from './ShippingConversionPanel'
+import OverpaymentWaiverSection from '../account/OverpaymentWaiverSection'
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { formatDateTime } from '../../lib/utils'
@@ -688,6 +689,7 @@ export default function OrderDetailView({
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-5 space-y-5 select-text">
+        <OverpaymentWaiverSection orderId={order.id} />
         {/* ── ข้อมูลลูกค้า ── */}
         <section>
           <h4 className="text-sm font-bold text-gray-800 border-b border-gray-200 pb-1.5 mb-2">ข้อมูลลูกค้า</h4>

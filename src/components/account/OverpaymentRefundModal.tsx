@@ -7,7 +7,7 @@ type RefundMatch = {
   bank: string | null; account_number: string | null; reason: string | null
   has_slip: boolean; sent: boolean; matched_at: string | null
 }
-type MatchData = { excess: number; matched_amount: number; remaining: number; refunds: RefundMatch[] }
+type MatchData = { excess: number; matched_amount: number; remaining: number; waived_amount?: number; refunds: RefundMatch[] }
 const money = (value: number) => Number(value).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 export default function OverpaymentRefundModal({ order, onClose, onChanged }: {
@@ -60,11 +60,12 @@ export default function OverpaymentRefundModal({ order, onClose, onChanged }: {
   const candidates = data?.refunds.filter(r => !r.matched_at) || []
   return <Modal open onClose={() => { if (!busy) onClose() }} ariaLabelledby="overpayment-refund-title" contentClassName="max-w-3xl w-full" showCloseButton={!busy}>
     <div className="space-y-4 p-5">
-      <h3 id="overpayment-refund-title" className="pr-8 text-lg font-bold">จับคู่รับเกินกับโอนคืน · {order.bill_no}</h3>
+      <h3 id="overpayment-refund-title" className="pr-8 text-lg font-bold">จัดการยอดรับเกิน · {order.bill_no}</h3>
       <p className="text-sm text-gray-500">เลือกรายการโอนคืนที่อนุมัติแล้วของบิลนี้ · การจับคู่ไม่เปลี่ยนยอดเงินรับหรือยืนยันการโอนเงิน</p>
       {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
       {notice && <p role="status" className="text-sm text-emerald-700">{notice}</p>}
       {loading ? <p className="py-6 text-center">กำลังโหลดรายการ...</p> : data && <>
+        {Number(data.waived_amount) > 0 && <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">บัญชีรับรองว่าลูกค้าไม่รับคืน ฿{money(data.waived_amount!)} · ไม่มีรายการโอนเงินออก · หักออกจากส่วนเกินที่รอจัดการแล้ว</p>}
         <div className="grid grid-cols-3 gap-3 text-sm">
           <div className="rounded-lg bg-red-50 p-3">รับเกิน<div className="font-semibold text-red-600">฿{money(data.excess)}</div></div>
           <div className="rounded-lg bg-emerald-50 p-3">จับคู่แล้ว<div className="font-semibold">฿{money(data.matched_amount)}</div></div>

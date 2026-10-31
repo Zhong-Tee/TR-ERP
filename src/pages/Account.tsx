@@ -14,6 +14,7 @@ import BillEditSection from '../components/account/BillEditSection'
 import { useShippingConversionCount } from '../hooks/useShippingConversionCount'
 import ShippingConversionPanel from '../components/order/ShippingConversionPanel'
 import ManualSlipCheckSection from '../components/account/ManualSlipCheckSection'
+import OverpaymentWaiverSection from '../components/account/OverpaymentWaiverSection'
 import TaxInvoiceModal from '../components/account/TaxInvoiceModal'
 import TrialBalanceSection from '../components/account/TrialBalanceSection'
 import EcommerceSection from '../components/account/EcommerceSection'
@@ -231,6 +232,7 @@ export default function Account() {
 
   const [orderToAmend, setOrderToAmend] = useState<(Order & { order_items?: any[] }) | null>(null)
   const [refunds, setRefunds] = useState<Refund[]>([])
+  const [pendingWaiverCount, setPendingWaiverCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [billingLoading, setBillingLoading] = useState(true)
   const [taxInvoiceOrders, setTaxInvoiceOrders] = useState<BillingRequestOrder[]>([])
@@ -607,6 +609,9 @@ export default function Account() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => {
         loadRefunds()
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_overpayment_waivers' }, () => {
+        loadRefunds()
+      })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_manual_slip_checks' }, () => {
         loadQueueCounts()
       })
@@ -680,6 +685,10 @@ export default function Account() {
       })
       
       setRefunds(filteredRefunds)
+      const { count, error: waiverError } = await supabase.from('ac_overpayment_waivers')
+        .select('id, or_orders!inner(status)', { count: 'exact', head: true }).eq('status', 'pending').neq('or_orders.status', 'ยกเลิก')
+      if (waiverError) throw waiverError
+      setPendingWaiverCount(count || 0)
     } catch (error: any) {
       console.error('Error loading refunds:', error)
     } finally {
@@ -1028,7 +1037,7 @@ export default function Account() {
     }
     if (item.count === 'refunds') {
       return {
-        text: loading ? '–' : String(pendingRefunds.length),
+        text: loading ? '–' : String(pendingRefunds.length + pendingWaiverCount),
         pillClass: 'bg-amber-100 text-amber-800',
       }
     }
@@ -1047,7 +1056,7 @@ export default function Account() {
     if (item.count === 'dashboard') {
       // ผลรวมงานใหม่ใน Dashboard: โอนคืนรออนุมัติ + คำขอเคลมรออนุมัติ + คำขอใบกำกับภาษี (นับเฉพาะที่มีสิทธิ์เห็น)
       const sum =
-        (hasAccess('account-refunds') ? pendingRefunds.length : 0) +
+        (hasAccess('account-refunds') ? pendingRefunds.length + pendingWaiverCount : 0) +
         (hasAccess('account-claim-approval') ? claimPendingCount : 0) +
         (hasAccess('account-tax-invoice') ? taxInvoiceOrders.length : 0)
       return {
@@ -1436,8 +1445,8 @@ export default function Account() {
         >
           <div className="h-1 w-full bg-amber-500 shrink-0" />
           <div className="p-5 flex-1">
-            <p className="text-base font-medium text-gray-500 uppercase tracking-wide">รออนุมัติโอนคืน</p>
-            <p className="mt-3 text-4xl font-bold text-amber-600 tabular-nums">{pendingRefunds.length}</p>
+            <p className="text-base font-medium text-gray-500 uppercase tracking-wide">รออนุมัติจัดการยอดเกิน</p>
+            <p className="mt-3 text-4xl font-bold text-amber-600 tabular-nums">{pendingRefunds.length + pendingWaiverCount}</p>
             <p className="text-sm text-gray-500 mt-1">รายการ</p>
           </div>
         </button>
@@ -1467,9 +1476,9 @@ export default function Account() {
           onClick={() => { setActiveTab('refunds') }}
           className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors flex items-center gap-2 ${activeTab === 'refunds' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
         >
-          รายการโอนคืน
+          โอนคืน / ไม่รับคืน
           <span className="min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold bg-amber-100 text-amber-800">
-            {loading ? '–' : pendingRefunds.length}
+            {loading ? '–' : pendingRefunds.length + pendingWaiverCount}
           </span>
         </button>
         )}
@@ -1847,6 +1856,8 @@ export default function Account() {
       {activeTab === 'claim-approval' && hasAccess('account-claim-approval') && <ClaimApprovalSection />}
 
       {activeTab === 'refunds' && hasAccess('account-refunds') && (
+      <>
+      <OverpaymentWaiverSection canReview={['superadmin', 'account', 'admin', 'admin-tr'].includes(user?.role || '')} onChanged={() => void loadRefunds()} />
       <section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50">
           <h2 className="text-lg font-semibold text-gray-800">รายการโอนคืน</h2>
@@ -1933,6 +1944,7 @@ export default function Account() {
           </div>
         )}
       </section>
+      </>
       )}
 
       {activeTab === 'tax-invoice' && hasAccess('account-tax-invoice') && (

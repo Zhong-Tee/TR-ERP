@@ -271,7 +271,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       const mpCountQuery = isAdminOrSuperadmin(user?.role)
         ? supabase.from('mp_orders').select('id', { count: 'exact', head: true }).eq('status', 'new')
         : supabase.from('mp_orders').select('id', { count: 'exact', head: true }).in('status', ['assigned', 'follow_up'])
-      const [rpcRes, ordersActionableRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planWorkQueueRes, machineryWarningRes, machineryCriticalRes, hrLeavePendingRes, hrOtPendingRes, hrWfhPendingRes, mpCountRes] =
+      const [rpcRes, ordersActionableRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planWorkQueueRes, machineryWarningRes, machineryCriticalRes, hrLeavePendingRes, hrOtPendingRes, hrWfhPendingRes, mpCountRes, waiverCountRes] =
         await Promise.all([
         supabase.rpc('get_sidebar_counts', { p_username: adminName, p_role: user?.role ?? '' }),
         supabase.rpc('get_orders_sidebar_actionable_count', { p_username: adminName, p_role: user?.role ?? '' }),
@@ -296,11 +296,12 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         supabase.from('hr_ot_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
         supabase.from('hr_wfh_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
         mpCountQuery,
+        supabase.from('ac_overpayment_waivers').select('id, or_orders!inner(status)', { count: 'exact', head: true }).eq('status', 'pending').neq('or_orders.status', 'ยกเลิก'),
       ])
 
       const c = rpcRes.data || {}
       const accountTotal =
-        (c.refund_pending || 0) +
+        (c.refund_pending || 0) + (waiverCountRes.count || 0) +
         (c.tax_pending || 0) +
         (c.manual_slip_pending || 0) +
         (c.amendment_pending || 0) +
@@ -360,6 +361,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'mp_orders' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_overpayment_waivers' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_manual_slip_checks' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_amendments' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_claim_requests' }, () => debouncedLoadCounts())

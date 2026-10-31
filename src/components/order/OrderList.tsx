@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import { buildIlikeOr, buildWhitespaceTolerantTrackingPattern } from '../../lib/searchFilter'
-import { fetchLatestRejectedManualSlipOrderIds, fetchLatestRejectedOverpayOrderIds, latestRefundsByOrder } from '../../lib/rejectedOverpayRefunds'
+import { fetchLatestRejectedManualSlipOrderIds, fetchLatestRejectedOverpayOrderIds, isManualSlipRevocationSuperseded, latestRefundsByOrder } from '../../lib/rejectedOverpayRefunds'
 import { hasDuplicateSlipError, manualSlipSubmissionMode } from '../../lib/manualSlipRules'
 import { Order, OrderStatus } from '../../types'
 import { formatDateTime } from '../../lib/utils'
@@ -655,7 +655,11 @@ export default function OrderList({
           .order('id', { ascending: false })
           .range(from, to))
 
-        const latestOverpayRefundByOrder = latestRefundsByOrder(rejectedRefundsData || [])
+        const { data: waiverRows, error: waiverError } = await supabase.from('ac_overpayment_waivers')
+          .select('id, order_id, status, created_at, reviewed_at, rejected_reason').in('order_id', orderIds)
+        if (waiverError) throw waiverError
+        const latestWaivers = latestRefundsByOrder(waiverRows || [])
+        const latestOverpayRefundByOrder = latestRefundsByOrder([...(rejectedRefundsData || []), ...(waiverRows || [])])
         const rejectedOverpayRefundByOrder = new Map<string, string | null>(
           [...latestOverpayRefundByOrder.values()]
             .filter((r) => r.status === 'rejected')
@@ -667,11 +671,13 @@ export default function OrderList({
         // Load manual slip check submissions (pending = ส่งตรวจแล้วรอบัญชี, rejected-only = ไม่อนุมัติ)
         const { data: manualSlipData } = await supabase
           .from('ac_manual_slip_checks')
-          .select('order_id, status, rejected_reason')
+          .select('order_id, status, rejected_reason, approval_revoked_at')
+          .is('duplicate_of', null)
           .in('order_id', orderIds)
 
         const manualSlipByOrder = new Map<string, { hasPending: boolean; hasRejected: boolean; rejectedReason: string | null }>()
         for (const r of manualSlipData || []) {
+          if (isManualSlipRevocationSuperseded(r, latestWaivers.get(r.order_id))) continue
           const oid = (r as any).order_id as string
           const st = (r as any).status as string
           const cur = manualSlipByOrder.get(oid) || { hasPending: false, hasRejected: false, rejectedReason: null }
@@ -693,6 +699,7 @@ export default function OrderList({
           return {
             ...order,
             has_overpay_refund: orderIdsWithOverpayRefund.has(order.id),
+            overpayment_waiver_status: latestWaivers.get(order.id)?.id === latestOverpayRefundByOrder.get(order.id)?.id ? latestWaivers.get(order.id)?.status : undefined,
             has_rejected_overpay_refund: rejectedOverpayRefundByOrder.has(order.id),
             latest_overpay_refund_status: latestOverpayRefundByOrder.get(order.id)?.status,
             rejected_overpay_reason: rejectedOverpayRefundByOrder.get(order.id) ?? null,
@@ -920,7 +927,9 @@ export default function OrderList({
                 )}
                 {['pending', 'approved'].includes((order as any).latest_overpay_refund_status) && (
                   <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${(order as any).latest_overpay_refund_status === 'approved' ? 'bg-emerald-100 text-emerald-800 border-emerald-200' : 'bg-amber-100 text-amber-800 border-amber-200'}`}>
-                    {(order as any).latest_overpay_refund_status === 'approved' ? 'อนุมัติโอนคืนแล้ว' : 'รออนุมัติโอนคืน'}
+                    {(order as any).overpayment_waiver_status === (order as any).latest_overpay_refund_status
+                      ? ((order as any).latest_overpay_refund_status === 'approved' ? 'รับรองไม่รับคืนแล้ว' : 'รอรับรองไม่รับคืน')
+                      : ((order as any).latest_overpay_refund_status === 'approved' ? 'อนุมัติโอนคืนแล้ว' : 'รออนุมัติโอนคืน')}
                   </span>
                 )}
                 {(order as any).has_rejected_overpay_refund && (
@@ -928,7 +937,7 @@ export default function OrderList({
                     className="px-2.5 py-1 bg-accent-300 text-surface-900 rounded-full text-sm font-semibold"
                     title={(order as any).rejected_overpay_reason ? `เหตุผลไม่อนุมัติ: ${(order as any).rejected_overpay_reason}` : undefined}
                   >
-                    ปฏิเสธโอนคืน
+                    {(order as any).overpayment_waiver_status === 'rejected' ? 'ไม่อนุมัติการไม่รับคืน' : 'ปฏิเสธโอนคืน'}
                     {(order as any).rejected_overpay_reason && (
                       <span className="font-medium">: {(order as any).rejected_overpay_reason}</span>
                     )}

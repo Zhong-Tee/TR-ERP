@@ -33,6 +33,7 @@ export interface VerificationResultModalProps {
   statusMessage: string
   /** หลังกรอกบัญชีรับคืนแล้ว — สร้าง/อัปเดต ac_refunds */
   onConfirmOverpay?: (details: OverpayRefundBankDetails) => void | Promise<void>
+  onConfirmNoRefund?: (details: { reason: string; evidenceUrl: string | null }) => void | Promise<void>
   /** กำลังดำเนินการ (เช่น กำลังสร้างรายการโอนคืน) */
   confirmingOverpay?: boolean
 }
@@ -198,9 +199,12 @@ export default function VerificationResultModal({
   validationErrors = [],
   statusMessage,
   onConfirmOverpay,
+  onConfirmNoRefund,
   confirmingOverpay = false,
 }: VerificationResultModalProps) {
   const [showOverpayBankForm, setShowOverpayBankForm] = useState(false)
+  const [showWaiverForm, setShowWaiverForm] = useState(false)
+  const [waiverConfirmed, setWaiverConfirmed] = useState(false)
   const [recipientName, setRecipientName] = useState('')
   const [recipientBank, setRecipientBank] = useState('')
   const [recipientAccountNo, setRecipientAccountNo] = useState('')
@@ -211,6 +215,8 @@ export default function VerificationResultModal({
   useEffect(() => {
     if (open) {
       setShowOverpayBankForm(false)
+      setShowWaiverForm(false)
+      setWaiverConfirmed(false)
       setRecipientName('')
       setRecipientBank('')
       setRecipientAccountNo('')
@@ -226,7 +232,7 @@ export default function VerificationResultModal({
   const isSuccess = type === 'success'
   const isSaveSuccess = type === 'save_success'
   const isFailed = type === 'failed'
-  const showVerificationDetails = !isSaveSuccess && !(isOverTransfer && showOverpayBankForm)
+  const showVerificationDetails = !isSaveSuccess && !(isOverTransfer && (showOverpayBankForm || showWaiverForm))
 
   // ต้องกรอกบัญชีและเหตุผลก่อนส่งคำขอ; ลิงก์เป็นข้อมูลเพิ่มเติม
   const overpayFormComplete =
@@ -258,7 +264,9 @@ export default function VerificationResultModal({
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={() => { if (!confirmingOverpay) onClose() }}
+      closeOnBackdropClick={!confirmingOverpay}
+      showCloseButton={!confirmingOverpay}
       contentClassName={`max-w-md ${isOverTransfer && showOverpayBankForm ? 'h-full' : 'max-h-[90vh]'}`}
       role="dialog"
       ariaModal
@@ -272,13 +280,24 @@ export default function VerificationResultModal({
         <h2 id="verification-result-title" className="text-lg font-semibold">
           {isSaveSuccess && 'บันทึกสำเร็จ'}
           {isSuccess && !isSaveSuccess && 'ตรวจสอบสลิปสำเร็จ'}
-          {isOverTransfer && !showOverpayBankForm && 'ยอดสลิปเกินยอดออเดอร์'}
+          {isOverTransfer && !showOverpayBankForm && !showWaiverForm && 'ยอดสลิปเกินยอดออเดอร์'}
+          {isOverTransfer && showWaiverForm && 'ลูกค้าไม่รับเงินคืน'}
           {isOverTransfer && showOverpayBankForm && 'บัญชีรับโอนคืน'}
           {isFailed && 'ตรวจสอบสลิปไม่สำเร็จ'}
         </h2>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-4">
+        {isOverTransfer && showWaiverForm && (
+          <div className="space-y-4 text-sm">
+            <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">ยอดบิล ฿{orderAmount.toLocaleString()} · รับเงิน ฿{totalAmount.toLocaleString()}<div className="mt-1 font-semibold">ลูกค้าไม่รับส่วนเกิน ฿{overpayAmount.toLocaleString()} คืน</div></div>
+            <p className="text-gray-600">ส่งให้บัญชีตรวจรับรองก่อนนำเข้าใบงาน โดยไม่สร้างรายการโอนเงินคืน</p>
+            <label className="block">เหตุผล <span className="text-red-600">*</span><textarea value={recipientReason} onChange={event => setRecipientReason(event.target.value)} disabled={confirmingOverpay} maxLength={1000} rows={3} className="mt-1 w-full rounded-lg border p-2" /></label>
+            <label className="block">ลิงก์หลักฐานที่ลูกค้ายืนยัน (ไม่บังคับ)<input type="url" value={requestLink} onChange={event => setRequestLink(event.target.value)} disabled={confirmingOverpay} placeholder="https://..." className="mt-1 w-full rounded-lg border p-2" /></label>
+            <label className="flex items-start gap-2"><input type="checkbox" checked={waiverConfirmed} onChange={event => setWaiverConfirmed(event.target.checked)} disabled={confirmingOverpay} className="mt-1" />ลูกค้ายืนยันไม่รับเงินส่วนเกินจำนวนนี้คืนแล้ว</label>
+            {formError && <p role="alert" className="text-red-600">{formError}</p>}
+          </div>
+        )}
         {isOverTransfer && showOverpayBankForm && (
           <div className="rounded-xl bg-amber-50 border border-amber-100 p-3 text-sm text-amber-900 space-y-1">
             <div>ยอดออเดอร์: ฿{orderAmount.toLocaleString()}</div>
@@ -357,11 +376,11 @@ export default function VerificationResultModal({
           </div>
         )}
 
-        {!(isOverTransfer && showOverpayBankForm) && (
+        {!(isOverTransfer && (showOverpayBankForm || showWaiverForm)) && (
           <div className="text-sm text-gray-700 whitespace-pre-line">{statusMessage}</div>
         )}
 
-        {(errors.length > 0 || validationErrors.length > 0) && !(isOverTransfer && showOverpayBankForm) && (
+        {(errors.length > 0 || validationErrors.length > 0) && !(isOverTransfer && (showOverpayBankForm || showWaiverForm)) && (
           <div className="rounded-xl bg-red-50 p-4 space-y-2">
             {(errors.length > 0 || validationErrors.length > 0) && (
               <h3 className="text-sm font-semibold text-red-800">รายละเอียด</h3>
@@ -381,7 +400,17 @@ export default function VerificationResultModal({
       </div>
 
       <div className="shrink-0 px-6 py-4 bg-gray-50 border-t border-gray-200 flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
-        {isOverTransfer && onConfirmOverpay ? (
+        {isOverTransfer && showWaiverForm ? (
+          <>
+            <button type="button" disabled={confirmingOverpay} onClick={() => { setShowWaiverForm(false); setFormError('') }} className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50">ย้อนกลับ</button>
+            <button type="button" disabled={confirmingOverpay || !waiverConfirmed || !recipientReason.trim()} onClick={() => {
+              const link = refundRequestLink(requestLink)
+              if (!recipientReason.trim() || !waiverConfirmed) { setFormError('กรุณาระบุเหตุผลและยืนยันว่าลูกค้าไม่รับเงินคืน'); return }
+              if (requestLink.trim() && !link) { setFormError('กรุณากรอกลิงก์ให้ถูกต้อง โดยขึ้นต้นด้วย https:// หรือ http://'); return }
+              void onConfirmNoRefund?.({ reason: recipientReason.trim(), evidenceUrl: link })
+            }} className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{confirmingOverpay ? 'กำลังส่ง...' : 'ส่งให้บัญชีรับรอง'}</button>
+          </>
+        ) : isOverTransfer && onConfirmOverpay ? (
           showOverpayBankForm ? (
             <>
               <button
@@ -417,7 +446,7 @@ export default function VerificationResultModal({
                 disabled={confirmingOverpay}
                 className="px-4 py-2 rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 text-sm font-medium"
               >
-                ไม่ยืนยัน
+                กลับไปตรวจสอบ
               </button>
               <button
                 type="button"
@@ -425,8 +454,9 @@ export default function VerificationResultModal({
                 disabled={confirmingOverpay}
                 className="px-4 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 text-sm font-medium"
               >
-                ยืนยัน โอนเงินเกิน
+                รับเงินคืน
               </button>
+              {onConfirmNoRefund && <button type="button" disabled={confirmingOverpay} onClick={() => { setShowWaiverForm(true); setFormError('') }} className="px-4 py-2 rounded-lg border border-amber-500 text-amber-800 text-sm font-medium disabled:opacity-50">ไม่รับเงินคืน</button>}
             </>
           )
         ) : (

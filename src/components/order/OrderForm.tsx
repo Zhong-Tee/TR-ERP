@@ -3602,8 +3602,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         if (displayTotal > orderAmount && allAccountNameMatch && allBankCodeMatch && !duplicateChecks.some((d) => d.isDuplicate)) {
           const overpay = displayTotal - orderAmount
           const msg = errors.length === 0 && validationErrors.length === 0
-            ? `เลขบัญชีและสาขาตรงกัน แต่ยอดสลิปเกิน\n\nยืนยันว่าลูกค้าโอนเกินและต้องมีการโอนคืนหรือไม่?`
-            : `เลขบัญชีและสาขาตรงกัน แต่ยอดเกิน\n\n${validationErrors.length > 0 ? validationErrors.join('\n') + '\n\n' : ''}ยืนยันว่าลูกค้าโอนเกินและต้องมีการโอนคืนหรือไม่?`
+            ? `เลขบัญชีและสาขาตรงกัน แต่ยอดสลิปเกิน\n\nกรุณาเลือกว่าลูกค้ารับเงินส่วนเกินคืนหรือไม่`
+            : `เลขบัญชีและสาขาตรงกัน แต่ยอดเกิน\n\n${validationErrors.length > 0 ? validationErrors.join('\n') + '\n\n' : ''}กรุณาเลือกว่าลูกค้ารับเงินส่วนเกินคืนหรือไม่`
           setVerificationModal({
             type: 'over_transfer',
             accountMatch: true,
@@ -3656,8 +3656,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         if (allAccountNameMatch && allBankCodeMatch && !duplicateChecks.some((d) => d.isDuplicate)) {
           // เลขบัญชีและสาขาตรง แต่ยอดเกิน และไม่มีสลิปซ้ำ → แสดง popup ยืนยันโอนเงินเกิน (ยังไม่อัปเดต DB)
           const msg = errors.length === 0 && validationErrors.length === 0
-            ? `เลขบัญชีและสาขาตรงกัน\n\nยืนยันว่าลูกค้าโอนเกินและต้องมีการโอนคืนหรือไม่?`
-            : `เลขบัญชีและสาขาตรงกัน แต่ยอดเกิน\n\n${validationErrors.length > 0 ? validationErrors.join('\n') + '\n\n' : ''}ยืนยันว่าลูกค้าโอนเกินและต้องมีการโอนคืนหรือไม่?`
+            ? `เลขบัญชีและสาขาตรงกัน\n\nกรุณาเลือกว่าลูกค้ารับเงินส่วนเกินคืนหรือไม่`
+            : `เลขบัญชีและสาขาตรงกัน แต่ยอดเกิน\n\n${validationErrors.length > 0 ? validationErrors.join('\n') + '\n\n' : ''}กรุณาเลือกว่าลูกค้ารับเงินส่วนเกินคืนหรือไม่`
           setVerificationModal({
             type: 'over_transfer',
             accountMatch: true,
@@ -7593,6 +7593,23 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             : undefined
         }
         confirmingOverpay={confirmingOverpay}
+        onConfirmNoRefund={verificationModal.type === 'over_transfer' && verificationModal.orderId ? async (details) => {
+          setConfirmingOverpay(true)
+          try {
+            const { error } = await supabase.rpc('submit_overpayment_waiver', {
+              p_order_id: verificationModal.orderId,
+              p_reason: details.reason,
+              p_evidence_url: details.evidenceUrl,
+            })
+            if (error) throw error
+            setVerificationModal(null)
+            onSave({ stayOnCreate: true })
+            setMessageModal({ open: true, title: 'ส่งคำขอแล้ว', message: 'ส่งให้บัญชีรับรองลูกค้าไม่รับเงินคืนแล้ว ต้องรออนุมัติก่อนนำเข้าใบงาน' })
+            window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+          } catch (error: any) {
+            setMessageModal({ open: true, title: 'ส่งคำขอไม่สำเร็จ', message: error?.message || String(error) })
+          } finally { setConfirmingOverpay(false) }
+        } : undefined}
       />
     )}
 

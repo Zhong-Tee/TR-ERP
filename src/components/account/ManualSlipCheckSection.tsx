@@ -4,6 +4,7 @@ import { Order } from '../../types'
 import { formatDateTime } from '../../lib/utils'
 import Modal from '../ui/Modal'
 import OrderDetailView from '../order/OrderDetailView'
+import { useAuthContext } from '../../contexts/AuthContext'
 
 type ManualSlipRow = {
   id: string
@@ -20,6 +21,9 @@ type ManualSlipRow = {
   rejected_reason: string | null
   cancelled_at: string | null
   submission_kind: 'manual' | 'duplicate_fallback_review'
+  approval_revoked_at: string | null
+  approval_revoked_by_name: string | null
+  approval_revoked_reason: string | null
 }
 
 type OrderGroup = {
@@ -40,6 +44,11 @@ type EditingCell = {
 } | null
 
 export default function ManualSlipCheckSection() {
+  const { user } = useAuthContext()
+  const [revokeGroup, setRevokeGroup] = useState<OrderGroup | null>(null)
+  const [revokeReason, setRevokeReason] = useState('')
+  const [revoking, setRevoking] = useState(false)
+  const [revokeError, setRevokeError] = useState('')
   const [rows, setRows] = useState<ManualSlipRow[]>([])
   const [loading, setLoading] = useState(true)
   const [filterTab, setFilterTab] = useState<'pending' | 'done'>('pending')
@@ -301,6 +310,30 @@ export default function ManualSlipCheckSection() {
     return { orderUpdateStatus: result.order_status || (action === 'approved' ? 'ตรวจสอบแล้ว' : 'ตรวจสอบไม่ผ่าน'), action }
   }
 
+  async function revokeApproval() {
+    if (!revokeGroup || revoking || user?.role !== 'superadmin') return
+    if (!revokeReason.trim()) { setRevokeError('กรุณาระบุเหตุผลที่ยกเลิกการอนุมัติ'); return }
+    setRevoking(true)
+    setRevokeError('')
+    try {
+      const { error } = await supabase.rpc('manual_slip_revoke_approval', {
+        p_order_id: revokeGroup.order_id,
+        p_slip_ids: revokeGroup.entries.filter(entry => entry.status === 'approved').map(entry => entry.id),
+        p_reason: revokeReason.trim(),
+      })
+      if (error) throw error
+      setRevokeGroup(null)
+      setRevokeReason('')
+      await loadRows()
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+      setCheckResult({ open: true, message: 'ยกเลิกการอนุมัติแล้ว ระบบจะไม่นำผลอนุมัติสลิปมือรายการนี้มาใช้ตอนบันทึกข้อมูลครบอีก โดยคงสถานะบิลเดิมไว้', type: 'success' })
+    } catch (error: any) {
+      setRevokeError(error?.message || 'ยกเลิกการอนุมัติไม่สำเร็จ')
+    } finally {
+      setRevoking(false)
+    }
+  }
+
   async function handleAction(action: 'approved' | 'rejected') {
     if (!actionModal.group) return
     setActionSubmitting(true)
@@ -473,7 +506,7 @@ export default function ManualSlipCheckSection() {
                         {group.bill_no || '-'}
                       </span>
                       <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${statusColor(group.status)}`}>
-                        {statusLabel(group.status)}
+                        {group.entries.every(entry => !!entry.approval_revoked_at) ? 'ยกเลิกการอนุมัติแล้ว' : statusLabel(group.status)}
                       </span>
                       {group.entries.some(e => e.submission_kind === 'duplicate_fallback_review') && (
                         <span className="text-xs px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-800 border border-amber-200">
@@ -517,6 +550,12 @@ export default function ManualSlipCheckSection() {
                         เหตุผลที่ไม่อนุมัติ: <span className="font-semibold">{group.rejected_reason}</span>
                       </div>
                     )}
+                    {group.entries.filter(entry => entry.approval_revoked_at).map(entry => (
+                      <div key={`revoked-${entry.id}`} className="mt-2 text-xs text-rose-700">
+                        ยกเลิกการอนุมัติสลิป {group.entries.indexOf(entry) + 1} โดย {entry.approval_revoked_by_name || '–'}
+                        {' — '}{formatDateTime(entry.approval_revoked_at!)} · {entry.approval_revoked_reason}
+                      </div>
+                    ))}
                     {group.entries.some(e => e.status === 'cancelled') && (
                       <div className="text-xs text-gray-700 bg-gray-100 border border-gray-200 rounded-lg px-2.5 py-1.5 mt-2 inline-block">
                         <i className="fas fa-ban mr-1"></i>
@@ -534,6 +573,15 @@ export default function ManualSlipCheckSection() {
                       >
                         <i className="fas fa-eye mr-1"></i> ดูบิล
                       </button>
+                      {user?.role === 'superadmin' && group.entries.some(entry => entry.status === 'approved') && (
+                        <button
+                          type="button"
+                          onClick={() => { setRevokeGroup(group); setRevokeReason(''); setRevokeError('') }}
+                          className="px-3 py-1.5 border border-red-300 bg-red-50 text-red-700 rounded-lg text-xs font-bold hover:bg-red-100 transition"
+                        >
+                          ยกเลิกการอนุมัติ
+                        </button>
+                      )}
                       {group.entries.some(e => e.status === 'pending') && (
                         <>
                           <button
@@ -573,6 +621,23 @@ export default function ManualSlipCheckSection() {
           </div>
         )}
       </div>
+
+      <Modal open={!!revokeGroup && user?.role === 'superadmin'} onClose={() => { if (!revoking) setRevokeGroup(null) }} contentClassName="max-w-md" closeOnBackdropClick={!revoking} ariaLabelledby="revoke-approval-title">
+        <div className="p-6">
+          <h3 id="revoke-approval-title" className="text-lg font-bold text-gray-900">ยกเลิกการอนุมัติสลิปมือ</h3>
+          <p className="mt-3 text-sm text-gray-700">บิล {revokeGroup?.bill_no || '–'} · ยกเลิกผลอนุมัติสลิปมือที่อนุมัติแล้วทั้งหมดของบิลนี้ โดยเก็บประวัติการอนุมัติเดิมไว้</p>
+          <p className="mt-2 text-sm text-gray-600">สถานะบิลจะคงเดิม และระบบจะไม่นำผลอนุมัติเหล่านี้มาใช้ซ้ำตอนบันทึกข้อมูลครบ การดำเนินการนี้ไม่ได้สร้างคำขอโอนคืน</p>
+          <label className="mt-4 block text-sm font-semibold text-gray-700">
+            เหตุผลที่ยกเลิกการอนุมัติ <span className="text-red-600">*</span>
+            <textarea value={revokeReason} onChange={event => setRevokeReason(event.target.value)} disabled={revoking} rows={3} maxLength={1000} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 font-normal" />
+          </label>
+          {revokeError && <p role="alert" className="mt-3 text-sm text-red-700">{revokeError}</p>}
+          <div className="mt-5 flex justify-end gap-3">
+            <button type="button" disabled={revoking} onClick={() => setRevokeGroup(null)} className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50">ย้อนกลับ</button>
+            <button type="button" disabled={revoking || !revokeReason.trim()} onClick={() => void revokeApproval()} className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{revoking ? 'กำลังดำเนินการ...' : 'ยืนยันยกเลิกการอนุมัติ'}</button>
+          </div>
+        </div>
+      </Modal>
 
       {/* Order Detail Modal */}
       <Modal open={!!detailOrder} onClose={() => setDetailOrder(null)} contentClassName="max-w-[96vw] w-full">

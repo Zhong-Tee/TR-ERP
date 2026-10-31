@@ -19,6 +19,20 @@ type ClaimReapprovalState = {
   reapproval_count: number | null
 }
 
+/** A cancelled manual approval is audit history once a newer customer waiver
+ * is approved. Ordinary slip rejections still require payment verification. */
+export function isManualSlipRevocationSuperseded(
+  manual: { status: string; approval_revoked_at?: string | null },
+  waiver?: { status: string; created_at: string; reviewed_at: string | null },
+): boolean {
+  if (manual.status !== 'rejected' || !manual.approval_revoked_at || waiver?.status !== 'approved' || !waiver.reviewed_at) return false
+  const revokedAt = Date.parse(manual.approval_revoked_at)
+  const createdAt = Date.parse(waiver.created_at)
+  const reviewedAt = Date.parse(waiver.reviewed_at)
+  return Number.isFinite(revokedAt) && Number.isFinite(createdAt) && Number.isFinite(reviewedAt)
+    && createdAt >= revokedAt && reviewedAt > revokedAt
+}
+
 export function isManualSlipRejectionSuperseded(
   manualSubmittedAt: string,
   revision?: ClaimReapprovalState,
@@ -45,15 +59,12 @@ export async function fetchLatestRejectedOverpayOrderIds(client: SupabaseClient)
     .order('id', { ascending: false })
     .range(from, to))
 
-  const latestStatusByOrder = new Map<string, string>()
-  for (const r of data) {
-    if (r.order_id && !latestStatusByOrder.has(r.order_id)) {
-      latestStatusByOrder.set(r.order_id, r.status)
-    }
-  }
-  return [...latestStatusByOrder.entries()]
-    .filter(([, st]) => st === 'rejected')
-    .map(([id]) => id)
+  const waivers = await fetchAllSupabasePages<{ id: string; order_id: string; status: string; created_at: string }>((from, to) => client
+    .from('ac_overpayment_waivers').select('id, order_id, status, created_at')
+    .order('created_at', { ascending: false }).order('id', { ascending: false }).range(from, to))
+  return [...latestRefundsByOrder([...data, ...waivers]).values()]
+    .filter(row => row.status === 'rejected')
+    .map(row => row.order_id!)
 }
 
 /**
@@ -61,17 +72,18 @@ export async function fetchLatestRejectedOverpayOrderIds(client: SupabaseClient)
  * เทียบด้วยการส่งตรวจล่าสุดต่อบิล: ถ้าถูกส่งตรวจใหม่ (pending) หรืออนุมัติแล้ว บิลจะหลุดจากรายการนี้
  */
 export async function fetchLatestRejectedManualSlipOrderIds(client: SupabaseClient): Promise<string[]> {
-  const data = await fetchAllSupabasePages<{ id: string; order_id: string | null; status: string; submitted_at: string }>((from, to) => client
+  const data = await fetchAllSupabasePages<{ id: string; order_id: string | null; status: string; submitted_at: string; approval_revoked_at: string | null }>((from, to) => client
     .from('ac_manual_slip_checks')
-    .select('id, order_id, status, submitted_at')
+    .select('id, order_id, status, submitted_at, approval_revoked_at')
+    .is('duplicate_of', null)
     .order('submitted_at', { ascending: false })
     .order('id', { ascending: false })
     .range(from, to))
 
-  const latestByOrder = new Map<string, { status: string; submitted_at: string }>()
+  const latestByOrder = new Map<string, { status: string; submitted_at: string; approval_revoked_at: string | null }>()
   for (const r of data) {
     if (r.order_id && !latestByOrder.has(r.order_id)) {
-      latestByOrder.set(r.order_id, { status: r.status, submitted_at: r.submitted_at })
+      latestByOrder.set(r.order_id, { status: r.status, submitted_at: r.submitted_at, approval_revoked_at: r.approval_revoked_at })
     }
   }
 
@@ -81,7 +93,7 @@ export async function fetchLatestRejectedManualSlipOrderIds(client: SupabaseClie
   // A claim-bill revision supersedes the old rejected manual-slip result while
   // it is pending, and after approval when the approval happened later than
   // that rejection. A newer manual rejection must still return to this queue.
-  const revisionRows = await fetchAllSupabasePages<ClaimReapprovalState & {
+  const [revisionRows, waiverRows] = await Promise.all([fetchAllSupabasePages<ClaimReapprovalState & {
     created_claim_order_id: string | null
   }>((from, to) => client
     .from('or_claim_requests')
@@ -90,7 +102,12 @@ export async function fetchLatestRejectedManualSlipOrderIds(client: SupabaseClie
     .gt('reapproval_count', 0)
     .in('status', ['pending', 'approved'])
     .order('created_at', { ascending: false })
-    .range(from, to))
+    .range(from, to)),
+    fetchAllSupabasePages<{ id: string; order_id: string; status: string; created_at: string; reviewed_at: string | null }>((from, to) => client
+      .from('ac_overpayment_waivers').select('id, order_id, status, created_at, reviewed_at')
+      .order('created_at', { ascending: false }).order('id', { ascending: false }).range(from, to)),
+  ])
+  const latestWaiverByOrder = latestRefundsByOrder(waiverRows)
 
   const revisionByOrder = new Map(
     revisionRows
@@ -102,6 +119,7 @@ export async function fetchLatestRejectedManualSlipOrderIds(client: SupabaseClie
     .filter(([orderId, manualCheck]) => {
       const revision = revisionByOrder.get(orderId)
       return !isManualSlipRejectionSuperseded(manualCheck.submitted_at, revision)
+        && !isManualSlipRevocationSuperseded(manualCheck, latestWaiverByOrder.get(orderId))
     })
     .map(([orderId]) => orderId)
 }

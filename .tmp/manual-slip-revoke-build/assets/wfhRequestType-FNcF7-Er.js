@@ -1,0 +1,1 @@
+const l=[{value:"afternoon_shift",label:"เข้างานกะบ่าย"},{value:"sunday_work",label:"ทำงานวันอาทิตย์"},{value:"other",label:"อื่นๆ"}];function n(e){return l.find(a=>a.value===(e??"other"))?.label??"อื่นๆ"}function t(e){return!e||e==="other"}export{l as W,t as a,n as w};

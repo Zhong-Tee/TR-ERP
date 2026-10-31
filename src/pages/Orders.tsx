@@ -652,6 +652,7 @@ export default function Orders() {
       .channel('orders-count-updates')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, scheduleRealtimeRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_overpayment_waivers' }, scheduleRealtimeRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_issues' }, () => loadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_claim_requests' }, () => loadCounts())
       .subscribe()
