@@ -2,13 +2,15 @@
  * Plan (แผนผลิต – Production Planner)
  * อ้างอิงจาก Order_MS/plan.html – ใช้กับ TR-ERP ผ่าน Supabase
  */
-import { useState, useEffect, useCallback, useRef, useSyncExternalStore, Fragment } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore, Fragment } from 'react'
 import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { supabase } from '../lib/supabase'
+import { countReadScope, createRefreshBatch } from '../lib/readRefresh'
+import { planWorkOrderIdsKey, planQuantityMaps, planHistoryEventAffects } from '../lib/planReadMetrics'
+import { usePlanReadMetrics } from '../hooks/usePlanReadMetrics'
 import { fetchAllSupabasePages, fetchAllSupabasePagesResult } from '../lib/supabasePagination'
 import { PLAN_WORK_QUEUE_POSTGREST_FILTER } from '../lib/planWorkQueue'
-import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../lib/orderFlowFilter'
 import * as XLSX from 'xlsx'
 import Modal from '../components/ui/Modal'
 import IssueBoard from '../components/order/IssueBoard'
@@ -725,7 +727,7 @@ type PlanProps = { tvMode?: boolean }
 
 export default function Plan({ tvMode = false }: PlanProps) {
   const { user } = useAuthContext()
-  const { hasAccess, menuAccessLoading } = useMenuAccess()
+  const { hasAccess, menuAccessLoading, isWmsStoreBackup } = useMenuAccess()
   const isTechnician = user?.role === 'technician'
   const canAccessPlanView = (view: ViewKey) =>
     isTechnician
@@ -738,6 +740,14 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const isSuperadmin = user?.role === 'superadmin'
   const [settings, setSettings] = useState<PlanSettingsData>(defaultSettings)
   const [jobs, setJobs] = useState<PlanJob[]>([])
+  const planScope = user ? countReadScope(user, isWmsStoreBackup) : ''
+  const workOrderIdsKey = planWorkOrderIdsKey(jobs)
+  const { metrics, error: metricsError, refresh: refreshPlanMetrics } = usePlanReadMetrics(workOrderIdsKey, planScope)
+  const { bills: dashBillCountByWorkOrderId, categories: catQtyByWorkOrderId, quantities: deptQtyByWorkOrderId } = useMemo(
+    () => planQuantityMaps(metrics, settings.departmentProductCategories || {}),
+    [metrics, settings.departmentProductCategories],
+  )
+  const [planReadError, setPlanReadError] = useState('')
   const [loading, setLoading] = useState(true)
   const [_dbStatus, setDbStatus] = useState('กำลังโหลด...')
   const [currentView, setCurrentView] = useState<ViewKey>('dash')
@@ -877,12 +887,6 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const [selectedDeptForSettings, setSelectedDeptForSettings] = useState<string>('')
   /** หมวดสินค้าจาก pr_products — ใช้ใน modal ตั้งค่า Plan */
   const [planProductCategories, setPlanProductCategories] = useState<string[]>([])
-  /** จำนวนที่คำนวณจากหมวดสินค้า ต่อ work_order_id และแผนก */
-  const [deptQtyByWorkOrderId, setDeptQtyByWorkOrderId] = useState<DeptQtyByWorkOrderId>({})
-  /** จำนวนสินค้าต่อหมวดหมู่ ต่อ work_order_id — ใช้กับขั้นตอนแบบ "ตามหมวดหมู่สินค้า" */
-  const [catQtyByWorkOrderId, setCatQtyByWorkOrderId] = useState<CatQtyByWorkOrderId>({})
-  /** จำนวนบิลต่อใบงานใน Dashboard - นับจาก or_orders เพื่อไม่พึ่ง order_count ที่อาจค้าง */
-  const [dashBillCountByWorkOrderId, setDashBillCountByWorkOrderId] = useState<Record<string, number>>({})
   const [categoryModalDept, setCategoryModalDept] = useState<string | null>(null)
   const [categoryModalDraft, setCategoryModalDraft] = useState<string[]>([])
   const [dashDraggedId, setDashDraggedId] = useState<string | null>(null)
@@ -902,7 +906,6 @@ export default function Plan({ tvMode = false }: PlanProps) {
   }>({ open: false, jobId: null, dept: null, procName: '', step: 'confirm', resultMessage: '' })
   const menuCountsRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const stopProdDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const planJobsRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const planJobsRequestRef = useRef(0)
   const deptActionBusyRef = useRef<Set<string>>(new Set())
   const [deptActionBusyKeys, setDeptActionBusyKeys] = useState<Set<string>>(new Set())
@@ -921,54 +924,70 @@ export default function Plan({ tvMode = false }: PlanProps) {
     }
   }, [depFilter, selectableDepts])
 
+  const readPlanJobs = useCallback(() => fetchAllSupabasePages<PlanJob>((from, to) =>
+    supabase.from('plan_jobs').select('*').order('order_index').order('id').range(from, to)
+  ), [])
+
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = !!opts?.silent
     const jobsRequestId = ++planJobsRequestRef.current
-    if (!silent) setDbStatus('กำลังโหลด...')
+    if (!silent) { setDbStatus('กำลังโหลด...'); refreshPlanMetrics() }
     try {
       const [settingsRes, jobsRes] = await Promise.all([
         supabase.from('plan_settings').select('data').eq('id', 1).single(),
-        supabase.from('plan_jobs').select('*').order('order_index'),
+        readPlanJobs(),
       ])
       if (settingsRes.error && settingsRes.error.code !== 'PGRST116') throw new Error('โหลดตั้งค่าไม่สำเร็จ')
-      if (jobsRes.error) throw new Error('โหลดใบงานไม่สำเร็จ')
       const loadedSettings = settingsRes.data?.data
         ? { ...defaultSettings, ...settingsRes.data.data }
         : defaultSettings
       setSettings(loadedSettings)
       if (jobsRequestId === planJobsRequestRef.current) {
-        setJobs((jobsRes.data || []) as PlanJob[])
+        setJobs(jobsRes)
+        setPlanReadError('')
       }
       if (!silent) setDbStatus('เชื่อมต่อฐานข้อมูลแล้ว')
     } catch (e: any) {
       console.error('Plan load error:', e)
       if (!silent) {
         setDbStatus('โหลดข้อมูลไม่สำเร็จ')
-        alert('ไม่สามารถโหลดข้อมูลจากฐานข้อมูลได้!')
+        setPlanReadError('ไม่สามารถโหลดข้อมูลแผนจากฐานข้อมูลได้ กรุณาลองใหม่')
       }
     } finally {
       if (!silent) setLoading(false)
     }
-  }, [])
+  }, [readPlanJobs, refreshPlanMetrics])
 
-  const schedulePlanJobsRefresh = useCallback(() => {
-    if (planJobsRefreshTimerRef.current) clearTimeout(planJobsRefreshTimerRef.current)
-    planJobsRefreshTimerRef.current = setTimeout(async () => {
-      const requestId = ++planJobsRequestRef.current
-      const { data, error } = await supabase.from('plan_jobs').select('*').order('order_index')
-      if (error) {
+  const planJobReader = useMemo(() => {
+    const batch = createRefreshBatch<'jobs'>({
+      delayMs: 500,
+      isVisible: () => document.visibilityState === 'visible',
+      load: async () => {
+        if (!planScope) return
+        const requestId = ++planJobsRequestRef.current
+        const data = await readPlanJobs()
+        if (batch.isActive() && requestId === planJobsRequestRef.current) {
+          setJobs(data)
+          setPlanReadError('')
+        }
+      },
+      onError: error => {
         console.error('Plan realtime refresh error:', error)
-        return
-      }
-      if (requestId === planJobsRequestRef.current && data) setJobs(data as PlanJob[])
-    }, 150)
-  }, [])
+        if (batch.isActive()) setPlanReadError('อัปเดตข้อมูลแผนไม่สำเร็จ กรุณาลองใหม่')
+      },
+    })
+    return { request: () => batch.request(['jobs']),
+      activate: () => { batch.resume() },
+      dispose: () => { batch.dispose(); ++planJobsRequestRef.current } }
+  }, [readPlanJobs, planScope])
+  useEffect(() => { planJobReader.activate(); return () => planJobReader.dispose() }, [planJobReader])
+  const schedulePlanJobsRefresh = useCallback(() => planJobReader.request(), [planJobReader])
 
   /** เบราว์เซอร์ทีวีบางรุ่นตัด WebSocket — โหลดซ้ำเป็นระยะให้ข้อมูลยังเคลื่อนไหว */
   useEffect(() => {
     if (!tvMode) return
     const id = window.setInterval(() => {
-      load({ silent: true })
+      if (document.visibilityState === 'visible') load({ silent: true })
     }, 45_000)
     return () => window.clearInterval(id)
   }, [tvMode, load])
@@ -1025,125 +1044,6 @@ export default function Plan({ tvMode = false }: PlanProps) {
       cancelled = true
     }
   }, [currentView])
-
-  useEffect(() => {
-    let cancelled = false
-    const selectedByDept = Object.entries(settings.departmentProductCategories || {}).filter(([, categories]) =>
-      Array.isArray(categories) && categories.length > 0
-    )
-    if (selectedByDept.length === 0) {
-      setDeptQtyByWorkOrderId({})
-      setCatQtyByWorkOrderId({})
-      return
-    }
-    const workOrderIds = Array.from(
-      new Set(
-        jobs
-          .map((j) => (j.work_order_id != null ? String(j.work_order_id) : ''))
-          .filter((id) => id !== '')
-      )
-    )
-    if (workOrderIds.length === 0) {
-      setDeptQtyByWorkOrderId({})
-      setCatQtyByWorkOrderId({})
-      return
-    }
-    ;(async () => {
-      try {
-        type OrderQtyRow = {
-          id: string
-          work_order_id: string | null
-          or_order_items: Array<{ product_id: string | null; quantity: number | null }> | null
-        }
-
-        // PostgREST limits a result set to 1,000 rows by default. Loading every
-        // historical work order in one request can therefore drop whole work
-        // orders, or cut a work order in the middle, which makes its live
-        // department quantity become zero. Fetch deterministic pages in small
-        // work-order batches so Master Plan and the department queue see every
-        // linked order.
-        const orders: OrderQtyRow[] = []
-        const workOrderBatchSize = 50
-        const orderPageSize = 1000
-        for (let batchStart = 0; batchStart < workOrderIds.length; batchStart += workOrderBatchSize) {
-          const workOrderBatch = workOrderIds.slice(batchStart, batchStart + workOrderBatchSize)
-          for (let pageStart = 0; ; pageStart += orderPageSize) {
-            const { data: orderPage, error: ordersError } = await supabase
-              .from('or_orders')
-              .select('id, work_order_id, or_order_items(product_id, quantity)')
-              .in('work_order_id', workOrderBatch)
-              .order('id', { ascending: true })
-              .range(pageStart, pageStart + orderPageSize - 1)
-            if (ordersError) throw ordersError
-            if (cancelled) return
-            const page = (orderPage || []) as OrderQtyRow[]
-            orders.push(...page)
-            if (page.length < orderPageSize) break
-          }
-        }
-        const productIds = Array.from(
-          new Set(
-            orders
-              .flatMap((order) =>
-                (order.or_order_items || []).map((item) => String(item.product_id || ''))
-              )
-              .filter((id) => id !== '')
-          )
-        )
-        const productCategoryById: Record<string, string> = {}
-        const productBatchSize = 200
-        for (let batchStart = 0; batchStart < productIds.length; batchStart += productBatchSize) {
-          const { data: products, error: productsError } = await supabase
-            .from('pr_products')
-            .select('id, product_category')
-            .in('id', productIds.slice(batchStart, batchStart + productBatchSize))
-          if (productsError) throw productsError
-          if (cancelled) return
-          ;(products || []).forEach((p: { id: string; product_category: string | null }) => {
-            const id = String(p.id || '')
-            const category = String(p.product_category || '').trim()
-            if (id && category) productCategoryById[id] = category
-          })
-        }
-        const categoryQtyByWorkOrder: Record<string, Record<string, number>> = {}
-        orders.forEach((order) => {
-          const workOrderId = String(order.work_order_id || '')
-          if (!workOrderId) return
-          categoryQtyByWorkOrder[workOrderId] = categoryQtyByWorkOrder[workOrderId] || {}
-          ;(order.or_order_items || []).forEach((item) => {
-            const productId = String(item.product_id || '')
-            const category = productCategoryById[productId]
-            if (!category) return
-            const rawQty = Number(item.quantity)
-            const qty = Number.isFinite(rawQty) && rawQty > 0 ? rawQty : 1
-            categoryQtyByWorkOrder[workOrderId][category] = (categoryQtyByWorkOrder[workOrderId][category] || 0) + qty
-          })
-        })
-        const next: DeptQtyByWorkOrderId = {}
-        workOrderIds.forEach((workOrderId) => {
-          const categoryMap = categoryQtyByWorkOrder[workOrderId] || {}
-          next[workOrderId] = {}
-          selectedByDept.forEach(([dept, categories]) => {
-            const total = (categories as string[]).reduce((sum, category) => sum + (categoryMap[category] || 0), 0)
-            next[workOrderId][dept] = total
-          })
-        })
-        if (!cancelled) {
-          setDeptQtyByWorkOrderId(next)
-          setCatQtyByWorkOrderId(categoryQtyByWorkOrder)
-        }
-      } catch (error) {
-        console.error('Plan: load department qty by categories', error)
-        if (!cancelled) {
-          setDeptQtyByWorkOrderId({})
-          setCatQtyByWorkOrderId({})
-        }
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [jobs, settings.departmentProductCategories])
 
   useEffect(() => {
     ;(async () => {
@@ -1248,10 +1148,8 @@ export default function Plan({ tvMode = false }: PlanProps) {
     }
   }, [jChannelFilter, manageDateFrom, manageDateTo])
 
-  useEffect(() => {
-    load()
-    loadMenuCounts()
-  }, [load, loadMenuCounts])
+  useEffect(() => { void load() }, [load])
+  useEffect(() => { void loadMenuCounts() }, [loadMenuCounts])
 
   useEffect(() => {
     const scheduleRefreshMenuCounts = () => {
@@ -1293,106 +1191,46 @@ export default function Plan({ tvMode = false }: PlanProps) {
       .channel('plan_jobs')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'plan_jobs' }, schedulePlanJobsRefresh)
       .subscribe()
+    const onVisible = () => { if (document.visibilityState === 'visible') schedulePlanJobsRefresh() }
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
-      if (planJobsRefreshTimerRef.current) clearTimeout(planJobsRefreshTimerRef.current)
+      document.removeEventListener('visibilitychange', onVisible)
       supabase.removeChannel(channel)
     }
   }, [schedulePlanJobsRefresh])
 
-  const loadDashboardBillCounts = useCallback(async () => {
-    const workOrderIds = Array.from(
-      new Set(
-        jobs
-          .map((j) => (j.work_order_id != null ? String(j.work_order_id) : ''))
-          .filter((id) => id !== '')
-      )
-    )
-    if (workOrderIds.length === 0) {
-      setDashBillCountByWorkOrderId({})
-      return
-    }
-
-    try {
-      const next: Record<string, number> = {}
-
-      // Supabase/PostgREST caps each response at 1,000 rows by default. Query
-      // small work-order batches and page deterministically so the dashboard
-      // count includes every active bill, even when all visible jobs together
-      // contain more than 1,000 orders.
-      const workOrderBatchSize = 50
-      const orderPageSize = 1000
-      for (let batchStart = 0; batchStart < workOrderIds.length; batchStart += workOrderBatchSize) {
-        const workOrderBatch = workOrderIds.slice(batchStart, batchStart + workOrderBatchSize)
-        for (let pageStart = 0; ; pageStart += orderPageSize) {
-          const { data, error } = await supabase
-            .from('or_orders')
-            .select('id, work_order_id')
-            .in('work_order_id', workOrderBatch)
-            .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
-            .order('id', { ascending: true })
-            .range(pageStart, pageStart + orderPageSize - 1)
-          if (error) throw error
-
-          const page = (data || []) as Array<{ id: string; work_order_id: string | null }>
-          for (const row of page) {
-            const workOrderId = String(row.work_order_id || '')
-            if (!workOrderId) continue
-            next[workOrderId] = (next[workOrderId] || 0) + 1
-          }
-          if (page.length < orderPageSize) break
-        }
-      }
-      setDashBillCountByWorkOrderId(next)
-    } catch (error) {
-      console.error('Plan: load dashboard bill counts', error)
-      setDashBillCountByWorkOrderId({})
-    }
-  }, [jobs])
-
-  useEffect(() => {
-    loadDashboardBillCounts()
-  }, [loadDashboardBillCounts])
-
-  useEffect(() => {
-    const channel = supabase
-      .channel('plan-dashboard-bill-counts')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
-        loadDashboardBillCounts()
-      })
-      .subscribe()
-    return () => {
-      supabase.removeChannel(channel)
-    }
-  }, [loadDashboardBillCounts])
-
   // โหลดประวัติยกเลิกจากข้อมูลบิล/รายการโดยตรง ไม่ผูกกับสถานะ stock_action ของ WMS
   // เพื่อให้ป้ายยังอยู่หลังคลังตัดสินใจรับคืน/ของเสียแล้ว
-  const loadCancelledOrders = useCallback(async () => {
+  const loadCancelledOrders = useCallback(async (signal?: AbortSignal) => {
+    const readSignal = signal || new AbortController().signal
     try {
-      const [{ data: cancelledOrders }, { data: cancelledItems }] = await Promise.all([
+      const [{ data: cancelledOrders, error: ordersError }, { data: cancelledItems, error: itemsError }] = await Promise.all([
         fetchAllSupabasePagesResult((from, to) => supabase
           .from('or_orders')
           .select('id, bill_no, channel_order_no, customer_name, work_order_id')
           .eq('status', 'ยกเลิก')
           .not('work_order_id', 'is', null)
           .order('id', { ascending: true })
-          .range(from, to)),
+          .range(from, to).abortSignal(readSignal)),
         fetchAllSupabasePagesResult((from, to) => supabase
           .from('or_order_items')
           .select('order_id')
           .not('cancellation_stock_action', 'is', null)
           .order('id', { ascending: true })
-          .range(from, to)),
+          .range(from, to).abortSignal(readSignal)),
       ])
+      if (ordersError) throw ordersError
+      if (itemsError) throw itemsError
       const partialOrderIds = [...new Set((cancelledItems || []).map((r: any) => r.order_id).filter(Boolean))]
-      const { data: partialOrders } = partialOrderIds.length > 0
+      const { data: partialOrders, error: partialError } = partialOrderIds.length > 0
         ? await supabase
             .from('or_orders')
             .select('id, bill_no, channel_order_no, customer_name, work_order_id')
             .in('id', partialOrderIds)
-            .not('work_order_id', 'is', null)
-        : { data: [] as any[] }
+            .not('work_order_id', 'is', null).abortSignal(readSignal)
+        : { data: [] as any[], error: null }
 
+      if (partialError) throw partialError
       const allOrders = [...(cancelledOrders || []), ...(partialOrders || [])]
       const map: Record<string, {
         id: string
@@ -1415,26 +1253,14 @@ export default function Plan({ tvMode = false }: PlanProps) {
           customer_name: o.customer_name || '-',
         })
       })
-      setCancelledByWO(map)
+      if (!readSignal.aborted) setCancelledByWO(map)
     } catch (e) {
-      console.error('Error loading cancelled orders:', e)
+      if (!readSignal.aborted) console.error('Error loading cancelled orders:', e)
     }
   }, [])
 
-  useEffect(() => { loadCancelledOrders() }, [loadCancelledOrders])
-
-  // Realtime: โหลดใหม่เมื่อ or_orders เปลี่ยน
-  useEffect(() => {
-    const ch = supabase
-      .channel('plan_cancelled_orders')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
-        loadCancelledOrders()
-      })
-      .subscribe()
-    return () => { supabase.removeChannel(ch) }
-  }, [loadCancelledOrders])
-
-  const loadReleasedOrders = useCallback(async () => {
+  const loadReleasedOrders = useCallback(async (signal?: AbortSignal) => {
+    const readSignal = signal || new AbortController().signal
     try {
       const data = await fetchAllSupabasePages((from, to) => supabase
         .from('or_orders')
@@ -1442,8 +1268,8 @@ export default function Plan({ tvMode = false }: PlanProps) {
         .in('status', ['ใบสั่งงาน', 'ย้ายจากใบงาน'])
         .not('plan_released_from_work_order_id', 'is', null)
         .order('id', { ascending: true })
-        .range(from, to))
-      if (data.length) {
+        .range(from, to).abortSignal(readSignal))
+      {
         const map: Record<string, { id: string; bill_no: string; customer_name: string; wo_name?: string }[]> = {}
         ;(data as any[]).forEach((o: any) => {
           const woId = String(o.plan_released_from_work_order_id || '')
@@ -1451,71 +1277,78 @@ export default function Plan({ tvMode = false }: PlanProps) {
           if (!map[woId]) map[woId] = []
           map[woId].push({ id: o.id, bill_no: o.bill_no || '-', customer_name: o.customer_name || '-', wo_name: o.plan_released_from_work_order || undefined })
         })
-        setReleasedByWO(map)
+        if (!readSignal.aborted) setReleasedByWO(map)
       }
     } catch (e) {
-      console.error('Error loading released orders:', e)
+      if (!readSignal.aborted) console.error('Error loading released orders:', e)
     }
   }, [])
 
   useEffect(() => {
-    loadReleasedOrders()
-  }, [loadReleasedOrders])
-
-  const loadPlanBillNameEditHistory = useCallback(async () => {
-    const workOrderIds = [...new Set(jobs.map((job) => job.work_order_id).filter((id): id is string => !!id))]
-    if (workOrderIds.length === 0) {
-      setNameEditsByWO({})
-      return
-    }
-
-    try {
-      const { data, error } = await supabase.rpc('rpc_get_plan_bill_name_edit_history', {
-        p_work_order_ids: workOrderIds,
+    const controller = new AbortController()
+    const batch = createRefreshBatch<'cancelled' | 'released'>({
+      delayMs: 500,
+      isVisible: () => document.visibilityState === 'visible',
+      load: async (keys) => {
+        await Promise.all(keys.map(key => key === 'cancelled'
+          ? loadCancelledOrders(controller.signal) : loadReleasedOrders(controller.signal)))
+      },
+      onError: error => { if (!controller.signal.aborted) console.error('Plan bill history:', error) },
+    })
+    batch.request(['cancelled', 'released'])
+    const channel = supabase.channel('plan-bill-history')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, payload => {
+        const keys = (['cancelled', 'released'] as const).filter(key => planHistoryEventAffects(key, 'or_orders', payload))
+        batch.request(keys)
       })
-      if (error) throw error
-
-      const grouped: Record<string, PlanBillNameEditHistory[]> = {}
-      for (const row of (data || []) as PlanBillNameEditHistory[]) {
-        const workOrderId = String(row.work_order_id || '')
-        if (!workOrderId) continue
-        if (!grouped[workOrderId]) grouped[workOrderId] = []
-        grouped[workOrderId].push(row)
-      }
-      setNameEditsByWO(grouped)
-    } catch (error) {
-      console.error('Error loading bill name edit history for Plan:', error)
-      setNameEditsByWO({})
-    }
-  }, [jobs])
-
-  useEffect(() => {
-    void loadPlanBillNameEditHistory()
-  }, [loadPlanBillNameEditHistory])
-
-  useEffect(() => {
-    const ch = supabase
-      .channel('plan_bill_name_edit_history')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'ac_bill_edit_logs' }, () => {
-        void loadPlanBillNameEditHistory()
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_items' }, payload => {
+        if (planHistoryEventAffects('cancelled', 'or_order_items', payload)) batch.request(['cancelled'])
       })
       .subscribe()
+    const onVisible = () => { if (document.visibilityState === 'visible') batch.request(['cancelled', 'released']) }
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
-      supabase.removeChannel(ch)
+      controller.abort(); batch.dispose()
+      document.removeEventListener('visibilitychange', onVisible)
+      void supabase.removeChannel(channel)
     }
-  }, [loadPlanBillNameEditHistory])
+  }, [loadCancelledOrders, loadReleasedOrders, planScope])
 
   useEffect(() => {
-    const ch = supabase
-      .channel('plan_released_orders')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
-        loadReleasedOrders()
-      })
+    const ids = JSON.parse(workOrderIdsKey) as string[]
+    const controller = new AbortController()
+    const batch = createRefreshBatch<'history'>({
+      isVisible: () => document.visibilityState === 'visible',
+      load: async () => {
+        const grouped: Record<string, PlanBillNameEditHistory[]> = {}
+        if (ids.length) {
+          const { data, error } = await supabase.rpc('rpc_get_plan_bill_name_edit_history', {
+            p_work_order_ids: ids,
+          }).abortSignal(controller.signal)
+          if (error) throw error
+          if (controller.signal.aborted) return
+          for (const row of (data || []) as PlanBillNameEditHistory[]) {
+            const id = String(row.work_order_id || '')
+            if (!id) continue
+            ;(grouped[id] ||= []).push(row)
+          }
+        }
+        if (!controller.signal.aborted) setNameEditsByWO(grouped)
+      },
+      onError: error => { if (!controller.signal.aborted) console.error('Plan bill name history:', error) },
+    })
+    batch.request(['history'])
+    const channel = supabase.channel('plan_bill_name_edit_history')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'ac_bill_edit_logs' }, () => batch.request(['history']))
       .subscribe()
+    const onVisible = () => { if (document.visibilityState === 'visible') batch.request(['history']) }
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
-      supabase.removeChannel(ch)
+      controller.abort(); batch.dispose()
+      document.removeEventListener('visibilitychange', onVisible)
+      void supabase.removeChannel(channel)
     }
-  }, [loadReleasedOrders])
+  }, [workOrderIdsKey, planScope])
 
   const loadReleasedOrderLines = useCallback(async (orderId: string) => {
     setReleasedLinesLoading(true)
@@ -2313,6 +2146,12 @@ export default function Plan({ tvMode = false }: PlanProps) {
           : 'w-full flex flex-col min-h-0 h-full flex-1'
       }
     >
+      {(planReadError || metricsError) && (
+        <div role="alert" className="m-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {planReadError || metricsError}
+          <button type="button" className="ml-3 underline" onClick={() => { void load() }}>ลองใหม่</button>
+        </div>
+      )}
       {/* เมนูย่อยอยู่ภายในพื้นที่ scroll หลักและยึดด้านบนใต้ TopBar */}
       {!tvMode && (
         <div

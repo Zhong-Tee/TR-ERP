@@ -1,5 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useMenuAccess } from '../../../contexts/MenuAccessContext'
+import { useAuthContext } from '../../../contexts/AuthContext'
+import { countReadScope, createRefreshBatch, operationalCountCache } from '../../../lib/readRefresh'
 import { supabase } from '../../../lib/supabase'
 import UploadSection from './UploadSection'
 import ReviewSection from './ReviewSection'
@@ -15,30 +17,38 @@ import NewOrdersSection from './NewOrdersSection'
 import { WMS_MENU_KEYS, WMS_COUNTED_KEYS, loadWmsTabCounts } from '../wmsUtils'
 
 export default function AdminLayout() {
-  const { hasAccess, menuAccessLoading } = useMenuAccess()
+  const { hasAccess, menuAccessLoading, isWmsStoreBackup } = useMenuAccess()
+  const { user } = useAuthContext()
+  const scope = user ? countReadScope(user, isWmsStoreBackup) : ''
   const [activeMenu, setActiveMenu] = useState<string>('')
   const { MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
   const [tabCounts, setTabCounts] = useState<Record<string, number>>({})
 
-  const loadTabCounts = useCallback(async () => {
-    try {
-      const { counts, total } = await loadWmsTabCounts()
-      setTabCounts(counts)
-      window.dispatchEvent(new CustomEvent('wms-counts-updated', { detail: { total, counts } }))
-    } catch (e) {
-      console.error('Error loading WMS tab counts:', e)
-    }
-  }, [])
-
-  // ── Debounce: รวม Realtime events หลายครั้งเป็นการเรียก loadTabCounts ครั้งเดียว ──
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reader = useMemo(() => {
+    const batch = createRefreshBatch<'wms'>({
+      delayMs: 500,
+      isVisible: () => document.visibilityState === 'visible',
+      load: async () => {
+        if (!scope) return
+        const { counts, total } = await loadWmsTabCounts(scope)
+        if (!batch.isActive()) return
+        setTabCounts(counts)
+        window.dispatchEvent(new CustomEvent('wms-counts-updated', { detail: { total, counts } }))
+      },
+      onError: error => console.error('Error loading WMS tab counts:', error),
+    })
+    return { request: () => batch.request(['wms']),
+      activate: () => { batch.resume() },
+      dispose: () => { batch.dispose() } }
+  }, [scope])
+  useEffect(() => { reader.activate(); return () => reader.dispose() }, [reader])
+  const loadTabCounts = useCallback(() => {
+    if (!menuAccessLoading) reader.request()
+  }, [reader, menuAccessLoading])
   const debouncedLoadTabCounts = useCallback(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(() => {
-      loadTabCounts()
-    }, 2_000)
-  }, [loadTabCounts])
-  useEffect(() => () => { if (debounceRef.current) clearTimeout(debounceRef.current) }, [])
+    operationalCountCache.invalidate(`wms:${scope}`)
+    loadTabCounts()
+  }, [scope, loadTabCounts])
 
   // Realtime: รวม channel เดียว + debounce เพื่อลด API calls
   useEffect(() => {
@@ -58,9 +68,15 @@ export default function AdminLayout() {
 
   // ฟัง event จาก child sections เมื่อข้อมูลเปลี่ยน → อัปเดตตัวเลข badge ทันที
   useEffect(() => {
-    const onDataChanged = () => loadTabCounts()
+    const onDataChanged = () => debouncedLoadTabCounts()
     window.addEventListener('wms-data-changed', onDataChanged)
     return () => window.removeEventListener('wms-data-changed', onDataChanged)
+  }, [debouncedLoadTabCounts])
+
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === 'visible') loadTabCounts() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
   }, [loadTabCounts])
 
   const menuItems = [

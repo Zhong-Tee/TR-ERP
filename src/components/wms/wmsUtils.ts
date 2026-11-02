@@ -3,6 +3,7 @@ import { supabase } from '../../lib/supabase'
 import { fetchAllSupabasePages } from '../../lib/supabasePagination'
 import { loadWmsNotificationBadgeCount } from '../../lib/wmsNotificationBadge'
 import { BORROW_OPEN_STATUSES } from '../../lib/wmsBorrow'
+import { operationalCountCache } from '../../lib/readRefresh'
 
 /** แถวที่ต้องหยิบจริง — ซ่อน system_complete จาก Picker / ตรวจสินค้า / รายการหยิบ */
 export const WMS_FULFILLMENT_PICK_OR_LEGACY =
@@ -37,7 +38,13 @@ export function isWmsReviewVisibleRow(row: { status?: string | null; stock_actio
  * รองรับทั้ง work_order_id และแถว legacy ที่ work_order_id ว่าง โดย order_id เก็บชื่อใบงาน
  * และแบ่งหน้าการอ่านเพื่อไม่ให้รายการเกินเพดาน 1,000 แถวของ Supabase
  */
-export async function fetchWorkOrderNamesWithWmsAssigned(): Promise<Set<string>> {
+export async function fetchWorkOrderNamesWithWmsAssigned(names?: string[]): Promise<Set<string>> {
+  if (names) {
+    if (names.length === 0) return new Set()
+    const { data, error } = await supabase.rpc('rpc_wms_assigned_names', { p_work_order_names: names })
+    if (error) throw error
+    return new Set((data || []) as string[])
+  }
   const wmsRows = await fetchAllSupabasePages<{ work_order_id: string | null; order_id: string | null }>((from, to) =>
     supabase
       .from('wms_orders')
@@ -161,7 +168,12 @@ export function isWmsPickableProduct(
  * คำนวณจำนวนรายการในแต่ละแท็บ WMS — shared logic ใช้ร่วมกันทั้ง Sidebar และ AdminLayout
  * เพื่อให้ตัวเลขตรงกันเสมอ
  */
-export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total: number }> {
+export function loadWmsTabCounts(scope?: string): Promise<{ counts: WmsTabCounts; total: number }> {
+  if (!scope) return loadWmsTabCountsUncached()
+  return operationalCountCache.read(`wms:${scope}`, loadWmsTabCountsUncached)
+}
+
+async function loadWmsTabCountsUncached(): Promise<{ counts: WmsTabCounts; total: number }> {
   const dateParts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date())
   const datePart = (type: Intl.DateTimeFormatPartTypes) => dateParts.find((part) => part.type === type)?.value || ''
   const today = `${datePart('year')}-${datePart('month')}-${datePart('day')}`
@@ -175,7 +187,7 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
   if (woData && woData.length > 0) {
     const woNames = [...new Set(woData.map((wo: any) => wo.work_order_name as string))]
     const [assignedNames, nonPickerCategories, subWarehouseProductIds] = await Promise.all([
-      fetchWorkOrderNamesWithWmsAssigned(),
+      fetchWorkOrderNamesWithWmsAssigned(woNames),
       fetchWmsNonPickerCategories(),
       fetchSubWarehouseProductIds(),
     ])

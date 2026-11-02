@@ -1,14 +1,11 @@
-import { useState, useEffect, useCallback, useRef, useSyncExternalStore, ReactNode } from 'react'
+import { useState, useEffect, useCallback, useMemo, useSyncExternalStore, ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { useMenuAccess } from '../../contexts/MenuAccessContext'
 import { UserRole } from '../../types'
 import { supabase } from '../../lib/supabase'
-import { PLAN_WORK_QUEUE_POSTGREST_FILTER } from '../../lib/planWorkQueue'
-import { loadWmsTabCounts } from '../wms/wmsUtils'
-import { fetchWorkOrdersWithProgress } from '../../lib/qcApi'
-import { loadPurchaseBadgeCounts } from '../../lib/purchaseApi'
-import { isAdminOrSuperadmin, resolveOwnerScopeAdminName } from '../../config/accessPolicy'
+import { countReadScope, createRefreshBatch } from '../../lib/readRefresh'
+import { SIDEBAR_COUNT_GROUPS, SIDEBAR_COUNT_TABLES, sidebarGroupsForContextTable, sidebarGroupsForEvent, readSidebarCounts, invalidateSidebarCounts, type SidebarCountGroup, type SidebarCountPatch } from '../../lib/sidebarCounts'
 import { getIssueOnCountSnapshot, subscribeIssueOnCount } from '../../lib/issueOnCountBroadcast'
 import { HR_MY_OPEN_TASK_COUNT_EVENT, loadHrMyOpenTaskCount } from '../../lib/hrTaskBadge'
 import {
@@ -233,7 +230,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     getIssueOnCountSnapshot,
   )
   const [hrMyOpenTaskCount, setHrMyOpenTaskCount] = useState(0)
-  const { hasAccess } = useMenuAccess()
+  const { hasAccess, menuAccessLoading, isWmsStoreBackup } = useMenuAccess()
 
   useEffect(() => {
     if (!hasAccess('hr-tasks') || !user?.id) {
@@ -262,135 +259,69 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     }
   }, [hasAccess, user?.id])
 
-  const loadCounts = useCallback(async () => {
-    try {
-      // ── RPC: ดึง counts พื้นฐานทั้งหมดใน 1 query (แทน 8 queries เดิม) ──
-      // ส่ง username + role ของกลุ่ม sales owner-scope เพื่อเห็นเฉพาะ orders ของตัวเอง
-      const adminName = resolveOwnerScopeAdminName(user?.role, user?.username, user?.email)
-      // Marketplace: admin เห็นจำนวน "งานรอมอบหมาย", sales เห็น "งานของตัวเองที่ยังไม่เสร็จ" (RLS จำกัดให้อยู่แล้ว)
-      const mpCountQuery = isAdminOrSuperadmin(user?.role)
-        ? supabase.from('mp_orders').select('id', { count: 'exact', head: true }).eq('status', 'new')
-        : supabase.from('mp_orders').select('id', { count: 'exact', head: true }).in('status', ['assigned', 'follow_up'])
-      const [rpcRes, ordersActionableRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planWorkQueueRes, machineryWarningRes, machineryCriticalRes, hrLeavePendingRes, hrOtPendingRes, hrWfhPendingRes, mpCountRes, waiverCountRes] =
-        await Promise.all([
-        supabase.rpc('get_sidebar_counts', { p_username: adminName, p_role: user?.role ?? '' }),
-        supabase.rpc('get_orders_sidebar_actionable_count', { p_username: adminName, p_role: user?.role ?? '' }),
-        fetchWorkOrdersWithProgress(true).catch(() => [] as any[]),
-        loadWmsTabCounts(),
-        supabase.from('inv_returns').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
-        loadPurchaseBadgeCounts().catch(() => ({ pr_pending: 0, pr_approved_no_po: 0, po_waiting_gr: 0, machinery_pending: 0 })),
-        supabase
-          .from('or_orders')
-          .select('id', { count: 'exact', head: true })
-          .or(PLAN_WORK_QUEUE_POSTGREST_FILTER)
-          .is('work_order_id', null),
-        supabase
-          .from('pr_machinery_machines')
-          .select('id', { count: 'exact', head: true })
-          .eq('current_status', 'power_off'),
-        supabase
-          .from('pr_machinery_machines')
-          .select('id', { count: 'exact', head: true })
-          .in('current_status', ['broken', 'repairing']),
-        supabase.from('hr_leave_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
-        supabase.from('hr_ot_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
-        supabase.from('hr_wfh_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
-        mpCountQuery,
-        supabase.from('ac_overpayment_waivers').select('id, or_orders!inner(status)', { count: 'exact', head: true }).eq('status', 'pending').neq('or_orders.status', 'ยกเลิก'),
-      ])
-
-      const c = rpcRes.data || {}
-      const accountTotal =
-        (c.refund_pending || 0) + (waiverCountRes.count || 0) +
-        (c.tax_pending || 0) +
-        (c.manual_slip_pending || 0) +
-        (c.amendment_pending || 0) +
-        (c.claim_pending || 0)
-      const qcWoCount = Array.isArray(qcWoList) ? qcWoList.length : 0
-      const qcTotal = qcWoCount + (c.qc_reject || 0)
-      const purchaseTotal = (purchaseBadge.pr_pending || 0) + (purchaseBadge.machinery_pending || 0) + (purchaseBadge.pr_approved_no_po || 0) + (purchaseBadge.po_waiting_gr || 0)
-
-      setMenuCounts({
-        marketplace: mpCountRes.count || 0,
-        // นับออเดอร์ที่เปิดเข้าไปจัดการได้จริงแบบไม่ซ้ำ รวมงานสถานะค้างและบิลเคลมที่อนุมัติแล้วรอยืนยันที่อยู่
-        orders: ordersActionableRes.error
-          ? (c.orders || 0) + (c.orders_req_claim_shipping || 0)
-          : Number(ordersActionableRes.data || 0),
-        'admin-qc': c.admin_qc || 0,
-        plan: planWorkQueueRes.count || 0,
-        machinery: (machineryWarningRes.count || 0) + (machineryCriticalRes.count || 0),
-        account: accountTotal,
-        wms: wmsResult.total,
-        qc: qcTotal,
-        packing: c.packing || 0,
-        warehouse: c.warehouse || 0,
-        purchase: purchaseTotal,
-        hr: (hrLeavePendingRes.count || 0) + (hrOtPendingRes.count || 0) + (hrWfhPendingRes.count || 0),
-      })
-      setMachineryAlertCounts({
-        warning: machineryWarningRes.count || 0,
-        critical: machineryCriticalRes.count || 0,
-      })
-
-      window.dispatchEvent(new CustomEvent('sidebar-purchase-badge', { detail: purchaseBadge }))
-      const pendingReturnCount = pendingReturnsRes.count || 0
-
-      // ── แจ้ง TopBar ให้ใช้ค่า warehouse count จาก RPC (ลด query ซ้ำ) ──
-      window.dispatchEvent(new CustomEvent('sidebar-warehouse-count', { detail: { count: c.warehouse || 0 } }))
-      window.dispatchEvent(new CustomEvent('sidebar-pending-return-count', { detail: { count: pendingReturnCount } }))
-    } catch (e) {
-      console.error('Sidebar loadCounts:', e)
+  const scope = user ? countReadScope(user, isWmsStoreBackup) : ''
+  const allowedKey = JSON.stringify(menuItems.filter(item => user?.role === 'technician'
+    ? item.key === 'plan' || item.key === 'machinery' : hasAccess(item.key)).map(item => item.key).sort())
+  const countContext = useMemo(() => ({
+    scope, role: user?.role || '', username: user?.username, email: user?.email,
+    allowed: JSON.parse(allowedKey) as string[],
+  }), [scope, user?.role, user?.username, user?.email, allowedKey])
+  const countReader = useMemo(() => {
+    const applied = new Map<SidebarCountGroup, SidebarCountPatch>()
+    const batch = createRefreshBatch<SidebarCountGroup>({
+      isVisible: () => document.visibilityState === 'visible',
+      load: async (groups) => {
+        if (!countContext.scope) return
+        const results = await readSidebarCounts(countContext, groups)
+        if (!batch.isActive()) return
+        for (const { group, patch } of results) {
+          // A navigation cache hit must not overwrite a newer count broadcast by a page.
+          if (applied.get(group) === patch) continue
+          applied.set(group, patch)
+          if (patch.counts) setMenuCounts(previous => ({ ...previous, ...patch.counts }))
+          if (patch.machinery) setMachineryAlertCounts(patch.machinery)
+          if (patch.purchase) window.dispatchEvent(new CustomEvent('sidebar-purchase-badge', { detail: patch.purchase }))
+          if (patch.warehouse != null) window.dispatchEvent(new CustomEvent('sidebar-warehouse-count', { detail: { count: patch.warehouse } }))
+          if (patch.returns != null) window.dispatchEvent(new CustomEvent('sidebar-pending-return-count', { detail: { count: patch.returns } }))
+        }
+      },
+      onError: error => console.error('Sidebar loadCounts:', error),
+    })
+    return {
+      request: batch.request,
+      activate: () => { batch.resume() },
+      dispose: () => { batch.dispose() },
     }
-  }, [user?.role, user?.username, user?.email])
+  }, [countContext])
+  useEffect(() => { countReader.activate(); return () => countReader.dispose() }, [countReader])
+  const loadCounts = useCallback(() => {
+    if (!menuAccessLoading) countReader.request(SIDEBAR_COUNT_GROUPS)
+  }, [countReader, menuAccessLoading])
+  const refreshCounts = useCallback((groups: readonly SidebarCountGroup[]) => {
+    invalidateSidebarCounts(countContext, groups)
+    if (!menuAccessLoading) countReader.request(groups)
+  }, [countContext, countReader, menuAccessLoading])
 
-  // ── Debounce: รวม Realtime events หลายครั้งในช่วงเวลาสั้น ๆ เป็นการเรียก loadCounts ครั้งเดียว ──
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const debouncedLoadCounts = useCallback(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(() => {
-      loadCounts()
-    }, 2_000)
-  }, [loadCounts])
-  useEffect(() => () => { if (debounceRef.current) clearTimeout(debounceRef.current) }, [])
-
-  // โหลดครั้งแรก + Realtime พร้อม debounce (ลด API calls จาก Realtime events ที่มาถี่ ๆ)
   useEffect(() => {
+    if (menuAccessLoading || !scope) return
     loadCounts()
-    const channel = supabase
-      .channel('sidebar-menu-counts')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'mp_orders' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_overpayment_waivers' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_manual_slip_checks' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_amendments' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_claim_requests' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_orders' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_requisitions' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_notifications' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_records' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_sessions' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_skip_logs' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_returns' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_pr' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_po' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pr_machinery_machines' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_leave_requests' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_ot_requests' }, () => debouncedLoadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_wfh_requests' }, () => debouncedLoadCounts())
-      .subscribe()
-    return () => {
-      supabase.removeChannel(channel)
+    let channel = supabase.channel('sidebar-menu-counts')
+    for (const table of SIDEBAR_COUNT_TABLES) {
+      const groups = sidebarGroupsForContextTable(countContext, table)
+      if (!groups.length) continue
+      channel = channel.on('postgres_changes', { event: '*', schema: 'public', table },
+        payload => refreshCounts(sidebarGroupsForEvent(countContext, table, payload)))
     }
-  }, [loadCounts, debouncedLoadCounts])
+    channel.subscribe(status => { if (status === 'SUBSCRIBED') loadCounts() })
+    return () => { void supabase.removeChannel(channel) }
+  }, [scope, countContext, menuAccessLoading, loadCounts, refreshCounts])
 
   // ฟัง event จากหน้า HR (ยื่น/อนุมัติ/ปฏิเสธ ลา/OT) → โหลด count ใหม่ทันที
   useEffect(() => {
-    const onHrChanged = () => loadCounts()
+    const onHrChanged = () => refreshCounts(['hr'])
     window.addEventListener('hr-counts-changed', onHrChanged)
     return () => window.removeEventListener('hr-counts-changed', onHrChanged)
-  }, [loadCounts])
+  }, [refreshCounts])
 
   // ฟัง event จากหน้า QC เมื่อมีการอัปเดตจำนวน (เร็วกว่า Realtime)
   useEffect(() => {
@@ -437,10 +368,10 @@ export default function Sidebar({ isOpen }: SidebarProps) {
 
   // ฟัง event จากหน้า admin-qc / account เมื่อมีการอนุมัติ/ไม่อนุมัติ/อัปเดต เพื่อให้ตัวเลขเมนูอัปเดตทันที
   useEffect(() => {
-    const onRefresh = () => loadCounts()
+    const onRefresh = () => refreshCounts(SIDEBAR_COUNT_GROUPS)
     window.addEventListener('sidebar-refresh-counts', onRefresh)
     return () => window.removeEventListener('sidebar-refresh-counts', onRefresh)
-  }, [loadCounts])
+  }, [refreshCounts])
 
   // ฟัง event จากหน้า WMS AdminLayout เมื่อมีการอัปเดตตัวเลข (เร็วกว่า Realtime)
   useEffect(() => {
@@ -468,10 +399,10 @@ export default function Sidebar({ isOpen }: SidebarProps) {
 
   // ฟัง event จากหน้าจัดซื้อเมื่อมีการเปลี่ยนแปลงข้อมูล
   useEffect(() => {
-    const onPurchaseRefresh = () => loadCounts()
+    const onPurchaseRefresh = () => refreshCounts(['purchase', 'core'])
     window.addEventListener('purchase-badge-refresh', onPurchaseRefresh)
     return () => window.removeEventListener('purchase-badge-refresh', onPurchaseRefresh)
-  }, [loadCounts])
+  }, [refreshCounts])
 
   // ฟัง event จากหน้า Warehouse เมื่อจำนวนสินค้าต่ำกว่าจุดสั่งซื้อเปลี่ยน
   useEffect(() => {

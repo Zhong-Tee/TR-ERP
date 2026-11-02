@@ -3,6 +3,7 @@ import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { getPublicUrl, fetchInkTypes } from '../lib/qcApi'
 import { supabase } from '../lib/supabase'
+import { assignPackingTags } from '../lib/packingTags'
 import { usePackingList } from '../hooks/usePackingList'
 import type { PackingShippedPage, PackingReportPage } from '../lib/packingListTypes'
 import { Order, OrderItem, WorkOrder, InkType, PackingMeta } from '../types'
@@ -10,7 +11,6 @@ import { flatBillUnitUid, normalizedLineQuantity, stableOrderItemUnitKey } from 
 import { sortOrderItemsForExport } from '../lib/orderItemExportSort'
 import { isCondoStampProductName } from '../lib/condoStamp'
 import { SELF_PICKUP_CHANNELS } from '../lib/channelBehavior'
-import { downloadFlashWaybillXlsx } from '../lib/flashWaybillExport'
 import Modal from '../components/ui/Modal'
 import {
   addQueueItem,
@@ -1306,6 +1306,7 @@ export default function Packing() {
     const billing = (data.billing_details || {}) as Record<string, any>
     const address = [billing.address_line, billing.sub_district, billing.district, billing.province]
       .filter(Boolean).join(' ').trim() || data.customer_address || ''
+    const { downloadFlashWaybillXlsx } = await import('../lib/flashWaybillExport')
     await downloadFlashWaybillXlsx([{
       billNo: data.bill_no || '',
       consigneeName: data.recipient_name || data.customer_name || '',
@@ -2165,24 +2166,19 @@ export default function Packing() {
       return group.map((item) => ({ ...item, packingTag: t }))
     })
 
-    const persistNewTags = aggregatedTagged
-      .map((group, i) => ({ group, hadTag: aggregated[i]![0].packingTag != null }))
-      .filter((x) => !x.hadTag)
-      .map(({ group }) => {
-        const order = orders.find((o) => o.id === group[0].order_id)
-        const prev =
-          order?.packing_meta && typeof order.packing_meta === 'object'
-            ? { ...(order.packing_meta as unknown as Record<string, unknown>) }
-            : {}
-        const tag = group[0].packingTag
-        return supabase
-          .from('or_orders')
-          .update({
-            packing_meta: { ...prev, dailyPackingTag: tag } as PackingMeta,
-          })
-          .eq('id', group[0].order_id)
-      })
-    if (!viewOnly) await Promise.allSettled(persistNewTags)
+    const tagsToSave = aggregatedTagged
+      .filter((_, index) => aggregated[index]![0].packingTag == null)
+      .map(group => ({ order_id: group[0].order_id, tag: group[0].packingTag! }))
+    if (!viewOnly && tagsToSave.length) {
+      const saved = await assignPackingTags(tagsToSave)
+      // A concurrent station may already have assigned a different tag. Show
+      // the committed value instead of the proposal from this device.
+      for (const group of aggregatedTagged) {
+        if (saved[group[0].order_id] != null) {
+          for (const item of group) item.packingTag = saved[item.order_id]
+        }
+      }
+    }
 
     setAggregatedData(aggregatedTagged)
     if (aggregatedTagged.length === 0) {
