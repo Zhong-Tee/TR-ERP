@@ -7,6 +7,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { extractPhonesFromText, e164ToLocal } from './thaiPhone'
 
 export interface SubDistrictOption {
+  province?: string
   subDistrict: string
   district: string
 }
@@ -124,7 +125,7 @@ export async function getAddressByZip(
 ): Promise<{ province: string; options: SubDistrictOption[]; subDistrict: string; district: string }> {
   const empty = { province: '', options: [], subDistrict: '', district: '' }
   const zip = (zipCode ?? '').trim()
-  if (!zip || zip.length !== 5) return empty
+  if (!/^\d{5}$/.test(zip)) return empty
 
   if (supabaseClient) {
     type Row = { name_th?: string; thai_districts?: { name_th?: string | null; thai_provinces?: { name_th?: string } | null } | { name_th?: string | null }[] | null }
@@ -166,6 +167,7 @@ export async function getAddressByZip(
       const options: SubDistrictOption[] = rows.map((r: Row) => ({
         subDistrict: r.name_th ?? '',
         district: getDistrict(r),
+        province: getProvince(r),
       }))
       const hint = (addressHint ?? '').trim()
       let chosen: Row = rows[0] as Row

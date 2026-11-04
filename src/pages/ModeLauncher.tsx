@@ -14,6 +14,7 @@ const MODE_CARD_CLASS: Record<MobileMode, string> = {
   manager: 'from-violet-600 to-violet-800 border-violet-500',
   technician: 'from-blue-600 to-indigo-800 border-blue-500',
   picker: 'from-amber-500 to-orange-700 border-amber-400',
+  sales_mb: 'from-indigo-500 to-indigo-800 border-indigo-400',
   auditor: 'from-cyan-600 to-teal-800 border-cyan-500',
 }
 

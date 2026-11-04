@@ -49,6 +49,7 @@ import TechnicianHome from './components/wms/technician/TechnicianHome'
 import { lazy, Suspense } from 'react'
 import EmployeePortal from './pages/EmployeePortal'
 import ModeLauncher from './pages/ModeLauncher'
+import SalesMobile from './pages/SalesMobile'
 import ResetPassword from './pages/ResetPassword'
 import MissedClockInAlert from './components/hr/MissedClockInAlert'
 import UnreadAnnouncementAlert from './components/hr/UnreadAnnouncementAlert'
@@ -197,12 +198,12 @@ function AppRoutes() {
   const activeMobileMode = getActiveMobileMode(user)
   const isWmsMobileRole = user
     ? WMS_MOBILE_SPECIAL_ROLES.includes(user.role) ||
-      (activeMobileMode != null && WMS_MOBILE_SPECIAL_ROLES.includes(activeMobileMode))
+      (activeMobileMode != null && WMS_MOBILE_SPECIAL_ROLES.some(role => role === activeMobileMode))
     : false
   const isMachineryMobileLayout = user
     ? (MACHINERY_MOBILE_ROLES.includes(user.role) && user.role !== TECHNICIAN_ROLE) ||
       (user.role === TECHNICIAN_ROLE && window.innerWidth <= MOBILE_MAX_WIDTH && !hasDesktopOverride()) ||
-      (activeMobileMode != null && MACHINERY_MOBILE_ROLES.includes(activeMobileMode))
+      (activeMobileMode != null && MACHINERY_MOBILE_ROLES.some(role => role === activeMobileMode))
     : false
 
   // ผู้ใช้ที่เปิดสวิตช์ employee_access เข้า /employee ได้ทุก role — ไม่โดน redirect ของ role มือถือ
@@ -266,6 +267,7 @@ function AppRoutes() {
 
   return (
     <Routes>
+      <Route path="/sales-mobile" element={<ProtectedRoute><SalesMobile /></ProtectedRoute>} />
       <Route
         path="/"
         element={<SmartRedirect />}

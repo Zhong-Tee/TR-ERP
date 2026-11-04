@@ -1,3 +1,4 @@
+import { calculateWithholding } from '../../lib/taxInvoice'
 import { isSelfPickupBill } from '../../lib/channelBehavior'
 import OrderStatusHistory from './OrderStatusHistory'
 import ShippingConversionPanel from './ShippingConversionPanel'
@@ -395,7 +396,14 @@ export default function OrderDetailView({
   const items = inlineItems.length > 0 ? inlineItems : (loadedItems || [])
   const displayItems = useMemo(() => sortOrderItemsForBillDisplay(items as any[]), [items])
   const canOpenTicket = !!user && (hasAccess('orders-issue') || hasAccess('plan-issue'))
-  const canManageTaxRequest = !!user && hasAccess('orders-create')
+  const [taxRequestLocked,setTaxRequestLocked] = useState(true)
+  useEffect(()=>{
+    let live=true
+    setTaxRequestLocked(true)
+    supabase.from('ac_verified_slips').select('id').eq('order_id',order.id).or('is_deleted.is.null,is_deleted.eq.false').eq('validation_status','passed').limit(1).then(({data,error})=>{if(live)setTaxRequestLocked(!!error || !!data?.length)})
+    return ()=>{live=false}
+  },[order.id])
+  const canManageTaxRequest = !!user && hasAccess('orders-create') && !taxRequestLocked && !billing?.request_tax_invoice
   const taxRequestAlreadyConfirmed = billing?.account_confirmed_tax === true && billing?.tax_request_closed !== true
 
   function openTaxRequestForm() {
@@ -410,7 +418,7 @@ export default function OrderDetailView({
   }
 
   async function saveLateTaxInvoiceRequest() {
-    if (!user || !order.id || taxRequestSaving) return
+    if (!user || !order.id || taxRequestSaving || !canManageTaxRequest) return
     const customerName = taxRequestForm.customerName.trim()
     const address = taxRequestForm.address.trim()
     const taxId = taxRequestForm.taxId.trim()
@@ -470,9 +478,7 @@ export default function OrderDetailView({
         tax_customer_phone: phone || null,
         tax_id: taxId,
         tax_items: taxItems,
-        account_confirmed_tax: false,
-        account_confirmed_tax_at: null,
-        account_confirmed_tax_by: null,
+
         tax_request_closed: false,
         tax_request_closed_reason: null,
         tax_requested_at: new Date().toISOString(),
@@ -784,6 +790,7 @@ export default function OrderDetailView({
         <section>
           <h4 className="text-sm font-bold text-gray-800 border-b border-gray-200 pb-1.5 mb-2">ยอดเงิน</h4>
           <dl className="grid grid-cols-2 md:grid-cols-4 gap-x-8">
+            {billing?.withholding_requested && <><InfoRow label="หัก ณ ที่จ่าย 3%" value={`฿${fmt(calculateWithholding(Number(order.total_amount),true,billing.vat_rate ?? 7).withheld)}`} /><InfoRow label="ยอดรับชำระ" value={`฿${fmt(calculateWithholding(Number(order.total_amount),true,billing.vat_rate ?? 7).receivable)}`} /></>}
             <InfoRow label="ราคาสินค้า" value={`฿${fmt(order.price)}`} />
             {!isSelfPickupBill(order.fulfillment_method, order.channel_code) && <InfoRow label="ค่าส่ง" value={`฿${fmt(order.shipping_cost)}`} />}
             <InfoRow label="ส่วนลด" value={`฿${fmt(order.discount)}`} />

@@ -1,3 +1,4 @@
+import TaxRequestBoard from '../components/account/TaxRequestBoard'
 import { useState, useEffect, useRef } from 'react'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { useAuthContext } from '../contexts/AuthContext'
@@ -30,6 +31,7 @@ import { getBangkokCalendarDayUtcBoundsISO } from '../lib/utils'
 import { cancelOrderWithAudit, isZeroValueOrder } from '../lib/orderCancellation'
 
 type Tab =
+  | 'tax'
   | 'discount-approval'
   | 'shipping-conversion'
   | 'all'
@@ -48,7 +50,7 @@ type Tab =
 
 type FailureArchiveFilter = 'active' | 'archived' | 'all'
 
-const ALL_TABS: Tab[] = ['discount-approval', 'all', 'prebill', 'shipping-conversion', 'create', 'claim-req', 'waiting', 'data-error', 'complete', 'verified', 'refund-return', 'confirm', 'shipped', 'cancelled', 'issue']
+const ALL_TABS: Tab[] = ['discount-approval', 'all', 'prebill', 'shipping-conversion', 'create', 'claim-req', 'waiting', 'data-error', 'complete', 'verified', 'refund-return', 'tax', 'confirm', 'shipped', 'cancelled', 'issue']
 
 /** แท็บที่ sales-tr มี dropdown + ปุ่มเฉพาะฉัน กรอง admin_user */
 const SALES_TR_FILTER_TABS: Tab[] = ['all', 'waiting', 'data-error', 'complete', 'verified', 'shipped', 'issue', 'claim-req']
@@ -82,6 +84,16 @@ function getDefaultStatusFilterForTab(tab: Tab): OrderStatus | '' {
 
 export default function Orders() {
   const { hasAccess, menuAccessLoading } = useMenuAccess()
+  const [taxRejectedCount,setTaxRejectedCount] = useState(0)
+  useEffect(()=>{
+    if(!hasAccess('orders-tax')) return
+    let live=true
+    const refresh=()=>{supabase.rpc('or_tax_queue',{p_mode:'sales',p_state:'rejected',p_search:'',p_offset:0}).then(({data,error})=>{if(live&&!error)setTaxRejectedCount(Number(data.rejected_total || 0))})}
+    refresh()
+    const channel=supabase.channel('sales-tax-badge').on('postgres_changes',{event:'*',schema:'public',table:'or_orders'},refresh).subscribe()
+    window.addEventListener('sidebar-refresh-counts',refresh)
+    return ()=>{live=false;void supabase.removeChannel(channel);window.removeEventListener('sidebar-refresh-counts',refresh)}
+  },[hasAccess])
   const { user } = useAuthContext()
   const shippingConversionCount = useShippingConversionCount()
   const [orderMessage, setOrderMessage] = useState('')
@@ -750,6 +762,7 @@ export default function Orders() {
               { id: 'complete', label: 'ตรวจสอบไม่ผ่าน', count: completeCount, countColor: 'text-red-600' },
               { id: 'verified', label: 'ตรวจสอบแล้ว', count: verifiedCount, countColor: 'text-green-600' },
               { id: 'refund-return', label: 'โอนคืน', count: refundReturnCount, countColor: 'text-emerald-600' },
+              { id: 'tax', label: 'TAX', count: taxRejectedCount, countColor: 'text-red-600' },
               { id: 'confirm', label: 'Confirm', count: confirmCount, countColor: 'text-blue-600' },
               { id: 'shipped', label: 'จัดส่งแล้ว' },
               { id: 'cancelled', label: `ยกเลิก (${cancelledCount})`, labelColor: 'text-orange-600' },
@@ -1068,6 +1081,8 @@ export default function Orders() {
               user?.role === 'sales-tr' ? narrowSalesTrAdminUserForTab() : undefined
             }
           />
+        ) : activeTab === 'tax' ? (
+          <TaxRequestBoard mode="sales" onCount={setTaxRejectedCount} />
         ) : activeTab === 'claim-req' ? (
           <ClaimReqOrdersTab
             userRole={user?.role}

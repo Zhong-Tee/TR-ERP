@@ -6,7 +6,7 @@ import type { User } from '../types'
  * โหมดที่เลือกอยู่เก็บใน localStorage และตรวจกับสิทธิ์ทุกครั้งที่อ่าน
  */
 
-export const MOBILE_MODE_ROLES = ['production_mb', 'manager', 'technician', 'picker', 'auditor'] as const
+export const MOBILE_MODE_ROLES = ['production_mb', 'manager', 'technician', 'picker', 'auditor', 'sales_mb'] as const
 export type MobileMode = (typeof MOBILE_MODE_ROLES)[number]
 
 export const MOBILE_MODE_INFO: Record<MobileMode, { label: string; description: string; emoji: string; path: string }> = {
@@ -14,17 +14,22 @@ export const MOBILE_MODE_INFO: Record<MobileMode, { label: string; description: 
   manager: { label: 'อนุมัติใบเบิก', description: 'อนุมัติใบเบิก/ใบคืนคลัง', emoji: '✅', path: '/wms' },
   technician: { label: 'ช่างเทคนิค', description: 'งานซ่อมบำรุงเครื่องจักร', emoji: '🔧', path: '/technician' },
   picker: { label: 'หยิบสินค้า', description: 'หยิบสินค้าตามใบเบิก', emoji: '🛒', path: '/wms' },
+  sales_mb: { label: 'Sales', description: 'สร้างและแก้ไข QT / PC', emoji: '📄', path: '/sales-mobile' },
   auditor: { label: 'ตรวจนับสต๊อก', description: 'ตรวจนับสินค้าคงคลัง', emoji: '📋', path: '/warehouse/audit' },
 }
 
 const MODE_KEY = 'tr-erp:mobile-mode'
 const DESKTOP_KEY = 'tr-erp:desktop-override'
 
+export function canUseSalesMobile(user: User | null | undefined): boolean {
+  return !!user && ['superadmin', 'sales-tr', 'sales-pump'].includes(user.role)
+}
+
 /** รายชื่อโหมดเพิ่มเติมที่ user นี้เปิดสิทธิ์ไว้ (ไม่รวม role หลักและกรองเฉพาะค่าที่ระบบรู้จัก) */
 export function getMobileAccess(user: User | null | undefined): MobileMode[] {
   const raw = user?.mobile_access
   if (!Array.isArray(raw)) return []
-  return MOBILE_MODE_ROLES.filter((mode) => raw.includes(mode) && mode !== user?.role)
+  return MOBILE_MODE_ROLES.filter((mode) => raw.includes(mode) && mode !== user?.role && (mode !== 'sales_mb' || canUseSalesMobile(user)))
 }
 
 /** โหมดที่ผู้ใช้เลือกใช้งานได้ รวม role มือถือหลักของบัญชีด้วย */
@@ -91,6 +96,8 @@ export function hasDesktopOverride(): boolean {
 /** path ที่โหมดนั้นเข้าได้ (ใช้ใน ProtectedRoute) */
 export function modeAllowsPath(mode: MobileMode, pathname: string): boolean {
   switch (mode) {
+    case 'sales_mb':
+      return pathname === '/sales-mobile'
     case 'picker':
       return pathname.startsWith('/wms')
     case 'production_mb':

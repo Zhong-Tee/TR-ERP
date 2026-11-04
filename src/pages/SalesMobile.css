@@ -1,0 +1,15 @@
+/* Only the explicit Sales mobile workspace uses these card layouts. */
+.sales-mobile table { display: block; width: 100%; min-width: 0 !important; }
+.sales-mobile thead { display: none; }
+.sales-mobile tbody { display: grid; gap: 1rem; }
+.sales-mobile tr { display: grid; grid-template-columns: minmax(0, 1fr); gap: .5rem; padding: 1rem; border: 1px solid #e0e7ff; border-radius: 1rem; background: white; }
+.sales-mobile td { display: block; min-width: 0; width: auto; border: 0; padding: .25rem 0; text-align: left; overflow-wrap: anywhere; }
+.sales-mobile td[data-label]::before { content: attr(data-label); display: block; margin-bottom: .35rem; color: #64748b; font-size: .75rem; font-weight: 600; }
+.sales-mobile input:not([type=checkbox]), .sales-mobile select, .sales-mobile textarea { min-width: 0; max-width: 100%; min-height: 44px; font-size: 16px; }
+.sales-mobile td input:not([type=checkbox]), .sales-mobile td select { width: 100%; }
+.sales-mobile input[type=checkbox] { width: 22px; height: 22px; }
+.sales-mobile button { min-height: 44px; }
+.sales-mobile section { min-width: 0; }
+.sales-mobile fieldset > section.grid { grid-template-columns: minmax(0, 1fr); }
+.sales-mobile fieldset > section.grid > * { grid-column: auto; }
+.sales-mobile td[data-label="สินค้า"] { padding: .5rem 0; }

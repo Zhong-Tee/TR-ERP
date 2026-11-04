@@ -1,3 +1,4 @@
+import TaxRequestBoard from '../components/account/TaxRequestBoard'
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { Refund, Order } from '../types'
@@ -30,7 +31,7 @@ import { SLIP_BANK_APPS_30D, SLIP_BANK_APPS_7D, bankLogoUrl } from '../config/th
 import * as XLSX from 'xlsx'
 
 type AccountSection = 'zero-shipping' | 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bank-reconciliation' | 'bill-edit' | 'cancelled-bills' | 'amendment' | 'claim-approval' | 'slip-age' | 'ecommerce' | 'promotion-audit' | 'payroll' | 'trial-balance'
-type AccountTab = 'refunds' | 'claim-approval' | 'tax-invoice' | 'approvals'
+type AccountTab = 'withholding' | 'refunds' | 'claim-approval' | 'tax-invoice' | 'approvals'
 type ApprovalFilter = 'refund' | 'claim' | 'tax-invoice'
 
 type ClaimHistoryRow = {
@@ -945,21 +946,7 @@ export default function Account() {
     if (!user || !order) return
     setCloseTaxRequestModal((prev) => ({ ...prev, submitting: true }))
     try {
-      const bd = order.billing_details || {}
-      const newBillingDetails = {
-        ...bd,
-        // ใช้ flag ชุดเดียวกับการยืนยัน เพื่อให้หายจากคิว/badge ทุกจุด (RPC sidebar นับจาก account_confirmed_tax)
-        account_confirmed_tax: true,
-        account_confirmed_tax_at: new Date().toISOString(),
-        account_confirmed_tax_by: user.id,
-        // flag แยกไว้บอกว่า "ปิดคำขอเพราะบิลยกเลิก" ไม่ใช่การอนุมัติออกใบกำกับ
-        tax_request_closed: true,
-        tax_request_closed_reason: 'ยกเลิกบิล',
-      }
-      const { error } = await supabase
-        .from('or_orders')
-        .update({ billing_details: newBillingDetails })
-        .eq('id', order.id)
+      const { error } = await supabase.rpc('or_tax_close_cancelled',{p_order_id:order.id})
       if (error) throw error
       setCloseTaxRequestModal({ open: false, order: null, submitting: false })
       setBillingResultModal({ open: true, title: 'สำเร็จ', message: `ปิดคำขอใบกำกับภาษีของบิล ${order.bill_no} แล้ว — รายการนี้จะไม่แสดงซ้ำอีก` })
@@ -973,22 +960,11 @@ export default function Account() {
     }
   }
 
-  async function submitTaxInvoiceConfirm(order: BillingRequestOrder) {
+  async function submitTaxInvoiceConfirm(_order: BillingRequestOrder) {
     if (!user) return
     setTaxInvoiceModal((prev) => ({ ...prev, submitting: true }))
     try {
-      const bd = order.billing_details || {}
-      const newBillingDetails = {
-        ...bd,
-        account_confirmed_tax: true,
-        account_confirmed_tax_at: new Date().toISOString(),
-        account_confirmed_tax_by: user.id,
-      }
-      const { error } = await supabase
-        .from('or_orders')
-        .update({ billing_details: newBillingDetails })
-        .eq('id', order.id)
-      if (error) throw error
+      // The modal issues and persists the immutable document through the RPC.
       setTaxInvoiceModal({ open: false, order: null, submitting: false, viewOnly: false })
       setBillingResultModal({ open: true, title: 'สำเร็จ', message: 'ยืนยันใบกำกับภาษีเรียบร้อย' })
       await loadBillingRequests()
@@ -1506,6 +1482,7 @@ export default function Account() {
           </span>
         </button>
         )}
+        {hasAccess('account-withholding') && <button type="button" onClick={() => setActiveTab('withholding')} className={"rounded px-3 py-3 " + (activeTab === 'withholding' ? 'bg-blue-100 text-blue-700' : '')}>ขอหัก ณ ที่จ่าย</button>}
         {hasAccess('account-approvals') && (
         <button
           type="button"
@@ -1853,6 +1830,8 @@ export default function Account() {
       </section>
       )}
 
+      {activeTab === 'withholding' && hasAccess('account-withholding') && <TaxRequestBoard mode="withholding" />}
+      {activeTab === 'tax-invoice' && hasAccess('account-tax-invoice') && <TaxRequestBoard mode="invoice" onIssue={o => void confirmTaxInvoice({...o, channel_order_no:o.channel_order_no || null})} />}
       {activeTab === 'claim-approval' && hasAccess('account-claim-approval') && <ClaimApprovalSection />}
 
       {activeTab === 'refunds' && hasAccess('account-refunds') && (
@@ -1948,7 +1927,7 @@ export default function Account() {
       )}
 
       {activeTab === 'tax-invoice' && hasAccess('account-tax-invoice') && (
-      <section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+      <details><summary className="cursor-pointer rounded border p-3">รายการคำขอเดิม / จัดการคำขอบิลยกเลิก</summary><section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 bg-sky-50/50">
           <h2 className="text-lg font-semibold text-gray-800">รายการขอใบกำกับภาษี</h2>
           <p className="text-sm text-gray-500 mt-0.5">รอยืนยันจากฝ่ายบัญชี — คลิกรายการเพื่อดูข้อมูลบิล</p>
@@ -2036,7 +2015,7 @@ export default function Account() {
                         ) : (
                           <button
                             type="button"
-                            onClick={(e) => { e.stopPropagation(); confirmTaxInvoice(o) }}
+                            onClick={(e) => { e.stopPropagation(); setBillingResultModal({open:true,title:'ตรวจคำขอก่อน',message:'กรุณาอนุมัติและออกเอกสารจากกรอบคำขอด้านบน'}) }}
                             className="px-2.5 py-1 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 text-xs font-medium transition-colors"
                           >
                             ตรวจสอบ
@@ -2050,7 +2029,7 @@ export default function Account() {
             </table>
           </div>
         )}
-      </section>
+      </section></details>
       )}
 
       {/* Modal ดูสลิปโอน */}

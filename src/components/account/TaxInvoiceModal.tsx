@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useAuthContext } from '../../contexts/AuthContext'
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { pdf, PDFViewer } from '@react-pdf/renderer'
 import { supabase } from '../../lib/supabase'
 import Modal from '../ui/Modal'
@@ -23,6 +24,8 @@ interface TaxInvoiceOrder {
     tax_customer_name?: string | null
     tax_customer_address?: string | null
     tax_customer_phone?: string | null
+    vat_rate?: number
+    tax_branch?: string | null
     tax_id?: string | null
     tax_items?: { product_name: string; quantity: number; unit_price: number }[]
     address_line?: string | null
@@ -44,7 +47,6 @@ interface TaxInvoiceModalProps {
   receiverAccount?: string | null
 }
 
-const VAT_RATE = 7
 const TOTAL_ROWS = 10
 
 const TH_MONTHS = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม']
@@ -79,8 +81,21 @@ export default function TaxInvoiceModal({
 }: TaxInvoiceModalProps) {
   const [billHeaders, setBillHeaders] = useState<BillHeaderSetting[]>([])
   const [selectedHeaderId, setSelectedHeaderId] = useState<string>('')
+  const { user } = useAuthContext()
+  const canIssue = user?.role === 'account' || user?.role === 'superadmin'
+  const [issued, setIssued] = useState(false)
+  const issuedRef=useRef(false)
+  const [documentLoading, setDocumentLoading] = useState(true)
+  const [documentError, setDocumentError] = useState('')
+  const [issuing, setIssuing] = useState(false)
+  const [flowReference, setFlowReference] = useState('')
+  const [seriesOpen,setSeriesOpen] = useState(false)
+  const [seriesLast,setSeriesLast] = useState('')
+  const [seriesReason,setSeriesReason] = useState('')
+  const [savedCompany, setSavedCompany] = useState<BillHeaderSetting | null>(null)
+  const [savedAmounts, setSavedAmounts] = useState<{ shippingCost: number; subtotal: number; netAmount: number; vatAmount: number; grandTotal: number; refDocNo: string; vatRate?: number } | null>(null)
   const [invoiceNo, setInvoiceNo] = useState('')
-  const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [invoiceDate, setInvoiceDate] = useState(() => new Date(Date.now()+7*60*60*1000).toISOString().split('T')[0])
   const [customerName, setCustomerName] = useState('')
   const [customerAddress, setCustomerAddress] = useState('')
   const [customerTaxId, setCustomerTaxId] = useState('')
@@ -95,13 +110,16 @@ export default function TaxInvoiceModal({
   /* Load bill headers from DB */
   useEffect(() => {
     if (!open) return
+    let active=true
     ;(async () => {
       const { data } = await supabase
         .from('bill_header_settings')
         .select('*')
         .order('created_at', { ascending: true })
       const headers = (data || []) as BillHeaderSetting[]
+      if(!active) return
       setBillHeaders(headers)
+      if(issuedRef.current) return
 
       // Auto-select header from receiver bank account
       if (receiverAccount && headers.length > 0) {
@@ -121,7 +139,8 @@ export default function TaxInvoiceModal({
         setSelectedHeaderId(headers[0].id)
       }
     })()
-  }, [open, receiverAccount])
+    return ()=>{active=false}
+  }, [open, receiverAccount, order?.id])
 
   useEffect(() => {
     if (!open) setBuyerCopied(false)
@@ -134,14 +153,11 @@ export default function TaxInvoiceModal({
     setRefBillNo(order.bill_no || '')
     setCustomerName(bd.tax_customer_name || order.customer_name || '')
     setCustomerTaxId(bd.tax_id || '')
+    setCustomerBranch(!bd.tax_branch || bd.tax_branch === '00000' ? 'สำนักงานใหญ่' : `สาขา ${bd.tax_branch}`)
     setCustomerPhone(bd.tax_customer_phone || bd.mobile_phone || '')
     setDiscount(Number(order.discount) || 0)
 
-    const now = new Date()
-    const yy = now.getFullYear().toString().slice(-2)
-    const mm = (now.getMonth() + 1).toString().padStart(2, '0')
-    const code = selectedHeader?.bill_code || 'T'
-    setInvoiceNo(`${code}IV${yy}${mm}0001`)
+    setInvoiceNo('ระบบจะรันเลขเมื่อยืนยัน')
 
     const taxAddr = (bd.tax_customer_address || '').trim()
     if (taxAddr) {
@@ -173,8 +189,8 @@ export default function TaxInvoiceModal({
         {
           description: 'สินค้า',
           quantity: 1,
-          unitPrice: order.total_amount || 0,
-          amount: order.total_amount || 0,
+          unitPrice: Math.max(0,Number(order.total_amount || 0) + Number(order.discount || 0) - Number(order.shipping_cost || 0)),
+          amount: Math.max(0,Number(order.total_amount || 0) + Number(order.discount || 0) - Number(order.shipping_cost || 0)),
         },
       ])
     }
@@ -183,13 +199,26 @@ export default function TaxInvoiceModal({
   const selectedHeader = billHeaders.find(h => h.id === selectedHeaderId) || null
 
   useEffect(() => {
-    if (!selectedHeader) return
-    const code = selectedHeader.bill_code || 'T'
-    setInvoiceNo(prev => {
-      const suffix = prev.replace(/^[A-Z]*IV/, '')
-      return `${code}IV${suffix || '00000001'}`
+    if (!open || !order) return
+    let active = true
+    issuedRef.current=false
+    setDocumentLoading(true); setDocumentError(''); setIssued(false); setSavedCompany(null); setSavedAmounts(null); setFlowReference('')
+    supabase.from('or_tax_invoices').select('*').eq('order_id',order.id).maybeSingle().then(({data,error}) => {
+      if(!active) return
+      if(error) { setDocumentError('โหลดทะเบียนใบกำกับไม่ได้ กรุณาปิดและลองใหม่'); setDocumentLoading(false); return }
+      if(data) {
+        const v=data.snapshot
+        setInvoiceNo(data.invoice_no); setInvoiceDate(data.invoice_date); setSelectedHeaderId(data.header_id)
+        setCustomerName(v.customerName); setCustomerAddress(v.customerAddress); setCustomerTaxId(v.customerTaxId)
+        setCustomerBranch(v.customerBranch); setCustomerPhone(v.customerPhone); setItems(v.items); setDiscount(v.discount)
+        setSavedCompany(v.companyData); setSavedAmounts(v); setFlowReference(data.flow_account_reference || ''); issuedRef.current=true; setIssued(true)
+      } else if ((order.billing_details as Record<string, unknown> | null)?.account_confirmed_tax) {
+        setDocumentError('เอกสารเก่ายังไม่มีเลขในทะเบียนใหม่ ต้องตรวจเลขที่เคยใช้ก่อน ห้ามออกเลขใหม่ทับ')
+      }
+      setDocumentLoading(false)
     })
-  }, [selectedHeader?.id])
+    return () => { active=false }
+  },[open,order])
 
   const filledItems: TaxInvoiceItem[] = (() => {
     const arr = [...items]
@@ -199,15 +228,17 @@ export default function TaxInvoiceModal({
     return arr
   })()
 
-  const shippingCost = Number(order?.shipping_cost || 0)
-  const subtotal = filledItems.reduce((s, r) => s + (r.amount || 0), 0)
+  const shippingCost = savedAmounts?.shippingCost ?? Number(order?.shipping_cost || 0)
+  const subtotal = savedAmounts?.subtotal ?? filledItems.reduce((s, r) => s + (r.amount || 0), 0)
   const afterDiscount = subtotal - discount
-  const grandTotal = afterDiscount + shippingCost
-  const netAmount = Math.round((grandTotal / (1 + VAT_RATE / 100)) * 100) / 100
-  const vatAmount = Math.round((grandTotal - netAmount) * 100) / 100
+  const grandTotal = savedAmounts?.grandTotal ?? afterDiscount + shippingCost
+  const vatRate = savedAmounts?.vatRate ?? order?.billing_details?.vat_rate ?? 7
+  const netAmount = savedAmounts?.netAmount ?? Math.round((grandTotal / (1 + vatRate / 100)) * 100) / 100
+  const vatAmount = savedAmounts?.vatAmount ?? Math.round((grandTotal - netAmount) * 100) / 100
 
   /* REF DOC NO logic based on channel */
   const refDocNo = (() => {
+    if (savedAmounts) return savedAmounts.refDocNo
     if (!order) return ''
     const ch = (order.channel_code || '').toUpperCase()
     if (MARKETPLACE_CHANNELS.includes(ch)) {
@@ -246,7 +277,7 @@ export default function TaxInvoiceModal({
     }
     return (
       <TaxInvoicePDF
-        companyData={selectedHeader || fallbackHeader}
+        companyData={savedCompany || selectedHeader || fallbackHeader}
         invoiceNo={invoiceNo}
         invoiceDate={invoiceDate}
         orderNo={order?.bill_no || undefined}
@@ -260,7 +291,7 @@ export default function TaxInvoiceModal({
         shippingCost={shippingCost}
         subtotal={subtotal}
         netAmount={netAmount}
-        vatRate={VAT_RATE}
+        vatRate={vatRate}
         vatAmount={vatAmount}
         grandTotal={grandTotal}
         refDocNo={refDocNo || undefined}
@@ -268,7 +299,7 @@ export default function TaxInvoiceModal({
         isCopy={false}
       />
     )
-  }, [selectedHeader, invoiceNo, invoiceDate, customerName, customerAddress, customerTaxId, customerBranch, customerPhone, filledItems, discount, shippingCost, subtotal, netAmount, vatAmount, grandTotal, refDocNo])
+  }, [order?.bill_no, savedCompany, selectedHeader, invoiceNo, invoiceDate, customerName, customerAddress, customerTaxId, customerBranch, customerPhone, filledItems, discount, shippingCost, subtotal, netAmount, vatAmount, grandTotal, refDocNo, vatRate])
 
   const pdfDocument = useMemo(() => buildPdfElement(), [buildPdfElement])
 
@@ -285,14 +316,36 @@ export default function TaxInvoiceModal({
     } catch (err: unknown) {
       console.error('Error generating Tax Invoice PDF:', err)
       const msg = err instanceof Error ? err.message : String(err)
-      alert('เกิดข้อผิดพลาดในการสร้าง PDF:\n' + msg)
+      setDocumentError('เกิดข้อผิดพลาดในการสร้าง PDF: ' + msg)
     } finally {
       setExporting(false)
     }
   }
 
-  function handleConfirm() {
-    if (order) onConfirm(order)
+  async function handleConfirm() {
+    if (!order || !canIssue || documentLoading || documentError) return
+    setIssuing(true)
+    try {
+      const snapshot = {customerName,customerAddress,customerTaxId,customerBranch,customerPhone,items:filledItems.filter(r=>r.description&&r.quantity>0),discount,shippingCost,subtotal,netAmount,vatAmount,grandTotal,refDocNo,vatRate}
+      const {data,error}=await supabase.rpc('or_issue_tax_invoice',{p_order_id:order.id,p_header_id:selectedHeaderId,p_date:invoiceDate,p_snapshot:snapshot,p_flow_reference:flowReference})
+      if(error) throw error
+      setInvoiceNo(data.invoice_no); issuedRef.current=true; setIssued(true); setSavedCompany(data.snapshot.companyData); setSavedAmounts(data.snapshot)
+      onConfirm(order)
+    } catch(e) {setDocumentError((e as {message?:string})?.message || 'ออกเอกสารไม่สำเร็จ')}
+    finally{setIssuing(false)}
+  }
+  async function initializeSeries() {
+    if(!order || !selectedHeaderId || !/^\d+$/.test(seriesLast) || !seriesReason.trim()) return
+    setIssuing(true)
+    const {error}=await supabase.rpc('or_tax_initialize_series',{p_order_id:order.id,p_header_id:selectedHeaderId,p_period:invoiceDate.slice(2,4)+invoiceDate.slice(5,7),p_last_number:Number(seriesLast),p_reason:seriesReason})
+    setDocumentError(error?.message || '');setIssuing(false)
+    if(!error) setSeriesOpen(false)
+  }
+  async function saveFlowReference() {
+    if(!order || !issued || !canIssue) return
+    setIssuing(true)
+    const {error}=await supabase.rpc('or_tax_flow_reference',{p_order_id:order.id,p_reference:flowReference})
+    setDocumentError(error?.message || ''); setIssuing(false)
   }
 
   async function copyFullInvoiceForExcel() {
@@ -336,7 +389,7 @@ export default function TaxInvoiceModal({
       ['รวมเป็นเงิน / Amount', Number(subtotal || 0).toFixed(2)],
       ...(shippingCost > 0 ? ([['ค่าขนส่ง / Shipping', Number(shippingCost).toFixed(2)]] as [string, string][]) : []),
       ['มูลค่าสินค้าที่นำมาคิดภาษี', Number(netAmount || 0).toFixed(2)],
-      [`ภาษีมูลค่าเพิ่ม ${VAT_RATE}%`, Number(vatAmount || 0).toFixed(2)],
+      [`ภาษีมูลค่าเพิ่ม ${vatRate}%`, Number(vatAmount || 0).toFixed(2)],
       ['รวมจำนวนเงิน / TOTAL', Number(grandTotal || 0).toFixed(2)],
     ]
 
@@ -388,7 +441,7 @@ export default function TaxInvoiceModal({
         setBuyerCopied(true)
         window.setTimeout(() => setBuyerCopied(false), 2000)
       } catch {
-        alert('ไม่สามารถคัดลอกได้')
+        setDocumentError('ไม่สามารถคัดลอกได้')
       }
     }
   }
@@ -408,6 +461,7 @@ export default function TaxInvoiceModal({
           <div className="flex items-center gap-3">
             <label className="text-sm font-medium text-gray-600">บริษัท:</label>
             <select
+              disabled={issued || documentLoading || !canIssue}
               value={selectedHeaderId}
               onChange={(e) => setSelectedHeaderId(e.target.value)}
               className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400"
@@ -424,7 +478,7 @@ export default function TaxInvoiceModal({
             <button
               type="button"
               onClick={handleExportPDF}
-              disabled={exporting}
+              disabled={exporting || !issued || documentLoading || !!documentError}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-semibold transition-colors disabled:opacity-50 inline-flex items-center gap-2"
             >
               {exporting ? (
@@ -441,11 +495,11 @@ export default function TaxInvoiceModal({
                 </>
               )}
             </button>
-            {!hideConfirm && (
+            {!hideConfirm && !issued && canIssue && (
               <button
                 type="button"
                 onClick={handleConfirm}
-                disabled={submitting}
+                disabled={submitting || issuing || documentLoading || !!documentError}
                 className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm font-semibold transition-colors disabled:opacity-50 inline-flex items-center gap-2"
               >
                 {submitting ? (
@@ -454,16 +508,24 @@ export default function TaxInvoiceModal({
                     กำลังยืนยัน...
                   </>
                 ) : (
-                  'ยืนยันใบกำกับภาษี'
+                  'ยืนยันออกเลขใบกำกับ ERP'
                 )}
               </button>
             )}
           </div>
         </div>
 
+        {documentLoading && <p role="status">กำลังโหลดเอกสาร…</p>}
+        {documentError && <p role="alert" className="rounded bg-red-50 p-3 text-red-700">{documentError}</p>}
+        <label className="block">วันที่ออกเอกสาร<input type="date" disabled={issued || issuing || documentLoading || !canIssue} value={invoiceDate} onChange={e=>setInvoiceDate(e.target.value)} className="ml-2 rounded border p-2" /></label>
+        <label className="block">เลขอ้างอิงจาก FlowAccount<input value={flowReference} disabled={!canIssue || issuing} onChange={e=>setFlowReference(e.target.value)} className="ml-2 rounded border p-2" /></label>
+        {issued && canIssue && <button type="button" disabled={issuing} onClick={()=>void saveFlowReference()} className="rounded border p-2">บันทึกเลขอ้างอิง</button>}
+        {!issued && <p className="text-sm text-amber-800">ตัวอย่างก่อนออกเอกสาร — ระบบจะรันเลขจริงเมื่อยืนยัน</p>}
+        {!issued && canIssue && <button type="button" disabled={issuing || documentLoading} onClick={()=>{setSeriesLast('');setSeriesReason('');setSeriesOpen(true)}} className="text-sm text-blue-700 underline">ยืนยันเลขล่าสุดจากทะเบียนเดิม</button>}
+        <Modal open={seriesOpen} stackClassName="z-[60]" onClose={()=>{if(!issuing)setSeriesOpen(false)}} contentClassName="max-w-lg"><div className="space-y-3 p-5"><h3 className="font-bold">ยืนยันเลขล่าสุดจากทะเบียนเดิม</h3><p>บริษัท {selectedHeader?.company_name} · เดือน {invoiceDate.slice(0,7)} — ตรวจเลขเอกสารที่เคยใช้จริงก่อนบันทึก ระบบจะออกเลขถัดไปและไม่เปลี่ยนเอกสารเก่า</p><label className="block">ลำดับล่าสุดที่ใช้แล้ว (0 หากยังไม่เคยใช้)<input type="number" min={0} max={9999} value={seriesLast} onChange={e=>setSeriesLast(e.target.value)} className="w-full rounded border p-2" /></label><label className="block">ที่มาหรือเหตุผลที่ตรวจสอบ<textarea value={seriesReason} onChange={e=>setSeriesReason(e.target.value)} className="w-full rounded border p-2" /></label><button type="button" disabled={issuing || !seriesReason.trim() || !/^\d+$/.test(seriesLast)} onClick={()=>void initializeSeries()} className="rounded bg-blue-600 px-4 py-2 text-white">ยืนยันเลขล่าสุด</button>{documentError&&<p className="text-red-700">{documentError}</p>}</div></Modal>
         {/* ─── Mode Toggle ─── */}
         <div className="flex rounded-lg bg-gray-100 p-0.5">
-          <button type="button" onClick={() => setMode('edit')} className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${mode === 'edit' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>แก้ไข</button>
+          <button type="button" onClick={() => setMode('edit')} className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${mode === 'edit' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>ข้อมูลใบกำกับ</button>
           <button type="button" onClick={() => setMode('preview')} className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${mode === 'preview' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>พรีวิว PDF</button>
         </div>
 
@@ -483,7 +545,7 @@ export default function TaxInvoiceModal({
 
         {/* ─── Edit Mode ─── */}
         {mode === 'edit' && (
-        <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-5">
+        <fieldset disabled className="bg-white border border-gray-200 rounded-xl p-5 space-y-5">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-bold text-gray-800">ใบเสร็จรับเงิน/ใบกำกับภาษี</h2>
             <span className="text-sm text-blue-600 font-semibold bg-blue-50 px-3 py-1 rounded-full">
@@ -495,7 +557,7 @@ export default function TaxInvoiceModal({
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">เลขที่ / No.</label>
-              <input type="text" value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:border-blue-400" />
+              <input type="text" value={invoiceNo} readOnly className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:border-blue-400" />
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">วันที่ / Date</label>
@@ -614,7 +676,7 @@ export default function TaxInvoiceModal({
                 <span className="font-medium">{netAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>
               </div>
               <div className="flex justify-between text-sm py-1 border-b border-gray-100">
-                <span className="text-gray-600">ภาษีมูลค่าเพิ่ม {VAT_RATE}%</span>
+                <span className="text-gray-600">ภาษีมูลค่าเพิ่ม {vatRate}%</span>
                 <span className="font-medium">{vatAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>
               </div>
               <div className="flex justify-between text-sm py-2 bg-[#2980b9] text-white rounded-lg px-3 mt-1">
@@ -623,7 +685,7 @@ export default function TaxInvoiceModal({
               </div>
             </div>
           </div>
-        </div>
+        </fieldset>
         )}
       </div>
     </Modal>

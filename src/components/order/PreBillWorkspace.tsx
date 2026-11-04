@@ -8,6 +8,7 @@ import PreBillForm from './PreBillForm'
 import { loadPreBillCounts, loadPreBillDetail, loadPreBillPage, PREBILL_PAGE_SIZE, type PreBillSummary, type PreBillView as View } from '../../lib/prebillWorkspace'
 
 type Props = {
+  mobile?: boolean
   onOpenBill: (document: Pick<PreBillDocument, 'id'>) => void | Promise<void>
   onViewConvertedOrder: (document: Pick<PreBillDocument, 'converted_order_id'>) => void | Promise<void>
   onReviewDiscounts: () => void
@@ -24,7 +25,7 @@ const statusClass: Record<string, string> = {
   converted: 'bg-violet-100 text-violet-700', cancelled: 'bg-slate-200 text-slate-500',
 }
 
-export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder, pendingCounts, onReviewDiscounts }: Props) {
+export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder, pendingCounts, onReviewDiscounts, mobile = false }: Props) {
   const { user } = useAuthContext()
   const [documentType, setDocumentType] = useState<PreBillDocumentType>('quotation')
   const [view, setView] = useState<View>('mine')
@@ -150,12 +151,13 @@ export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder, pen
   }
 
   if (editing || renewing) return <PreBillForm
+    mobile={mobile}
     documentType={renewing?.document_type || (editing !== 'new' && editing ? editing.document_type : documentType)}
     document={editing === 'new' ? null : editing}
     sourceDocument={renewing}
     onSaved={() => { setEditing(null); setRenewing(null); refresh() }}
     onCancel={() => { setEditing(null); setRenewing(null) }}
-    onOpenBill={onOpenBill}
+    onOpenBill={mobile ? undefined : onOpenBill}
   />
 
   return (
@@ -178,7 +180,7 @@ export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder, pen
       </Modal>
       <div className="rounded-2xl bg-white p-2 shadow-sm">
         <div className="flex flex-wrap gap-2">
-          {(['quotation','production_confirmation'] as PreBillDocumentType[]).map(type => <button key={type} disabled={detailBusy || deleteBusy} onClick={() => { setDocumentType(type); setView('mine'); resetPage() }} className={`rounded-xl px-5 py-3 font-bold ${documentType === type ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{PREBILL_TYPE_LABEL[type]}{pendingCounts[type] > 0 ? ` (${pendingCounts[type]})` : ''}</button>)}
+          {(['quotation','production_confirmation'] as PreBillDocumentType[]).map(type => <button key={type} disabled={detailBusy || deleteBusy} onClick={() => { setDocumentType(type); setView('mine'); resetPage() }} className={`rounded-xl px-5 py-3 font-bold ${documentType === type ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{mobile ? (type === 'quotation' ? 'QT · เสนอราคา' : 'PC · ยืนยันการผลิต') : PREBILL_TYPE_LABEL[type]}{pendingCounts[type] > 0 ? ` (${pendingCounts[type]})` : ''}</button>)}
         </div>
       </div>
 
@@ -224,8 +226,8 @@ export default function PreBillWorkspace({ onOpenBill, onViewConvertedOrder, pen
               const canCancel = !['converted','cancelled'].includes(doc.status)
               const selected = selectedCancelledIds.includes(doc.id)
               return <tr key={doc.id} className="border-t hover:bg-slate-50">
-                {view === 'cancelled' && user?.role === 'superadmin' && <td className="p-3 text-center"><input type="checkbox" aria-label={`เลือก ${doc.document_no}`} disabled={busy} checked={selected} onChange={() => setSelectedCancelledIds(current => selected ? current.filter(id => id !== doc.id) : [...current, doc.id])} /></td>}
-                <td className="p-3 font-bold text-blue-700">{doc.document_no}</td><td className="p-3">{new Date(doc.created_at).toLocaleDateString('th-TH')}</td><td className="p-3">{doc.owner_name}</td><td className="p-3"><div className="font-semibold">{doc.customer_name}</div></td><td className="p-3">{doc.channel_code}</td><td className="p-3 text-right font-bold">{money(doc.total_amount)}</td><td className="p-3">{new Date(`${doc.valid_until}T00:00:00`).toLocaleDateString('th-TH')}</td><td className="p-3"><span className={`rounded-full px-3 py-1 text-xs font-bold ${statusClass[displayStatus]}`}>{PREBILL_STATUS_LABEL[displayStatus as keyof typeof PREBILL_STATUS_LABEL]}</span>{doc.status === 'converted' && <div className="mt-1.5 whitespace-nowrap text-xs font-bold text-violet-700">เลขบิล: {doc.converted_order?.bill_no ? <button type="button" disabled={busy} onClick={() => void onViewConvertedOrder(doc)} className="underline decoration-violet-300 underline-offset-2 hover:text-violet-900 hover:decoration-violet-700" title="ดูรายละเอียดบิล">{doc.converted_order.bill_no}</button> : '-'}</div>}</td><td className="p-3"><div className="flex flex-wrap gap-2"><button disabled={busy} onClick={() => void openDocument(doc)} className="rounded-lg bg-blue-600 px-3 py-1.5 font-semibold text-white hover:bg-blue-700">{['converted','cancelled'].includes(doc.status) ? 'ดู' : 'แก้ไข'}</button>{displayStatus === 'expired' && <button disabled={busy} onClick={() => void openDocument(doc, true)} className="rounded-lg bg-orange-500 px-3 py-1.5 font-semibold text-white hover:bg-orange-600">สร้างใหม่</button>}{user?.role === 'superadmin' && doc.status === 'pending_discount' && <button onClick={onReviewDiscounts} className="rounded-lg bg-emerald-600 px-3 py-1.5 font-semibold text-white hover:bg-emerald-700">อนุมัติ</button>}{!['converted','cancelled'].includes(doc.status) && displayStatus !== 'expired' && ['active','approved'].includes(doc.status) && <button disabled={busy} onClick={() => void onOpenBill(doc)} className="rounded-lg bg-violet-600 px-3 py-1.5 font-semibold text-white hover:bg-violet-700">เปิดบิล</button>}{canCancel && <button disabled={busy} onClick={() => setCancelling(doc)} className="rounded-lg bg-orange-600 px-3 py-1.5 font-semibold text-white hover:bg-orange-700">ยกเลิก</button>}</div></td>
+                {view === 'cancelled' && user?.role === 'superadmin' && <td data-label="เลือกเอกสาร" className="p-3 text-center"><input type="checkbox" aria-label={`เลือก ${doc.document_no}`} disabled={busy} checked={selected} onChange={() => setSelectedCancelledIds(current => selected ? current.filter(id => id !== doc.id) : [...current, doc.id])} /></td>}
+                <td data-label="เลขเอกสาร" className="p-3 font-bold text-blue-700">{doc.document_no}</td><td data-label="วันที่" className="p-3">{new Date(doc.created_at).toLocaleDateString('th-TH')}</td><td data-label="ผู้เปิดเอกสาร" className="p-3">{doc.owner_name}</td><td data-label="ลูกค้า" className="p-3"><div className="font-semibold">{doc.customer_name}</div></td><td data-label="ช่องทาง" className="p-3">{doc.channel_code}</td><td data-label="ยอดสุทธิ" className="p-3 text-right font-bold">{money(doc.total_amount)}</td><td data-label="ยืนราคาถึง" className="p-3">{new Date(`${doc.valid_until}T00:00:00`).toLocaleDateString('th-TH')}</td><td data-label="สถานะ" className="p-3"><span className={`rounded-full px-3 py-1 text-xs font-bold ${statusClass[displayStatus]}`}>{PREBILL_STATUS_LABEL[displayStatus as keyof typeof PREBILL_STATUS_LABEL]}</span>{doc.status === 'converted' && <div className="mt-1.5 whitespace-nowrap text-xs font-bold text-violet-700">เลขบิล: {!mobile && doc.converted_order?.bill_no ? <button type="button" disabled={busy} onClick={() => void onViewConvertedOrder(doc)} className="underline decoration-violet-300 underline-offset-2 hover:text-violet-900 hover:decoration-violet-700" title="ดูรายละเอียดบิล">{doc.converted_order.bill_no}</button> : doc.converted_order?.bill_no || '-'}</div>}</td><td data-label="จัดการ" className="p-3"><div className="flex flex-wrap gap-2"><button disabled={busy} onClick={() => void openDocument(doc)} className="rounded-lg bg-blue-600 px-3 py-1.5 font-semibold text-white hover:bg-blue-700">{['converted','cancelled'].includes(doc.status) ? 'ดู' : 'แก้ไข'}</button>{displayStatus === 'expired' && <button disabled={busy} onClick={() => void openDocument(doc, true)} className="rounded-lg bg-orange-500 px-3 py-1.5 font-semibold text-white hover:bg-orange-600">สร้างใหม่</button>}{!mobile && user?.role === 'superadmin' && doc.status === 'pending_discount' && <button onClick={onReviewDiscounts} className="rounded-lg bg-emerald-600 px-3 py-1.5 font-semibold text-white hover:bg-emerald-700">อนุมัติ</button>}{!mobile && !['converted','cancelled'].includes(doc.status) && displayStatus !== 'expired' && ['active','approved'].includes(doc.status) && <button disabled={busy} onClick={() => void onOpenBill(doc)} className="rounded-lg bg-violet-600 px-3 py-1.5 font-semibold text-white hover:bg-violet-700">เปิดบิล</button>}{canCancel && <button disabled={busy} onClick={() => setCancelling(doc)} className="rounded-lg bg-orange-600 px-3 py-1.5 font-semibold text-white hover:bg-orange-700">ยกเลิก</button>}</div></td>
               </tr>
             })}
           </tbody>

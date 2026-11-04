@@ -1,3 +1,4 @@
+import { orderReceivable } from '../../lib/taxInvoice'
 import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import { buildIlikeOr, buildWhitespaceTolerantTrackingPattern } from '../../lib/searchFilter'
@@ -946,6 +947,7 @@ export default function OrderList({
                 {/* แสดง คำขอใบกำกับภาษี / บิลเงินสด สำหรับสถานะ รอลงข้อมูล, ลงข้อมูลผิด, ตรวจสอบไม่ผ่าน, ตรวจสอบแล้ว */}
                 {order.billing_details && (
                   <>
+                    {order.billing_details.withholding_requested && <span className="rounded bg-amber-100 px-2 py-1 text-xs text-amber-800">หัก ณ ที่จ่าย 3% · {(order.billing_details as unknown as {withholding_receipt?:unknown}).withholding_receipt ? 'ได้รับเอกสารแล้ว' : 'รอรับเอกสาร'}</span>}
                     {order.billing_details.request_tax_invoice && (
                       <span className="px-2.5 py-1 bg-primary-100 text-primary-900 rounded-full text-sm font-semibold">
                         ขอใบกำกับภาษี
@@ -1464,7 +1466,7 @@ export default function OrderList({
             <div className="p-6 border-b border-gray-200 shrink-0">
               <h3 className="text-xl font-bold text-gray-800 mb-1">ส่งตรวจสลิป</h3>
               <p className="text-sm text-gray-500">
-                บิล <span className="font-mono font-bold text-blue-600">{slipCheckOrder.bill_no}</span> — ยอดรวม ฿{slipCheckOrder.total_amount?.toLocaleString()}
+                บิล <span className="font-mono font-bold text-blue-600">{slipCheckOrder.bill_no}</span> — ยอดรวม ฿{orderReceivable(slipCheckOrder).toLocaleString()}
                 {slipCheckSlipUrls.length > 0 && <span className="ml-2 text-gray-400">({slipCheckSlipUrls.length} สลิป)</span>}
               </p>
               {slipCheckExceptionReview && (

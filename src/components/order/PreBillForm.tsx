@@ -1,3 +1,4 @@
+import { calculateWithholding } from '../../lib/taxInvoice'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -23,15 +24,18 @@ import type { CartoonPattern, Product } from '../../types'
 import type { PreBillChannelSetting, PreBillDocument, PreBillDocumentType, PreBillItem } from '../../types/prebill'
 import { PREBILL_TYPE_LABEL } from '../../types/prebill'
 import Modal from '../ui/Modal'
+import TaxInvoiceFields, { type TaxInvoiceFieldsValue } from './TaxInvoiceFields'
+import { validTaxId } from '../../lib/taxInvoice'
 import PreBillPreview, { buildPreBillCustomerText } from './PreBillPreview'
 
 type Props = {
+  mobile?: boolean
   documentType: PreBillDocumentType
   document?: PreBillDocument | null
   sourceDocument?: PreBillDocument | null
   onSaved: () => void
   onCancel: () => void
-  onOpenBill: (document: PreBillDocument) => void
+  onOpenBill?: (document: PreBillDocument) => void
 }
 
 type Channel = { channel_code: string; channel_name: string; default_carrier?: string | null; is_self_pickup?: boolean | null }
@@ -201,7 +205,7 @@ function LookupDropdownInput({ value, options, placeholder, disabled = false, on
   </>
 }
 
-export default function PreBillForm({ documentType, document, sourceDocument, onSaved, onCancel, onOpenBill }: Props) {
+export default function PreBillForm({ documentType, document, sourceDocument, onSaved, onCancel, onOpenBill, mobile = false }: Props) {
   const { user } = useAuthContext()
   const seed = document || sourceDocument
   const isRenewal = !document && !!sourceDocument
@@ -247,6 +251,18 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
     delivery_term: seed?.delivery_term || '1-3 วัน', delivery_custom: '', valid_until: isRenewal ? addDays(7) : seed?.valid_until || addDays(7),
     payment_method: seed?.payment_method || 'โอน', internal_note: seed?.internal_note || '',
   })
+  const [withholdingRequested, setWithholdingRequested] = useState(seed?.billing_details?.withholding_requested === true)
+  const [requestTaxInvoice, setRequestTaxInvoice] = useState(seed?.billing_details?.request_tax_invoice === true)
+  const [taxInvoice, setTaxInvoice] = useState<TaxInvoiceFieldsValue>({
+    company_name: String(seed?.billing_details?.tax_customer_name || ''),
+    address: String(seed?.billing_details?.tax_customer_address || ''),
+    tax_id: String(seed?.billing_details?.tax_id || ''),
+    branch: String(seed?.billing_details?.tax_branch || '00000'),
+    tax_address: seed?.billing_details?.tax_address as TaxInvoiceFieldsValue['tax_address'],
+  })
+  const mobileTaxDetails = mobile ? { request_tax_invoice: requestTaxInvoice || withholdingRequested,
+    tax_customer_name: taxInvoice.company_name, tax_customer_address: taxInvoice.address,
+    tax_id: taxInvoice.tax_id, tax_branch: taxInvoice.branch || '00000', tax_address: taxInvoice.tax_address } : {}
   const seedAddress = (seed?.billing_details || {}) as Partial<AddressParts>
   const [address, setAddress] = useState<AddressParts>({
     address_line: seedAddress.address_line || '', sub_district: seedAddress.sub_district || '', district: seedAddress.district || '',
@@ -520,6 +536,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
     : automaticShippingActive ? automaticShipping : Number(manualShipping || 0)
   const specialDiscount = Number(document?.special_discount || 0)
   const totalAmount = Math.max(0, subtotal + shippingCost - promotionDiscount - specialDiscount)
+  const paymentSummary = calculateWithholding(totalAmount, withholdingRequested)
   const selectedSetting = settings.find(s => s.channel_code === form.channel_code && s.document_type === documentType)
   const headerName = selectedSetting?.header_name || PREBILL_TYPE_LABEL[documentType]
   const deliveryTerm = form.delivery_term === 'custom' ? form.delivery_custom.trim() : form.delivery_term
@@ -785,6 +802,11 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
   }
 
   function validationError(status: 'draft' | 'active'): string | null {
+    if (mobile && status === 'active' && (requestTaxInvoice || withholdingRequested)) {
+      if (!taxInvoice.company_name.trim() || !taxInvoice.address.trim()) return 'กรุณากรอกชื่อและที่อยู่ออกใบกำกับภาษี'
+      if (!validTaxId(taxInvoice.tax_id)) return 'กรุณาตรวจสอบเลขประจำตัวผู้เสียภาษี'
+      if (!/^\d{5}$/.test(taxInvoice.branch || '00000')) return 'กรุณากรอกเลขสาขา 5 หลัก'
+    }
     if (!form.channel_code) return 'กรุณาเลือกช่องทาง'
     if (!form.customer_name.trim()) return 'กรุณากรอกชื่อลูกค้า'
     if (!deliveryTerm) return 'กรุณาระบุระยะเวลาจัดส่ง'
@@ -825,7 +847,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
         channel_code: form.channel_code, header_name: headerName, customer_name: form.customer_name.trim(),
         customer_address: isPickup ? null : form.customer_address.trim() || [address.address_line, address.sub_district, address.district, address.province, address.postal_code].filter(Boolean).join(' ') || null,
         recipient_name: form.recipient_name.trim() || null, customer_phone: form.customer_phone.trim() || null,
-        billing_details: { ...(isPickup ? { address_line: '', sub_district: '', district: '', province: '', postal_code: '' } : address), mobile_phone: form.customer_phone.trim() || null }, delivery_term: deliveryTerm, valid_until: form.valid_until,
+        billing_details: { ...seed?.billing_details, ...mobileTaxDetails, withholding_requested: withholdingRequested, request_tax_invoice: withholdingRequested || (mobile ? requestTaxInvoice : seed?.billing_details?.request_tax_invoice === true), ...(isPickup ? { address_line: '', sub_district: '', district: '', province: '', postal_code: '' } : address), mobile_phone: form.customer_phone.trim() || null }, delivery_term: deliveryTerm, valid_until: form.valid_until,
         payment_method: form.payment_method || null, subtotal, shipping_cost: shippingCost,
         promotion_discount: promotionDiscount, special_discount: document?.special_discount || 0,
         total_amount: totalAmount, promotion_ids: selectedPromotionIds,
@@ -886,6 +908,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
     recipient_name: form.recipient_name, customer_phone: form.customer_phone, delivery_term: deliveryTerm, valid_until: form.valid_until,
     payment_method: form.payment_method, subtotal, shipping_cost: shippingCost, promotion_discount: promotionDiscount,
     special_discount: specialDiscount, total_amount: totalAmount,
+    billing_details: { ...seed?.billing_details, ...mobileTaxDetails, withholding_requested: withholdingRequested, request_tax_invoice: withholdingRequested || (mobile ? requestTaxInvoice : seed?.billing_details?.request_tax_invoice === true) },
     shipping_snapshot: {
       is_self_pickup: isPickup,
       matched_area: matchedArea,
@@ -1011,29 +1034,38 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
           {matchedArea ? <p className="mt-3 font-semibold text-violet-700">พบ{SHIPPING_AREA_TYPE_LABELS[matchedArea.area_type]}: เพิ่ม {money(matchedArea.surcharge)} บาท · {channel?.default_carrier}</p> : <p className="mt-3 text-sm text-amber-700">{areaMatchMessage}</p>}
         </details>}
 
+        {mobile && <section className="rounded-2xl bg-white p-5 shadow-sm">
+          <h3 className="text-lg font-bold">ข้อมูลออกใบกำกับภาษี</h3>
+          <label className="my-3 flex items-center gap-3"><input type="checkbox" checked={requestTaxInvoice || withholdingRequested} disabled={withholdingRequested} onChange={e => setRequestTaxInvoice(e.target.checked)} />ต้องการใบกำกับภาษี</label>
+          {(requestTaxInvoice || withholdingRequested) && <>
+            <p className="mb-3 text-sm text-slate-500">เตรียมข้อมูลสำหรับเปิดบิลบนคอมฯ แยกจากที่อยู่จัดส่ง</p>
+            <button type="button" className="mb-4 rounded-xl border px-4 py-2" onClick={() => setTaxInvoice(v => ({ ...v, company_name: form.customer_name, address: form.customer_address, tax_address: undefined }))}>ใช้ชื่อและที่อยู่ลูกค้า</button>
+            <TaxInvoiceFields value={taxInvoice} onChange={setTaxInvoice} disabled={locked || expired || saving} />
+          </>}
+        </section>}
         <section className="overflow-x-auto rounded-2xl bg-white p-4 shadow-sm">
           <div className="mb-3 flex items-center justify-between"><h3 className="text-lg font-bold">รายการสินค้า</h3></div>
           <table className={`${documentType === 'production_confirmation' ? 'min-w-[1720px]' : 'min-w-[980px]'} w-full border-collapse text-sm`}>
             <thead><tr className="bg-slate-100"><th className="w-10 border p-1 text-center text-[10px]">ฟรี</th><th className="w-10 border p-1 text-center text-[10px]">#</th><th className={`${documentType === 'production_confirmation' ? 'min-w-[240px]' : 'min-w-[360px]'} border p-1.5`}>ชื่อสินค้า</th><th className="w-14 border p-1 text-center text-[10px]">OH</th>{documentType === 'production_confirmation' && <><th className="w-32 border p-1.5">สีหมึก</th><th className="w-16 border p-1.5">ชั้น</th><th className="w-28 border p-1.5">ลาย</th><th className="w-24 border p-1.5">ฟอนต์</th><th className="w-14 border p-1 text-center text-[10px] whitespace-nowrap">ไม่รับชื่อ</th><th className="min-w-[150px] border p-1.5">บรรทัด 1</th><th className="min-w-[150px] border p-1.5">บรรทัด 2</th><th className="min-w-[150px] border p-1.5">บรรทัด 3</th></>}<th className="w-20 border p-1.5">จำนวน</th><th className="w-24 border p-1 text-[10px] whitespace-nowrap">ราคา/หน่วย</th><th className="min-w-[150px] border p-1.5">หมายเหตุ</th>{documentType === 'production_confirmation' && <th className="min-w-[140px] border p-1.5">ไฟล์แนบ</th>}<th className="w-10 border p-1.5" /></tr></thead>
             <tbody>{items.map((item, index) => (
               <tr key={item.id || index} className={`align-middle ${itemGroupRowClass(index)} ${item.is_free ? 'bg-green-50' : ''}`}>
-                <td className="border p-1 text-center">{item.is_detail_row ? <span className="text-slate-400">-</span> : <input type="checkbox" checked={item.is_free} onChange={e => updateItem(index, { is_free: e.target.checked, unit_price: e.target.checked ? 0 : item.unit_price })} className="h-4 w-4 align-middle" />}</td>
-                <td className="border p-1 text-center text-xs font-semibold text-slate-600">{itemDisplayNumber(index)}</td>
-                <td className="border p-1.5"><div className="relative w-full"><input ref={element => { productInputRefs.current[index] = element }} value={item.product_name} disabled={item.is_detail_row} placeholder="ค้นหาหรือเลือกสินค้า..." onFocus={event => { if (!item.is_detail_row) openProductDropdown(index, event.currentTarget, true) }} onChange={event => { selectProduct(index, event.target.value); setProductSearchTerms(current => ({ ...current, [index]: event.target.value })); openProductDropdown(index, event.currentTarget) }} onBlur={() => window.setTimeout(() => { setOpenProductIndex(current => current === index ? null : current); setProductDropdownPosition(null) }, 150)} className="w-full rounded border px-1.5 py-1 pr-7 text-xs disabled:bg-slate-100" autoComplete="off" />{!item.is_detail_row && <button type="button" tabIndex={-1} onMouseDown={event => event.preventDefault()} onClick={() => { const input = productInputRefs.current[index]; if (!input) return; if (openProductIndex === index) { setOpenProductIndex(null); setProductDropdownPosition(null) } else openProductDropdown(index, input, true) }} className="absolute right-0 top-0 h-7 w-7 text-slate-500">▾</button>}</div></td>
-                <td className="border p-1 text-center align-middle text-xs font-semibold">{item.product_id ? Number(stockMap[String(item.product_id)] ?? item.oh_snapshot).toLocaleString() : <span className="text-slate-400">-</span>}</td>
+                <td data-label="ฟรี" className="border p-1 text-center">{item.is_detail_row ? <span className="text-slate-400">-</span> : <input type="checkbox" checked={item.is_free} onChange={e => updateItem(index, { is_free: e.target.checked, unit_price: e.target.checked ? 0 : item.unit_price })} className="h-4 w-4 align-middle" />}</td>
+                <td data-label="รายการ" className="border p-1 text-center text-xs font-semibold text-slate-600">{itemDisplayNumber(index)}</td>
+                <td data-label="สินค้า" className="border p-1.5"><div className="relative w-full"><input ref={element => { productInputRefs.current[index] = element }} value={item.product_name} disabled={item.is_detail_row} placeholder="ค้นหาหรือเลือกสินค้า..." onFocus={event => { if (!item.is_detail_row) openProductDropdown(index, event.currentTarget, true) }} onChange={event => { selectProduct(index, event.target.value); setProductSearchTerms(current => ({ ...current, [index]: event.target.value })); openProductDropdown(index, event.currentTarget) }} onBlur={() => window.setTimeout(() => { setOpenProductIndex(current => current === index ? null : current); setProductDropdownPosition(null) }, 150)} className="w-full rounded border px-1.5 py-1 pr-7 text-xs disabled:bg-slate-100" autoComplete="off" />{!item.is_detail_row && <button type="button" tabIndex={-1} onMouseDown={event => event.preventDefault()} onClick={() => { const input = productInputRefs.current[index]; if (!input) return; if (openProductIndex === index) { setOpenProductIndex(null); setProductDropdownPosition(null) } else openProductDropdown(index, input, true) }} className="absolute right-0 top-0 h-7 w-7 text-slate-500">▾</button>}</div></td>
+                <td data-label="OH" className="border p-1 text-center align-middle text-xs font-semibold">{item.product_id ? Number(stockMap[String(item.product_id)] ?? item.oh_snapshot).toLocaleString() : <span className="text-slate-400">-</span>}</td>
                 {documentType === 'production_confirmation' && <>
-                  <td className="border p-1.5">{fieldState(index,'ink_color') ? <select value={item.ink_color || ''} onChange={e => updateInkColor(index, e.target.value)} className="w-full rounded border px-1.5 py-1 text-xs"><option value="">เลือกสี</option>{inkTypes.map(value => <option key={value} value={value}>{value}</option>)}</select> : '-'}</td>
-                  <td className="border p-1.5">{fieldState(index,'product_type') ? <input value={item.product_type || ''} placeholder="ชั้น1" onChange={e => updateItem(index, { product_type: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs" /> : '-'}</td>
-                  <td className="border p-1.5">{fieldState(index,'cartoon_pattern') ? <LookupDropdownInput value={item.cartoon_pattern || ''} options={filteredPatternNames(index)} placeholder="ลาย" onChange={value => updatePattern(index, value)} /> : '-'}</td>
-                  <td className="border p-1.5">{fieldState(index,'font') ? <LookupDropdownInput value={item.font || ''} options={fonts} placeholder="F01" onChange={value => updateItem(index, { font: value })} /> : '-'}</td>
-                  <td className="border p-1 text-center"><input type="checkbox" checked={item.no_name_line} onChange={e => updateItem(index, { no_name_line: e.target.checked })} className="h-4 w-4 align-middle" /></td>
-                  {(['line_1','line_2','line_3'] as const).map((key, lineIndex) => <td key={key} className="border p-1.5">{fieldState(index,key) ? <input value={item[key] || ''} disabled={item.no_name_line} placeholder={`บรรทัด ${lineIndex + 1}`} onChange={e => updateItem(index, { [key]: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100" /> : '-'}</td>)}
+                  <td data-label="สีหมึก" className="border p-1.5">{fieldState(index,'ink_color') ? <select value={item.ink_color || ''} onChange={e => updateInkColor(index, e.target.value)} className="w-full rounded border px-1.5 py-1 text-xs"><option value="">เลือกสี</option>{inkTypes.map(value => <option key={value} value={value}>{value}</option>)}</select> : '-'}</td>
+                  <td data-label="ชั้น" className="border p-1.5">{fieldState(index,'product_type') ? <input value={item.product_type || ''} placeholder="ชั้น1" onChange={e => updateItem(index, { product_type: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs" /> : '-'}</td>
+                  <td data-label="ลาย" className="border p-1.5">{fieldState(index,'cartoon_pattern') ? <LookupDropdownInput value={item.cartoon_pattern || ''} options={filteredPatternNames(index)} placeholder="ลาย" onChange={value => updatePattern(index, value)} /> : '-'}</td>
+                  <td data-label="ฟอนต์" className="border p-1.5">{fieldState(index,'font') ? <LookupDropdownInput value={item.font || ''} options={fonts} placeholder="F01" onChange={value => updateItem(index, { font: value })} /> : '-'}</td>
+                  <td data-label="ไม่มีบั้งชื่อ" className="border p-1 text-center"><input type="checkbox" checked={item.no_name_line} onChange={e => updateItem(index, { no_name_line: e.target.checked })} className="h-4 w-4 align-middle" /></td>
+                  {(['line_1','line_2','line_3'] as const).map((key, lineIndex) => <td data-label={`บรรทัด ${lineIndex + 1}`} key={key} className="border p-1.5">{fieldState(index,key) ? <input value={item[key] || ''} disabled={item.no_name_line} placeholder={`บรรทัด ${lineIndex + 1}`} onChange={e => updateItem(index, { [key]: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100" /> : '-'}</td>)}
                 </>}
-                <td className="border p-1.5"><input type="number" min="1" value={item.quantity} disabled={item.is_detail_row} onChange={e => updateItem(index, { quantity: Math.max(1, Number(e.target.value)) })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100" /></td>
-                <td className="border p-1.5"><input type="number" min="0" value={item.unit_price} placeholder="0.00" disabled={item.is_detail_row || item.is_free || (!MANUAL_PRICE_CHANNELS.has(form.channel_code) && !!item.product_id)} onChange={e => updateItem(index, { unit_price: Number(e.target.value) })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100 disabled:text-slate-500" /></td>
-                <td className="border p-1.5">{fieldState(index,'notes') ? <input value={item.notes || ''} placeholder="หมายเหตุเพิ่มเติม" onChange={e => updateItem(index, { notes: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs" /> : '-'}</td>
-                {documentType === 'production_confirmation' && <td className="border p-1.5"><div className="space-y-1"><input value={item.attachment_name || ''} disabled={!fieldState(index,'attachment')} placeholder="ชื่อกำกับ" onChange={e => updateItem(index, { attachment_name: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100" /><input value={item.file_attachment || ''} disabled={!fieldState(index,'attachment')} placeholder="ไฟล์แนบ (URL)" onChange={e => updateItem(index, { file_attachment: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100" /></div></td>}
-                <td className="border p-1 text-center"><button type="button" disabled={items.length === 1} onClick={() => removeItem(index)} className="h-7 w-7 rounded bg-red-500 font-bold text-white hover:bg-red-600 disabled:bg-slate-200">×</button></td>
+                <td data-label="จำนวน" className="border p-1.5"><input type="number" min="1" value={item.quantity} disabled={item.is_detail_row} onChange={e => updateItem(index, { quantity: Math.max(1, Number(e.target.value)) })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100" /></td>
+                <td data-label="ราคา/หน่วย" className="border p-1.5"><input type="number" min="0" value={item.unit_price} placeholder="0.00" disabled={item.is_detail_row || item.is_free || (!MANUAL_PRICE_CHANNELS.has(form.channel_code) && !!item.product_id)} onChange={e => updateItem(index, { unit_price: Number(e.target.value) })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100 disabled:text-slate-500" /></td>
+                <td data-label="หมายเหตุ" className="border p-1.5">{fieldState(index,'notes') ? <input value={item.notes || ''} placeholder="หมายเหตุเพิ่มเติม" onChange={e => updateItem(index, { notes: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs" /> : '-'}</td>
+                {documentType === 'production_confirmation' && <td data-label="ไฟล์แนบ" className="border p-1.5"><div className="space-y-1"><input value={item.attachment_name || ''} disabled={!fieldState(index,'attachment')} placeholder="ชื่อกำกับ" onChange={e => updateItem(index, { attachment_name: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100" /><input value={item.file_attachment || ''} disabled={!fieldState(index,'attachment')} placeholder="ไฟล์แนบ (URL)" onChange={e => updateItem(index, { file_attachment: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100" /></div></td>}
+                <td data-label="ลบรายการ" className="border p-1 text-center"><button type="button" disabled={items.length === 1} onClick={() => removeItem(index)} className="h-7 w-7 rounded bg-red-500 font-bold text-white hover:bg-red-600 disabled:bg-slate-200">×</button></td>
               </tr>
             ))}</tbody>
           </table>
@@ -1074,7 +1106,12 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
               <div className="flex justify-between text-emerald-700"><span>ส่วนลดโปรโมชั่น</span><b>-{money(promotionDiscount)}</b></div>
               {specialDiscount > 0 && <div className="flex justify-between text-emerald-700"><span>{document?.approved_by ? 'ส่วนลดพิเศษที่อนุมัติ' : 'ส่วนลดพิเศษ (ต้องขออนุมัติ)'}</span><b>-{money(specialDiscount)}</b></div>}
               {!isPickup && (automaticShippingActive ? <div className="space-y-2 rounded-xl border bg-slate-50 p-3 text-sm"><div className="flex justify-between text-sky-700"><span>ค่าจัดส่งปกติ{baseShippingWaived ? ' (ยกเว้น)' : ''}</span><b>{money(chargedStandardShipping)} บาท</b></div><div className="flex justify-between text-violet-700"><span>ค่าพื้นที่ห่างไกล/พิเศษ</span><b>{money(specialAreaSurcharge)} บาท</b></div><label className="flex items-center justify-between gap-4 border-t pt-2 font-semibold"><span>ค่าจัดส่งรวม</span><input type="number" min="0" value={shippingCost} disabled className="w-32 rounded-lg border bg-slate-100 p-2 text-right" /></label>{baseShippingWaived && standardShipping > 0 && <p className="text-xs text-slate-500">ค่าจัดส่งปกติก่อนยกเว้น {money(standardShipping)} บาท</p>}</div> : <label className="flex items-center justify-between gap-4"><span>ค่าจัดส่ง</span><input type="number" min="0" value={shippingCost} disabled={!!document} onChange={e => setManualShipping(Number(e.target.value))} className="w-32 rounded-lg border p-2 text-right disabled:bg-slate-100" /></label>)}
-              <div className="flex justify-between border-t-2 pt-4 text-xl text-blue-700"><b>ยอดสุทธิ</b><b>{money(totalAmount)} บาท</b></div>
+              <label className="flex gap-2"><input type="checkbox" checked={withholdingRequested} disabled={!!document && ['converted','cancelled','approved','pending_discount'].includes(document.status)} onChange={e => setWithholdingRequested(e.target.checked)} />หัก ณ ที่จ่าย 3% (ขอใบกำกับภาษีด้วย)</label>
+              {withholdingRequested && <>
+                <div className="flex justify-between"><span>ยอดบิลรวม VAT</span><b>{money(paymentSummary.gross)} บาท</b></div>
+                <div className="flex justify-between text-amber-800"><span>หัก ณ ที่จ่าย 3%</span><b>{money(paymentSummary.withheld)} บาท</b></div>
+              </>}
+              <div className="flex justify-between border-t-2 pt-4 text-xl text-blue-700"><b>ยอดรับชำระสุทธิ</b><b>{money(paymentSummary.receivable)} บาท</b></div>
               <label className="block pt-2 text-sm font-semibold text-slate-800">วิธีการชำระเงิน<select value={form.payment_method} onChange={e => setForm(v => ({ ...v, payment_method: e.target.value }))} className="mt-1 w-full rounded-xl border bg-white p-2.5"><option>โอน</option><option>เงินสด</option><option>เก็บเงินปลายทาง</option><option>เครดิต</option></select></label>
               <label className="block text-sm font-semibold text-slate-800">หมายเหตุภายใน<textarea value={form.internal_note} onChange={e => setForm(v => ({ ...v, internal_note: e.target.value }))} rows={3} className="mt-1 w-full rounded-xl border p-2.5" /></label>
             </div>
@@ -1089,7 +1126,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
         <button disabled={saving} onClick={downloadImage} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">ดาวน์โหลดรูป</button>
         <button disabled={saving} onClick={downloadPdf} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">ดาวน์โหลด PDF</button>
         <button disabled={saving} onClick={copyText} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">คัดลอกข้อความ</button>
-        {document && !expired && ['active','approved'].includes(document.status) && !document.converted_order_id && <button onClick={() => onOpenBill(document)} className="ml-auto rounded-xl bg-emerald-600 px-5 py-2 font-bold text-white">เปิดบิล</button>}
+        {!mobile && onOpenBill && document && !expired && ['active','approved'].includes(document.status) && !document.converted_order_id && <button onClick={() => onOpenBill(document)} className="ml-auto rounded-xl bg-emerald-600 px-5 py-2 font-bold text-white">เปิดบิล</button>}
       </div>
 
       <Modal open={discountModal} onClose={() => setDiscountModal(false)} contentClassName="max-w-md" ariaLabelledby="prebill-discount-request-title"><div className="p-6"><h3 id="prebill-discount-request-title" className="pr-8 text-xl font-bold">ขออนุมัติส่วนลด</h3><div className="mt-4 grid grid-cols-3 gap-2"><select value={discountRequest.type} onChange={e => setDiscountRequest(v => ({ ...v, type: e.target.value as 'amount' | 'percent' }))} className="rounded-xl border p-2"><option value="amount">บาท</option><option value="percent">เปอร์เซ็นต์</option></select><input type="number" min="0" value={discountRequest.value} onChange={e => setDiscountRequest(v => ({ ...v, value: e.target.value }))} className="col-span-2 rounded-xl border p-2" placeholder="จำนวนที่ขอ" /></div><div className="mt-3 rounded-xl bg-amber-50 p-3 text-sm"><div className="flex justify-between"><span>ยอดสินค้า</span><b>{money(subtotal)}</b></div><div className="mt-1 flex justify-between"><span>ส่วนลดที่ขอ</span><b>{money(discountRequest.type === 'percent' ? subtotal * Math.min(100, Number(discountRequest.value || 0)) / 100 : Math.min(subtotal, Number(discountRequest.value || 0)))}</b></div></div><textarea value={discountRequest.note} onChange={e => setDiscountRequest(v => ({ ...v, note: e.target.value }))} rows={4} placeholder="หมายเหตุคำขอ (บังคับ)" className="mt-3 w-full rounded-xl border p-3" /><div className="mt-4 flex justify-end gap-2"><button onClick={() => setDiscountModal(false)} className="rounded-xl border px-4 py-2">ยกเลิก</button><button disabled={!discountRequest.value || !discountRequest.note.trim()} onClick={requestDiscount} className="rounded-xl bg-amber-500 px-4 py-2 font-bold text-white disabled:opacity-50">ส่งคำขอ</button></div></div></Modal>

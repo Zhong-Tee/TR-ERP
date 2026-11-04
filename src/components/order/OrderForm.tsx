@@ -1,3 +1,5 @@
+import { calculateWithholding, orderReceivable, taxInvoiceErrors, emptyTaxAddress } from '../../lib/taxInvoice'
+import TaxInvoiceFields, { type TaxInvoiceFieldsValue } from './TaxInvoiceFields'
 import { canCorrectMarketplaceItem, preserveUnflaggedMarketplaceFields } from '../../lib/marketplaceCorrections'
 import { resolveFieldEnabled } from '../../lib/productFieldRules'
 import { isMarketplaceImportedFieldLocked, isMarketplaceReviewLocked, normalizeMarketplaceItem } from '../../lib/marketplaceItemGuards'
@@ -829,6 +831,15 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const [fonts, setFonts] = useState<{ font_code: string; font_name: string }[]>([])
   const [items, setItems] = useState<Partial<OrderItem>[]>([])
   const [showTaxInvoice, setShowTaxInvoice] = useState(false)
+  const [withholdingRequested, setWithholdingRequested] = useState(false)
+  const [taxRequestLocked, setTaxRequestLocked] = useState(false)
+  useEffect(() => {
+    let live = true
+    setTaxRequestLocked(!!order)
+    if (!order?.id) return
+    supabase.from('ac_verified_slips').select('id').eq('order_id',order.id).eq('validation_status','passed').or('is_deleted.is.null,is_deleted.eq.false').limit(1).then(({data,error}) => { if(live) setTaxRequestLocked(!!error || !!data?.length) })
+    return () => { live=false }
+  },[order?.id])
   const [productSearchTerm, setProductSearchTerm] = useState<{ [key: number]: string }>({})
   const [patternSearchTerm, setPatternSearchTerm] = useState<{ [key: number]: string }>({})
   const [fontSearchTerm, setFontSearchTerm] = useState<{ [key: number]: string }>({})
@@ -1015,9 +1026,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     payment_date: '',
     payment_time: '',
   })
-  const [taxInvoiceData, setTaxInvoiceData] = useState({
+  const [taxInvoiceData, setTaxInvoiceData] = useState<TaxInvoiceFieldsValue & { items_note: string }>({
     company_name: '',
     address: '',
+    tax_address: emptyTaxAddress(),
     tax_id: '',
     items_note: '',
   })
@@ -1283,11 +1295,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         if (order.billing_details) {
           const bd = order.billing_details
           setShowTaxInvoice(bd.request_tax_invoice || false)
+          setWithholdingRequested(bd.withholding_requested === true)
           if (bd.request_tax_invoice) {
             setTaxInvoiceData({
               company_name: bd.tax_customer_name || '',
               address: bd.tax_customer_address || '',
               tax_id: bd.tax_id || '',
+              branch: bd.tax_branch || '00000',
+              tax_address: bd.tax_address || (bd.tax_customer_address ? undefined : emptyTaxAddress()),
               items_note: '',
             })
           }
@@ -2394,6 +2409,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       return
     }
 
+    if (showTaxInvoice && !taxRequestLocked && !(order?.billing_details as Record<string,unknown> | null)?.account_confirmed_tax) {
+      const errors = taxInvoiceErrors(taxInvoiceData)
+      if (errors.length) { setMessageModal({open:true,title:'ตรวจข้อมูลใบกำกับภาษี',message:errors.join('\n')}); setLoading(false); return }
+    }
     if (isMarketplaceReviewLocked(order)) return
     if (order?.source_marketplace_order_id) {
       if (!itemsToSave.length || itemsToSave.some((item) => !item.product_id)) {
@@ -2563,11 +2582,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       delete existingBillingDetails.original_customer_address
       const billingDetails = {
         ...existingBillingDetails,
-        request_tax_invoice: showTaxInvoice,
+        request_tax_invoice: showTaxInvoice || withholdingRequested,
+        withholding_requested: withholdingRequested,
         request_cash_bill: false,
         tax_customer_name: showTaxInvoice ? taxInvoiceData.company_name : null,
         tax_customer_address: showTaxInvoice ? taxInvoiceData.address : null,
         tax_id: showTaxInvoice ? taxInvoiceData.tax_id : null,
+        tax_branch: showTaxInvoice ? taxInvoiceData.branch || '00000' : null,
+        tax_address: showTaxInvoice ? taxInvoiceData.tax_address : null,
         tax_items: showTaxInvoice ? itemsToSave
           .filter(item => item.product_id && !isCondoSubRow(item) && !(item as { is_free?: boolean }).is_free)
           .map(item => ({
@@ -2581,6 +2603,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         province: selfPickupForSave ? null : formData.province?.trim() || null,
         postal_code: selfPickupForSave ? null : formData.postal_code?.trim() || null,
         mobile_phone: selfPickupForSave ? null : formData.mobile_phone?.trim() || null,
+      }
+
+      if (order && (taxRequestLocked || existingBillingDetails.tax_workflow || existingBillingDetails.account_confirmed_tax)) {
+        const fields = ['request_tax_invoice','withholding_requested','tax_customer_name','tax_customer_address','tax_id','tax_branch','tax_address']
+        for (const field of fields) {
+          if (field in existingBillingDetails) (billingDetails as Record<string,unknown>)[field]=existingBillingDetails[field]
+          else delete (billingDetails as Record<string,unknown>)[field]
+        }
       }
 
       // บิลที่บันทึก "ข้อมูลครบ": ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED → สถานะ "ตรวจสอบแล้ว" โดยตรง
@@ -2883,7 +2913,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         setDiscountRequestOpen(false)
         window.dispatchEvent(new CustomEvent('discount-approval-refresh'))
         setVerificationModal({ type: 'save_success', accountMatch: null, bankCodeMatch: null, amountStatus: 'match',
-          orderId, orderAmount: calculatedTotal, totalAmount: 0, errors: [], validationErrors: [],
+          orderId, orderAmount: calculateWithholding(calculatedTotal,withholdingRequested,order?.billing_details?.vat_rate ?? 7).receivable, totalAmount: 0, errors: [], validationErrors: [],
           statusMessage: 'บันทึกบิลและส่งขออนุมัติส่วนลดแล้ว รอ superadmin พิจารณาที่ ออเดอร์ → อนุมัติส่วนลด' })
         return
       }
@@ -2936,7 +2966,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
             if (slipsToVerify.length > 0) {
               try {
-                await verifyUploadedSlips(orderId, slipsToVerify, calculatedTotal)
+                await verifyUploadedSlips(orderId, slipsToVerify, calculateWithholding(calculatedTotal, withholdingRequested, order?.billing_details?.vat_rate ?? 7).receivable)
                 // หลังแสดงผลตรวจสลิป โหลด path กลับมา (ตัด path ที่ถูกลบแล้วถ้ามี orderId)
                 if (currentBillNo) await loadSlipImages(currentBillNo, orderId)
                 return
@@ -3021,7 +3051,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       // Get order data including status
       const { data: orderData, error: orderError } = await supabase
         .from('or_orders')
-        .select('channel_code, status, total_amount')
+        .select('channel_code, status, total_amount, billing_details')
         .eq('id', orderId)
         .single()
 
@@ -3032,7 +3062,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       // ถ้ารายการอยู่ที่ "ตรวจสอบแล้ว" และยอดเงินเท่าเดิม ไม่ต้องตรวจสอบซ้ำ
       if (orderData.status === 'ตรวจสอบแล้ว' && 
           orderData.total_amount && 
-          Math.abs(orderData.total_amount - orderAmount) < 0.01) {
+          Math.abs(orderReceivable(orderData) - orderAmount) < 0.01) {
         console.log('[Verify Slips] Order already verified with same amount, skipping verification')
         return
       }
@@ -5322,6 +5352,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
   /** โหมดดูอย่างเดียว (ตรวจสอบแล้ว/ยกเลิก): บล็อกทุกฟิลด์และป้องกันการลบสลิป */
   const formDisabled = readOnly || viewOnly || nameLinesOnlyMode || marketplaceCorrectionMode
+  const paymentVatRate = order?.billing_details?.vat_rate ?? 7
+  const paymentSummary = calculateWithholding(Math.max(0, Number(formData.total_amount) || 0), withholdingRequested, paymentVatRate)
   const limitedReferenceFieldsEnabled = (nameLinesOnlyMode || marketplaceCorrectionMode) && !readOnly && !viewOnly
   const limitedProductionFieldsEnabled = (nameLinesOnlyMode || marketplaceCorrectionMode) && !readOnly && !viewOnly
   const limitedShippingFieldsEnabled = nameLinesOnlyMode && !readOnly && !viewOnly
@@ -6788,12 +6820,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1">
-                {showTaxInvoice ? 'ยอดรวมภาษี (รวมแล้ว)' : 'ยอดสุทธิ'}
-              </label>
+              {withholdingRequested && <div className="mb-2 space-y-1 text-sm">
+                <div className="flex justify-between gap-2"><span>ยอดบิลรวม VAT</span><span>{paymentSummary.gross.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span></div>
+                <div className="flex justify-between gap-2 text-amber-800"><span>หัก ณ ที่จ่าย 3%</span><span>{paymentSummary.withheld.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span></div>
+              </div>}
+              <label className="block text-sm font-medium mb-1">ยอดรับชำระสุทธิ</label>
               <input
                 type="text"
-                value={formData.total_amount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                value={paymentSummary.receivable.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 readOnly
                 className="w-full px-3 py-2 border-2 border-blue-300 rounded-lg bg-blue-50 font-bold text-lg"
               />
@@ -6882,8 +6916,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               <div className="flex flex-nowrap items-center justify-start gap-2 self-end border-t pt-4 md:col-start-1 md:row-start-2">
           <button
             type="button"
-            disabled={marketplaceCorrectionMode}
-            onClick={() => setShowTaxInvoice(!showTaxInvoice)}
+            disabled={formDisabled || taxRequestLocked || withholdingRequested}
+            onClick={() => { if (!taxRequestLocked && !withholdingRequested) setShowTaxInvoice(!showTaxInvoice) }}
             className={`shrink-0 px-3 sm:px-6 py-2 text-xs sm:text-sm rounded-lg font-medium transition-colors ${
               showTaxInvoice
                 ? 'bg-blue-600 text-white'
@@ -6892,6 +6926,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           >
             ขอใบกำกับภาษี
           </button>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={withholdingRequested} disabled={formDisabled || taxRequestLocked} onChange={e => { setWithholdingRequested(e.target.checked); if(e.target.checked) setShowTaxInvoice(true) }} />หัก ณ ที่จ่าย 3%</label>
+          {taxRequestLocked && <span className="text-xs text-gray-600">ผ่าน EasySlip แล้ว เพิ่มคำขอใหม่ไม่ได้ · แก้คำขอที่ส่งกลับใน TAX</span>}
                 {!(nameLinesOnlyMode && order) && (
                   <>
         <button
@@ -7296,6 +7332,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         </div>
       </div>
 
+      {withholdingRequested && <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">บิลนี้ขอใบกำกับภาษี และรอหนังสือรับรองหัก ณ ที่จ่ายจากลูกค้า 3% จำนวน {paymentSummary.withheld.toFixed(2)} บาท · ยอดรับชำระ {paymentSummary.receivable.toFixed(2)} บาท</div>}
       {!viewOnly && showTaxInvoice && (
       <div className="bg-white p-6 rounded-lg shadow">
         <h3 className="text-xl font-bold mb-4">ข้อมูลใบกำกับภาษี</h3>
@@ -7303,37 +7340,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           <div className="border-2 border-blue-200 rounded-lg p-4 bg-blue-50">
             <h4 className="font-semibold text-blue-800 mb-3">ข้อมูลสำหรับใบกำกับภาษี</h4>
             <div className="space-y-3">
-              <div>
-                <label className="block text-sm font-medium mb-1">ชื่อลูกค้า/บริษัท</label>
-                <input
-                  type="text"
-                  disabled={marketplaceCorrectionMode}
-                  value={taxInvoiceData.company_name}
-                  onChange={(e) => setTaxInvoiceData({ ...taxInvoiceData, company_name: e.target.value })}
-                  className="w-full px-3 py-2 border rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">ที่อยู่</label>
-                <textarea
-                  disabled={marketplaceCorrectionMode}
-                  value={taxInvoiceData.address}
-                  onChange={(e) => setTaxInvoiceData({ ...taxInvoiceData, address: e.target.value })}
-                  rows={3}
-                  className="w-full px-3 py-2 border rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">เลขประจำตัวผู้เสียภาษี (TAX ID)</label>
-                <input
-                  type="text"
-                  disabled={marketplaceCorrectionMode}
-                  value={taxInvoiceData.tax_id}
-                  onChange={(e) => setTaxInvoiceData({ ...taxInvoiceData, tax_id: e.target.value })}
-                  className="w-full px-3 py-2 border rounded-lg"
-                  placeholder="เช่น 0-0000-00000-00-0"
-                />
-              </div>
+              <TaxInvoiceFields value={taxInvoiceData} disabled={formDisabled || taxRequestLocked || !!(order?.billing_details as Record<string, unknown> | null)?.tax_workflow || !!(order?.billing_details as Record<string, unknown> | null)?.account_confirmed_tax} onChange={next => setTaxInvoiceData(prev => ({ ...prev, ...next }))} />
               <div>
                 <label className="block text-sm font-medium mb-1">รายการสินค้าในใบกำกับ</label>
                 <div className="border rounded-lg p-3 bg-gray-50">
@@ -7380,47 +7387,55 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                           const discountBaht = getDiscountInBaht(basePrice, formData.discount || 0, discountType)
                           const shipping = formData.shipping_cost || 0
                           // ยอดรวม (รวม VAT) = ยอดสินค้า - ส่วนลด + ค่าขนส่ง (สอดคล้องกับยอดรวมบิล)
-                          const grandTotal = Math.round((basePrice + shipping - discountBaht) * 100) / 100
-                          const netAmount = grandTotal / 1.07
-                          const vatAmount = grandTotal - netAmount
+                          const grandTotal = paymentSummary.gross
+                          const netAmount = paymentSummary.base
+                          const vatAmount = paymentSummary.vat
 
                           return (
                             <>
                               <tr className="border-t">
                                 <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ราคาสินค้า:</td>
                                 <td className="p-2 pl-2 pr-4 text-right">
-                                  {itemsSubtotal.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                                  {itemsSubtotal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </td>
                               </tr>
                               <tr className="border-t">
                                 <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ส่วนลด:</td>
                                 <td className="p-2 pl-2 pr-4 text-right text-red-600">
-                                  {discountBaht > 0 ? '-' : ''}{discountBaht.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                                  {discountBaht > 0 ? '-' : ''}{discountBaht.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </td>
                               </tr>
                               <tr className="border-t">
                                 <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ค่าขนส่ง:</td>
                                 <td className="p-2 pl-2 pr-4 text-right">
-                                  {shipping.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                                  {shipping.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </td>
                               </tr>
                               <tr className="border-t">
                                 <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ราคาก่อนภาษี:</td>
                                 <td className="p-2 pl-2 pr-4 text-right">
-                                  {netAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                                  {netAmount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </td>
                               </tr>
                               <tr className="border-t">
-                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ภาษีมูลค่าเพิ่ม 7%:</td>
+                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ภาษีมูลค่าเพิ่ม {paymentVatRate}%:</td>
                                 <td className="p-2 pl-2 pr-4 text-right">
-                                  {vatAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                                  {vatAmount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </td>
                               </tr>
-                              <tr className="border-t font-bold text-lg">
-                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ยอดรวม (รวม VAT):</td>
+                              <tr className="border-t">
+                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ยอดบิลรวม VAT:</td>
                                 <td className="p-2 pl-2 pr-4 text-right">
-                                  {grandTotal.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                                  {grandTotal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </td>
+                              </tr>
+                              {withholdingRequested && <tr className="border-t text-amber-800">
+                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">หัก ณ ที่จ่าย 3%:</td>
+                                <td className="p-2 pl-2 pr-4 text-right">{paymentSummary.withheld.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                              </tr>}
+                              <tr className="border-t font-bold text-lg text-blue-700">
+                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ยอดรับชำระสุทธิ:</td>
+                                <td className="p-2 pl-2 pr-4 text-right">{paymentSummary.receivable.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                               </tr>
                             </>
                           )

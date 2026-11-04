@@ -89,6 +89,7 @@ type AllocationRow = {
   match_method: string
   or_orders: {
     bill_no: string
+    receivable_amount?: number
     total_amount: number
     status: string
   } | null
@@ -268,7 +269,7 @@ async function fetchAllocations(transactionIds: string[]): Promise<AllocationRow
   for (let start = 0; start < transactionIds.length; start += 100) {
     for (let offset = 0; ; offset += 1000) {
       const page = await supabase.from('ac_bank_reconciliation_allocations')
-        .select('id, transaction_id, order_id, allocated_amount, match_method, or_orders(bill_no, total_amount, status)')
+        .select('id, transaction_id, order_id, allocated_amount, match_method, or_orders(bill_no, total_amount, receivable_amount, status)')
         .in('transaction_id', transactionIds.slice(start,start+100)).order('id').range(offset,offset+999)
       if (page.error) throw page.error
       rows.push(...(page.data || []) as unknown as AllocationRow[])
@@ -670,7 +671,7 @@ export default function BankReconciliationSection() {
       const current = map.get(row.order_id) || {
         orderId: row.order_id,
         billNo: row.or_orders.bill_no,
-        billAmount: Number(row.or_orders.total_amount),
+        billAmount: Number(row.or_orders.receivable_amount ?? row.or_orders.total_amount),
         received: 0,
         status: row.or_orders.status,
       }

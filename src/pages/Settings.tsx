@@ -16,7 +16,7 @@ import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { useAuthContext } from '../contexts/AuthContext'
 import { getRoleLookupCandidates, normalizeRole } from '../config/accessPolicy'
 import { pumpVerifiedRoutingStatus } from '../lib/pumpConfirmRouting'
-import { MOBILE_MODE_ROLES, MOBILE_MODE_INFO, getMobileAccess, type MobileMode } from '../lib/mobileMode'
+import { MOBILE_MODE_ROLES, MOBILE_MODE_INFO, getMobileAccess, canUseSalesMobile, type MobileMode } from '../lib/mobileMode'
 import { authErrorMessage } from '../lib/authErrorMessage'
 import PromotionSettingsPanel from '../components/settings/PromotionSettingsPanel'
 import { fetchAllSupabasePages } from '../lib/supabasePagination'
@@ -48,6 +48,11 @@ const PARTIALLY_RESTRICTED_GROUPS = new Set([
 ])
 
 const MOBILE_ROLE_ACCESS = [
+  {
+    role: 'sales_mb', label: 'Sales', path: MOBILE_MODE_INFO.sales_mb.path, tone: 'indigo',
+    menus: ['QT: สร้างและแก้ไขใบเสนอราคา', 'PC: สร้างและแก้ไขใบยืนยันรายละเอียดการผลิต', 'ข้อมูลลูกค้าและข้อมูลออกใบกำกับภาษี', 'ดูสถานะและตัวอย่างเอกสาร'],
+    note: 'เปิดสิทธิ์ที่ จัดการสิทธิ์ผู้ใช้ → สิทธิ์ Role มือถือ → Sales สำหรับ sales-tr, sales-pump และ superadmin ใช้ข้อมูลร่วมกับ Desktop ตามสิทธิ์และสถานะเอกสารเดิม ไม่มีการเปิดบิลขายในโหมดมือถือ',
+  },
   {
     role: 'production_mb', label: 'ฝ่ายผลิต (Mobile)', path: '/wms', tone: 'emerald',
     menus: ['บันทึกคิวงาน', 'เบิกของ', 'คืนของ', 'ยืมของ', 'รับสินค้าตีกลับ', 'Machinery: มอนิเตอร์/ตรวจความพร้อม/แจ้งซ่อม/ประวัติ/คำขอซื้อ/สต๊อค'],
@@ -743,6 +748,7 @@ export default function Settings() {
     { key: 'orders-data-error', label: 'ลงข้อมูลผิด', group: 'orders' },
     { key: 'orders-complete', label: 'ตรวจสอบไม่ผ่าน', group: 'orders' },
     { key: 'orders-verified', label: 'ตรวจสอบแล้ว', group: 'orders' },
+    { key: 'orders-tax', label: 'TAX', group: 'orders' },
     { key: 'orders-refund-return', label: 'โอนคืน', group: 'orders' },
     { key: 'orders-confirm', label: 'Confirm', group: 'orders' },
     { key: 'orders-shipped', label: 'จัดส่งแล้ว', group: 'orders' },
@@ -802,6 +808,7 @@ export default function Settings() {
     { key: 'account-claim-approval', label: 'อนุมัติเคลม', group: 'account' },
     { key: 'account-slip-age', label: 'อายุสลิป', group: 'account' },
     { key: 'account-refunds', label: 'รายการโอนคืน', group: 'account' },
+    { key: 'account-withholding', label: 'ขอหัก ณ ที่จ่าย', group: 'account' },
     { key: 'account-tax-invoice', label: 'ขอใบกำกับภาษี', group: 'account' },
     { key: 'account-approvals', label: 'รายการอนุมัติ', group: 'account' },
     { key: 'account-ecommerce', label: 'Ecommerce', group: 'account' },
@@ -3093,7 +3100,7 @@ export default function Settings() {
                                   style={mobileAccessPopoverPosition}
                                 >
                                   <p className="text-xs font-semibold text-gray-500 mb-1">สิทธิ์ Role มือถือ</p>
-                                  {MOBILE_MODE_ROLES.map((mode) => {
+                                  {MOBILE_MODE_ROLES.filter(mode => mode !== 'sales_mb' || canUseSalesMobile(user)).map((mode) => {
                                     const isOwnRole = normalizeRole(user.role) === mode
                                     const on = granted.includes(mode)
                                     return (
@@ -3249,7 +3256,7 @@ export default function Settings() {
           </> : (
             <div className="space-y-4">
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
-                สิทธิ์ Mobile กำหนดจาก role และ route เฉพาะของระบบ จึงแสดงเพื่ออ้างอิงเท่านั้นและไม่สามารถเปิด–ปิดจากตารางนี้ได้
+                หน้านี้แสดงเมนูและเส้นทางของแต่ละโหมด Mobile เพื่ออ้างอิง เปิด–ปิดสิทธิ์โหมดเพิ่มเติมได้ที่ จัดการสิทธิ์ผู้ใช้ → สิทธิ์ Role มือถือ
               </div>
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {MOBILE_ROLE_ACCESS.map((item) => (

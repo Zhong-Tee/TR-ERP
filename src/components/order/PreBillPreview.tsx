@@ -1,3 +1,4 @@
+import { calculateWithholding } from '../../lib/taxInvoice'
 /* eslint-disable react-refresh/only-export-components */
 import { forwardRef } from 'react'
 import type { PreBillDocument, PreBillItem } from '../../types/prebill'
@@ -35,6 +36,8 @@ function shippingBreakdown(document: Partial<PreBillDocument>) {
 export function buildPreBillCustomerText(document: Partial<PreBillDocument>, items: PreBillItem[]): string {
   const isPickup = (document.shipping_snapshot as Record<string, unknown> | null)?.is_self_pickup === true
   const shipping = shippingBreakdown(document)
+  const withholdingRequested = document.billing_details?.withholding_requested === true
+  const paymentSummary = calculateWithholding(Number(document.total_amount || 0), withholdingRequested)
   const detail = items.map((item, index) => {
     const specs = [
       item.ink_color && `สีหมึก: ${item.ink_color}`,
@@ -70,7 +73,9 @@ export function buildPreBillCustomerText(document: Partial<PreBillDocument>, ite
     !isPickup && shipping.available ? `ค่าจัดส่งปกติ${shipping.baseWaived ? ' (ยกเว้น)' : ''}: ${money(shipping.standard)} บาท` : '',
     !isPickup && shipping.available ? `ค่าพื้นที่ห่างไกล/พิเศษ: ${money(shipping.special)} บาท` : '',
     !isPickup ? `ค่าจัดส่ง${shipping.available ? 'รวม' : ''}: ${money(document.shipping_cost)} บาท` : '',
-    `ยอดสุทธิ: ${money(document.total_amount)} บาท`,
+    withholdingRequested ? `ยอดบิลรวม VAT: ${money(paymentSummary.gross)} บาท` : '',
+    withholdingRequested ? `หัก ณ ที่จ่าย 3%: ${money(paymentSummary.withheld)} บาท` : '',
+    `ยอดรับชำระสุทธิ: ${money(paymentSummary.receivable)} บาท`,
     document.payment_method ? `วิธีชำระเงิน: ${document.payment_method}` : '',
     `ระยะเวลาจัดส่ง: ${document.delivery_term || '-'}`,
     document.valid_until ? `ยืนราคาถึงวันที่ ${new Date(`${document.valid_until}T00:00:00`).toLocaleDateString('th-TH')}` : '',
@@ -84,6 +89,8 @@ export function buildPreBillCustomerText(document: Partial<PreBillDocument>, ite
 const PreBillPreview = forwardRef<HTMLDivElement, Props>(function PreBillPreview({ document, items }, ref) {
   const isPickup = (document.shipping_snapshot as Record<string, unknown> | null)?.is_self_pickup === true
   const shipping = shippingBreakdown(document)
+  const withholdingRequested = document.billing_details?.withholding_requested === true
+  const paymentSummary = calculateWithholding(Number(document.total_amount || 0), withholdingRequested)
   return (
     <div ref={ref} className="bg-white text-slate-900 w-[794px] min-h-[1123px] p-12 font-sans">
       <div className="flex items-start justify-between border-b-4 border-blue-700 pb-5">
@@ -171,7 +178,11 @@ const PreBillPreview = forwardRef<HTMLDivElement, Props>(function PreBillPreview
         {!isPickup && shipping.available && <div className="flex justify-between text-sky-700"><span>ค่าจัดส่งปกติ{shipping.baseWaived ? ' (ยกเว้น)' : ''}</span><b>{money(shipping.standard)} บาท</b></div>}
         {!isPickup && shipping.available && <div className="flex justify-between text-violet-700"><span>ค่าพื้นที่ห่างไกล/พิเศษ</span><b>{money(shipping.special)} บาท</b></div>}
         {!isPickup && <div className={`flex justify-between ${shipping.available ? 'border-t pt-2 font-semibold' : ''}`}><span>ค่าจัดส่ง{shipping.available ? 'รวม' : ''}</span><b>{money(document.shipping_cost)} บาท</b></div>}
-        <div className="flex justify-between border-t-2 border-blue-700 pt-3 text-xl text-blue-800"><span className="font-bold">ยอดสุทธิ</span><b>{money(document.total_amount)} บาท</b></div>
+        {withholdingRequested && <>
+          <div className="flex justify-between"><span>ยอดบิลรวม VAT</span><b>{money(paymentSummary.gross)} บาท</b></div>
+          <div className="flex justify-between text-amber-800"><span>หัก ณ ที่จ่าย 3%</span><b>{money(paymentSummary.withheld)} บาท</b></div>
+        </>}
+        <div className="flex justify-between border-t-2 border-blue-700 pt-3 text-xl text-blue-800"><span className="font-bold">ยอดรับชำระสุทธิ</span><b>{money(paymentSummary.receivable)} บาท</b></div>
       </div>
 
       {document.document_type === 'production_confirmation' && (

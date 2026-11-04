@@ -191,6 +191,12 @@ export interface OrderItem {
 }
 
 export interface BillingDetails {
+  tax_branch?: string | null
+  tax_address?: import('../lib/taxInvoice').TaxAddress | null
+  withholding_requested?: boolean
+  vat_rate?: number
+  withholding_document_no?: string | null
+  withholding_issued_at?: string | null
   request_tax_invoice: boolean
   request_cash_bill: boolean
   tax_customer_name: string | null
