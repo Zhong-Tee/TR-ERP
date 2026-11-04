@@ -17,7 +17,7 @@ CREATE TABLE channels(channel_code text PRIMARY KEY); INSERT INTO channels VALUE
 ALTER TABLE us_users ADD role text DEFAULT 'superadmin'; CREATE TABLE st_user_menus(role text,menu_key text,has_access boolean);
 CREATE TABLE pr_products(id uuid PRIMARY KEY,product_code text,product_name text,unit_name text);
 CREATE SCHEMA cron; CREATE FUNCTION cron.schedule(text,text,text) RETURNS bigint LANGUAGE sql AS $$ SELECT 1::bigint $$;`)
-const initial = await read('supabase/migrations/001_initial_schema.sql')
+const initial = await read('supabase/legacy-migrations/pre-baseline-20261104/001_initial_schema.sql')
 await db.exec(table(initial,'or_orders')+';'+table(initial,'or_order_items'))
 await db.exec(`ALTER TABLE or_orders ADD source_prebill_document_id uuid,ADD claim_shipping_confirmed_at timestamptz;
 ALTER TABLE or_order_items ADD is_detail_row boolean DEFAULT false,ADD parent_item_id uuid,ADD cancellation_stock_action text,ADD unit_price numeric,ADD no_name_line boolean DEFAULT false,ADD is_free boolean DEFAULT false,ADD attachment_name text;
@@ -35,35 +35,35 @@ CREATE FUNCTION inv_deduct_stock_on_wms_picked() RETURNS trigger LANGUAGE plpgsq
 CREATE TRIGGER trg_inv_deduct_wms_picked AFTER UPDATE OF status ON wms_orders FOR EACH ROW EXECUTE FUNCTION inv_deduct_stock_on_wms_picked();
 CREATE FUNCTION fn_guard_or_order_items_stock() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
 CREATE TRIGGER trg_guard_or_order_items_stock BEFORE INSERT OR UPDATE OF product_id,quantity ON or_order_items FOR EACH ROW EXECUTE FUNCTION fn_guard_or_order_items_stock();`)
-const fifoTables=await read('supabase/migrations/099_fifo_stock_lots.sql')
+const fifoTables=await read('supabase/legacy-migrations/pre-baseline-20261104/099_fifo_stock_lots.sql')
 await db.exec(table(fifoTables,'inv_stock_lots')+';'+table(fifoTables,'inv_lot_consumptions'))
 await db.exec(`ALTER TABLE inv_stock_lots ADD is_safety_stock boolean DEFAULT false;
 ALTER TABLE inv_stock_movements ADD unit_cost numeric,ADD total_cost numeric;
 ALTER TABLE pr_products ADD landed_cost numeric DEFAULT 10;
 DROP FUNCTION fn_consume_stock_fifo(uuid,numeric,uuid); DROP FUNCTION fn_reconcile_sellable_lots_to_on_hand(uuid);`)
-const fifoSql=await read('supabase/migrations/504_reconcile_fifo_lots_before_wms_deduction.sql')
+const fifoSql=await read('supabase/legacy-migrations/pre-baseline-20261104/504_reconcile_fifo_lots_before_wms_deduction.sql')
 for(const name of ['fn_consume_stock_fifo','fn_reconcile_sellable_lots_to_on_hand']) {
   const start=fifoSql.indexOf('CREATE OR REPLACE FUNCTION public.'+name+'(')
   await db.exec(fifoSql.slice(start,fifoSql.indexOf('$$;',start)+3))
 }
-const pre = await read('supabase/migrations/576_prebill_qt_pc_documents.sql')
+const pre = await read('supabase/legacy-migrations/pre-baseline-20261104/57600_prebill_qt_pc_documents.sql')
 await db.exec(table(pre,'public.or_prebill_documents')+';'+table(pre,'public.or_prebill_items'))
 // Use the actual latest prebill mutation guards as well as the RLS-backed RPCs.
-const preGuardSql=await read('supabase/migrations/597_prebill_sales_tr_team_cancel_audit.sql')
+const preGuardSql=await read('supabase/legacy-migrations/pre-baseline-20261104/597_prebill_sales_tr_team_cancel_audit.sql')
 for(const name of ['guard_prebill_document_update','guard_prebill_item_write']) {
   const start=preGuardSql.indexOf('CREATE OR REPLACE FUNCTION public.'+name+'(')
   await db.exec(preGuardSql.slice(start,preGuardSql.indexOf('$$;',start)+3))
 }
 await db.exec(`CREATE TRIGGER trg_guard_prebill_document_update BEFORE INSERT OR UPDATE ON or_prebill_documents FOR EACH ROW EXECUTE FUNCTION guard_prebill_document_update();
 CREATE TRIGGER trg_guard_prebill_item_write BEFORE INSERT OR UPDATE OR DELETE ON or_prebill_items FOR EACH ROW EXECUTE FUNCTION guard_prebill_item_write();`)
-let migration=await read('supabase/migrations/625_document_stock_reservations.sql')
+let migration=await read('supabase/legacy-migrations/pre-baseline-20261104/625_document_stock_reservations.sql')
 migration=migration.replace('CREATE EXTENSION IF NOT EXISTS pg_cron;','-- pg_cron stubbed in embedded test only')
 await db.exec(`INSERT INTO or_orders(id,channel_code,bill_no,customer_name,customer_address,admin_user) VALUES('88888888-8888-8888-8888-888888888888','TR','LEGACY-1','Old','','tester');`)
 await db.exec('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO authenticated,anon; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO authenticated,anon;')
 await db.exec(migration)
-await db.exec(await read('supabase/migrations/627_sales_draft_no_reservation.sql'))
+await db.exec(await read('supabase/legacy-migrations/pre-baseline-20261104/627_sales_draft_no_reservation.sql'))
 await db.exec(`ALTER TABLE or_orders ALTER COLUMN status SET DEFAULT 'ข้อมูลครบ'`)
-await db.exec(await read('supabase/migrations/632_stable_bill_item_order.sql'))
+await db.exec(await read('supabase/legacy-migrations/pre-baseline-20261104/632_stable_bill_item_order.sql'))
 const orderId='88888888-8888-8888-8888-888888888888'
 const a='11111111-1111-4111-8111-111111111111', b='22222222-2222-4222-8222-222222222222', c='33333333-3333-4333-8333-333333333333'
 const save = async items => db.query('SELECT rpc_save_order_items($1,$2::jsonb)',[orderId,JSON.stringify(items.map(x=>({product_name:'Test',...x})))])
@@ -80,7 +80,7 @@ await save([{id:a,quantity:1}])
 await save([{id:a,quantity:1},{id:b,quantity:1}])
 assert.deepEqual((await rows()).map(x=>x.item_uid),['LEGACY-1-1','LEGACY-1-4'])
 await db.exec('UPDATE or_order_items SET sort_order=NULL')
-await db.exec(await read('supabase/migrations/632_stable_bill_item_order.sql'))
+await db.exec(await read('supabase/legacy-migrations/pre-baseline-20261104/632_stable_bill_item_order.sql'))
 assert.deepEqual((await rows()).map(x=>x.item_uid),['LEGACY-1-1','LEGACY-1-4'])
 assert.deepEqual((await rows()).map(x=>x.sort_order),[1,2])
 await db.close()

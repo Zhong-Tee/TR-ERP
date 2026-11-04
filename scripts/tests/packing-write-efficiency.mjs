@@ -31,9 +31,9 @@ INSERT INTO or_orders VALUES('${first}','${a}','{"parcelScanned":true,"scanTime"
 ('${second}','${a}',NULL,'ใบสั่งงาน',now()),('${hidden}','${b}',NULL,'ใบสั่งงาน',now());
 INSERT INTO plan_jobs VALUES('job','{}','${a}'),('hidden','{}','${b}');`)
 // Apply the actual original routine first, then verify migration reapplication.
-const original = await read('supabase/migrations/086_rpc_merge_plan_tracks.sql')
+const original = await read('supabase/legacy-migrations/pre-baseline-20261104/086_rpc_merge_plan_tracks.sql')
 await db.exec(original.slice(original.indexOf('CREATE OR REPLACE FUNCTION merge_plan_tracks('), original.indexOf('-- Name-based variant')))
-const migration = await read('supabase/migrations/692_packing_write_efficiency.sql')
+const migration = await read('supabase/legacy-migrations/pre-baseline-20261104/692_packing_write_efficiency.sql')
 await db.exec(migration)
 await db.exec(migration)
 await db.exec(`SET request.jwt.claim.sub='${a}'; SET ROLE authenticated`)

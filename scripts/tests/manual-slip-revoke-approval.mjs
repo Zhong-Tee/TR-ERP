@@ -22,8 +22,8 @@ try {
     CREATE TABLE ac_order_receipt_certifications(order_id uuid,revoked_at timestamptz);
     CREATE TABLE ac_refunds(order_id uuid,status text,amount numeric);
   `)
-  await db.exec(await fs.readFile('supabase/migrations/687_manual_slip_revoke_approval.sql','utf8'))
-  const reuseSql = await fs.readFile('supabase/migrations/631_manual_payment_duplicate_and_edit_reuse.sql','utf8')
+  await db.exec(await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/687_manual_slip_revoke_approval.sql','utf8'))
+  const reuseSql = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/631_manual_payment_duplicate_and_edit_reuse.sql','utf8')
   await db.exec(reuseSql.slice(reuseSql.indexOf('CREATE OR REPLACE FUNCTION public.reuse_manual_payment_after_order_edit()'), reuseSql.indexOf('CREATE OR REPLACE FUNCTION public.or_guard_pickup_shipping()')))
   const q = async (sql,args=[]) => (await db.query(sql,args)).rows
   const actor = role => q("SELECT set_config('test.actor',$1,false)", [role === 'superadmin' ? 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' : 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'])

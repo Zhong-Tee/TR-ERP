@@ -1,0 +1,241 @@
+{
+  "project": "zkzjbhvsltbwbtteihiy",
+  "checkedAt": "2026-11-04T13:55:30.530Z",
+  "candidates": [
+    {
+      "file": "085_rpc_distinct_product_categories.sql",
+      "version": "085",
+      "name": "rpc_distinct_product_categories",
+      "sha256": "b38ada0a9cb39d0106299f8ca28a7c61adfb1bd1a6caeb4cee62dae86cc0f06c",
+      "checks": [
+        "public.get_distinct_product_categories()"
+      ]
+    },
+    {
+      "file": "109_optimize_batch_queries.sql",
+      "version": "109",
+      "name": "optimize_batch_queries",
+      "sha256": "1dd48ea412d78733be17a1953f291a5e55116096ed2d7d128f0f163234ab2823",
+      "checks": [
+        "public.fn_calc_pp_producible_qty_batch(_uuid)",
+        "public.fn_validate_production_items_batch(jsonb)"
+      ]
+    },
+    {
+      "file": "112_calc_avg_daily_sales.sql",
+      "version": "112",
+      "name": "calc_avg_daily_sales",
+      "sha256": "20ba7fcee98851cea573d1ac0dc01c8bd9a0b55f3a1390554cb86f74fa2ac75a",
+      "checks": [
+        "public.calc_avg_daily_sales(date)"
+      ]
+    },
+    {
+      "file": "131_purchase_badge_counts.sql",
+      "version": "131",
+      "name": "purchase_badge_counts",
+      "sha256": "583f71b6e58281862a49f9df38a6c76e86b5ec47e83d5b7fe3b7f30250432e92",
+      "checks": [
+        "public.get_purchase_badge_counts()"
+      ]
+    },
+    {
+      "file": "145_pending_po_qty_for_warehouse.sql",
+      "version": "145",
+      "name": "pending_po_qty_for_warehouse",
+      "sha256": "ef6b8a72b228a4454ffe226243a8ea3cd992b70faae78b7d7a28b11643d775a5",
+      "checks": [
+        "public.rpc_get_pending_po_by_product()"
+      ]
+    },
+    {
+      "file": "154_roll_auto_fg_use_rm_mapping.sql",
+      "version": "154",
+      "name": "roll_auto_fg_use_rm_mapping",
+      "sha256": "700228fe477f5e93f0ad43943cf44092351655970aeb7bf79d0499f5bafebe3c",
+      "checks": [
+        "public.fn_auto_convert_rm_to_fg_on_movement()"
+      ]
+    },
+    {
+      "file": "231_req_claim_bill_suffix.sql",
+      "version": "231",
+      "name": "req_claim_bill_suffix",
+      "sha256": "fb3825ecec7990ee2f10b237fa02970999709fe785319f72b4fc0bc408f6c4b2",
+      "checks": [
+        "public.rpc_approve_claim_request(uuid)"
+      ]
+    },
+    {
+      "file": "256_rpc_data_delete_all_products.sql",
+      "version": "256",
+      "name": "rpc_data_delete_all_products",
+      "sha256": "729b584bff98cd8718593ec9fdeeb37ffce810b54f30f39656fe2007783811eb",
+      "checks": [
+        "public.erp_data_product_dependent_master_tables()",
+        "public.rpc_data_delete_all_products(text)"
+      ]
+    },
+    {
+      "file": "257_rpc_data_delete_all_sellers.sql",
+      "version": "257",
+      "name": "rpc_data_delete_all_sellers",
+      "sha256": "e612188af8b7b590cc3466f60140e2a44c9d818c2311880f110dd414869639b8",
+      "checks": [
+        "public.rpc_data_delete_all_sellers(text)"
+      ]
+    },
+    {
+      "file": "287_work_order_sequence_literal_prefix.sql",
+      "version": "287",
+      "name": "work_order_sequence_literal_prefix",
+      "sha256": "2bdc7f384b6a77cf90917c2260b4d76fe8e4206ea17cbf5931fb92b8eb1fd51b",
+      "checks": [
+        "public.rpc_next_work_order_name(text,text)"
+      ]
+    },
+    {
+      "file": "311_hr_account_full_admin.sql",
+      "version": "311",
+      "name": "hr_account_full_admin",
+      "sha256": "29505b841ff94ed2efe4efb01aef2283a4223f3d4dcd19d14569ed7644199fa2",
+      "checks": [
+        "public.hr_is_admin()"
+      ]
+    },
+    {
+      "file": "366_plan_production_employee_directory.sql",
+      "version": "366",
+      "name": "plan_production_employee_directory",
+      "sha256": "ee0f0d86ef7a4193a5935cce36ad1df87e219880a8939b5283eec2630d66259f",
+      "checks": [
+        "public.plan_list_employees()"
+      ]
+    },
+    {
+      "file": "372_plan_update_production_line.sql",
+      "version": "372",
+      "name": "plan_update_production_line",
+      "sha256": "c3314e9149b1293d89694f2ade76ba383b07e43d7091ee9a1d0f7329cbb675de",
+      "checks": [
+        "public.plan_update_job_line_assignment(text,text,int4)"
+      ]
+    },
+    {
+      "file": "388_pr_pending_po_duplicate_warning.sql",
+      "version": "388",
+      "name": "pr_pending_po_duplicate_warning",
+      "sha256": "464f80f7525029175744a38aeca42dcc72bd0a8e607f0bd9015eff6c06fbd638",
+      "checks": [
+        "public.rpc_get_pending_po_details_by_product()"
+      ]
+    },
+    {
+      "file": "406_allow_store_approve_return_requisition.sql",
+      "version": "406",
+      "name": "allow_store_approve_return_requisition",
+      "sha256": "b52c15750093a83c4109cd51308335e81997ddd7dcd62bd0372bebd43c343472",
+      "checks": [
+        "public.approve_return_requisition(uuid,uuid)"
+      ]
+    },
+    {
+      "file": "427_machinery_inspection_access_candidates.sql",
+      "version": "427",
+      "name": "machinery_inspection_access_candidates",
+      "sha256": "ac09eec8d2093e90b1694cc4964eed143dc03404d1bfd5feda863bc329df96e7",
+      "checks": [
+        "public.get_machinery_inspection_access_candidates()"
+      ]
+    },
+    {
+      "file": "458_fix_task_assigner_save.sql",
+      "version": "458",
+      "name": "fix_task_assigner_save",
+      "sha256": "b657f06c9656013ab8bf623045bb9945d540869e4cd4821907cb70e93203ed8c",
+      "checks": [
+        "public.hr_set_task_assigners(_uuid)"
+      ]
+    },
+    {
+      "file": "461_marketplace_assign_permission_shows_new_tab.sql",
+      "version": "461",
+      "name": "marketplace_assign_permission_shows_new_tab",
+      "sha256": "af9764e4557694572aca9a0f7a063b0f6069d3b2f8910e2c6672b67230e64ec8",
+      "checks": [
+        "public.mp_can_manage_new_orders()"
+      ]
+    },
+    {
+      "file": "487_copy_machinery_checklist_settings.sql",
+      "version": "487",
+      "name": "copy_machinery_checklist_settings",
+      "sha256": "80f6ea883054986319dfab1b66aa7915ab3b830210b42acf00f8af64a323a970",
+      "checks": [
+        "public.rpc_copy_machinery_checklist_settings(uuid,uuid)"
+      ]
+    },
+    {
+      "file": "523_sub_warehouse_other_wms_details.sql",
+      "version": "523",
+      "name": "sub_warehouse_other_wms_details",
+      "sha256": "aa50b79df6cfaa763e1b92bd0a9b4327d4443cda3d7483c1c4cad775c6044f8e",
+      "checks": [
+        "public.rpc_get_sub_warehouse_other_wms_details(uuid,uuid,timestamptz,timestamptz)"
+      ]
+    },
+    {
+      "file": "54200_allow_store_manage_borrow_requisition.sql",
+      "version": "54200",
+      "name": "allow_store_manage_borrow_requisition",
+      "sha256": "c667fe8c1d180d718bf6ab0edc6a7472ec369ae42d99c93455cf3521db51ac8f",
+      "checks": [
+        "public.approve_borrow_requisition(uuid,uuid)",
+        "public.return_borrow_requisition(uuid,jsonb,uuid)",
+        "public.write_off_borrow_requisition(uuid,jsonb,uuid)",
+        "public.reject_borrow_requisition(uuid,uuid)"
+      ]
+    },
+    {
+      "file": "618_sales_mark_refund_slip_sent.sql",
+      "version": "618",
+      "name": "sales_mark_refund_slip_sent",
+      "sha256": "2d8afd28921e6299d954f65c6c012aba0584aa239fbc8d3c0530e9949aaa4e03",
+      "checks": [
+        "public.mark_refund_slip_sent(uuid)"
+      ]
+    },
+    {
+      "file": "666_superadmin_product_import.sql",
+      "version": "666",
+      "name": "superadmin_product_import",
+      "sha256": "80036866a622eb0fdaf9e0f6b9fef0b35509e174cead79b381bdfa66b041ef65",
+      "checks": [
+        "public.rpc_import_products(jsonb)"
+      ]
+    },
+    {
+      "file": "672_defer_work_order_auto_wms_until_linked.sql",
+      "version": "672",
+      "name": "defer_work_order_auto_wms_until_linked",
+      "sha256": "3b6a571484602debe5bdd6f3156b19a9e79c04471e916e99343eafe2795e48b4",
+      "checks": [
+        "public.trg_or_orders_try_auto_non_pick()",
+        "public.rpc_create_work_order_with_plan(text,_uuid,text,text,text,jsonb,int4)"
+      ]
+    },
+    {
+      "file": "675_sales_discount_optional_web_snapshot.sql",
+      "version": "675",
+      "name": "sales_discount_optional_web_snapshot",
+      "sha256": "584e99fbafd2d72a0f73c10c8aa734e550593e3bba11e5500d3dad2b5f4a6f75",
+      "checks": [
+        "public.or_guard_sales_discount()",
+        "public.or_validate_sales_discount()"
+      ]
+    }
+  ],
+  "migrationSQLExecuted": false,
+  "repairedAt": "2026-11-04T13:55:31.703Z",
+  "historyOnly": true
+}

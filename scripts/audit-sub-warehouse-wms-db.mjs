@@ -1,9 +1,11 @@
+import {assertLegacyMigrationReplayAllowed} from './lib/legacy-migration-guard.mjs'
 // Read-only inspection by default. Rehearse rolls back; apply installs migration 673 only.
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs/promises'
 import assert from 'node:assert/strict'
 import pg from '../.reservation-test-runtime/node_modules/pg/lib/index.js'
 const mode=process.argv[2] || 'inspect'
+assertLegacyMigrationReplayAllowed(mode)
 assert.ok(['inspect','verify','rehearse','apply'].includes(mode))
 const dump=execFileSync('supabase',['db','dump','--linked','--dry-run'],{encoding:'utf8',stdio:['ignore','pipe','pipe']})
 const vars={}
@@ -60,7 +62,7 @@ try {
     WHERE EXISTS(SELECT 1 FROM wh_sub_warehouse_products p WHERE p.product_id=i.product_id)
       OR EXISTS(SELECT 1 FROM wh_sub_warehouse_stock_moves m WHERE m.product_id=i.product_id)
       OR jsonb_array_length(i.sub_warehouse_snapshot)>0`)
-  const path='supabase/migrations/673_fix_audit_sub_warehouse_wms_snapshot.sql'
+  const path='supabase/legacy-migrations/pre-baseline-20261104/673_fix_audit_sub_warehouse_wms_snapshot.sql'
   const source=await fs.readFile(path,'utf8')
   const sql=source.replace(/^BEGIN;\s*/,'').replace(/^COMMIT;$/m,'')
   await db.query(sql)

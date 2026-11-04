@@ -83,7 +83,7 @@ await db.exec(`
     ('${uuid(406)}','${uuid(1)}','${uuid(104)}',' TRIM ',NULL,'picked'),
     ('${uuid(407)}','${uuid(1)}','${uuid(103)}','VISIBLE LEGACY','warehouse_pick','correct');
 `)
-const migration = await fs.readFile('supabase/migrations/691_plan_read_summaries.sql','utf8')
+const migration = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/691_plan_read_summaries.sql','utf8')
 await db.exec(migration)
 await db.exec(migration)
 const requested = [101,102,103,104,105,101].map(uuid)

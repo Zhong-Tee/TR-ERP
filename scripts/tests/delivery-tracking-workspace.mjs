@@ -12,8 +12,8 @@ await db.exec(`CREATE ROLE authenticated; CREATE ROLE anon; CREATE SCHEMA auth;
   tracking_number TEXT,created_at TIMESTAMPTZ,status TEXT,shipped_time TIMESTAMPTZ,channel_code TEXT,
   recipient_name TEXT,customer_name TEXT,fulfillment_method TEXT);
 `)
-for (const name of ['571_transport_delivery_check','572_delivery_check_cross_import_duplicates','640_delivery_tracking_workspace']) {
- await db.exec(await fs.readFile(`supabase/migrations/${name}.sql`,'utf8'))
+for (const name of ['57101_transport_delivery_check','572_delivery_check_cross_import_duplicates','640_delivery_tracking_workspace']) {
+ await db.exec(await fs.readFile(`supabase/legacy-migrations/pre-baseline-20261104/${name}.sql`,'utf8'))
 }
 const scalar = async sql => (await db.query(sql)).rows[0].value
 const workspace = async (args = "NULL,NULL,'all'") => scalar(`SELECT tr_delivery_tracking_workspace(${args}) value`)
@@ -80,7 +80,7 @@ assert.equal(page2.count,114)
 assert.equal(page2.summary.bills,114)
 assert.equal(new Set([...result.rows,...page2.rows].map(r=>r.id)).size,100)
 // Exclude Ecommerce channels and both channel-based and bill-specific customer pickup.
-await db.exec(await fs.readFile('supabase/migrations/641_exclude_ecommerce_pickup_delivery_tracking.sql','utf8'))
+await db.exec(await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/641_exclude_ecommerce_pickup_delivery_tracking.sql','utf8'))
 await db.exec(`INSERT INTO or_orders(bill_no,created_at,status,channel_code,fulfillment_method)
  SELECT 'ECOM-'||channel,'2026-09-05','จัดส่งแล้ว',channel,'shipping'
  FROM unnest(ARRAY['SPTR','FSPTR','TTTR','LZTR','PGTR','WY']) channel;

@@ -42,7 +42,7 @@ try {
     INSERT INTO inv_stock_balances SELECT id,123 FROM pr_products;
   `)
   for (const [role,id] of Object.entries(ids)) await query('INSERT INTO us_users VALUES($1,$2,$3)',[id,role==='inactive'?'superadmin':role,role!=='inactive'])
-  const migration = async name => readFile(new URL(`../../supabase/migrations/${name}`,import.meta.url),'utf8')
+  const migration = async name => readFile(new URL(`../../supabase/legacy-migrations/pre-baseline-20261104/${name}`,import.meta.url),'utf8')
   // Exercise the actual cost masking/grants introduced by 616/617.
   const costHelper = (await migration('616_purchase_receiving_cases.sql')).split('CREATE OR REPLACE FUNCTION public.erp_can_manage_receiving_cases')[0]
   await run(`${costHelper}\nCOMMIT;`)

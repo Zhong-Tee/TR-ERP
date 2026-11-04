@@ -16,7 +16,7 @@ CREATE SCHEMA storage;
 CREATE TABLE storage.objects(id uuid DEFAULT gen_random_uuid(),bucket_id text,name text);
 CREATE FUNCTION storage.foldername(text) RETURNS text[] LANGUAGE sql IMMUTABLE AS $$ SELECT string_to_array($1,'/') $$;
 `)
-for(const file of ['690_tax_workflow.sql','691_tax_invoice_numbering.sql']) await db.exec(readFileSync(`supabase/migrations/${file}`,'utf8'))
+for(const file of ['695_tax_workflow.sql','696_tax_invoice_numbering.sql']) await db.exec(readFileSync(`supabase/legacy-migrations/pre-baseline-20261104/${file}`,'utf8'))
 const actor='10000000-0000-0000-0000-000000000001',sales='10000000-0000-0000-0000-000000000002',head='20000000-0000-0000-0000-000000000001'
 const ids=[1,2,3,4,5].map(n=>`30000000-0000-0000-0000-${String(n).padStart(12,'0')}`)
 await db.query(`INSERT INTO us_users VALUES ($1,'acc','acc@test','account'),($2,'seller','seller@test','sales-tr'); INSERT INTO bill_header_settings VALUES ($3,'TR')`,[actor,sales,head]).catch(async()=>{
@@ -71,7 +71,7 @@ CREATE FUNCTION bank_reconciliation_require_authorized_role() RETURNS void LANGU
 CREATE FUNCTION or_overpayment_paid(uuid) RETURNS numeric LANGUAGE sql STABLE AS $$SELECT 0::numeric$$;
 CREATE FUNCTION or_approved_overpayment_amount(uuid) RETURNS numeric LANGUAGE sql STABLE AS $$SELECT 0::numeric$$;
 `)
-await db.exec(readFileSync('supabase/migrations/692_tax_receivable_payment_paths.sql','utf8'))
+await db.exec(readFileSync('supabase/legacy-migrations/pre-baseline-20261104/697_tax_receivable_payment_paths.sql','utf8'))
 await uid(actor)
 const availability=(await db.query(`SELECT bank_reconciliation_bill_match_availability($1) info`,[ids[0]])).rows[0].info
 assert.equal(availability.bill_amount,1040);assertions++
@@ -85,7 +85,7 @@ await db.query(`UPDATE us_users SET role='superadmin' WHERE id=$1`,[actor])
 await denied(()=>db.query(`SELECT bank_certify_receipt($1,1070,'cash','2026-11-04','test',null)`,[ids[0]]),/เกินยอดค้าง/)
 await db.query(`SELECT bank_certify_receipt($1,1040,'cash','2026-11-04','test',null)`,[ids[0]])
 assert.equal((await db.query(`SELECT bank_auto_match_order_has_capacity($1,1) ok`,[ids[0]])).rows[0].ok,false);assertions++
-await db.exec(readFileSync('supabase/migrations/694_tax_queue.sql','utf8'))
+await db.exec(readFileSync('supabase/legacy-migrations/pre-baseline-20261104/699_tax_queue.sql','utf8'))
 const queue=(await db.query(`SELECT or_tax_queue('invoice','issued','',0) result`)).rows[0].result
 assert.equal(queue.total,2);assertions++
 

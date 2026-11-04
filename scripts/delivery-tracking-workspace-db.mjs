@@ -1,9 +1,11 @@
+import {assertLegacyMigrationReplayAllowed} from './lib/legacy-migration-guard.mjs'
 // Uses the existing Supabase CLI linked connection. Never prints connection credentials.
 // node scripts/delivery-tracking-workspace-db.mjs audit|rehearse|apply
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs/promises'
 import pg from '../.reservation-test-runtime/node_modules/pg/lib/index.js'
 const mode = process.argv[2] || 'audit'
+assertLegacyMigrationReplayAllowed(mode)
 if (!['audit', 'rehearse', 'apply'].includes(mode)) throw new Error('Expected audit, rehearse or apply')
 const dump = execFileSync('supabase', ['db', 'dump', '--linked', '--dry-run'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 const vars = {}
@@ -33,7 +35,7 @@ try {
           if (already[0].name !== name.slice(4)) throw new Error(`Migration ${version} is occupied by another change`)
           continue
         }
-        const source = await fs.readFile(`supabase/migrations/${name}.sql`, 'utf8')
+        const source = await fs.readFile(`supabase/legacy-migrations/pre-baseline-20261104/${name}.sql`, 'utf8')
         const sql = source.replace(/^BEGIN;$/m, '').replace(/^COMMIT;$/m, '')
         await client.query(sql)
         await client.query('INSERT INTO supabase_migrations.schema_migrations(version,name,statements) VALUES($1,$2,$3::TEXT[])', [version, name.slice(4), [sql]])

@@ -37,10 +37,10 @@ await db.exec(`
  INSERT INTO or_shipping_fee_settings VALUES(1,true,true);
  INSERT INTO or_shipping_fee_ranges VALUES(0,NULL,50,1);
 `)
-const old = await readFile('supabase/migrations/515_order_fulfillment_conversion.sql', 'utf8')
+const old = await readFile('supabase/legacy-migrations/pre-baseline-20261104/515_order_fulfillment_conversion.sql', 'utf8')
 await db.exec(old.slice(old.indexOf('CREATE OR REPLACE FUNCTION public.normalize_shop_pickup_tracking_number()'), old.indexOf('CREATE OR REPLACE FUNCTION public.pk_convert_self_pickup_to_shipping(')))
-await db.exec(await readFile('supabase/migrations/628_sales_shipping_conversion.sql', 'utf8'))
-await db.exec(await readFile('supabase/migrations/629_preserve_legacy_pickup_financial_snapshot.sql', 'utf8'))
+await db.exec(await readFile('supabase/legacy-migrations/pre-baseline-20261104/628_sales_shipping_conversion.sql', 'utf8'))
+await db.exec(await readFile('supabase/legacy-migrations/pre-baseline-20261104/629_preserve_legacy_pickup_financial_snapshot.sql', 'utf8'))
 const actors = {}
 for (const role of ['sales-tr','packing_staff','production','account','admin','superadmin','sales-pump']) {
  const id = (await sql('SELECT gen_random_uuid() id')).rows[0].id

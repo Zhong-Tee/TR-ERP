@@ -6,7 +6,7 @@ const db=new PGlite();const id=n=>`00000000-0000-0000-0000-${String(n).padStart(
 await db.exec(`CREATE TABLE hr_leave_types(id uuid primary key,name text,max_days_per_year numeric);
 CREATE TABLE hr_employee_opening_leave_balances(id uuid default gen_random_uuid(),employee_id uuid,leave_type_id uuid,year int,effective_date date,opening_remaining_days numeric);
 CREATE TABLE hr_leave_requests(id uuid primary key default gen_random_uuid(),employee_id uuid,leave_type_id uuid,start_date date,end_date date,total_days numeric,status text,leave_mode text,start_time time,end_time time,total_hours numeric,reason text,medical_cert_url text,created_at timestamptz default now());`)
-await db.exec(await fs.readFile('supabase/migrations/670_personal_leave_entitlement_consistency.sql','utf8'))
+await db.exec(await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/670_personal_leave_entitlement_consistency.sql','utf8'))
 const q=async(sql,args=[])=>(await db.query(sql,args)).rows
 async function seed(quota=2){await db.exec(`TRUNCATE hr_leave_requests,hr_leave_types,hr_employee_opening_leave_balances;
 INSERT INTO hr_leave_types VALUES('${id(1)}','ลาพักร้อน',6),('${id(2)}','ลาป่วย',30);

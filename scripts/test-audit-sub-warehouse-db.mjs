@@ -36,7 +36,7 @@ CREATE POLICY store_insert ON inv_audit_items FOR INSERT TO authenticated WITH C
 GRANT USAGE ON SCHEMA public,auth TO authenticated;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO authenticated;
 GRANT INSERT ON inv_audit_items TO authenticated;`)
-await db.exec(await fs.readFile('supabase/migrations/669_audit_sub_warehouse_snapshot.sql','utf8'))
+await db.exec(await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/669_audit_sub_warehouse_snapshot.sql','utf8'))
 const q=async(sql,args=[])=>(await db.query(sql,args)).rows
 let count=0
 async function test(name,fn){await fn();console.log(`PASS ${name}`);count++}
@@ -109,7 +109,7 @@ const beforeItems=await q("SELECT id,to_jsonb(i)-'sub_warehouse_snapshot' data F
 await db.exec(`CREATE FUNCTION guard_separate_audit_count() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN RAISE EXCEPTION 'closed counted sheet cannot be updated'; END; $$;
 CREATE TRIGGER guard_separate_audit_count BEFORE UPDATE ON inv_audit_items FOR EACH ROW EXECUTE FUNCTION guard_separate_audit_count();`)
-await db.exec(await fs.readFile('supabase/migrations/673_fix_audit_sub_warehouse_wms_snapshot.sql','utf8'))
+await db.exec(await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/673_fix_audit_sub_warehouse_wms_snapshot.sql','utf8'))
 const snapshot=async(product)=>(await q('SELECT fn_audit_sub_warehouse_snapshot($1,$2) s',[id(product),'2026-10-20']))[0].s
 const qty=(s,warehouse)=>s.find(w=>w.sub_warehouse_id===id(warehouse))?.qty
 await test('saved 147 becomes 46; exact cutoff, earliest summary and all completion fallbacks',async()=>{

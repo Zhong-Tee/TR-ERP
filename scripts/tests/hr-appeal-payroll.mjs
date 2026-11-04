@@ -38,11 +38,11 @@ await db.exec(`
   GRANT USAGE ON SCHEMA public,auth TO authenticated;
   GRANT ALL ON hr_payroll_runs,hr_payroll_items TO authenticated;
 `)
-const original = await fs.readFile('supabase/migrations/331_hr_score_appeal_by_event_key.sql', 'utf8')
+const original = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/331_hr_score_appeal_by_event_key.sql', 'utf8')
 const start = original.indexOf('CREATE OR REPLACE FUNCTION hr_score_accept_appeal(')
 const end = original.indexOf('GRANT EXECUTE ON FUNCTION hr_score_accept_appeal', start)
 await db.exec(original.slice(start, end))
-const migration = await fs.readFile('supabase/migrations/680_hr_appeal_wages_and_payroll_revisions.sql','utf8')
+const migration = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/680_hr_appeal_wages_and_payroll_revisions.sql','utf8')
 await db.exec(migration)
 await db.exec(migration) // Re-running does not erase history or duplicate policies.
 
@@ -129,7 +129,7 @@ try {
   await db.exec('ALTER TABLE hr_employees ADD COLUMN social_security_enabled boolean; ALTER TABLE hr_payroll_items ADD COLUMN social_security numeric DEFAULT 0')
   await db.query('UPDATE hr_employees SET social_security_enabled=(id=$1)',[ids.employee])
   const legacyBefore = (await db.query('SELECT id,base_salary,social_security FROM hr_payroll_items ORDER BY id')).rows
-  const snapshotMigration = await fs.readFile('supabase/migrations/681_payroll_social_security_snapshot.sql','utf8')
+  const snapshotMigration = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/681_payroll_social_security_snapshot.sql','utf8')
   await db.exec(snapshotMigration)
   await db.exec(snapshotMigration)
   assert.deepEqual((await db.query('SELECT id,base_salary,social_security FROM hr_payroll_items ORDER BY id')).rows,legacyBefore); checks++
@@ -173,7 +173,7 @@ try {
   }
   const moneyBefore = (await db.query('SELECT id,employee_id,base_salary,social_security,other_deduction,net_pay FROM hr_payroll_items ORDER BY id')).rows
   const octoberBefore = (await db.query('SELECT * FROM hr_payroll_runs WHERE id=$1',[insuredOctober])).rows[0]
-  const groupsMigration = await fs.readFile('supabase/migrations/682_independent_monthly_payroll_groups.sql','utf8')
+  const groupsMigration = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/682_independent_monthly_payroll_groups.sql','utf8')
   await db.exec(groupsMigration)
   await db.exec(groupsMigration)
   assert.deepEqual((await db.query('SELECT id,employee_id,base_salary,social_security,other_deduction,net_pay FROM hr_payroll_items ORDER BY id')).rows,moneyBefore); checks++
@@ -225,7 +225,7 @@ try {
   await db.query("INSERT INTO hr_payroll_items(payroll_run_id,employee_id,employee_code,pay_type,base_salary) VALUES($1,$2,'EMP00024','daily',5400)",[staleDaily,ids.employee])
   await db.query("INSERT INTO hr_payroll_items(payroll_run_id,employee_id,employee_code,pay_type,base_salary) VALUES($1,$2,'EMP00025','daily',600)",[staleDaily,ids.other])
   const protectedConfirmed = (await db.query("SELECT i.id,i.base_salary,i.social_security,i.net_pay FROM hr_payroll_items i JOIN hr_payroll_runs r ON r.id=i.payroll_run_id WHERE r.status='confirmed' ORDER BY i.id")).rows
-  const compensationMigration = await fs.readFile('supabase/migrations/683_payroll_effective_compensation_and_proration.sql','utf8')
+  const compensationMigration = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/683_payroll_effective_compensation_and_proration.sql','utf8')
   await db.exec(compensationMigration)
   await db.exec(compensationMigration)
   const effective = (await db.query('SELECT salary,pay_type,effective_date FROM hr_salary_history WHERE employee_id=$1 ORDER BY effective_date DESC,created_at DESC,id DESC LIMIT 1',[ids.employee])).rows[0]
@@ -273,8 +273,8 @@ try {
       ADD COLUMN total_deduction numeric GENERATED ALWAYS AS(personal_tax+social_security+ewf+savings+student_loan+company_loan+leave_deduction+other_deduction) STORED,
       ADD COLUMN net_pay numeric GENERATED ALWAYS AS(base_salary+position_allowance+overtime_pay+other_income-personal_tax-social_security-ewf-savings-student_loan-company_loan-leave_deduction-other_deduction) STORED;
     ALTER TABLE hr_payroll_items ADD CONSTRAINT hr_payroll_items_run_employee_unique UNIQUE(payroll_run_id,employee_id);`)
-  const scheduleMigration=await fs.readFile('supabase/migrations/684_payroll_schedules_and_atomic_periods.sql','utf8')
-  const paymentMigration=await fs.readFile('supabase/migrations/685_payroll_payments_and_adjustments.sql','utf8')
+  const scheduleMigration=await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/684_payroll_schedules_and_atomic_periods.sql','utf8')
+  const paymentMigration=await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/685_payroll_payments_and_adjustments.sql','utf8')
   await db.exec(scheduleMigration)
   await db.exec(paymentMigration)
   const {testPayrollPeriods}=await import('../lib/payroll-period-test-cases.mjs')

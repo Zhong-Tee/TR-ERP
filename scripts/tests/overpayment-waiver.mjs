@@ -19,8 +19,8 @@ await db.exec(`
  INSERT INTO bank_settings(id,bank_code,bank_name,account_number) VALUES('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','004','KBANK','12349552');
  INSERT INTO bank_settings_channels VALUES('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','SHOP');
 `)
-for (const migration of ['561_bank_statement_reconciliation','562_fix_bank_reconciliation_missing_payments','563_improve_bank_statement_auto_match','564_bank_statement_match_diagnostics','565_restrict_bank_reconciliation_roles','569_split_available_and_allocated_match_candidates','570_link_manual_bill_match_to_payment_source','571_bank_non_sales_classification_rules','580_sync_bank_rule_classification_name','581_prevent_fully_paid_bill_reuse','582_bank_reconciliation_global_summary','583_bank_reconciliation_import_issue_summary','634_reconciliation_workspace','635_literal_bank_rules_and_audit','636_certified_receipt_matching_guards','637_bank_workspace_credit_pagination', '638_sales_tracking_start_october', '639_exclude_ecommerce_sales_tracking','671_bank_import_matching_isolation_and_coverage']) {
-  try { await db.exec(await fs.readFile(`supabase/migrations/${migration}.sql`, 'utf8')) }
+for (const migration of ['561_bank_statement_reconciliation','562_fix_bank_reconciliation_missing_payments','563_improve_bank_statement_auto_match','564_bank_statement_match_diagnostics','565_restrict_bank_reconciliation_roles','569_split_available_and_allocated_match_candidates','570_link_manual_bill_match_to_payment_source','57100_bank_non_sales_classification_rules','580_sync_bank_rule_classification_name','581_prevent_fully_paid_bill_reuse','582_bank_reconciliation_global_summary','583_bank_reconciliation_import_issue_summary','634_reconciliation_workspace','635_literal_bank_rules_and_audit','636_certified_receipt_matching_guards','637_bank_workspace_credit_pagination', '638_sales_tracking_start_october', '639_exclude_ecommerce_sales_tracking','671_bank_import_matching_isolation_and_coverage']) {
+  try { await db.exec(await fs.readFile(`supabase/legacy-migrations/pre-baseline-20261104/${migration}.sql`, 'utf8')) }
   catch (error) { console.error('Migration:', migration); throw error }
 }
 const q=async(sql,args=[])=>(await db.query(sql,args)).rows
@@ -36,7 +36,7 @@ await db.exec(`
   refund_recipient_bank text,refund_recipient_account_number text,refund_recipient_reason text);
 `)
 for (const name of ['648_refund_production_gate_and_status_history','662_bank_overpayment_refund_matching','663_bank_auto_match_overpayment_refunds','688_overpayment_customer_waiver','689_optional_overpayment_waiver_evidence']) {
-  await db.exec(await fs.readFile(`supabase/migrations/${name}.sql`,'utf8'))
+  await db.exec(await fs.readFile(`supabase/legacy-migrations/pre-baseline-20261104/${name}.sql`,'utf8'))
 }
 const actor='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 const bank='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'

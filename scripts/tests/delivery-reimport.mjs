@@ -13,8 +13,8 @@ await db.exec(`CREATE ROLE authenticated; CREATE ROLE anon; CREATE SCHEMA auth;
   tracking_number TEXT,created_at TIMESTAMPTZ,status TEXT,shipped_time TIMESTAMPTZ,channel_code TEXT,
   recipient_name TEXT,customer_name TEXT,customer_address TEXT,billing_details JSONB,fulfillment_method TEXT);
 `)
-for (const name of ['571_transport_delivery_check','572_delivery_check_cross_import_duplicates','573_delivery_check_duplicate_confirmation','575_delete_delivery_check_import','576_update_delivery_check_for_new_carrier_file','621_delivery_check_free_text_consignment']) {
- await db.exec(await fs.readFile(`supabase/migrations/${name}.sql`,'utf8'))
+for (const name of ['57101_transport_delivery_check','572_delivery_check_cross_import_duplicates','573_delivery_check_duplicate_confirmation','575_delete_delivery_check_import','57601_update_delivery_check_for_new_carrier_file','621_delivery_check_free_text_consignment']) {
+ await db.exec(await fs.readFile(`supabase/legacy-migrations/pre-baseline-20261104/${name}.sql`,'utf8'))
 }
 const scalar = async sql => (await db.query(sql)).rows[0].value
 await db.exec(`INSERT INTO or_orders(bill_no,tracking_number,created_at,status,shipped_time,channel_code,fulfillment_method)

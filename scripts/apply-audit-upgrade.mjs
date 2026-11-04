@@ -1,10 +1,12 @@
+import {assertLegacyMigrationReplayAllowed} from './lib/legacy-migration-guard.mjs'
+assertLegacyMigrationReplayAllowed('apply')
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs/promises'
 import assert from 'node:assert/strict'
 import pg from '../.reservation-test-runtime/node_modules/pg/lib/index.js'
 
 // Apply this reviewed migration only; other work in the shared checkout is not deployed.
-const path = 'supabase/migrations/643_audit_movement_and_separate_safety.sql'
+const path = 'supabase/legacy-migrations/pre-baseline-20261104/643_audit_movement_and_separate_safety.sql'
 const sql = (await fs.readFile(path, 'utf8')).replace(/^BEGIN;\s*/, '').replace(/COMMIT;\s*$/, '')
 const dump = execFileSync('supabase', ['db', 'dump', '--linked', '--dry-run'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 const vars = {}

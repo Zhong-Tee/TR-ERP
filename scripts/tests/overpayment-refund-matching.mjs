@@ -20,7 +20,7 @@ try {
     CREATE TABLE ac_bank_reconciliation_allocations(order_id UUID,allocated_amount NUMERIC);
     CREATE TABLE ac_order_receipt_certifications(order_id UUID,amount NUMERIC,revoked_at TIMESTAMPTZ);
   `)
-  await db.exec(await fs.readFile('supabase/migrations/662_bank_overpayment_refund_matching.sql', 'utf8'))
+  await db.exec(await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/662_bank_overpayment_refund_matching.sql', 'utf8'))
   const order = '11111111-1111-1111-1111-111111111111'
   const other = '22222222-2222-2222-2222-222222222222'
   const ids = [1,2,3,4,5].map(n => `bbbbbbbb-bbbb-bbbb-bbbb-${String(n).padStart(12,'0')}`)
@@ -64,7 +64,7 @@ try {
   assert.equal(Number(untouched.amount),220, 'Matching must not change incoming bank allocations')
   console.log('PASS: role checks, same bill, approval, duplicate protection, amount limits, unlink, and original receipts preserved')
 
-  await db.exec(await fs.readFile('supabase/migrations/663_bank_auto_match_overpayment_refunds.sql', 'utf8'))
+  await db.exec(await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/663_bank_auto_match_overpayment_refunds.sql', 'utf8'))
   const auto = async (bill=order) => (await db.query(`SELECT bank_auto_match_overpayment_refunds(ARRAY['${bill}']::UUID[]) value`)).rows[0].value
   await db.exec(`UPDATE ac_refunds SET amount=30.01 WHERE id='${ids[0]}'`)
   assert.equal((await auto()).matched_count,0, 'Amounts must match exactly, including cents')

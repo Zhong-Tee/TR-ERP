@@ -16,7 +16,7 @@ await db.exec(`
  ('e62533f5-9fe8-480d-b205-eecf2659e1db','0599b759-237d-42af-a4db-4249e70fe4b1','2026-10-06','17:30',2079,'approved');
 `)
 for(const name of ['628_sales_shipping_conversion','629_preserve_legacy_pickup_financial_snapshot','631_manual_payment_duplicate_and_edit_reuse'])
- await db.exec(await readFile(`supabase/migrations/${name}.sql`,'utf8'))
+ await db.exec(await readFile(`supabase/legacy-migrations/pre-baseline-20261104/${name}.sql`,'utf8'))
 await db.exec(await readFile('scripts/repair_shopp26100005_duplicate_and_discount.sql','utf8'))
 const bill = async () => (await db.query("SELECT * FROM or_orders WHERE bill_no='SHOPP26100005'")).rows[0]
 assert.equal(Number((await bill()).total_amount),2079)

@@ -7,7 +7,7 @@ import { PGlite } from '../../.reservation-test-runtime/node_modules/@electric-s
 
 const db = new PGlite()
 const id = n => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`
-const migration = async name => fs.readFile(new URL(`../../supabase/migrations/${name}.sql`, import.meta.url), 'utf8')
+const migration = async name => fs.readFile(new URL(`../../supabase/legacy-migrations/pre-baseline-20261104/${name}.sql`, import.meta.url), 'utf8')
 const fn = (sql, name) => {
   const match = sql.match(new RegExp(`CREATE(?: OR REPLACE)? FUNCTION (?:public\\.)?${name}\\([\\s\\S]*?\\$\\$;`))
   assert.ok(match, `Missing function ${name}`)

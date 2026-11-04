@@ -1,5 +1,7 @@
 # TAX workflow implementation — 4 November 2026
 
+> Migration status: production now uses `20261104140132_production_baseline.sql`. Historical SQL is archived under `supabase/legacy-migrations/pre-baseline-20261104/`; earlier numbered-deployment instructions below are historical and must not be replayed.
+
 This document records the latest approved chat requirements. They supersede the historical handoff: the customer supplies the withholding certificate; ERP tracks receipt. ERP issues its own sequential tax-invoice number and has a separate manually entered FlowAccount reference. FlowAccount API integration is outside scope.
 
 ## Implemented paths
@@ -19,11 +21,11 @@ This document records the latest approved chat requirements. They supersede the 
 
 Apply in order to an isolated staging database first:
 
-1. `690_tax_workflow.sql`: receivable column, workflow guard/RPC, validation, audit, protected document tables and role-menu seeds.
-2. `691_tax_invoice_numbering.sql`: issuance, legacy-sequence initialization and FlowAccount reference RPCs.
-3. `692_tax_receivable_payment_paths.sql`: payment-path replacements based on the latest existing migrations; preserves gross sales reporting.
-4. `693_tax_evidence.sql`: private evidence bucket and storage policies.
-5. `694_tax_queue.sql`: paginated, role/menu-aware queues and cancelled-request closure.
+1. `695_tax_workflow.sql`: receivable column, workflow guard/RPC, validation, audit, protected document tables and role-menu seeds.
+2. `696_tax_invoice_numbering.sql`: issuance, legacy-sequence initialization and FlowAccount reference RPCs.
+3. `697_tax_receivable_payment_paths.sql`: payment-path replacements based on the latest existing migrations; preserves gross sales reporting.
+4. `698_tax_evidence.sql`: private evidence bucket and storage policies.
+5. `699_tax_queue.sql`: paginated, role/menu-aware queues and cancelled-request closure.
 
 The frontend requires these migrations before use. The `rd-vat-lookup` Edge Function must be available in the staging environment to test the whole application-to-RD path. No migration, deployment, production SQL write or production UI write was performed during development.
 
@@ -44,3 +46,33 @@ Before production rollout, test with a representative database copy and separate
 At the user's explicit request, only `rd-vat-lookup` was deployed to Supabase project `zkzjbhvsltbwbtteihiy`, matching localhost configuration, using `supabase functions deploy rd-vat-lookup --project-ref zkzjbhvsltbwbtteihiy --use-api`. No website deployment or migration was performed by the agent in this step.
 
 Verified end to end in the existing signed-in localhost form: TIN `0103563005345`, branch `00000` returned the partnership name and structured address, and displayed the explicit apply-data button. No bill was saved, no registry data was applied automatically, and the pre-test tax-ID input was restored. Proof: `.tmp/rd-vat-localhost-proof.jpg`.
+
+
+## Migration numbering reconciliation — 2026-11-04
+
+Read-only inspection of linked production project `zkzjbhvsltbwbtteihiy` found both Packing/Plan and tax functions already deployed with bodies matching the local SQL, although versions 690–694 were absent from migration history. The tax generated column, RLS-enabled tables, policies, evidence bucket and guard trigger were also present.
+
+Packing/Plan retain versions 690, 691 and 692. Tax files were renamed without SQL changes:
+
+| Previous filename | Current filename |
+| --- | --- |
+| 690_tax_workflow.sql | 695_tax_workflow.sql |
+| 691_tax_invoice_numbering.sql | 696_tax_invoice_numbering.sql |
+| 692_tax_receivable_payment_paths.sql | 697_tax_receivable_payment_paths.sql |
+| 693_tax_evidence.sql | 698_tax_evidence.sql |
+| 694_tax_queue.sql | 699_tax_queue.sql |
+
+Registered these eight verified deployments in `supabase_migrations.schema_migrations` in one transaction; no migration SQL was executed and no business rows were modified. Existing history rows were preserved. Local backups/reports: `.tmp/migration-history-before-numbering-repair.json`, `.tmp/migration-collision-audit.json`, `.tmp/migration-numbering-repair-result.json`. The verification script is `scripts/audit-migration-collisions.mjs`; its default mode is read-only.
+
+Supabase CLI v2.54.11 confirms all eight local/remote versions match. The isolated tax workflow tests pass all 33 assertions. CLI v3 rejects this repository's legacy `[inbucket]` configuration; the compatible pinned CLI was used without modifying configuration.
+
+This reconciliation covers only these eight migrations. Older duplicate local versions and missing remote history entries remain outside this repair. Do not run a blanket `db push --include-all` or rerun these deployed SQL files; audit the older baseline separately before using automatic migration deployment. No application deployment or Git push was performed.
+
+
+## Current status: production baseline adopted (supersedes the numbering-only repair)
+
+On 2026-11-04 the user confirmed all historical migrations had previously been run and explicitly selected the current production database as the new baseline. Historical schema differences were not replayed or filled in. All 722 legacy SQL files and the 52-row pre-baseline migration history are preserved under `supabase/legacy-migrations/pre-baseline-20261104/`.
+
+The active migration is now `supabase/migrations/20261104140132_production_baseline.sql`, exported from the live schema using PostgreSQL 17 pg_dump. It includes the public schema, extension requirements, application storage/auth policies, bucket configuration and public realtime membership. It excludes business rows, object contents, sequence current values, auth users, scheduled job contents and environment secrets. It is a Supabase/PostgreSQL 17 schema baseline, not a full data backup or a standalone non-Supabase installer.
+
+Only migration-history metadata was changed remotely. The baseline SQL was stored as history, never executed against production. The previous per-file history reconciliation is preserved as an intermediate audit record and is superseded by this adoption. Future changes must use new timestamped migration files. Historical apply/rehearsal/history-repair commands are guarded against replay; isolated tests read SQL from the archive. See `docs/production-baseline-2026-11-04.json` for hashes and the complete archive manifest.

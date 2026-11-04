@@ -19,8 +19,8 @@ await db.exec(`
  INSERT INTO bank_settings(id,bank_code,bank_name,account_number) VALUES('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','004','KBANK','12349552');
  INSERT INTO bank_settings_channels VALUES('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','SHOP');
 `)
-for (const migration of ['561_bank_statement_reconciliation','562_fix_bank_reconciliation_missing_payments','563_improve_bank_statement_auto_match','564_bank_statement_match_diagnostics','565_restrict_bank_reconciliation_roles','569_split_available_and_allocated_match_candidates','570_link_manual_bill_match_to_payment_source','571_bank_non_sales_classification_rules','580_sync_bank_rule_classification_name','581_prevent_fully_paid_bill_reuse','582_bank_reconciliation_global_summary','583_bank_reconciliation_import_issue_summary','634_reconciliation_workspace','635_literal_bank_rules_and_audit','636_certified_receipt_matching_guards','637_bank_workspace_credit_pagination', '638_sales_tracking_start_october', '639_exclude_ecommerce_sales_tracking','671_bank_import_matching_isolation_and_coverage']) {
-  try { await db.exec(await fs.readFile(`supabase/migrations/${migration}.sql`, 'utf8')) }
+for (const migration of ['561_bank_statement_reconciliation','562_fix_bank_reconciliation_missing_payments','563_improve_bank_statement_auto_match','564_bank_statement_match_diagnostics','565_restrict_bank_reconciliation_roles','569_split_available_and_allocated_match_candidates','570_link_manual_bill_match_to_payment_source','57100_bank_non_sales_classification_rules','580_sync_bank_rule_classification_name','581_prevent_fully_paid_bill_reuse','582_bank_reconciliation_global_summary','583_bank_reconciliation_import_issue_summary','634_reconciliation_workspace','635_literal_bank_rules_and_audit','636_certified_receipt_matching_guards','637_bank_workspace_credit_pagination', '638_sales_tracking_start_october', '639_exclude_ecommerce_sales_tracking','671_bank_import_matching_isolation_and_coverage']) {
+  try { await db.exec(await fs.readFile(`supabase/legacy-migrations/pre-baseline-20261104/${migration}.sql`, 'utf8')) }
   catch (error) { console.error('Migration:', migration); throw error }
 }
 
@@ -50,12 +50,12 @@ await db.exec(`
  CREATE FUNCTION check_user_role(p_id uuid,p_roles text[]) RETURNS boolean LANGUAGE sql STABLE AS $$ SELECT EXISTS(SELECT 1 FROM us_users WHERE id=p_id AND role=ANY(p_roles)) $$;
 `)
 function sqlFunction(sql,name){const a=sql.indexOf('CREATE OR REPLACE FUNCTION public.'+name+'(');assert.ok(a>=0,name);return sql.slice(a,sql.indexOf('$$;',a)+3)}
-const prebill576=await fs.readFile('supabase/migrations/576_prebill_qt_pc_documents.sql','utf8')
-const prebill597=await fs.readFile('supabase/migrations/597_prebill_sales_tr_team_cancel_audit.sql','utf8')
+const prebill576=await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/57600_prebill_qt_pc_documents.sql','utf8')
+const prebill597=await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/597_prebill_sales_tr_team_cancel_audit.sql','utf8')
 for(const [file,name] of [[prebill597,'can_manage_prebill_document'],[prebill597,'rpc_request_prebill_discount'],[prebill576,'rpc_review_prebill_discount'],[prebill597,'guard_prebill_document_update'],[prebill597,'guard_prebill_item_write']]) await db.exec(sqlFunction(file,name))
 await db.exec(`CREATE TRIGGER trg_guard_prebill_document_update BEFORE INSERT OR UPDATE ON or_prebill_documents FOR EACH ROW EXECUTE FUNCTION guard_prebill_document_update();
 CREATE TRIGGER trg_guard_prebill_item_write BEFORE INSERT OR UPDATE OR DELETE ON or_prebill_items FOR EACH ROW EXECUTE FUNCTION guard_prebill_item_write();`)
-await db.exec(await fs.readFile('supabase/migrations/648_refund_production_gate_and_status_history.sql','utf8'))
+await db.exec(await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/648_refund_production_gate_and_status_history.sql','utf8'))
 await db.exec(`
  ALTER TABLE or_orders ADD COLUMN promotion text,ADD COLUMN customer_name text,ADD COLUMN customer_address text,ADD COLUMN recipient_name text,
  ADD COLUMN entry_date date,ADD COLUMN billing_details jsonb,ADD COLUMN prebill_price_locked boolean DEFAULT false,ADD COLUMN source_prebill_document_type text,ADD COLUMN source_prebill_owner_name text;
@@ -70,7 +70,7 @@ await db.exec(`
 `)
 await db.exec(sqlFunction(prebill597,'rpc_convert_prebill_to_order'))
 
-await db.exec(await fs.readFile('supabase/migrations/674_sales_discount_approval.sql','utf8'))
+await db.exec(await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/674_sales_discount_approval.sql','utf8'))
 const q=async(sql,args=[])=>(await db.query(sql,args)).rows
 const root='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',seller='11111111-1111-1111-1111-111111111111',other='22222222-2222-2222-2222-222222222222',admin='33333333-3333-3333-3333-333333333333',product='44444444-4444-4444-4444-444444444444'
 const actor=async id=>{await q("SELECT set_config('request.jwt.claim.sub',$1,false)",[id])}
@@ -88,7 +88,7 @@ await db.exec('ALTER TABLE or_orders DROP COLUMN web_import_snapshot')
 await test('674 reproduces opening failure when optional web snapshot column is missing',async()=>{
  await assert.rejects(()=>bill(0),/record "new" has no field "web_import_snapshot"/)
 })
-const optionalWebFix=await fs.readFile('supabase/migrations/675_sales_discount_optional_web_snapshot.sql','utf8')
+const optionalWebFix=await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/675_sales_discount_optional_web_snapshot.sql','utf8')
 await db.exec(optionalWebFix)
 await db.exec(optionalWebFix) // Safe to reapply on an already patched database.
 await test('direct sales open and complete without optional web import column',async()=>{

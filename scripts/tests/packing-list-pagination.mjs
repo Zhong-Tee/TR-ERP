@@ -46,7 +46,7 @@ await db.exec(`
   GRANT USAGE ON SCHEMA public, auth TO authenticated;
   GRANT SELECT ON public.or_orders, public.pk_packing_upload_queue_reports, public.pk_packing_devices TO authenticated;
 `)
-const migration = await fs.readFile('supabase/migrations/690_packing_history_and_report_pagination.sql', 'utf8')
+const migration = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/690_packing_history_and_report_pagination.sql', 'utf8')
 await db.exec(migration)
 await db.exec(migration) // repeatable deployment, no grant changes
 

@@ -13,7 +13,7 @@ try {
     INSERT INTO pr_products VALUES('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','990000055','ใบปะหน้า','แพ็ค');
     INSERT INTO inv_stock_balances VALUES('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',19,0);
     INSERT INTO wms_requisitions(requisition_id,status) VALUES('REQ-1','pending'),('REQ-2','pending');`)
-  await db.exec(await fs.readFile(new URL('../../supabase/migrations/650_guard_wms_requisition_stock.sql', import.meta.url), 'utf8'))
+  await db.exec(await fs.readFile(new URL('../../supabase/legacy-migrations/pre-baseline-20261104/650_guard_wms_requisition_stock.sql', import.meta.url), 'utf8'))
   const add = (req, qty) => db.exec(`INSERT INTO wms_requisition_items(requisition_id,product_code,qty) VALUES('${req}','990000055',${qty})`)
   await assert.rejects(() => add('REQ-1',2000), /ไม่เกิน 19/)
   for (const qty of [0,-1,"'NaN'","'Infinity'"]) await assert.rejects(() => add('REQ-1',qty), /ต้องมากกว่า 0/)

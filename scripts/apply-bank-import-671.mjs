@@ -1,3 +1,4 @@
+import {assertLegacyMigrationReplayAllowed} from './lib/legacy-migration-guard.mjs'
 // Apply only migration 671. Never imports statements or invokes matching against live rows.
 // node scripts/apply-bank-import-671.mjs audit|rehearse|apply
 import fs from 'node:fs/promises'
@@ -6,6 +7,7 @@ import { execFileSync } from 'node:child_process'
 import pg from '../.reservation-test-runtime/node_modules/pg/lib/index.js'
 pg.types.setTypeParser(1082,s=>s)
 const mode=process.argv[2]||'audit';assert.ok(['audit','rehearse','apply'].includes(mode))
+assertLegacyMigrationReplayAllowed(mode)
 let dump;try{dump=execFileSync('supabase',['db','dump','--linked','--dry-run'],{encoding:'utf8',stdio:['ignore','pipe','pipe'],timeout:25000})}catch{throw new Error('Supabase linked connection unavailable. No changes made.')}
 const vars={};for(const m of dump.matchAll(/^export (PG\w+)=(.*)$/gm))vars[m[1]]=m[2].trim().replace(/^['"]|['"]$/g,'')
 assert.ok(vars.PGHOST&&vars.PGPASSWORD,'Linked credentials unavailable')
@@ -29,7 +31,7 @@ try{
  const name='bank_import_matching_isolation_and_coverage'
  if(installed.length)assert.equal(installed[0].name,name,'Migration 671 belongs to another change')
  console.log(JSON.stringify({mode,already_installed:installed.length>0,original_pair:{allocated_amount:oldPair[0].allocated_amount,file_name:oldPair[0].file_name}}))
- const migration=await fs.readFile('supabase/migrations/671_bank_import_matching_isolation_and_coverage.sql','utf8')
+ const migration=await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/671_bank_import_matching_isolation_and_coverage.sql','utf8')
  if(mode==='audit'){await db.query('ROLLBACK')}
  else{
   if(!installed.length){
@@ -40,7 +42,7 @@ try{
     bank_workspace_auto_match:['636_certified_receipt_matching_guards','bank_workspace_auto_match'],
     bank_statement_import_authorized_impl:['561_bank_statement_reconciliation','bank_statement_import'],
     bank_sales_workspace:['664_approved_claim_receivable','bank_sales_workspace']}
-   for(const row of live){const [file,fn]=originals[row.proname];assert.equal(normalize(row.prosrc),normalize(body(await fs.readFile(`supabase/migrations/${file}.sql`,'utf8'),fn)),`Live ${row.proname} differs; review before replacing`)}
+   for(const row of live){const [file,fn]=originals[row.proname];assert.equal(normalize(row.prosrc),normalize(body(await fs.readFile(`supabase/legacy-migrations/pre-baseline-20261104/${file}.sql`,'utf8'),fn)),`Live ${row.proname} differs; review before replacing`)}
    const sql=migration.replace(/^BEGIN;\s*$/gm,'').replace(/^COMMIT;\s*$/gm,'')
    await db.query(sql)
    await db.query('INSERT INTO supabase_migrations.schema_migrations(version,name,statements) VALUES($1,$2,$3::text[])',['671',name,[sql]])

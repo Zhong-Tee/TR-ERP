@@ -23,7 +23,7 @@ try {
     INSERT INTO mp_order_items VALUES('${id(30)}','${id(20)}','${id(1)}',0);
     INSERT INTO or_order_items(id,order_id,product_id,item_uid,font,line_1) VALUES('${id(40)}','${id(10)}','${id(1)}','B-1','F01','legacy');
   `)
-  await db.exec(await fs.readFile(new URL('../../supabase/migrations/655_marketplace_review_guards.sql', import.meta.url), 'utf8'))
+  await db.exec(await fs.readFile(new URL('../../supabase/legacy-migrations/pre-baseline-20261104/655_marketplace_review_guards.sql', import.meta.url), 'utf8'))
   const row = async table => (await db.query(`SELECT * FROM ${table} ORDER BY id`)).rows[0]
   assert.equal((await row('or_orders')).source_marketplace_order_id, id(20))
   assert.equal((await row('or_order_items')).source_mp_order_item_id, id(30))
@@ -82,7 +82,7 @@ try {
   await db.exec(`ALTER TABLE mp_order_items ADD raw_snapshot jsonb DEFAULT '{}'::jsonb,
       ADD product_name_raw text, ADD sku_ref text, ADD is_free boolean DEFAULT false;
     ALTER TABLE or_order_items ADD product_name text, ADD is_free boolean DEFAULT false;`)
-  await db.exec(await fs.readFile(new URL('../../supabase/migrations/656_marketplace_product_identity_lock.sql', import.meta.url), 'utf8'))
+  await db.exec(await fs.readFile(new URL('../../supabase/legacy-migrations/pre-baseline-20261104/656_marketplace_product_identity_lock.sql', import.meta.url), 'utf8'))
   for (const sql of [
     `UPDATE mp_order_items SET product_id='${id(2)}' WHERE id='${id(30)}'`,
     `UPDATE mp_order_items SET product_name_raw='manual replacement' WHERE id='${id(30)}'`,
@@ -118,8 +118,8 @@ try {
       ADD file_attachment text, ADD attachment_name text, ADD created_at timestamptz DEFAULT now(),
       ADD updated_at timestamptz DEFAULT now();
     CREATE TABLE inv_stock_balances(product_id uuid PRIMARY KEY);`)
-  await db.exec(await fs.readFile(new URL('../../supabase/migrations/632_stable_bill_item_order.sql', import.meta.url), 'utf8'))
-  await db.exec(await fs.readFile(new URL('../../supabase/migrations/657_atomic_marketplace_bill_save.sql', import.meta.url), 'utf8'))
+  await db.exec(await fs.readFile(new URL('../../supabase/legacy-migrations/pre-baseline-20261104/632_stable_bill_item_order.sql', import.meta.url), 'utf8'))
+  await db.exec(await fs.readFile(new URL('../../supabase/legacy-migrations/pre-baseline-20261104/657_atomic_marketplace_bill_save.sql', import.meta.url), 'utf8'))
   const payload = async () => (await db.query(`SELECT * FROM or_order_items WHERE order_id='${id(10)}' ORDER BY id`)).rows
   const save = (header, items) => db.query('SELECT rpc_save_marketplace_bill($1,$2::jsonb,$3::jsonb) AS status', [id(10),JSON.stringify(header),JSON.stringify(items)])
   let items = await payload()
@@ -151,7 +151,7 @@ try {
   await assert.rejects(db.query('SELECT rpc_save_marketplace_bill($1,$2::jsonb,$3::jsonb)',[id(11),JSON.stringify({status:'รอตรวจคำสั่งซื้อ'}),JSON.stringify(items)]),/ไม่ได้มาจาก Marketplace/)
   await db.exec(`ALTER TABLE or_orders ADD channel_order_no text, ADD tracking_number text, ADD express_receipt_number text;
     UPDATE or_orders SET channel_order_no='MP-ORDER',tracking_number='TRACK-1' WHERE id='${id(10)}'`)
-  await db.exec(await fs.readFile(new URL('../../supabase/migrations/658_marketplace_returned_reference_lock.sql', import.meta.url), 'utf8'))
+  await db.exec(await fs.readFile(new URL('../../supabase/legacy-migrations/pre-baseline-20261104/658_marketplace_returned_reference_lock.sql', import.meta.url), 'utf8'))
   for (const sql of [
     `UPDATE or_orders SET channel_order_no='changed' WHERE id='${id(10)}'`,
     `UPDATE or_orders SET tracking_number='changed' WHERE id='${id(10)}'`,
@@ -175,7 +175,7 @@ try {
   await save({status:'รอตรวจคำสั่งซื้อ',channel_order_no:'MP-ORDER',tracking_number:'TRACK-1'},items)
   assert.equal((await row('or_orders')).status,'รอตรวจคำสั่งซื้อ')
   assert.equal((await row('or_orders')).tracking_number,'TRACK-1')
-  await db.exec(await fs.readFile(new URL('../../supabase/migrations/659_marketplace_returned_tracking_and_quantity.sql', import.meta.url), 'utf8'))
+  await db.exec(await fs.readFile(new URL('../../supabase/legacy-migrations/pre-baseline-20261104/659_marketplace_returned_tracking_and_quantity.sql', import.meta.url), 'utf8'))
   await db.exec(`UPDATE or_orders SET status='ลงข้อมูลผิด' WHERE id='${id(10)}'`)
   items = await payload()
   await assert.rejects(db.exec(`UPDATE or_orders SET channel_order_no='still-locked' WHERE id='${id(10)}'`),/เลขคำสั่งซื้อ/)
@@ -200,7 +200,7 @@ try {
     UPDATE or_orders SET status='ลงข้อมูลผิด' WHERE id='${id(10)}'`)
   const correctionErrors = {tracking_number:true,item_ids:[id(44),id(40)],items:[{line_2:true},{font:true}]}
   await db.query("INSERT INTO or_order_reviews(order_id,status,error_fields) VALUES($1,'rejected',$2::jsonb)",[id(10),JSON.stringify(correctionErrors)])
-  await db.exec(await fs.readFile(new URL('../../supabase/migrations/660_marketplace_flagged_corrections_only.sql', import.meta.url), 'utf8'))
+  await db.exec(await fs.readFile(new URL('../../supabase/legacy-migrations/pre-baseline-20261104/660_marketplace_flagged_corrections_only.sql', import.meta.url), 'utf8'))
   // IDs deliberately differ from display order: permissions must stay on the correct item.
   await db.exec(`UPDATE or_order_items SET font='F03' WHERE id='${id(40)}';
     UPDATE or_order_items SET line_2='flagged gift name' WHERE id='${id(44)}';

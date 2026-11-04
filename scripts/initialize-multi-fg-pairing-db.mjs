@@ -1,8 +1,10 @@
+import {assertLegacyMigrationReplayAllowed} from './lib/legacy-migration-guard.mjs'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs/promises'
 import assert from 'node:assert/strict'
 import pg from '../.reservation-test-runtime/node_modules/pg/lib/index.js'
 const mode=process.argv[2]||'rehearse'
+assertLegacyMigrationReplayAllowed(mode)
 if(!['rehearse','apply'].includes(mode)) throw Error('Expected rehearse|apply')
 const dump=execFileSync('supabase',['db','dump','--linked','--dry-run'],{encoding:'utf8',stdio:['ignore','pipe','pipe'],timeout:30000})
 const vars={}
@@ -19,7 +21,7 @@ try {
  (SELECT md5(coalesce(string_agg(to_jsonb(l)::text,',' ORDER BY l.id),'')) FROM inv_stock_lots l WHERE NOT(product_id=ANY($1::uuid[]))) other_lots,
  (SELECT md5(coalesce(string_agg(product_id::text||':'||coalesce(reserved,0)||':'||coalesce(safety_stock,0),',' ORDER BY product_id),'')) FROM inv_stock_balances WHERE product_id=ANY($1::uuid[])) protected_fg`,[ids])).rows[0]
  const before=await unchanged()
- const sql=await fs.readFile('supabase/migrations/645_initialize_multi_fg_pairing_stock.sql','utf8')
+ const sql=await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/645_initialize_multi_fg_pairing_stock.sql','utf8')
  await client.query(sql.replace(/^BEGIN;$/m,'').replace(/^COMMIT;$/m,''))
  assert.deepEqual(await unchanged(),before,'Unrelated stock, RM, FG reservations and safety must stay unchanged')
  const rows=(await client.query(`SELECT p.product_code,b.on_hand,b.reserved,b.safety_stock,i.target_on_hand,

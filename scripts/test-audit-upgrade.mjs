@@ -7,7 +7,7 @@ const dump = execFileSync('supabase', ['db', 'dump', '--linked', '--dry-run'], {
 const vars = {}
 for (const m of dump.matchAll(/^export (PG\w+)=(.*)$/gm)) vars[m[1]] = m[2].trim().replace(/^['"]|['"]$/g, '')
 const client = new pg.Client({ host: vars.PGHOST, port: Number(vars.PGPORT), user: vars.PGUSER, password: vars.PGPASSWORD, database: vars.PGDATABASE, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 15000 })
-const migration = (await fs.readFile('supabase/migrations/643_audit_movement_and_separate_safety.sql', 'utf8')).replace(/^BEGIN;\s*/, '').replace(/COMMIT;\s*$/, '')
+const migration = (await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/643_audit_movement_and_separate_safety.sql', 'utf8')).replace(/^BEGIN;\s*/, '').replace(/COMMIT;\s*$/, '')
 const checks = []
 async function asUser(user) {
   await client.query('SET LOCAL ROLE postgres')

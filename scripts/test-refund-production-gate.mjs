@@ -18,7 +18,7 @@ try {
     INSERT INTO us_users VALUES('${actorId}','test_admin',NULL,'superadmin');
     INSERT INTO or_orders VALUES('${orderId}','TEST-REFUND-GATE','ใบสั่งงาน',200,NULL,NULL,NULL);
     SELECT set_config('request.jwt.claim.sub','${actorId}',false);`)
-  await db.exec(await fs.readFile(new URL('../supabase/migrations/648_refund_production_gate_and_status_history.sql',import.meta.url),'utf8'))
+  await db.exec(await fs.readFile(new URL('../supabase/legacy-migrations/pre-baseline-20261104/648_refund_production_gate_and_status_history.sql',import.meta.url),'utf8'))
   const reason = async () => (await db.query('SELECT or_refund_production_block($1,200) reason',[orderId])).rows[0].reason
   const attemptAttach = async () => db.query('UPDATE or_orders SET work_order_id=$2,work_order_name=\'TEST-WO\' WHERE id=$1',[orderId,workId])
   assert.equal(await reason(),null)

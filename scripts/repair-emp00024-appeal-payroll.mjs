@@ -1,3 +1,4 @@
+import {assertLegacyMigrationReplayAllowed} from './lib/legacy-migration-guard.mjs'
 // Reviewable maintenance only. No production execution is part of authoring
 // this script. Every mutation is hard-scoped to EMP00024 / October 2026.
 import fs from 'node:fs/promises'
@@ -8,6 +9,7 @@ import assert from 'node:assert/strict'
 import { connectHrRepairDatabase } from './lib/hr-repair-db.mjs'
 
 const mode = process.argv[2] || 'help'
+assertLegacyMigrationReplayAllowed(mode)
 if (mode === 'help' || mode === '--help') {
   console.log(`Privileged EMP00024 / 2026-10 repair; requires separate database authorization.
 node scripts/repair-emp00024-appeal-payroll.mjs audit
@@ -81,7 +83,7 @@ try {
 
   // Read the same underlying fact SELECT as the application, with the employee
   // parameter fixed. Do not impersonate an app user or modify any DB function.
-  const factSource = await fs.readFile('supabase/migrations/334_hr_wfh_time_range.sql','utf8')
+  const factSource = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/334_hr_wfh_time_range.sql','utf8')
   const functionSource = factSource.slice(factSource.indexOf('CREATE OR REPLACE FUNCTION hr_attendance_facts('))
   const expectedBody = functionSource.match(/AS \$\$([\s\S]*?)\$\$/)[1]
   const liveBody = await rows("SELECT prosrc FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='hr_attendance_facts'")
@@ -132,7 +134,7 @@ try {
       assert.equal(Number(compensation.salary),600, 'Unexpected historical rate; review before changing wages')
       return { date, payableDay, appeal: matches[0], amount: 600 * payableDay }
     })
-    const migration = await fs.readFile('supabase/migrations/680_hr_appeal_wages_and_payroll_revisions.sql','utf8')
+    const migration = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/680_hr_appeal_wages_and_payroll_revisions.sql','utf8')
     const installed = await rows("SELECT name FROM supabase_migrations.schema_migrations WHERE version='680'")
     if (installed.length) assert.equal(installed[0].name,'hr_appeal_wages_and_payroll_revisions')
     else {

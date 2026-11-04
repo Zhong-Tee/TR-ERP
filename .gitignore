@@ -45,3 +45,11 @@ dist-delivery-review/
 .tmp/hr-appeal-review/
 .tmp/hr-appeal-build/
 .tmp/hr-social-security-build-20261030/
+
+# Migration audit tooling, credentials-free working snapshots and dump binaries
+.tmp/migration-audit-runtime/
+.tmp/migration-*.json
+.tmp/legacy-migration-audit/
+.tmp/production-baseline-20261104/
+.tmp/pg17-dump-tools/
+.tmp/download-pg17-tools.py

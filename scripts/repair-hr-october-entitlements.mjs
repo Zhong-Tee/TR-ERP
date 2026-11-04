@@ -1,9 +1,11 @@
+import {assertLegacyMigrationReplayAllowed} from './lib/legacy-migration-guard.mjs'
 import {execFileSync} from 'node:child_process'
 import fs from 'node:fs/promises'
 import assert from 'node:assert/strict'
 import pg from '../.reservation-test-runtime/node_modules/pg/lib/index.js'
 pg.types.setTypeParser(1082,s=>s)
 const mode=process.argv[2]||'audit';if(!['audit','rehearse','apply'].includes(mode))throw new Error('Expected audit, rehearse or apply')
+assertLegacyMigrationReplayAllowed(mode)
 let dump;try{dump=execFileSync('supabase',['db','dump','--linked','--dry-run'],{encoding:'utf8',stdio:['ignore','pipe','pipe'],timeout:25000})}catch{throw new Error('Linked Supabase connection unavailable; no changes made')}
 const vars={};for(const m of dump.matchAll(/^export (PG\w+)=(.*)$/gm))vars[m[1]]=m[2].trim().replace(/^['"]|['"]$/g,'')
 if(!vars.PGHOST||!vars.PGPASSWORD)throw new Error('Connection details unavailable')
@@ -29,12 +31,12 @@ try{
   const installed=(await db.query("SELECT name FROM supabase_migrations.schema_migrations WHERE version='670'")).rows
   if(installed.length)assert.equal(installed[0].name,name,'Migration 670 is already occupied')
   if(!installed.length){
-   const original=await fs.readFile('supabase/migrations/353_hr_employee_opening_balances.sql','utf8')
+   const original=await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/353_hr_employee_opening_balances.sql','utf8')
    const expected=original.match(/CREATE OR REPLACE FUNCTION public\.get_employee_leave_summary[\s\S]*?AS \$\$([\s\S]*?)\$\$/)[1]
    const live=(await db.query("SELECT prosrc FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='get_employee_leave_summary'")).rows
    const normalize=s=>s.replace(/\s+/g,' ').trim()
    assert.equal(live.length,1);assert.equal(normalize(live[0].prosrc),normalize(expected),'Deployed leave summary differs from migration 353; review before replacing')
-   const sql=(await fs.readFile('supabase/migrations/670_personal_leave_entitlement_consistency.sql','utf8')).replace(/^BEGIN;\s*$/gm,'').replace(/^COMMIT;\s*$/gm,'');await db.query(sql);await db.query('INSERT INTO supabase_migrations.schema_migrations(version,name,statements) VALUES($1,$2,$3::text[])',['670',name,[sql]])}
+   const sql=(await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/670_personal_leave_entitlement_consistency.sql','utf8')).replace(/^BEGIN;\s*$/gm,'').replace(/^COMMIT;\s*$/gm,'');await db.query(sql);await db.query('INSERT INTO supabase_migrations.schema_migrations(version,name,statements) VALUES($1,$2,$3::text[])',['670',name,[sql]])}
   for(const row of rows){const days=row.leave_type_name==='ลากิจ'?5:30
    if(row.effective_date==='2026-10-01'&&Number(row.opening_remaining_days)===days)continue
    await db.query(`UPDATE hr_employee_opening_leave_balances SET effective_date='2026-10-01',opening_remaining_days=$2,note=concat_ws(E'\n',nullif(note,''),'ปรับตาม HR: เริ่มสิทธิ์รายเดือน 1 ต.ค. 2569 ลากิจ 5 วัน / ลาป่วย 30 วัน; ไม่ปรับงวดเงินเดือนที่ยืนยันแล้ว') WHERE id=$1`,[row.id,days])

@@ -27,17 +27,17 @@ const functionSQL = (sql,name) => {
  assert.ok(match, name)
  return match[0]
 }
-await db.exec(functionSQL(await fs.readFile('supabase/migrations/504_reconcile_fifo_lots_before_wms_deduction.sql','utf8'),'fn_consume_stock_fifo'))
-await db.exec(functionSQL(await fs.readFile('supabase/migrations/099_fifo_stock_lots.sql','utf8'),'fn_recalc_product_landed_cost'))
-const workflowSQL = await fs.readFile('supabase/migrations/402_internal_production_workflow.sql','utf8')
+await db.exec(functionSQL(await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/504_reconcile_fifo_lots_before_wms_deduction.sql','utf8'),'fn_consume_stock_fifo'))
+await db.exec(functionSQL(await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/099_fifo_stock_lots.sql','utf8'),'fn_recalc_product_landed_cost'))
+const workflowSQL = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/402_internal_production_workflow.sql','utf8')
 await db.exec(functionSQL(workflowSQL,'guard_pp_production_max_stock'))
 await db.exec(`CREATE TRIGGER trg_guard_pp_production_max_stock BEFORE UPDATE ON pp_production_orders FOR EACH ROW EXECUTE FUNCTION guard_pp_production_max_stock();`)
-await db.exec(await fs.readFile('supabase/migrations/668_internal_production_actual_completion.sql','utf8'))
-const accessSQL = await fs.readFile('supabase/migrations/620_packing_sub_warehouse_and_internal_production_access.sql','utf8')
+await db.exec(await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/668_internal_production_actual_completion.sql','utf8'))
+const accessSQL = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/620_packing_sub_warehouse_and_internal_production_access.sql','utf8')
 await db.exec(functionSQL(accessSQL,'guard_pp_production_status_roles'))
 await db.exec(functionSQL(accessSQL,'rpc_start_production_order'))
 await db.exec('CREATE TRIGGER trg_guard_pp_status_roles BEFORE UPDATE ON pp_production_orders FOR EACH ROW EXECUTE FUNCTION guard_pp_production_status_roles()')
-const receiptAccessSQL = await fs.readFile('supabase/migrations/676_internal_production_store_receipt.sql','utf8')
+const receiptAccessSQL = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/676_internal_production_store_receipt.sql','utf8')
 await db.exec(receiptAccessSQL)
 await db.exec(receiptAccessSQL) // Reapplication must be safe.
 

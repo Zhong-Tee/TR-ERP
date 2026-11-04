@@ -1,3 +1,4 @@
+import {assertLegacyMigrationReplayAllowed} from './lib/legacy-migration-guard.mjs'
 // Uses the project's linked Supabase connection without logging credentials.
 // node scripts/account-delivery-check-db.mjs audit|rehearse|apply
 import { execFileSync } from 'node:child_process'
@@ -6,6 +7,7 @@ import assert from 'node:assert/strict'
 import pg from '../.reservation-test-runtime/node_modules/pg/lib/index.js'
 
 const mode = process.argv[2] || 'audit'
+assertLegacyMigrationReplayAllowed(mode)
 if (!['audit', 'rehearse', 'apply'].includes(mode)) throw new Error('Expected audit, rehearse or apply')
 const dump = execFileSync('supabase', ['db', 'dump', '--linked', '--dry-run'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 const vars = {}
@@ -43,7 +45,7 @@ try {
       const existing = (await client.query("SELECT name FROM supabase_migrations.schema_migrations WHERE version='665'")).rows
       if (existing.length && existing[0].name !== name.slice(4)) throw new Error('Migration 665 is occupied by another change')
       if (!existing.length) {
-        const sql = (await fs.readFile(`supabase/migrations/${name}.sql`, 'utf8')).replace(/^BEGIN;$/m, '').replace(/^COMMIT;$/m, '')
+        const sql = (await fs.readFile(`supabase/legacy-migrations/pre-baseline-20261104/${name}.sql`, 'utf8')).replace(/^BEGIN;$/m, '').replace(/^COMMIT;$/m, '')
         await client.query(sql)
         console.log('Migration executed in transaction')
         // Fail closed if the deployed functions contain logic absent from this checkout.

@@ -9,7 +9,7 @@ const packagePath = process.argv[2] ?? '.tmp/late-accumulation-validation/node_m
 const { PGlite } = await import(pathToFileURL(path.resolve(packagePath)).href)
 const db = new PGlite()
 await db.exec(await fs.readFile('scripts/fixtures/hr_late_accumulation.sql','utf8'))
-await db.exec(await fs.readFile('supabase/migrations/653_hr_late_accumulation.sql','utf8'))
+await db.exec(await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/653_hr_late_accumulation.sql','utf8'))
 const employee = '00000000-0000-0000-0000-000000000011'
 const hr = '00000000-0000-0000-0000-000000000001'
 const ordinary = '00000000-0000-0000-0000-000000000002'

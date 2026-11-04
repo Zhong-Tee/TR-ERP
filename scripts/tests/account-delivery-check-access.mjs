@@ -24,16 +24,16 @@ try {
     GRANT USAGE ON SCHEMA public,auth TO authenticated;
     GRANT SELECT ON us_users,or_orders TO authenticated;
   `)
-  for (const name of ['571_transport_delivery_check','572_delivery_check_cross_import_duplicates',
+  for (const name of ['57101_transport_delivery_check','572_delivery_check_cross_import_duplicates',
     '573_delivery_check_duplicate_confirmation','575_delete_delivery_check_import',
-    '576_update_delivery_check_for_new_carrier_file','621_delivery_check_free_text_consignment',
+    '57601_update_delivery_check_for_new_carrier_file','621_delivery_check_free_text_consignment',
     '641_exclude_ecommerce_pickup_delivery_tracking','642_delivery_check_review_workflow']) {
-    await db.exec(await fs.readFile(`supabase/migrations/${name}.sql`, 'utf8'))
+    await db.exec(await fs.readFile(`supabase/legacy-migrations/pre-baseline-20261104/${name}.sql`, 'utf8'))
   }
   const scalar = async (sql, params = []) => (await db.query(sql, params)).rows[0].value
   const workspace = () => scalar('SELECT tr_delivery_tracking_workspace() value')
   await assert.rejects(workspace(), /ไม่มีสิทธิ์/)
-  const migration = await fs.readFile('supabase/migrations/665_account_delivery_check_access.sql', 'utf8')
+  const migration = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/665_account_delivery_check_access.sql', 'utf8')
   await db.exec(migration)
   await db.exec(migration) // Safe to reapply; the menu upsert updates existing permissions.
   assert.equal(await scalar("SELECT has_access value FROM st_user_menus WHERE role='account' AND menu_key='transport'"), true)

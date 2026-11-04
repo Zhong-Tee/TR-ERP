@@ -1,9 +1,11 @@
+import {assertLegacyMigrationReplayAllowed} from './lib/legacy-migration-guard.mjs'
 // Uses the linked connection without printing credentials. Rehearsal always rolls back.
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs/promises'
 import assert from 'node:assert/strict'
 import pg from '../.reservation-test-runtime/node_modules/pg/lib/index.js'
 const mode = process.argv[2] || 'audit'
+assertLegacyMigrationReplayAllowed(mode)
 if (!['audit', 'rehearse', 'apply'].includes(mode)) throw new Error('Expected audit|rehearse|apply')
 let dump
 try {
@@ -28,7 +30,7 @@ try {
   if (mode==='audit') {
     console.log(JSON.stringify({productColumns:(await client.query("SELECT column_name,is_generated FROM information_schema.columns WHERE table_schema='public' AND table_name='pr_products' ORDER BY ordinal_position")).rows}))
   } else {
-    const migration = await fs.readFile('supabase/migrations/644_roll_pairing_groups.sql','utf8')
+    const migration = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/644_roll_pairing_groups.sql','utf8')
     const sql = migration.replace(/^BEGIN;$/m,'').replace(/^COMMIT;$/m,'')
     const fingerprint = async () => (await client.query(`SELECT
       (SELECT md5(string_agg(row_to_json(b)::text,',' ORDER BY product_id)) FROM inv_stock_balances b) balances,

@@ -58,7 +58,7 @@ EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY',t);
 EXECUTE format('CREATE POLICY original_read ON %I FOR ALL TO authenticated USING (auth.uid() IS NOT NULL)',t);
 END LOOP; END $$;
 `)
-for (const name of ['616_purchase_receiving_cases.sql','617_purchase_cost_read_security.sql']) await run(await readFile(new URL(`../../supabase/migrations/${name}`, import.meta.url),'utf8'))
+for (const name of ['616_purchase_receiving_cases.sql','617_purchase_cost_read_security.sql']) await run(await readFile(new URL(`../../supabase/legacy-migrations/pre-baseline-20261104/${name}`, import.meta.url),'utf8'))
 await login(store)
 check((await one('SELECT unit_price FROM v_cost_safe_inv_po_items')).unit_price, null)
 check((await one('SELECT total_amount,intl_shipping_cost_thb FROM v_cost_safe_inv_po')).intl_shipping_cost_thb, '20')

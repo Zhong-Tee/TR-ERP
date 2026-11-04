@@ -1,0 +1,74 @@
+{
+  "project": "zkzjbhvsltbwbtteihiy",
+  "repairedAt": "2026-11-04T13:44:36.745Z",
+  "registered": [
+    {
+      "version": "690",
+      "name": "packing_history_and_report_pagination"
+    },
+    {
+      "version": "691",
+      "name": "plan_read_summaries"
+    },
+    {
+      "version": "692",
+      "name": "packing_write_efficiency"
+    },
+    {
+      "version": "695",
+      "name": "tax_workflow"
+    },
+    {
+      "version": "696",
+      "name": "tax_invoice_numbering"
+    },
+    {
+      "version": "697",
+      "name": "tax_receivable_payment_paths"
+    },
+    {
+      "version": "698",
+      "name": "tax_evidence"
+    },
+    {
+      "version": "699",
+      "name": "tax_queue"
+    }
+  ],
+  "businessDataChanged": false,
+  "migrationsExecuted": false,
+  "files": [
+    {
+      "file": "690_packing_history_and_report_pagination.sql",
+      "sha256": "ba11d65d4928dc58fd596337f5c3ab61f5001a17d8b6a3df66c8934b3e31437d"
+    },
+    {
+      "file": "691_plan_read_summaries.sql",
+      "sha256": "5b4f34046b6490001a1588388ad59ef61f56aaf8b1382ebbeccfc6d84fba0331"
+    },
+    {
+      "file": "692_packing_write_efficiency.sql",
+      "sha256": "e4603be751bccd3ed96bafadd4867191265cfb527dacebb4214bd7816d4e34a3"
+    },
+    {
+      "file": "695_tax_workflow.sql",
+      "sha256": "330b7fcc756f79019784d7b44fee14875e823adcff465dcee3bd6bb45b07c585"
+    },
+    {
+      "file": "696_tax_invoice_numbering.sql",
+      "sha256": "0b851243dacf0e42415896c9b50835f6dadd84c04be2821cdf9127b11b016324"
+    },
+    {
+      "file": "697_tax_receivable_payment_paths.sql",
+      "sha256": "ed912fe5e7465ec91c6da56c557958f7af466864890095ef10c8c119de969707"
+    },
+    {
+      "file": "698_tax_evidence.sql",
+      "sha256": "3cc1f00caf32401b5bacfeb5f56f476dbd6125b04d65ebc0cf4142cf5698561a"
+    },
+    {
+      "file": "699_tax_queue.sql",
+      "sha256": "b563cd59a1a67e6a6f5efbe99d4f11eecffe9fdc4c580eb39b14d36c641f446b"
+    }
+  ]
+}

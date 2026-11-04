@@ -25,7 +25,7 @@ await db.exec(`
   INSERT INTO mp_orders(config_id,marketplace_order_no,status,order_total,billed_at,billed_order_id,billed_bill_no)
     SELECT c.id, o.bill_no, 'billed', 100, now(), o.id, o.bill_no FROM or_orders o CROSS JOIN mp_channel_configs c;
 `)
-const migration = await fs.readFile('supabase/migrations/654_parcel_return_order_status.sql', 'utf8')
+const migration = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/654_parcel_return_order_status.sql', 'utf8')
 await db.exec(migration)
 const scalar = async (sql) => (await db.query(sql)).rows[0].value
 const marker = (bill) => scalar(`SELECT has_parcel_return value FROM or_orders WHERE bill_no='${bill}'`)

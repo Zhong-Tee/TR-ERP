@@ -4,9 +4,9 @@ import fs from 'node:fs/promises'
 import { PGlite } from '../../.reservation-test-runtime/node_modules/@electric-sql/pglite/dist/index.js'
 
 const db = new PGlite()
-const oldMigration = await fs.readFile('supabase/migrations/597_prebill_sales_tr_team_cancel_audit.sql', 'utf8')
+const oldMigration = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/597_prebill_sales_tr_team_cancel_audit.sql', 'utf8')
 const originalHelper = oldMigration.slice(oldMigration.indexOf('CREATE OR REPLACE FUNCTION public.can_manage_prebill_document'), oldMigration.indexOf('DROP POLICY IF EXISTS prebill_documents_select'))
-const patch = await fs.readFile('supabase/migrations/677_prebill_set_based_rls.sql', 'utf8')
+const patch = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/677_prebill_set_based_rls.sql', 'utf8')
 const uuid = number => `00000000-0000-0000-0000-${String(number).padStart(12, '0')}`
 const roles = ['superadmin', 'sales-tr', 'sales-tr', 'sales-pump', 'sales-pump', 'admin', 'account', 'production']
 await db.exec(`

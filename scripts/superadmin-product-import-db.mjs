@@ -1,9 +1,11 @@
+import {assertLegacyMigrationReplayAllowed} from './lib/legacy-migration-guard.mjs'
 // Apply only migration 666; do not push unrelated pending migrations.
 // node scripts/superadmin-product-import-db.mjs rehearse|apply
 import { execFileSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import pg from '../.reservation-test-runtime/node_modules/pg/lib/index.js'
 const mode = process.argv[2] || 'rehearse'
+assertLegacyMigrationReplayAllowed(mode)
 if (!['rehearse','apply'].includes(mode)) throw new Error('Expected rehearse or apply')
 let client
 try {
@@ -22,7 +24,7 @@ try {
     if (existing[0].name !== 'superadmin_product_import') throw new Error('Migration 666 is occupied by another change')
     console.log('Migration 666 is already installed')
   } else {
-    const sql = (await readFile(new URL('../supabase/migrations/666_superadmin_product_import.sql',import.meta.url),'utf8')).replace(/^BEGIN;$/m,'').replace(/^COMMIT;$/m,'')
+    const sql = (await readFile(new URL('../supabase/legacy-migrations/pre-baseline-20261104/666_superadmin_product_import.sql',import.meta.url),'utf8')).replace(/^BEGIN;$/m,'').replace(/^COMMIT;$/m,'')
     await client.query(sql)
     await client.query('INSERT INTO supabase_migrations.schema_migrations(version,name,statements) VALUES($1,$2,$3::text[])',['666','superadmin_product_import',[sql]])
   }

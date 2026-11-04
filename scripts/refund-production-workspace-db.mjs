@@ -1,9 +1,11 @@
+import {assertLegacyMigrationReplayAllowed} from './lib/legacy-migration-guard.mjs'
 // Uses the project's existing linked Supabase CLI credentials without printing them.
 // node scripts/refund-production-workspace-db.mjs audit|rehearse|apply
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs/promises'
 import pg from '../.tmp/refund-db-runtime/node_modules/pg/lib/index.js'
 const mode=process.argv[2] || 'audit'
+assertLegacyMigrationReplayAllowed(mode)
 if (!['audit','rehearse','apply'].includes(mode)) throw new Error('Expected audit, rehearse or apply')
 let dump
 try { dump=execFileSync('.tmp/refund-db-runtime/node_modules/.bin/supabase',['db','dump','--linked','--dry-run','--output-format','text','--agent','no'],{encoding:'utf8',stdio:['ignore','pipe','pipe'],timeout:30000}) }
@@ -35,7 +37,7 @@ try {
     const check=(await client.query("SELECT name FROM supabase_migrations.schema_migrations WHERE version='648'")).rows
     if(check.length && check[0].name!==name.slice(4)) throw new Error('Migration 648 belongs to another change')
     if(!check.length) {
-      const sql=body(await fs.readFile(`supabase/migrations/${name}.sql`,'utf8'))
+      const sql=body(await fs.readFile(`supabase/legacy-migrations/pre-baseline-20261104/${name}.sql`,'utf8'))
       await client.query(sql)
       await client.query('INSERT INTO supabase_migrations.schema_migrations(version,name,statements) VALUES($1,$2,$3::text[])',['648',name.slice(4),[sql]])
     }

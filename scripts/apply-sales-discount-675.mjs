@@ -1,3 +1,4 @@
+import {assertLegacyMigrationReplayAllowed} from './lib/legacy-migration-guard.mjs'
 // Uses the existing linked database connection; never logs credentials.
 import fs from 'node:fs/promises'
 import assert from 'node:assert/strict'
@@ -5,6 +6,7 @@ import { execFileSync } from 'node:child_process'
 import pg from '../.reservation-test-runtime/node_modules/pg/lib/index.js'
 
 const mode = process.argv[2] || 'audit'
+assertLegacyMigrationReplayAllowed(mode)
 assert.ok(['audit', 'apply', 'verify'].includes(mode))
 let dump
 try {
@@ -30,8 +32,8 @@ assert.ok(vars.PGHOST.includes(ref) || vars.PGUSER.includes(ref), 'Unexpected li
 const db = new pg.Client({ host: vars.PGHOST, port: Number(vars.PGPORT), user: vars.PGUSER,
   password: vars.PGPASSWORD, database: vars.PGDATABASE, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 15000 })
 const names = ['or_guard_sales_discount', 'or_validate_sales_discount']
-const source = await fs.readFile('supabase/migrations/674_sales_discount_approval.sql', 'utf8')
-const patch = await fs.readFile('supabase/migrations/675_sales_discount_optional_web_snapshot.sql', 'utf8')
+const source = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/674_sales_discount_approval.sql', 'utf8')
+const patch = await fs.readFile('supabase/legacy-migrations/pre-baseline-20261104/675_sales_discount_optional_web_snapshot.sql', 'utf8')
 const body = (sql, name) => {
   const start = sql.indexOf(`FUNCTION public.${name}()`)
   assert.ok(start >= 0)
