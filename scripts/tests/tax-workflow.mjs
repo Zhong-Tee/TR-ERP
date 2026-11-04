@@ -115,5 +115,20 @@ await db.query(`INSERT INTO us_users VALUES($1,'other','other@test','sales-pump'
 await uid(otherSales)
 assert.equal((await db.query(`SELECT or_tax_queue('sales','pending','',0) result`)).rows[0].result.total,0);assertions++
 await denied(()=>action(ids[3],'invoice','resubmit',identity),/ไม่มีสิทธิ์จัดการบิลนี้/)
+// Recover a manually issued legacy number without consuming a new number.
+await db.exec(readFileSync('supabase/migrations/20261104150000_recover_legacy_tax_invoice.sql','utf8'))
+const recover = (number, id=ids[4]) => db.query(`SELECT * FROM or_tax_recover_legacy_invoice($1,$2,'2026-11-04',$3,$4,'FA-OLD')`,[id,head,number,snapshot])
+await uid(sales)
+await denied(()=>recover('OLD-125'),/เฉพาะบัญชี/)
+await uid(actor)
+const fresh='30000000-0000-0000-0000-000000000099'
+await db.query(`INSERT INTO or_orders(id,bill_no,status,total_amount,billing_details) VALUES($1,'NEW','ตรวจสอบแล้ว',1070,$2)`,[fresh,identity])
+await denied(()=>recover('OLD-125',fresh),/เฉพาะรายการเก่า/)
+await denied(()=>recover(' trIv26110001 '),/ถูกใช้แล้ว/)
+await denied(()=>recover('  '),/กรุณากรอก/)
+assert.equal((await recover(' OLD-125 ')).rows[0].invoice_no,'OLD-125');assertions++
+assert.equal((await db.query('SELECT last_number FROM or_tax_invoice_counters WHERE header_id=$1 AND period=$2',[head,'2611'])).rows[0].last_number,43);assertions++
+assert.equal((await db.query('SELECT billing_details FROM or_orders WHERE id=$1',[ids[4]])).rows[0].billing_details.erp_tax_invoice_no,'OLD-125');assertions++
+await denied(()=>recover('OLD-126'),/มีเลขใบกำกับ/)
 console.log(`PASS: ${assertions} PostgreSQL workflow/payment assertions; no external database used`)
 await db.close()

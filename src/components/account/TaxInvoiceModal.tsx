@@ -89,6 +89,10 @@ export default function TaxInvoiceModal({
   const [documentError, setDocumentError] = useState('')
   const [issuing, setIssuing] = useState(false)
   const [flowReference, setFlowReference] = useState('')
+  const [legacyOpen, setLegacyOpen] = useState(false)
+  const [legacyNumber, setLegacyNumber] = useState('')
+  const [legacyError, setLegacyError] = useState('')
+  const isLegacy = !!(order?.billing_details as Record<string, unknown> | null)?.account_confirmed_tax
   const [seriesOpen,setSeriesOpen] = useState(false)
   const [seriesLast,setSeriesLast] = useState('')
   const [seriesReason,setSeriesReason] = useState('')
@@ -202,6 +206,7 @@ export default function TaxInvoiceModal({
     if (!open || !order) return
     let active = true
     issuedRef.current=false
+    setLegacyOpen(false); setLegacyNumber(''); setLegacyError('');
     setDocumentLoading(true); setDocumentError(''); setIssued(false); setSavedCompany(null); setSavedAmounts(null); setFlowReference('')
     supabase.from('or_tax_invoices').select('*').eq('order_id',order.id).maybeSingle().then(({data,error}) => {
       if(!active) return
@@ -334,6 +339,31 @@ export default function TaxInvoiceModal({
     } catch(e) {setDocumentError((e as {message?:string})?.message || 'ออกเอกสารไม่สำเร็จ')}
     finally{setIssuing(false)}
   }
+  async function recoverLegacyInvoice() {
+    if (!order || !canIssue || !isLegacy || issued || issuing) return
+    setLegacyError('')
+    if (!legacyNumber.trim() || !selectedHeaderId || !invoiceDate) {
+      setLegacyError('กรุณากรอกเลขใบกำกับเดิม บริษัท และวันที่ออกเอกสาร')
+      return
+    }
+    setIssuing(true)
+    try {
+      const snapshot = {customerName,customerAddress,customerTaxId,customerBranch,customerPhone,items:filledItems.filter(r=>r.description&&r.quantity>0),discount,shippingCost,subtotal,netAmount,vatAmount,grandTotal,refDocNo,vatRate}
+      const {data,error} = await supabase.rpc('or_tax_recover_legacy_invoice', {
+        p_order_id:order.id, p_header_id:selectedHeaderId, p_date:invoiceDate,
+        p_invoice_no:legacyNumber.trim(), p_snapshot:snapshot, p_flow_reference:flowReference,
+      })
+      if (error) throw error
+      setInvoiceNo(data.invoice_no); setInvoiceDate(data.invoice_date)
+      issuedRef.current=true; setIssued(true)
+      setSavedCompany(data.snapshot.companyData); setSavedAmounts(data.snapshot)
+      setDocumentError(''); setLegacyOpen(false)
+      onConfirm(order)
+    } catch (error) {
+      setLegacyError((error as {message?:string})?.message || 'บันทึกเลขใบกำกับเดิมไม่สำเร็จ')
+    } finally { setIssuing(false) }
+  }
+
   async function initializeSeries() {
     if(!order || !selectedHeaderId || !/^\d+$/.test(seriesLast) || !seriesReason.trim()) return
     setIssuing(true)
@@ -452,7 +482,7 @@ export default function TaxInvoiceModal({
     <Modal
       open={open}
       onClose={onClose}
-      contentClassName="max-w-[780px] w-full"
+      contentClassName="max-w-[1200px] w-full"
       closeOnBackdropClick
     >
       <div className="p-4 space-y-4 max-h-[90vh] overflow-y-auto">
@@ -520,7 +550,19 @@ export default function TaxInvoiceModal({
         <label className="block">วันที่ออกเอกสาร<input type="date" disabled={issued || issuing || documentLoading || !canIssue} value={invoiceDate} onChange={e=>setInvoiceDate(e.target.value)} className="ml-2 rounded border p-2" /></label>
         <label className="block">เลขอ้างอิงจาก FlowAccount<input value={flowReference} disabled={!canIssue || issuing} onChange={e=>setFlowReference(e.target.value)} className="ml-2 rounded border p-2" /></label>
         {issued && canIssue && <button type="button" disabled={issuing} onClick={()=>void saveFlowReference()} className="rounded border p-2">บันทึกเลขอ้างอิง</button>}
-        {!issued && <p className="text-sm text-amber-800">ตัวอย่างก่อนออกเอกสาร — ระบบจะรันเลขจริงเมื่อยืนยัน</p>}
+        {!issued && !isLegacy && <p className="text-sm text-amber-800">ตัวอย่างก่อนออกเอกสาร — ระบบจะรันเลขจริงเมื่อยืนยัน</p>}
+        {isLegacy && !issued && canIssue && !documentLoading && <button type="button" disabled={issuing} onClick={()=>{setLegacyError('');setLegacyOpen(true)}} className="mr-4 mb-2 rounded bg-blue-600 px-4 py-2 text-white">บันทึกเลขใบกำกับเดิม</button>}
+        <Modal open={legacyOpen} stackClassName="z-[60]" onClose={()=>{if(!issuing)setLegacyOpen(false)}} contentClassName="max-w-xl" ariaLabelledby="legacy-invoice-title" showCloseButton={!issuing}>
+          <div className="space-y-4 p-6">
+            <h3 id="legacy-invoice-title" className="font-bold">บันทึกเลขใบกำกับเดิม</h3>
+            <p>ออเดอร์ {order?.bill_no} · บริษัท {selectedHeader?.company_name} · วันที่ {invoiceDate}</p>
+            <p className="text-sm text-amber-800">ใช้เลขและวันที่ตามเอกสารเดิม ตรวจข้อมูลผู้ซื้อและยอดเงินให้ตรงก่อนบันทึก ระบบจะไม่ออกเลขใหม่และไม่เปลี่ยนเลขล่าสุดสำหรับเอกสารใหม่</p>
+            <label className="block">เลขใบกำกับเดิมเต็มเลข<input autoFocus value={legacyNumber} disabled={issuing} onChange={e=>setLegacyNumber(e.target.value)} className="mt-1 w-full rounded border p-2" /></label>
+            <p className="text-sm">เลขอ้างอิง FlowAccount: {flowReference || '—'} · แก้บริษัท วันที่ และเลขอ้างอิงได้ที่หน้าข้อมูลใบกำกับก่อนเปิดหน้าต่างนี้</p>
+            {legacyError && <p role="alert" className="text-red-700">{legacyError}</p>}
+            <button type="button" disabled={issuing || !legacyNumber.trim()} onClick={()=>void recoverLegacyInvoice()} className="rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50">{issuing ? 'กำลังตรวจสอบและบันทึก…' : 'ยืนยันบันทึกเลขเดิม'}</button>
+          </div>
+        </Modal>
         {!issued && canIssue && <button type="button" disabled={issuing || documentLoading} onClick={()=>{setSeriesLast('');setSeriesReason('');setSeriesOpen(true)}} className="text-sm text-blue-700 underline">ยืนยันเลขล่าสุดจากทะเบียนเดิม</button>}
         <Modal open={seriesOpen} stackClassName="z-[60]" onClose={()=>{if(!issuing)setSeriesOpen(false)}} contentClassName="max-w-lg"><div className="space-y-3 p-5"><h3 className="font-bold">ยืนยันเลขล่าสุดจากทะเบียนเดิม</h3><p>บริษัท {selectedHeader?.company_name} · เดือน {invoiceDate.slice(0,7)} — ตรวจเลขเอกสารที่เคยใช้จริงก่อนบันทึก ระบบจะออกเลขถัดไปและไม่เปลี่ยนเอกสารเก่า</p><label className="block">ลำดับล่าสุดที่ใช้แล้ว (0 หากยังไม่เคยใช้)<input type="number" min={0} max={9999} value={seriesLast} onChange={e=>setSeriesLast(e.target.value)} className="w-full rounded border p-2" /></label><label className="block">ที่มาหรือเหตุผลที่ตรวจสอบ<textarea value={seriesReason} onChange={e=>setSeriesReason(e.target.value)} className="w-full rounded border p-2" /></label><button type="button" disabled={issuing || !seriesReason.trim() || !/^\d+$/.test(seriesLast)} onClick={()=>void initializeSeries()} className="rounded bg-blue-600 px-4 py-2 text-white">ยืนยันเลขล่าสุด</button>{documentError&&<p className="text-red-700">{documentError}</p>}</div></Modal>
         {/* ─── Mode Toggle ─── */}
