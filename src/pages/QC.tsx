@@ -275,6 +275,8 @@ export default function QC() {
   const [clEditTopicName, setClEditTopicName] = useState('')
   const [clUploading, setClUploading] = useState(false)
   const [clImporting, setClImporting] = useState(false)
+  const [clTemplateLoading, setClTemplateLoading] = useState(false)
+  const [clTemplateError, setClTemplateError] = useState('')
   const [clImportResult, setClImportResult] = useState<BulkImportResult | null>(null)
   const clFileInputRef = useRef<HTMLInputElement>(null)
 
@@ -3465,7 +3467,14 @@ export default function QC() {
                       </button>
                       <div className="w-px h-8 bg-gray-200 mx-1"></div>
                       <button
-                        onClick={generateChecklistTemplate}
+                        disabled={clTemplateLoading}
+                        onClick={async () => {
+                          setClTemplateLoading(true)
+                          setClTemplateError('')
+                          try { await generateChecklistTemplate() }
+                          catch { setClTemplateError('ดาวน์โหลด Template ไม่สำเร็จ กรุณาลองใหม่') }
+                          finally { setClTemplateLoading(false) }
+                        }}
                         className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-bold flex items-center gap-2"
                       >
                         <i className="fas fa-download text-sm"></i> ดาวน์โหลด Template
@@ -3489,6 +3498,7 @@ export default function QC() {
                         }}
                       />
                     </div>
+                    {clTemplateError && <div role="alert" className="mb-4 text-sm text-red-600">{clTemplateError}</div>}
                     {clImportResult && (
                       <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-xl text-sm">
                         <div className="font-bold text-blue-800 mb-2">ผลการนำเข้า</div>

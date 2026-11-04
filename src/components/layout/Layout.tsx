@@ -2,6 +2,7 @@ import { ReactNode, useState, useEffect } from 'react'
 import { useLocation } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import TopBar from './TopBar'
+import RoutePage from '../RoutePage'
 
 interface LayoutProps {
   children: ReactNode
@@ -48,7 +49,7 @@ export default function Layout({ children }: LayoutProps) {
           data-app-scroll-container
           className="relative z-0 flex min-h-0 flex-1 flex-col overflow-auto bg-transparent px-3 pb-4 sm:px-4 md:px-6 md:pb-6"
         >
-          {children}
+          <RoutePage>{children}</RoutePage>
         </main>
       </div>
     </div>

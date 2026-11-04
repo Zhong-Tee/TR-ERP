@@ -6,51 +6,9 @@ import Layout from './components/layout/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
 import { useAuthContext } from './contexts/AuthContext'
 import { useMenuAccess } from './contexts/MenuAccessContext'
-import Orders from './pages/Orders'
-import AdminQC from './pages/AdminQC'
-import Account from './pages/Account'
-import QC from './pages/QC'
-import Packing from './pages/Packing'
-import TransportVerification from './pages/TransportVerification'
-import Plan from './pages/Plan'
-import Wms from './pages/Wms'
-import Products from './pages/Products'
-import ProductsInactive from './pages/ProductsInactive'
-import ProductInformation from './pages/ProductInformation'
-import CartoonPatterns from './pages/CartoonPatterns'
-import SalesReports from './pages/SalesReports'
-import KPIDashboard from './pages/KPI'
-import Settings from './pages/Settings'
-import Warehouse from './pages/Warehouse'
-import WarehouseAudit from './pages/WarehouseAudit'
-import WarehouseAdjust from './pages/WarehouseAdjust'
-import WarehouseSub from './pages/WarehouseSub'
-import WarehouseTransfers from './pages/WarehouseTransfers'
 import { WAREHOUSE_TRANSFER_ROLES } from './lib/warehouseTransferAccess'
-import CreateAuditForm from './components/audit/CreateAuditForm'
-import MobileCountView from './components/audit/MobileCountView'
-import AuditReviewView from './components/audit/AuditReviewView'
-import AuditorHome from './components/audit/AuditorHome'
-import WarehouseReturns from './pages/WarehouseReturns'
-import InternalProduction from './pages/InternalProduction'
-import RollMaterialCalc from './pages/RollMaterialCalc'
-import ProductSalesList from './pages/ProductSalesList'
-import InventoryBalanceHistory from './pages/InventoryBalanceHistory'
-import PurchasePR from './pages/PurchasePR'
-import PurchasePO from './pages/PurchasePO'
-import PurchaseGR from './pages/PurchaseGR'
-import PurchaseReceivingCases from './pages/PurchaseReceivingCases'
-import PurchaseSample from './pages/PurchaseSample'
-import DashboardPage from './pages/Dashboard'
-import Marketplace from './pages/Marketplace'
-import Machinery from './pages/Machinery'
-import KnowledgeHub from './pages/KnowledgeHub'
-import TechnicianHome from './components/wms/technician/TechnicianHome'
 import { lazy, Suspense } from 'react'
-import EmployeePortal from './pages/EmployeePortal'
-import ModeLauncher from './pages/ModeLauncher'
-import SalesMobile from './pages/SalesMobile'
-import ResetPassword from './pages/ResetPassword'
+import RoutePage from './components/RoutePage'
 import MissedClockInAlert from './components/hr/MissedClockInAlert'
 import UnreadAnnouncementAlert from './components/hr/UnreadAnnouncementAlert'
 import UnreadWarningCertificateAlert from './components/hr/UnreadWarningCertificateAlert'
@@ -61,6 +19,50 @@ import {
   WMS_MOBILE_SPECIAL_ROLES,
 } from './config/accessPolicy'
 import { getActiveMobileMode, getMobileAccess, getSelectableMobileModes, hasDesktopOverride, modeAllowsPath } from './lib/mobileMode'
+
+const SalesMobile = lazy(() => import('./pages/SalesMobile'))
+const Orders = lazy(() => import('./pages/Orders'))
+const AdminQC = lazy(() => import('./pages/AdminQC'))
+const Account = lazy(() => import('./pages/Account'))
+const QC = lazy(() => import('./pages/QC'))
+const Packing = lazy(() => import('./pages/Packing'))
+const TransportVerification = lazy(() => import('./pages/TransportVerification'))
+const Plan = lazy(() => import('./pages/Plan'))
+const Wms = lazy(() => import('./pages/Wms'))
+const Products = lazy(() => import('./pages/Products'))
+const ProductsInactive = lazy(() => import('./pages/ProductsInactive'))
+const ProductInformation = lazy(() => import('./pages/ProductInformation'))
+const CartoonPatterns = lazy(() => import('./pages/CartoonPatterns'))
+const SalesReports = lazy(() => import('./pages/SalesReports'))
+const KPIDashboard = lazy(() => import('./pages/KPI'))
+const Settings = lazy(() => import('./pages/Settings'))
+const Warehouse = lazy(() => import('./pages/Warehouse'))
+const WarehouseAudit = lazy(() => import('./pages/WarehouseAudit'))
+const WarehouseAdjust = lazy(() => import('./pages/WarehouseAdjust'))
+const WarehouseSub = lazy(() => import('./pages/WarehouseSub'))
+const WarehouseTransfers = lazy(() => import('./pages/WarehouseTransfers'))
+const WarehouseReturns = lazy(() => import('./pages/WarehouseReturns'))
+const InternalProduction = lazy(() => import('./pages/InternalProduction'))
+const RollMaterialCalc = lazy(() => import('./pages/RollMaterialCalc'))
+const ProductSalesList = lazy(() => import('./pages/ProductSalesList'))
+const InventoryBalanceHistory = lazy(() => import('./pages/InventoryBalanceHistory'))
+const PurchasePR = lazy(() => import('./pages/PurchasePR'))
+const PurchasePO = lazy(() => import('./pages/PurchasePO'))
+const PurchaseGR = lazy(() => import('./pages/PurchaseGR'))
+const PurchaseReceivingCases = lazy(() => import('./pages/PurchaseReceivingCases'))
+const PurchaseSample = lazy(() => import('./pages/PurchaseSample'))
+const DashboardPage = lazy(() => import('./pages/Dashboard'))
+const Marketplace = lazy(() => import('./pages/Marketplace'))
+const Machinery = lazy(() => import('./pages/Machinery'))
+const KnowledgeHub = lazy(() => import('./pages/KnowledgeHub'))
+const EmployeePortal = lazy(() => import('./pages/EmployeePortal'))
+const ModeLauncher = lazy(() => import('./pages/ModeLauncher'))
+const ResetPassword = lazy(() => import('./pages/ResetPassword'))
+const CreateAuditForm = lazy(() => import('./components/audit/CreateAuditForm'))
+const MobileCountView = lazy(() => import('./components/audit/MobileCountView'))
+const AuditReviewView = lazy(() => import('./components/audit/AuditReviewView'))
+const AuditorHome = lazy(() => import('./components/audit/AuditorHome'))
+const TechnicianHome = lazy(() => import('./components/wms/technician/TechnicianHome'))
 
 const HREmployeeRegistry = lazy(() => import('./components/hr/EmployeeRegistry'))
 const HRLeaveManagement = lazy(() => import('./components/hr/LeaveManagement'))
@@ -267,7 +269,7 @@ function AppRoutes() {
 
   return (
     <Routes>
-      <Route path="/sales-mobile" element={<ProtectedRoute><SalesMobile /></ProtectedRoute>} />
+      <Route path="/sales-mobile" element={<ProtectedRoute><RoutePage><SalesMobile /></RoutePage></ProtectedRoute>} />
       <Route
         path="/"
         element={<SmartRedirect />}
@@ -839,7 +841,7 @@ function App() {
     <Router>
       <AuthProvider>
         <MenuAccessProvider>
-          <AppRoutes />
+          <RoutePage><AppRoutes /></RoutePage>
           {/* เตือน "ลืมบันทึกเวลาเข้างาน" ทันทีที่ login — ครอบทุกหน้า */}
           <MissedClockInAlert />
           {/* เตือน "ประกาศที่ยังไม่รับทราบ" ทันทีที่ login — ครอบทุกหน้า ทั้ง PC และมือถือ */}

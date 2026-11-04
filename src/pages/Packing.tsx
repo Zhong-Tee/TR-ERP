@@ -3,13 +3,14 @@ import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { getPublicUrl, fetchInkTypes } from '../lib/qcApi'
 import { supabase } from '../lib/supabase'
-import { fetchAllSupabasePages } from '../lib/supabasePagination'
+import { assignPackingTags } from '../lib/packingTags'
+import { usePackingList } from '../hooks/usePackingList'
+import type { PackingShippedPage, PackingReportPage } from '../lib/packingListTypes'
 import { Order, OrderItem, WorkOrder, InkType, PackingMeta } from '../types'
 import { flatBillUnitUid, normalizedLineQuantity, stableOrderItemUnitKey } from '../lib/productionUnits'
 import { sortOrderItemsForExport } from '../lib/orderItemExportSort'
 import { isCondoStampProductName } from '../lib/condoStamp'
 import { SELF_PICKUP_CHANNELS } from '../lib/channelBehavior'
-import { downloadFlashWaybillXlsx } from '../lib/flashWaybillExport'
 import Modal from '../components/ui/Modal'
 import {
   addQueueItem,
@@ -314,7 +315,7 @@ const RECORDING_TIMESLICE_MS = 5_000
 
 const DEVICE_ONLINE_MS = 2 * 60 * 1000
 const UPLOAD_REPORT_PAGE_SIZE = 50
-const UPLOAD_REPORT_FETCH_BATCH_SIZE = 1000
+const SHIPPED_PAGE_SIZE = 50
 
 type PackingUploadReportRow = {
   id: string
@@ -423,14 +424,31 @@ function uploadRecoveryAdvice(row: PackingUploadReportRow, deviceOnline: boolean
   return 'เครื่องยังออนไลน์แต่คิวไม่ขยับ: เปิดแท็บคิวที่เครื่องต้นทางและสั่งอัปโหลดใหม่'
 }
 
-function isStaleQueueTimestamp(status: string, updatedAt: string | null | undefined): boolean {
+function isStaleQueueTimestamp(status: string, updatedAt: string | null | undefined, referenceTime = Date.now()): boolean {
   if (status !== 'pending' && status !== 'uploading') return false
   const time = new Date(updatedAt || '').getTime()
   const limit = status === 'pending' ? 30 * 60 * 1000 : STALE_UPLOAD_MS
-  return !Number.isFinite(time) || Date.now() - time >= limit
+  return !Number.isFinite(time) || referenceTime - time >= limit
 }
 
 type UploadStatusFilter = 'pending' | 'uploading' | 'success' | 'failed'
+
+function PackingListPagination({ page, pages, total, loading, onPage }: {
+  page: number; pages: number; total: number; loading: boolean; onPage: (page: number) => void
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+      <span className="text-gray-500">ทั้งหมด {total.toLocaleString('th-TH')} ใบงาน</span>
+      <div className="flex items-center gap-2">
+        <button type="button" disabled={loading || page <= 1} onClick={() => onPage(page - 1)}
+          className="rounded-lg border px-3 py-1.5 disabled:opacity-40">ก่อนหน้า</button>
+        <span>หน้า {page} / {pages}</span>
+        <button type="button" disabled={loading || page >= pages} onClick={() => onPage(page + 1)}
+          className="rounded-lg border px-3 py-1.5 disabled:opacity-40">ถัดไป</button>
+      </div>
+    </div>
+  )
+}
 
 function UploadStatusCard({
   label,
@@ -549,20 +567,7 @@ export default function Packing() {
       if (first) setSelectionTab(first)
     }
   }, [menuAccessLoading, hasAccess, selectionTab])
-  const [shippedOrders, setShippedOrders] = useState<
-    Array<{
-      id: string
-      work_order_id: string | null
-      work_order_name: string | null
-      shipped_time: string | null
-      channel_code: string | null
-      shipped_by: string | null
-      bill_no: string | null
-      customer_name: string | null
-      tracking_number: string | null
-      express_receipt_number: string | null
-    }>
-  >([])
+  const [shippedPage, setShippedPage] = useState(1)
   const [shippedDateFrom, setShippedDateFrom] = useState(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
@@ -601,8 +606,6 @@ export default function Packing() {
   const shouldPollQueueRef = useRef(true)
   const [queueLoading, setQueueLoading] = useState(false)
   const [clearingQueue, setClearingQueue] = useState(false)
-  const [uploadReportRows, setUploadReportRows] = useState<PackingUploadReportRow[]>([])
-  const [uploadReportLoading, setUploadReportLoading] = useState(false)
   const [uploadReportSearch, setUploadReportSearch] = useState('')
   const [uploadReportDeviceId, setUploadReportDeviceId] = useState('')
   const [uploadReportDateFrom, setUploadReportDateFrom] = useState('')
@@ -611,7 +614,32 @@ export default function Packing() {
   const [deletingUploadReportId, setDeletingUploadReportId] = useState<string | null>(null)
   const [reportDeviceListFilter, setReportDeviceListFilter] = useState<'online' | 'offline' | null>(null)
   const [reportStatusFilter, setReportStatusFilter] = useState<UploadStatusFilter | null>(null)
-  const [packingDevices, setPackingDevices] = useState<PackingDeviceRow[]>([])
+  const shippedList = usePackingList<PackingShippedPage>(
+    view === 'selection' && selectionTab === 'shipped' && !menuAccessLoading && hasAccess('packing-shipped'),
+    'pk_shipped_work_orders_page',
+    {
+      p_page: shippedPage, p_page_size: SHIPPED_PAGE_SIZE,
+      p_date_from: shippedDateFrom || null, p_date_to: shippedDateTo || null,
+      p_channel: shippedChannelFilter || null, p_packer: shippedPackerFilter || null,
+      p_search: shippedSearch.trim(),
+    },
+    undefined, user?.id,
+  )
+  const reportList = usePackingList<PackingReportPage<PackingUploadReportRow> & { stations: PackingDeviceRow[] }>(
+    view === 'selection' && selectionTab === 'report' && !menuAccessLoading && hasAccess('packing-report'),
+    'pk_upload_reports_page',
+    {
+      p_page: uploadReportPage, p_page_size: UPLOAD_REPORT_PAGE_SIZE,
+      p_from: uploadReportDateFrom ? new Date(`${uploadReportDateFrom}T00:00:00`).toISOString() : null,
+      p_to: uploadReportDateTo ? new Date(`${uploadReportDateTo}T23:59:59.999`).toISOString() : null,
+      p_device_id: uploadReportDeviceId || null, p_search: uploadReportSearch,
+      p_status: reportStatusFilter,
+    },
+    10_000, user?.id,
+  )
+  const [registeredPackingDevices, setPackingDevices] = useState<PackingDeviceRow[]>([])
+  const packingDevices = selectionTab === 'report' && reportList.data
+    ? reportList.data.stations : registeredPackingDevices
   const [stationClaimDeviceId, setStationClaimDeviceId] = useState('')
   const [stationClaiming, setStationClaiming] = useState(false)
   const [stationClaimMessage, setStationClaimMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
@@ -1184,41 +1212,6 @@ export default function Packing() {
     return rows
   }
 
-  async function loadUploadReport(showLoading = false) {
-    if (showLoading) setUploadReportLoading(true)
-    const fetchAllReports = async () => {
-      const rows: PackingUploadReportRow[] = []
-      let from = 0
-      while (true) {
-        const { data, error } = await supabase
-          .from('pk_packing_upload_queue_reports')
-          .select('id, user_id, recorded_by, device_id, device_name, folder_name, folder_path, work_order_name, tracking_number, channel_order_no, filename, storage_path, file_size_bytes, duration_seconds, status, retry_count, last_error, local_deleted, client_created_at, client_updated_at, uploaded_at, reported_at, quality_profile, requested_width, requested_height, requested_fps, requested_bitrate, actual_width, actual_height, actual_fps, mime_type, codec, recorder_bitrate, actual_bitrate')
-          .is('dismissed_at', null)
-          .order('client_created_at', { ascending: false })
-          .range(from, from + UPLOAD_REPORT_FETCH_BATCH_SIZE - 1)
-        if (error) return { data: null, error }
-        const batch = (data || []) as PackingUploadReportRow[]
-        rows.push(...batch)
-        if (batch.length < UPLOAD_REPORT_FETCH_BATCH_SIZE) break
-        from += UPLOAD_REPORT_FETCH_BATCH_SIZE
-      }
-      return { data: rows, error: null }
-    }
-    const [reportResult, deviceResult] = await Promise.all([
-      fetchAllReports(),
-      supabase
-        .from('pk_packing_devices')
-        .select('device_id, user_id, device_name, last_username, is_active, quality_profile, folder_name, folder_path, pending_count, uploading_count, failed_count, last_seen_at')
-        .eq('is_active', true)
-        .order('last_seen_at', { ascending: false }),
-    ])
-    if (reportResult.error) console.warn('Load packing upload report failed:', reportResult.error.message)
-    else setUploadReportRows((reportResult.data || []) as PackingUploadReportRow[])
-    if (deviceResult.error) console.warn('Load packing devices failed:', deviceResult.error.message)
-    else setPackingDevices((deviceResult.data || []) as PackingDeviceRow[])
-    if (showLoading) setUploadReportLoading(false)
-  }
-
   async function deleteProblemUploadReport(row: PackingUploadReportRow) {
     if (deletingUploadReportId) return
     setDeletingUploadReportId(row.id)
@@ -1227,7 +1220,7 @@ export default function Packing() {
         p_report_id: row.id,
       })
       if (error) throw error
-      setUploadReportRows((current) => current.filter((item) => item.id !== row.id))
+      reportList.refresh()
     } catch (error: any) {
       openAlert(`ลบรายการไม่สำเร็จ: ${error?.message || error}`, 'เกิดข้อผิดพลาด')
     } finally {
@@ -1267,13 +1260,6 @@ export default function Packing() {
     const timer = window.setInterval(() => void syncQueueReports(queueItems), 60_000)
     return () => window.clearInterval(timer)
   }, [queueItems, deviceId, deviceName, folderPath, folderHandle, user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (selectionTab !== 'report') return
-    void loadUploadReport(true)
-    const timer = window.setInterval(() => void loadUploadReport(false), 10_000)
-    return () => window.clearInterval(timer)
-  }, [selectionTab]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (selectionTab !== 'queue') return
@@ -1320,6 +1306,7 @@ export default function Packing() {
     const billing = (data.billing_details || {}) as Record<string, any>
     const address = [billing.address_line, billing.sub_district, billing.district, billing.province]
       .filter(Boolean).join(' ').trim() || data.customer_address || ''
+    const { downloadFlashWaybillXlsx } = await import('../lib/flashWaybillExport')
     await downloadFlashWaybillXlsx([{
       billNo: data.bill_no || '',
       consigneeName: data.recipient_name || data.customer_name || '',
@@ -1406,13 +1393,7 @@ export default function Packing() {
       openAlert('บันทึกการแก้ไขไม่สำเร็จ: ' + error.message)
       return
     }
-    setShippedOrders((prev) =>
-      prev.map((row) =>
-        row.work_order_name === workOrderName
-          ? { ...row, shipped_by: shippedBy || null, shipped_time: shippedTimeIso }
-          : row
-      )
-    )
+    shippedList.refresh()
     setShippedEdit(null)
     openAlert('บันทึกการแก้ไขเรียบร้อยแล้ว')
   }
@@ -1638,59 +1619,12 @@ export default function Packing() {
     window.dispatchEvent(new CustomEvent('packing-ready-count', { detail: { count: newWorkOrders.length } }))
   }, [newWorkOrders.length])
 
-  const shippedOrdersFiltered = useMemo(() => {
-    const base = shippedOrders.filter((row) => {
-      if (!row.work_order_name) return false
-      const date = row.shipped_time ? new Date(row.shipped_time).toISOString().slice(0, 10) : ''
-      if (shippedDateFrom && date < shippedDateFrom) return false
-      if (shippedDateTo && date > shippedDateTo) return false
-      if (shippedChannelFilter && row.channel_code !== shippedChannelFilter) return false
-      if (shippedPackerFilter && row.shipped_by !== shippedPackerFilter) return false
-      return true
-    })
-    const q = shippedSearch.trim().toLowerCase()
-    if (!q) return base
-    const qNoSpace = q.replace(/\s+/g, '')
-    const rowMatches = (row: (typeof shippedOrders)[number]) => {
-      const bill = (row.bill_no || '').toLowerCase()
-      const customer = (row.customer_name || '').toLowerCase()
-      const tracking = (row.tracking_number || '').toLowerCase().replace(/\s+/g, '')
-      const expressReceipt = (row.express_receipt_number || '').toLowerCase().replace(/\s+/g, '')
-      return bill.includes(q) || customer.includes(q) || (qNoSpace !== '' && (tracking.includes(qNoSpace) || expressReceipt.includes(qNoSpace)))
-    }
-    // แสดงทั้งใบงานที่มีบิลตรงคำค้นอย่างน้อย 1 บิล (จำนวนบิลบนการ์ดจึงยังครบ)
-    const workOrderKey = (row: (typeof shippedOrders)[number]) =>
-      `${row.work_order_id || ''}\u0001${row.work_order_name || ''}`
-    const matchedWo = new Set(base.filter(rowMatches).map(workOrderKey))
-    return base.filter((row) => matchedWo.has(workOrderKey(row)))
-  }, [shippedOrders, shippedDateFrom, shippedDateTo, shippedChannelFilter, shippedPackerFilter, shippedSearch])
-
-  const shippedWorkOrders = useMemo(() => {
-    const grouped = new Map<
-      string,
-      { work_order_id: string | null; work_order_name: string; order_count: number; shipped_time: string | null; channels: Set<string>; packers: Set<string> }
-    >()
-    shippedOrdersFiltered.forEach((row) => {
-      if (!row.work_order_name) return
-      const groupKey = `${row.work_order_id || ''}\u0001${row.work_order_name}`
-      const existing = grouped.get(groupKey) || {
-        work_order_id: row.work_order_id,
-        work_order_name: row.work_order_name,
-        order_count: 0,
-        shipped_time: null,
-        channels: new Set<string>(),
-        packers: new Set<string>()
-      }
-      existing.order_count += 1
-      if (row.shipped_time && (!existing.shipped_time || row.shipped_time > existing.shipped_time)) {
-        existing.shipped_time = row.shipped_time
-      }
-      if (row.channel_code) existing.channels.add(row.channel_code)
-      if (row.shipped_by) existing.packers.add(row.shipped_by)
-      grouped.set(groupKey, existing)
-    })
-    return Array.from(grouped.values()).sort((a, b) => (a.shipped_time || '').localeCompare(b.shipped_time || ''))
-  }, [shippedOrdersFiltered])
+  const shippedWorkOrders = shippedList.data?.rows || []
+  const shippedChannels = shippedList.data?.channels || []
+  const shippedPackers = shippedList.data?.packers || []
+  const shippedTotal = shippedList.data?.total || 0
+  const effectiveShippedPage = shippedList.data?.page || shippedPage
+  const shippedTotalPages = Math.max(1, Math.ceil(shippedTotal / SHIPPED_PAGE_SIZE))
 
   useEffect(() => {
     if (selectionTab !== 'tagSearch') return
@@ -1714,20 +1648,6 @@ export default function Packing() {
     const nextPending = tagSearchRows.find((item) => !item.scanned)
     return nextPending?.unit_uid ?? null
   }, [tagSearchRows, tagSearchInput])
-
-  const shippedChannels = useMemo(() => {
-    const values = shippedOrders
-      .map((row) => row.channel_code)
-      .filter((c): c is string => Boolean(c && c.trim()))
-    return Array.from(new Set(values)).sort()
-  }, [shippedOrders])
-
-  const shippedPackers = useMemo(() => {
-    const values = shippedOrders
-      .map((row) => row.shipped_by)
-      .filter((p): p is string => Boolean(p && p.trim()))
-    return Array.from(new Set(values)).sort()
-  }, [shippedOrders])
 
   useEffect(() => {
     if (!currentGroup || isViewOnly) return
@@ -2015,16 +1935,6 @@ export default function Packing() {
         setPlanStartTimes({})
       }
 
-      const shippedData = await fetchAllSupabasePages<(typeof shippedOrders)[number]>((from, to) =>
-        supabase
-          .from('or_orders')
-          .select('id, work_order_id, work_order_name, shipped_time, channel_code, shipped_by, bill_no, customer_name, tracking_number, express_receipt_number')
-          .eq('status', 'จัดส่งแล้ว')
-          .not('work_order_name', 'is', null)
-          .order('id', { ascending: true })
-          .range(from, to)
-      )
-      setShippedOrders(shippedData)
     } catch (error: any) {
       console.error('Error loading work orders:', error)
       openAlert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
@@ -2256,24 +2166,19 @@ export default function Packing() {
       return group.map((item) => ({ ...item, packingTag: t }))
     })
 
-    const persistNewTags = aggregatedTagged
-      .map((group, i) => ({ group, hadTag: aggregated[i]![0].packingTag != null }))
-      .filter((x) => !x.hadTag)
-      .map(({ group }) => {
-        const order = orders.find((o) => o.id === group[0].order_id)
-        const prev =
-          order?.packing_meta && typeof order.packing_meta === 'object'
-            ? { ...(order.packing_meta as unknown as Record<string, unknown>) }
-            : {}
-        const tag = group[0].packingTag
-        return supabase
-          .from('or_orders')
-          .update({
-            packing_meta: { ...prev, dailyPackingTag: tag } as PackingMeta,
-          })
-          .eq('id', group[0].order_id)
-      })
-    if (!viewOnly) await Promise.allSettled(persistNewTags)
+    const tagsToSave = aggregatedTagged
+      .filter((_, index) => aggregated[index]![0].packingTag == null)
+      .map(group => ({ order_id: group[0].order_id, tag: group[0].packingTag! }))
+    if (!viewOnly && tagsToSave.length) {
+      const saved = await assignPackingTags(tagsToSave)
+      // A concurrent station may already have assigned a different tag. Show
+      // the committed value instead of the proposal from this device.
+      for (const group of aggregatedTagged) {
+        if (saved[group[0].order_id] != null) {
+          for (const item of group) item.packingTag = saved[item.order_id]
+        }
+      }
+    }
 
     setAggregatedData(aggregatedTagged)
     if (aggregatedTagged.length === 0) {
@@ -3154,67 +3059,25 @@ export default function Packing() {
       const label = `${device.device_name || 'ไม่ระบุชื่อเครื่อง'} • ${device.last_username || 'ไม่ทราบ User'} • ${online ? 'ออนไลน์' : 'ออฟไลน์'}`
       devices.set(device.device_id, label)
     })
-    uploadReportRows.forEach((row) => {
+    reportList.data?.devices.forEach((row) => {
       if (!devices.has(row.device_id)) devices.set(row.device_id, row.device_name || 'ไม่ระบุชื่อเครื่อง')
     })
     return Array.from(devices, ([id, name]) => ({ id, name }))
       .sort((a, b) => a.name.localeCompare(b.name, 'th', { numeric: true }))
-  }, [packingDevices, uploadReportRows])
+  }, [packingDevices, reportList.data?.devices])
 
   const packingDeviceById = useMemo(
     () => new Map(packingDevices.map((device) => [device.device_id, device])),
     [packingDevices],
   )
 
-  const searchedUploadReportRows = useMemo(() => {
-    const term = normalizeParcelScanInput(uploadReportSearch).toLowerCase()
-    const fromTime = uploadReportDateFrom
-      ? new Date(`${uploadReportDateFrom}T00:00:00`).getTime()
-      : Number.NEGATIVE_INFINITY
-    const toTime = uploadReportDateTo
-      ? new Date(`${uploadReportDateTo}T23:59:59.999`).getTime()
-      : Number.POSITIVE_INFINITY
-    return uploadReportRows.filter((row) => {
-      if (uploadReportDeviceId && row.device_id !== uploadReportDeviceId) return false
-      const recordedTime = new Date(row.client_created_at).getTime()
-      if (recordedTime < fromTime || recordedTime > toTime) return false
-      if (!term) return true
-      return [
-        row.recorded_by,
-        row.device_name,
-        row.folder_path,
-        row.folder_name,
-        row.work_order_name,
-        row.tracking_number,
-        row.channel_order_no,
-        row.filename,
-      ].some((value) => normalizeParcelScanInput(String(value || '')).toLowerCase().includes(term))
-    })
-  }, [uploadReportRows, uploadReportSearch, uploadReportDeviceId, uploadReportDateFrom, uploadReportDateTo])
-
-  const reportStatusSummary = useMemo(() => ({
-    pending: searchedUploadReportRows.filter((row) => row.status === 'pending' && !isStaleQueueTimestamp(row.status, row.reported_at)).length,
-    uploading: searchedUploadReportRows.filter((row) => row.status === 'uploading' && !isStaleQueueTimestamp(row.status, row.reported_at)).length,
-    success: searchedUploadReportRows.filter((row) => row.status === 'success').length,
-    failed: searchedUploadReportRows.filter((row) => row.status === 'failed' || isStaleQueueTimestamp(row.status, row.reported_at)).length,
-  }), [searchedUploadReportRows])
-
-  const filteredUploadReportRows = useMemo(() => {
-    if (!reportStatusFilter) return searchedUploadReportRows
-    return searchedUploadReportRows.filter((row) => {
-      const stale = isStaleQueueTimestamp(row.status, row.reported_at)
-      if (reportStatusFilter === 'failed') return row.status === 'failed' || stale
-      if (stale) return false
-      return row.status === reportStatusFilter
-    })
-  }, [searchedUploadReportRows, reportStatusFilter])
-
-  const uploadReportTotalPages = Math.max(1, Math.ceil(filteredUploadReportRows.length / UPLOAD_REPORT_PAGE_SIZE))
-  const effectiveUploadReportPage = Math.min(uploadReportPage, uploadReportTotalPages)
-  const pagedUploadReportRows = useMemo(() => {
-    const start = (effectiveUploadReportPage - 1) * UPLOAD_REPORT_PAGE_SIZE
-    return filteredUploadReportRows.slice(start, start + UPLOAD_REPORT_PAGE_SIZE)
-  }, [filteredUploadReportRows, effectiveUploadReportPage])
+  const reportStatusSummary = reportList.data?.summary || { pending: 0, uploading: 0, success: 0, failed: 0 }
+  const reportReferenceTime = reportList.data ? new Date(reportList.data.as_of).getTime() : Date.now()
+  const uploadReportTotal = reportList.data?.total || 0
+  const uploadReportTotalPages = Math.max(1, Math.ceil(uploadReportTotal / UPLOAD_REPORT_PAGE_SIZE))
+  const effectiveUploadReportPage = reportList.data?.page || uploadReportPage
+  const pagedUploadReportRows = reportList.data?.rows || []
+  const uploadReportLoading = reportList.loading
 
   useEffect(() => {
     setUploadReportPage(1)
@@ -3420,14 +3283,14 @@ export default function Packing() {
                 <input
                   type="text"
                   value={shippedSearch}
-                  onChange={(e) => setShippedSearch(e.target.value)}
+                  onChange={(e) => { setShippedSearch(e.target.value); setShippedPage(1) }}
                   placeholder="ค้นหาเลขบิล ลูกค้า เลขพัสดุ หรือเลขรับพัสดุด่วน"
                   className="w-full border rounded-lg pl-3 pr-9 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
                 />
                 {shippedSearch && (
                   <button
                     type="button"
-                    onClick={() => setShippedSearch('')}
+                    onClick={() => { setShippedSearch(''); setShippedPage(1) }}
                     className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-lg leading-none"
                     aria-label="ล้างการค้นหา"
                   >
@@ -3441,7 +3304,7 @@ export default function Packing() {
                   <input
                     type="date"
                     value={shippedDateFrom}
-                    onChange={(e) => setShippedDateFrom(e.target.value)}
+                    onChange={(e) => { setShippedDateFrom(e.target.value); setShippedPage(1) }}
                     className="w-full border rounded px-3 py-2 text-sm"
                   />
                 </div>
@@ -3450,7 +3313,7 @@ export default function Packing() {
                   <input
                     type="date"
                     value={shippedDateTo}
-                    onChange={(e) => setShippedDateTo(e.target.value)}
+                    onChange={(e) => { setShippedDateTo(e.target.value); setShippedPage(1) }}
                     className="w-full border rounded px-3 py-2 text-sm"
                   />
                 </div>
@@ -3458,7 +3321,7 @@ export default function Packing() {
                   <label className="block text-xs text-gray-500 mb-1">ช่องทาง</label>
                   <select
                     value={shippedChannelFilter}
-                    onChange={(e) => setShippedChannelFilter(e.target.value)}
+                    onChange={(e) => { setShippedChannelFilter(e.target.value); setShippedPage(1) }}
                     className="w-full border rounded px-3 py-2 text-sm"
                   >
                     <option value="">ทั้งหมด</option>
@@ -3473,7 +3336,7 @@ export default function Packing() {
                   <label className="block text-xs text-gray-500 mb-1">ผู้แพ็ค</label>
                   <select
                     value={shippedPackerFilter}
-                    onChange={(e) => setShippedPackerFilter(e.target.value)}
+                    onChange={(e) => { setShippedPackerFilter(e.target.value); setShippedPage(1) }}
                     className="w-full border rounded px-3 py-2 text-sm"
                   >
                     <option value="">ทั้งหมด</option>
@@ -3485,7 +3348,17 @@ export default function Packing() {
                   </select>
                 </div>
               </div>
-              {shippedWorkOrders.length === 0 ? (
+              {shippedList.error && (
+                <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                  {shippedList.error}
+                  <button type="button" onClick={shippedList.refresh} className="ml-3 underline">ลองใหม่</button>
+                </div>
+              )}
+              <button type="button" disabled={shippedList.loading} onClick={shippedList.refresh}
+                className="rounded-lg border px-3 py-2 text-sm disabled:opacity-40">รีเฟรชประวัติ</button>
+              {shippedList.loading ? (
+                <div role="status" className="py-12 text-center text-gray-500">กำลังโหลดประวัติจัดส่ง...</div>
+              ) : shippedList.error ? null : shippedWorkOrders.length === 0 ? (
                 <div className="text-center py-12 text-gray-500">ไม่พบใบงานที่จัดส่งแล้ว</div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -3509,13 +3382,17 @@ export default function Packing() {
                         <span>{wo.shipped_time ? new Date(wo.shipped_time).toLocaleString('th-TH') : '-'}</span>
                       </div>
                       <div className="text-xs text-gray-500 mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
-                        <span>ช่องทาง: {Array.from(wo.channels).join(', ') || '-'}</span>
+                        <span>ช่องทาง: {wo.channels.join(', ') || '-'}</span>
                         <span className="text-gray-300">|</span>
-                        <span>ผู้แพ็ค: {Array.from(wo.packers).join(', ') || '-'}</span>
+                        <span>ผู้แพ็ค: {wo.packers.join(', ') || '-'}</span>
                       </div>
                     </button>
                   ))}
                 </div>
+              )}
+              {!shippedList.error && shippedTotal > 0 && (
+                <PackingListPagination page={effectiveShippedPage} pages={shippedTotalPages}
+                  total={shippedTotal} loading={shippedList.loading} onPage={setShippedPage} />
               )}
             </div>
           ) : selectionTab === 'tagSearch' ? (
@@ -3763,8 +3640,9 @@ export default function Packing() {
                   )}
                   <button
                     type="button"
-                    onClick={() => void loadUploadReport(true)}
-                    className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+                    onClick={reportList.refresh}
+                    disabled={uploadReportLoading}
+                    className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-40"
                   >
                     รีเฟรช
                   </button>
@@ -3833,9 +3711,15 @@ export default function Packing() {
                 )}
               </div>
 
+              {reportList.error && (
+                <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                  {reportList.error}
+                  <button type="button" onClick={reportList.refresh} className="ml-3 underline">ลองใหม่</button>
+                </div>
+              )}
               {uploadReportLoading ? (
                 <div className="py-12 text-center text-gray-500">กำลังโหลดรายงาน...</div>
-              ) : filteredUploadReportRows.length === 0 ? (
+              ) : reportList.error ? null : uploadReportTotal === 0 ? (
                 <div className="rounded-xl border border-dashed border-gray-300 py-12 text-center text-gray-500">
                   {reportStatusFilter ? 'ไม่มีรายการที่ตรงกับสถานะที่เลือก' : 'ยังไม่มีข้อมูลคิวอัปโหลด'}
                 </div>
@@ -3861,7 +3745,7 @@ export default function Packing() {
                       {pagedUploadReportRows.map((row, index) => {
                         const device = packingDeviceById.get(row.device_id)
                         const deviceOnline = Boolean(device && Date.now() - new Date(device.last_seen_at).getTime() < DEVICE_ONLINE_MS)
-                        const stale = isStaleQueueTimestamp(row.status, row.reported_at)
+                        const stale = isStaleQueueTimestamp(row.status, row.reported_at, reportReferenceTime)
                         const statusLabel = stale
                           ? 'ค้าง/ขาดการติดต่อ'
                           : row.status === 'success'
@@ -3959,7 +3843,7 @@ export default function Packing() {
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
                     <span className="text-gray-500">
-                      แสดง {((effectiveUploadReportPage - 1) * UPLOAD_REPORT_PAGE_SIZE) + 1}–{Math.min(effectiveUploadReportPage * UPLOAD_REPORT_PAGE_SIZE, filteredUploadReportRows.length)} จาก {filteredUploadReportRows.length.toLocaleString('th-TH')} รายการ
+                      แสดง {((effectiveUploadReportPage - 1) * UPLOAD_REPORT_PAGE_SIZE) + 1}–{Math.min(effectiveUploadReportPage * UPLOAD_REPORT_PAGE_SIZE, uploadReportTotal)} จาก {uploadReportTotal.toLocaleString('th-TH')} รายการ
                     </span>
                     {uploadReportTotalPages > 1 && (
                       <div className="flex items-center gap-2">

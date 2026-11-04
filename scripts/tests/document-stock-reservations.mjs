@@ -62,6 +62,8 @@ await db.exec(`INSERT INTO or_orders(id,channel_code,bill_no,customer_name,custo
 await db.exec('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO authenticated,anon; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO authenticated,anon;')
 await db.exec(migration)
 await db.exec(await read('supabase/migrations/627_sales_draft_no_reservation.sql'))
+await db.exec(await read('supabase/migrations/632_stable_bill_item_order.sql'))
+await db.exec(await read('supabase/migrations/692_packing_write_efficiency.sql'))
 await db.exec(`ALTER TABLE or_orders ALTER COLUMN status SET DEFAULT 'ข้อมูลครบ'`)
 console.log('Migration compiles on PostgreSQL')
 const product='11111111-1111-1111-1111-111111111111'
@@ -75,6 +77,18 @@ const balance=async()=> (await db.query(`SELECT on_hand,reserved,safety_stock FR
 await db.exec(`INSERT INTO or_orders(id,channel_code,bill_no,customer_name,customer_address,admin_user) VALUES('${order}','TR','TR-1','Customer','','tester');
 INSERT INTO or_order_items(id,order_id,item_uid,product_id,product_name,quantity) VALUES('${item}','${order}','TR-1-1','${product}','Product',30);`)
 assert.equal((await balance()).reserved,'37')
+// Packing metadata must not reconcile unchanged stock or rewrite reservation rows.
+await db.exec(`CREATE TEMP TABLE reservation_write_probe(n int);
+CREATE FUNCTION pg_temp.probe_reservation_write() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN INSERT INTO reservation_write_probe VALUES(1); RETURN NEW; END $$;
+CREATE TRIGGER phase3_probe AFTER UPDATE ON inv_document_reservations
+FOR EACH ROW EXECUTE FUNCTION pg_temp.probe_reservation_write();
+UPDATE or_orders SET packing_meta='{"parcelScanned":true,"scanTime":"2026-11-02T05:00:00Z"}',updated_at=now() WHERE id='${order}';`)
+await db.query('SELECT rpc_assign_packing_tags($1::jsonb)', [JSON.stringify([{order_id:order,tag:17}])])
+assert.equal((await db.query('SELECT count(*)::int n FROM reservation_write_probe')).rows[0].n,0)
+assert.equal((await balance()).reserved,'37')
+assert.equal((await db.query(`SELECT packing_meta->>'parcelScanned' scanned FROM or_orders WHERE id='${order}'`)).rows[0].scanned,'true')
+console.log('Packing tag/parcel metadata preserve stock and skip reservation writes')
 assert.equal(await lotQty(),100)
 assert.equal(await lotQty(true),20)
 assert.equal((await db.query("SELECT stock_reservation_enabled FROM or_orders WHERE bill_no='LEGACY-1'")).rows[0].stock_reservation_enabled,false)

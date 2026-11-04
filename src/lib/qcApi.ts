@@ -2,8 +2,8 @@
  * QC System API: work orders, items by WO, settings_reasons, ink_types, storage URL.
  */
 import { supabase } from './supabase'
+import { operationalCountCache } from './readRefresh'
 import { buildIlikeOr } from './searchFilter'
-import * as XLSX from 'xlsx'
 import type { QCItem, QCRecord, WorkOrder, SettingsReason, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct, QCCategoryGroup } from '../types'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN, isOrderAllowedInFulfillmentFlow } from './orderFlowFilter'
 import { flatBillUnitUid, normalizedLineQuantity, stableOrderItemUnitKey } from './productionUnits'
@@ -117,7 +117,12 @@ async function fetchProgressRecordsBySessionIds(sessionIds: string[]): Promise<Q
 }
 
 /** Load work orders with QC progress. When excludeCompleted is true, hides WOs only if nothing left to check AND no open QC session (still waiting for Finish). */
-export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Promise<WorkOrderWithProgress[]> {
+export function fetchWorkOrdersWithProgress(excludeCompleted = true, scope?: string): Promise<WorkOrderWithProgress[]> {
+  if (!scope) return fetchWorkOrdersWithProgressUncached(excludeCompleted)
+  return operationalCountCache.read(`qc-progress:${scope}:${excludeCompleted}`, () => fetchWorkOrdersWithProgressUncached(excludeCompleted))
+}
+
+async function fetchWorkOrdersWithProgressUncached(excludeCompleted: boolean): Promise<WorkOrderWithProgress[]> {
   const woRaw = await fetchWorkOrders()
   if (!woRaw.length) return []
 
@@ -1181,7 +1186,8 @@ export async function searchProducts(query: string): Promise<{ product_code: str
 // ============================================
 
 /** Generate and download an Excel template for bulk checklist import. */
-export function generateChecklistTemplate() {
+export async function generateChecklistTemplate() {
+  const XLSX = await import('xlsx')
   const wb = XLSX.utils.book_new()
 
   const ws1Data = [
@@ -1228,6 +1234,7 @@ export async function importChecklistFromExcel(file: File): Promise<BulkImportRe
     errors: [],
   }
 
+  const XLSX = await import('xlsx')
   const buffer = await file.arrayBuffer()
   const wb = XLSX.read(buffer, { type: 'array' })
 

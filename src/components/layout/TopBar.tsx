@@ -1,5 +1,7 @@
 import { useAuthContext } from '../../contexts/AuthContext'
 import { useMenuAccess } from '../../contexts/MenuAccessContext'
+import { countReadScope, operationalCountCache } from '../../lib/readRefresh'
+import { loadHrPendingCounts, loadPendingReturns } from '../../lib/operationalBadges'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabase'
@@ -17,7 +19,8 @@ interface TopBarProps {
 
 export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const { user, signOut } = useAuthContext()
-  const { hasAccess } = useMenuAccess()
+  const { hasAccess, isWmsStoreBackup } = useMenuAccess()
+  const badgeScope = user ? countReadScope(user, isWmsStoreBackup) : ''
   const location = useLocation()
   const navigate = useNavigate()
   const [issueOnCount, setIssueOnCount] = useState(0)
@@ -472,67 +475,51 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   }, [activeSubTabs.length])
 
   // Badge เมนู "รับสินค้าตีกลับ": แสดงเฉพาะสถานะรอดำเนินการ (pending)
+  const canSeeWarehouseReturns = hasAccess('warehouse-returns')
   useEffect(() => {
-    const loadWarehousePendingReturns = async () => {
+    if (!canSeeWarehouseReturns || !badgeScope) return
+    let active = true
+    const loadCount = async () => {
       try {
-        const { count, error } = await supabase
-          .from('inv_returns')
-          .select('*', { count: 'exact', head: true })
-          .eq('status', 'pending')
-        if (error) throw error
-        setWarehousePendingReturnCount(count || 0)
-      } catch (error) {
-        console.error('Error loading pending return count:', error)
-      }
+        const count = await loadPendingReturns(badgeScope)
+        if (active) setWarehousePendingReturnCount(count)
+      } catch (error) { if (active) console.error('Error loading pending return count:', error) }
     }
-
-    loadWarehousePendingReturns()
-    const channel = supabase
-      .channel('topbar-warehouse-returns-count')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_returns' }, () => {
-        loadWarehousePendingReturns()
-      })
+    const refresh = () => { operationalCountCache.invalidate(`returns:${badgeScope}`); void loadCount() }
+    void loadCount()
+    const channel = supabase.channel('topbar-warehouse-returns-count')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_returns' }, refresh)
       .subscribe()
-
-    return () => {
-      supabase.removeChannel(channel)
-    }
-  }, [])
+    return () => { active = false; void supabase.removeChannel(channel) }
+  }, [canSeeWarehouseReturns, badgeScope])
 
   // Badge เมนู HR "ลางาน/OT/WFH": จำนวนคำขอที่รออนุมัติ (เรียลไทม์)
   const canSeeHrLeave = hasAccess('hr-leave')
   useEffect(() => {
-    if (!canSeeHrLeave) return
-    const loadHrPending = async () => {
+    if (!canSeeHrLeave || !badgeScope) return
+    let active = true
+    const loadCount = async () => {
       try {
-        const [leaveRes, otRes, wfhRes] = await Promise.all([
-          supabase.from('hr_leave_requests').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
-          supabase.from('hr_ot_requests').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
-          supabase.from('hr_wfh_requests').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
-        ])
-        setHrLeavePending(leaveRes.count || 0)
-        setHrOtPending(otRes.count || 0)
-        setHrWfhPending(wfhRes.count || 0)
-      } catch (error) {
-        console.error('Error loading HR pending count:', error)
-      }
+        const counts = await loadHrPendingCounts(badgeScope)
+        if (!active) return
+        setHrLeavePending(counts.leave)
+        setHrOtPending(counts.ot)
+        setHrWfhPending(counts.wfh)
+      } catch (error) { if (active) console.error('Error loading HR pending count:', error) }
     }
-
-    loadHrPending()
-    // อัปเดตทันทีเมื่อหน้า HR แจ้ง (ยื่น/อนุมัติ/ปฏิเสธ) — ไม่ต้องรอ realtime
-    window.addEventListener('hr-counts-changed', loadHrPending)
-    const channel = supabase
-      .channel('topbar-hr-pending-count')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_leave_requests' }, loadHrPending)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_ot_requests' }, loadHrPending)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_wfh_requests' }, loadHrPending)
+    const refresh = () => { operationalCountCache.invalidate(`hr:${badgeScope}`); void loadCount() }
+    void loadCount()
+    window.addEventListener('hr-counts-changed', refresh)
+    const channel = supabase.channel('topbar-hr-pending-count')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_leave_requests' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_ot_requests' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_wfh_requests' }, refresh)
       .subscribe()
-
     return () => {
-      window.removeEventListener('hr-counts-changed', loadHrPending)
-      supabase.removeChannel(channel)
+      active = false; window.removeEventListener('hr-counts-changed', refresh)
+      void supabase.removeChannel(channel)
     }
-  }, [canSeeHrLeave])
+  }, [canSeeHrLeave, badgeScope])
 
   // Badge เมนู HR "คะแนนปฏิบัติงาน": คำทักท้วงรอตรวจสอบ (เรียลไทม์ทุกหน้า)
   const canSeeHrWorkScore = hasAccess('hr-work-score')
