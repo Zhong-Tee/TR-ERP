@@ -178,55 +178,11 @@ async function loadWmsTabCountsUncached(): Promise<{ counts: WmsTabCounts; total
   const datePart = (type: Intl.DateTimeFormatPartTypes) => dateParts.find((part) => part.type === type)?.value || ''
   const today = `${datePart('year')}-${datePart('month')}-${datePart('day')}`
 
-  // 1. ใบงานใหม่: work orders with status "กำลังผลิต" not yet assigned picker + มีสินค้าในหมวดหมู่ที่ต้องหยิบ
-  const { data: woData } = await supabase
-    .from('or_work_orders')
-    .select('work_order_name')
-    .eq('status', 'กำลังผลิต')
-  let newOrdersCount = 0
-  if (woData && woData.length > 0) {
-    const woNames = [...new Set(woData.map((wo: any) => wo.work_order_name as string))]
-    const [assignedNames, nonPickerCategories, subWarehouseProductIds] = await Promise.all([
-      fetchWorkOrderNamesWithWmsAssigned(woNames),
-      fetchWmsNonPickerCategories(),
-      fetchSubWarehouseProductIds(),
-    ])
-    const unassignedNames = woNames.filter((n) => !assignedNames.has(n))
-
-    if (unassignedNames.length > 0) {
-      const { data: orders } = await supabase
-        .from('or_orders')
-        .select('work_order_name, or_order_items(product_id, is_free)')
-        .in('work_order_name', unassignedNames)
-      const allItems = (orders || []).flatMap((o: any) =>
-        (o.or_order_items || []).map((i: any) => ({
-          product_id: i.product_id,
-          work_order_name: o.work_order_name,
-          is_free: i.is_free,
-        }))
-      )
-      const productIds = [...new Set(allItems.map((i: any) => i.product_id).filter(Boolean))]
-      let catMap: Record<string, string> = {}
-      if (productIds.length > 0) {
-        const { data: prods } = await supabase
-          .from('pr_products')
-          .select('id, product_category')
-          .in('id', productIds)
-        catMap = (prods || []).reduce((acc: Record<string, string>, p: any) => {
-          acc[p.id] = String(p.product_category || '')
-          return acc
-        }, {})
-      }
-      const woQualifies = new Set<string>()
-      allItems.forEach((item: any) => {
-        if (!item.product_id) return
-        if (isWmsPickableProduct(item.product_id, catMap[item.product_id], nonPickerCategories, subWarehouseProductIds)) {
-          woQualifies.add(item.work_order_name)
-        }
-      })
-      newOrdersCount = unassignedNames.filter((n) => woQualifies.has(n)).length
-    }
-  }
+  // Use the same item-level queue as the assignment screen, including mixed
+  // work orders with reused fulfillment and genuinely missing Picker rows.
+  const {data:pickerQueue,error:pickerQueueError}=await supabase.rpc('rpc_wms_work_orders_needing_picker')
+  if(pickerQueueError) throw pickerQueueError
+  const newOrdersCount=new Set((pickerQueue || []) as string[]).size
 
   // 2. รายการใบงาน: นับเฉพาะ order_id ที่สถานะภาพรวม = IN PROGRESS (มี item ที่ status เป็น pending/wrong/not_find)
   const { data: wmsData } = await supabase

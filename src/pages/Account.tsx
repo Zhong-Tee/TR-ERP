@@ -236,6 +236,7 @@ export default function Account() {
   const [pendingWaiverCount, setPendingWaiverCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [billingLoading, setBillingLoading] = useState(true)
+  const [withholdingPendingCount,setWithholdingPendingCount] = useState<number | null>(null)
   const taxReviewRef = useRef<HTMLDivElement>(null)
   const [taxReviewRequest,setTaxReviewRequest] = useState<{billNo:string;state:string}>()
   const [taxInvoiceOrders, setTaxInvoiceOrders] = useState<BillingRequestOrder[]>([])
@@ -326,6 +327,36 @@ export default function Account() {
   const [amendmentPendingCount, setAmendmentPendingCount] = useState(0)
   const [claimPendingCount, setClaimPendingCount] = useState(0)
   const [queueCountsLoading, setQueueCountsLoading] = useState(true)
+
+  useEffect(() => {
+    if(menuAccessLoading || !hasAccess('account-withholding')) return
+    let active=true
+    let version=0
+    const refresh=async()=>{
+      const request=++version
+      try {
+        const {data,error}=await supabase.rpc('or_tax_queue',{p_mode:'withholding',p_state:'pending',p_search:'',p_offset:0})
+        if(error) throw error
+        if(active && request===version) setWithholdingPendingCount(Number(data?.counts?.pending || 0))
+      } catch(error) {
+        if(active && request===version) setWithholdingPendingCount(null)
+        console.error('Error loading withholding count:',error)
+      }
+    }
+    void refresh()
+    const channel=supabase.channel('account-withholding-count')
+      .on('postgres_changes',{event:'*',schema:'public',table:'or_orders'},()=>void refresh()).subscribe()
+    const onRefresh=()=>void refresh()
+    const onVisible=()=>{if(document.visibilityState==='visible')void refresh()}
+    window.addEventListener('sidebar-refresh-counts',onRefresh)
+    document.addEventListener('visibilitychange',onVisible)
+    const timer=setInterval(()=>{if(accountSection==='dashboard'&&document.visibilityState==='visible')void refresh()},30000)
+    return ()=>{
+      active=false;clearInterval(timer);void supabase.removeChannel(channel)
+      window.removeEventListener('sidebar-refresh-counts',onRefresh)
+      document.removeEventListener('visibilitychange',onVisible)
+    }
+  },[menuAccessLoading,hasAccess,accountSection])
 
   async function loadQueueCounts() {
     try {
@@ -1388,62 +1419,43 @@ export default function Account() {
         <TrialBalanceSection />
       ) : (
         <>
-      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden flex flex-col">
-          <div className="h-1 w-full bg-blue-500 shrink-0" />
-          <div className="p-5 flex-1">
-            <p className="text-base font-medium text-gray-500 uppercase tracking-wide">EasySlip โควต้า</p>
-            {quotaLoading ? (
-              <div className="mt-3 flex items-center gap-2">
-                <div className="h-8 w-16 rounded bg-gray-200 animate-pulse" />
-                <span className="text-base text-gray-400">โหลด...</span>
-              </div>
-            ) : easyslipQuotaInfo ? (
-              <>
-                <p className="mt-3 text-4xl font-bold text-blue-600 tabular-nums">
-                  {easyslipQuotaInfo.remainingQuota.toLocaleString()}
-                </p>
-                <p className="text-sm text-gray-500 mt-1">คงเหลือ</p>
-                <div className="mt-4 pt-4 border-t border-gray-100 space-y-1.5 text-sm text-gray-600">
-                  <p>ใช้แล้ว {easyslipQuotaInfo.usedQuota.toLocaleString()} / {easyslipQuotaInfo.maxQuota.toLocaleString()}</p>
-                  <p>หมดอายุ {formatDateTime(easyslipQuotaInfo.expiredAt)}</p>
-                  <p>เครดิต {easyslipQuotaInfo.currentCredit.toLocaleString()}</p>
-                </div>
-              </>
-            ) : (
-              <p className="mt-3 text-base text-red-600">โหลดโควต้าไม่ได้</p>
-            )}
+      <section aria-label="สรุปงานบัญชี" className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+          <div className="space-y-2 border-t-4 border-blue-500 px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div><p className="text-lg font-semibold text-black">EasySlip โควต้า</p><p className="mt-0.5 text-base text-black">คงเหลือ</p></div>
+              {quotaLoading?<div className="h-8 w-16 animate-pulse rounded bg-gray-100"/>:easyslipQuotaInfo?<p className="text-4xl font-bold tabular-nums text-blue-600">{easyslipQuotaInfo.remainingQuota.toLocaleString()}</p>:<p className="text-base text-black">โหลดไม่ได้</p>}
+            </div>
+            {easyslipQuotaInfo&&!quotaLoading&&<div className="space-y-1 border-t border-gray-100 pt-2 text-base text-black">
+              <div className="flex flex-wrap justify-between gap-x-3 gap-y-1"><span>ใช้แล้ว {easyslipQuotaInfo.usedQuota.toLocaleString()} / {easyslipQuotaInfo.maxQuota.toLocaleString()}</span><span>เครดิต {easyslipQuotaInfo.currentCredit.toLocaleString()}</span></div>
+              <p>หมดอายุ {formatDateTime(easyslipQuotaInfo.expiredAt)}</p>
+            </div>}
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => { setActiveTab('refunds') }}
-          className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden text-left hover:shadow-md hover:border-amber-200 transition-all focus:outline-none focus:ring-2 focus:ring-amber-400 focus:ring-offset-1 flex flex-col"
-        >
-          <div className="h-1 w-full bg-amber-500 shrink-0" />
-          <div className="p-5 flex-1">
-            <p className="text-base font-medium text-gray-500 uppercase tracking-wide">รออนุมัติจัดการยอดเกิน</p>
-            <p className="mt-3 text-4xl font-bold text-amber-600 tabular-nums">{pendingRefunds.length + pendingWaiverCount}</p>
-            <p className="text-sm text-gray-500 mt-1">รายการ</p>
+        {hasAccess('account-refunds')&&<button type="button" onClick={()=>setActiveTab('refunds')}
+          className={`overflow-hidden rounded-xl border bg-white text-left shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-2 ${activeTab==='refunds'?'border-amber-300':'border-gray-200 hover:border-amber-300'}`}>
+          <div className="h-full border-t-4 border-amber-500 px-4 py-3">
+            <div className="flex items-center justify-between gap-3"><div><p className="text-lg font-semibold text-black">จัดการยอดเกิน</p><p className="mt-0.5 text-base text-black">รออนุมัติ</p></div><p className="text-4xl font-bold tabular-nums text-amber-600">{pendingRefunds.length+pendingWaiverCount}</p></div>
+            <p className="mt-3 text-base font-medium text-black">ดูรายการ <span aria-hidden="true">→</span></p>
           </div>
-        </button>
+        </button>}
 
-        <button
-          type="button"
-          onClick={() => { setActiveTab('tax-invoice') }}
-          className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden text-left hover:shadow-md hover:border-sky-200 transition-all focus:outline-none focus:ring-2 focus:ring-sky-400 focus:ring-offset-1 flex flex-col"
-        >
-          <div className="h-1 w-full bg-sky-500 shrink-0" />
-          <div className="p-5 flex-1">
-            <p className="text-base font-medium text-gray-500 uppercase tracking-wide">ขอใบกำกับภาษี</p>
-            <p className="mt-3 text-4xl font-bold text-sky-600 tabular-nums">
-              {billingLoading ? '–' : taxInvoiceOrders.length}
-            </p>
-            <p className="text-sm text-gray-500 mt-1">รายการ</p>
+        {hasAccess('account-tax-invoice')&&<button type="button" onClick={()=>setActiveTab('tax-invoice')}
+          className={`overflow-hidden rounded-xl border bg-white text-left shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 ${activeTab==='tax-invoice'?'border-sky-300':'border-gray-200 hover:border-sky-300'}`}>
+          <div className="h-full border-t-4 border-sky-500 px-4 py-3">
+            <div className="flex items-center justify-between gap-3"><div><p className="text-lg font-semibold text-black">ขอใบกำกับภาษี</p><p className="mt-0.5 text-base text-black">รายการคำขอ</p></div><p className="text-4xl font-bold tabular-nums text-sky-600">{billingLoading?'–':taxInvoiceOrders.length}</p></div>
+            <p className="mt-3 text-base font-medium text-black">ดูรายการ <span aria-hidden="true">→</span></p>
           </div>
-        </button>
+        </button>}
 
+        {hasAccess('account-withholding')&&<button type="button" onClick={()=>setActiveTab('withholding')}
+          className={`overflow-hidden rounded-xl border bg-white text-left shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 ${activeTab==='withholding'?'border-violet-300':'border-gray-200 hover:border-violet-300'}`}>
+          <div className="h-full border-t-4 border-violet-500 px-4 py-3">
+            <div className="flex items-center justify-between gap-3"><div><p className="text-lg font-semibold text-black">หัก ณ ที่จ่าย</p><p className="mt-0.5 text-base text-black">รออนุมัติ</p></div><p className="text-4xl font-bold tabular-nums text-violet-600">{withholdingPendingCount??'–'}</p></div>
+            <p className="mt-3 text-base font-medium text-black">ดูรายการ <span aria-hidden="true">→</span></p>
+          </div>
+        </button>}
       </section>
 
       {/* แถบเมนูย่อย — แสดงตัวเลขแบบเรียลไทม์ */}
@@ -1484,7 +1496,7 @@ export default function Account() {
           </span>
         </button>
         )}
-        {hasAccess('account-withholding') && <button type="button" onClick={() => setActiveTab('withholding')} className={"rounded px-3 py-3 " + (activeTab === 'withholding' ? 'bg-blue-100 text-blue-700' : '')}>ขอหัก ณ ที่จ่าย</button>}
+        {hasAccess('account-withholding') && <button type="button" onClick={() => setActiveTab('withholding')} className={`flex items-center gap-2 whitespace-nowrap border-b-2 px-3 py-3 text-base font-semibold transition-colors sm:px-4 ${activeTab==='withholding'?'border-violet-500 text-violet-600':'border-transparent text-gray-500 hover:text-violet-600'}`}>ขอหัก ณ ที่จ่าย<span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-xs text-violet-700">{withholdingPendingCount??'–'}</span></button>}
         {hasAccess('account-approvals') && (
         <button
           type="button"

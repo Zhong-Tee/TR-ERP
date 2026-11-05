@@ -8,6 +8,8 @@ import {
   type ParsedDeliveryFile,
 } from '../../lib/deliveryCheck'
 import Modal from '../ui/Modal'
+import { useAuthContext } from '../../contexts/AuthContext'
+import TransportBillingWorkspace from './TransportBillingWorkspace'
 import DeliveryTrackingWorkspace from './DeliveryTrackingWorkspace'
 
 type DeliveryImport = {
@@ -140,7 +142,10 @@ function formatDateTime(value: string | null | undefined): string {
 }
 
 export default function DeliveryCheckPanel() {
-  const [view, setView] = useState<'bills' | 'history'>('bills')
+  const { user } = useAuthContext()
+  const canReconcile = ['superadmin', 'account'].includes(user?.role || '')
+  const [view, setView] = useState<'billing' | 'bills' | 'history'>(() => canReconcile ? 'billing' : 'bills')
+  const [uploadOpen, setUploadOpen] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
   const rowsGeneration = useRef(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -164,6 +169,8 @@ export default function DeliveryCheckPanel() {
   const [savingRowId, setSavingRowId] = useState<string | null>(null)
   const [duplicateWarning, setDuplicateWarning] = useState<PreviousDuplicate[]>([])
   const [deleteImportOpen, setDeleteImportOpen] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<DeliveryImport | null>(null)
+  const [exportingImportId, setExportingImportId] = useState<string | null>(null)
   const [deletingImport, setDeletingImport] = useState(false)
   const [message, setMessage] = useState<{ tone: 'success' | 'error' | 'info'; text: string } | null>(null)
 
@@ -299,6 +306,7 @@ export default function DeliveryCheckPanel() {
       const finalCounts = rebuildResult.data as { issue_count?: number } | null
       await loadImports(result.import_id)
       setRefreshKey(key => key + 1)
+      setUploadOpen(false)
       setPreview(null)
       setSelectedFile(null)
       setFileHash('')
@@ -353,16 +361,16 @@ export default function DeliveryCheckPanel() {
   }
 
   async function deleteSelectedImport() {
-    if (!selectedImport) return
+    if (!deleteTarget) return
     setDeletingImport(true)
     try {
-      const deletedName = selectedImport.file_name
+      const deletedName = deleteTarget.file_name
       const { error } = await supabase.rpc('tr_delivery_check_delete_import', {
-        p_import_id: selectedImport.id,
+        p_import_id: deleteTarget.id,
       })
       if (error) throw error
       setDeleteImportOpen(false)
-      setSelectedImportId('')
+      if (selectedImportId === deleteTarget.id) setSelectedImportId('')
       await loadImports()
       setRefreshKey(key => key + 1)
       setMessage({ tone: 'success', text: `ลบประวัติ ${deletedName} และผลตรวจของรอบนั้นแล้ว` })
@@ -405,10 +413,20 @@ export default function DeliveryCheckPanel() {
     issues: rows.filter(isOpenIssue).length,
   }), [rows])
 
-  function exportResult() {
-    const selected = imports.find((item) => item.id === selectedImportId)
-    if (!selected || rows.length === 0) return
-    const output = rows.filter((row) => row.source_kind === 'carrier').map((row) => {
+  async function exportResult(selected: DeliveryImport) {
+    setExportingImportId(selected.id)
+    try {
+    const exportRows: DeliveryRow[] = []
+    for (let start = 0; ; start += 500) {
+      const { data, error } = await supabase.from('tr_delivery_check_rows')
+        .select('id,source_kind,source_row_number,pickup_at,order_no,tracking_no,sender,consignee,consignee_phone,consignee_address,is_consignment,note,order_id,match_status,match_method,match_detail,has_duplicate,has_previous_import,previous_import_id,previous_file_name,previous_carrier,previous_imported_at,previous_pickup_at,review_status,reviewed_at,raw_data,or_orders(bill_no,tracking_number,customer_name,recipient_name,channel_code,shipped_time,status)')
+        .eq('import_id', selected.id).eq('source_kind', 'carrier').order('source_row_number').order('id').range(start, start + 499)
+      if (error) throw error
+      const page = (data || []) as unknown as DeliveryRow[]
+      exportRows.push(...page)
+      if (page.length < 500) break
+    }
+    const output = exportRows.filter((row) => row.source_kind === 'carrier').map((row) => {
       const order = linkedOrder(row)
       return {
         สถานะ: statusLabel(row),
@@ -422,7 +440,7 @@ export default function DeliveryCheckPanel() {
         ผู้ส่ง: row.sender || '',
         ผู้รับ: row.consignee || order?.recipient_name || order?.customer_name || '',
         เบอร์โทร: row.consignee_phone || '',
-        หมายเหตุ: notes[row.id] ?? row.note ?? '',
+        หมายเหตุ: (selected.id === selectedImportId ? notes[row.id] : undefined) ?? row.note ?? '',
         รายละเอียด: row.match_detail || '',
         'เคยนำเข้าแล้ว': row.has_previous_import ? 'ใช่' : 'ไม่',
         'ไฟล์ที่เคยนำเข้า': row.previous_file_name || '',
@@ -433,9 +451,10 @@ export default function DeliveryCheckPanel() {
     const workbook = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(output), 'ผลตรวจสอบการส่ง')
     XLSX.writeFile(workbook, `ตรวจสอบการส่ง_${selected.carrier}_${selected.pickup_date_from}.xlsx`)
+    } catch (error) { setMessage({ tone: 'error', text: errorMessage(error) }) }
+    finally { setExportingImportId(null) }
   }
 
-  const selectedImport = imports.find((item) => item.id === selectedImportId)
 
   return (
     <div className="space-y-4">
@@ -449,8 +468,12 @@ export default function DeliveryCheckPanel() {
         </div>
       )}
 
-      <nav className="flex flex-wrap gap-2" aria-label="มุมมองตรวจสอบการส่ง">{([['bills', 'ติดตามบิล ERP รวมทุกไฟล์'], ['history', 'ประวัตินำเข้า / ฝากส่ง / รายการต้องตรวจ']] as const).map(([key,label]) => <button key={key} onClick={() => setView(key)} className={`rounded-lg border px-4 py-2 text-sm font-semibold ${view===key ? 'bg-blue-600 text-white' : 'bg-white text-gray-700'}`}>{label}</button>)}</nav>
-      <div className={`grid grid-cols-1 gap-4 ${view==='history' ? 'xl:grid-cols-[minmax(0,1.5fr)_minmax(300px,0.8fr)]' : ''}`}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+      <nav className="flex flex-wrap gap-2" aria-label="มุมมองตรวจสอบการส่ง">{canReconcile && <button onClick={() => setView('billing')} className={`rounded-lg border px-4 py-2 text-sm font-semibold ${view === 'billing' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700'}`}>กระทบยอดเรียกเก็บ</button>}{([['bills', 'ติดตามบิล ERP รวมทุกไฟล์'], ['history', 'ประวัตินำเข้า / ฝากส่ง / รายการต้องตรวจ']] as const).map(([key,label]) => <button key={key} onClick={() => setView(key)} className={`rounded-lg border px-4 py-2 text-sm font-semibold ${view===key ? 'bg-blue-600 text-white' : 'bg-white text-gray-700'}`}>{label}</button>)}</nav>
+      {view !== 'billing' && <button type="button" onClick={() => setUploadOpen(true)} className="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700">นำเข้าไฟล์รับพัสดุ</button>}
+      </div>
+      <Modal open={uploadOpen} onClose={() => !importing && setUploadOpen(false)} contentClassName="max-w-5xl">
+        {message?.tone === 'error' && <p role="alert" className="mx-5 mt-5 rounded-lg bg-red-50 p-3 text-sm text-red-700">{message.text}</p>}
         <section className="rounded-xl border border-gray-200 bg-white p-5">
           <div className="mb-4">
             <h2 className="text-lg font-bold text-gray-900">นำเข้าไฟล์รับพัสดุจากขนส่ง</h2>
@@ -500,33 +523,31 @@ export default function DeliveryCheckPanel() {
             </div>
           )}
         </section>
+      </Modal>
+      {view === 'billing' && canReconcile && <TransportBillingWorkspace />}
+      <div className={`${view === 'history' ? 'block' : 'hidden'}`}>
+
 
         {view==='history' && <section className="rounded-xl border border-gray-200 bg-white p-5">
           <h3 className="mb-3 text-sm font-semibold text-gray-700">ประวัติการนำเข้า · {imports.length} ไฟล์</h3>
-          <input aria-label="ค้นหาไฟล์นำเข้า" value={importQuery} onChange={event => setImportQuery(event.target.value)} placeholder="ค้นหาชื่อไฟล์ หรือวันที่ในไฟล์" className="mb-2 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" />
-          <div className="mb-3 flex flex-wrap gap-2">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
             <select aria-label="กรองบริษัทขนส่ง" value={importCarrier} onChange={event => setImportCarrier(event.target.value)} className="rounded-lg border px-2 py-2 text-sm"><option value="">ทุกขนส่ง</option>{[...new Set(imports.map(item => item.carrier))].map(value => <option key={value}>{value}</option>)}</select>
             <select aria-label="กรองสถานะไฟล์" value={importFilter} onChange={event => setImportFilter(event.target.value)} className="rounded-lg border px-2 py-2 text-sm"><option value="all">ทุกไฟล์</option><option value="issues">⚠ มีรายการต้องตรวจ</option><option value="consignment">📦 มีรายการฝากส่ง</option></select>
+          <input aria-label="ค้นหาไฟล์นำเข้า" value={importQuery} onChange={event => setImportQuery(event.target.value)} placeholder="ค้นหาชื่อไฟล์ หรือวันที่ในไฟล์" className="min-w-[180px] flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm" />
           </div>
-          <div className="max-h-72 space-y-2 overflow-y-auto" aria-label="รายการไฟล์นำเข้า">
-            {visibleImports.map(item => <button type="button" key={item.id} onClick={() => setSelectedImportId(item.id)} aria-pressed={selectedImportId === item.id} className={`w-full rounded-lg border p-3 text-left ${selectedImportId === item.id ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'}`}>
-              <div className="break-words text-sm font-semibold text-gray-900">{item.file_name}</div>
-              <div className="mt-1 text-xs text-gray-500">{item.pickup_date_from} · {item.carrier} · {item.source_row_count} รายการ</div>
-              <div className="mt-2 flex flex-wrap gap-2"><span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">⚠ ต้องตรวจ {item.issue_count}</span><span className="rounded-full bg-violet-100 px-2 py-1 text-xs font-bold text-violet-800">📦 ฝากส่ง {item.consignment_count}</span></div>
-            </button>)}
+          <div className="max-h-72 space-y-2 overflow-auto" aria-label="รายการไฟล์นำเข้า">
+            {visibleImports.map(item => <div key={item.id} className={`flex min-w-[1040px] items-center gap-3 rounded-lg border px-3 py-2 ${selectedImportId === item.id ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'}`}>
+              <button type="button" onClick={() => setSelectedImportId(item.id)} aria-pressed={selectedImportId === item.id} className="flex min-w-0 flex-1 items-center gap-4 text-left">
+                <span className="min-w-0 flex-1 truncate text-sm font-semibold text-gray-900" title={item.file_name}>{item.file_name}</span>
+                <span className="shrink-0 whitespace-nowrap text-xs text-gray-500">{item.pickup_date_from} · {item.carrier} · {item.source_row_count} รายการ</span>
+                <span className="shrink-0 whitespace-nowrap text-xs text-gray-500">นำเข้า {formatDateTime(item.uploaded_at)}</span>
+                <span className="flex shrink-0 gap-2 whitespace-nowrap"><span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">⚠ ต้องตรวจ {item.issue_count}</span><span className="rounded-full bg-violet-100 px-2 py-1 text-xs font-bold text-violet-800">📦 ฝากส่ง {item.consignment_count}</span></span>
+              </button>
+              <button type="button" aria-label={`ส่งออก ${item.file_name}`} disabled={exportingImportId !== null} onClick={() => void exportResult(item)} className="shrink-0 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">{exportingImportId === item.id ? 'กำลังส่งออก...' : 'ส่งออก'}</button>
+              <button type="button" aria-label={`ลบประวัติ ${item.file_name}`} disabled={deletingImport} onClick={() => { setDeleteTarget(item); setDeleteImportOpen(true) }} className="shrink-0 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-100 disabled:opacity-50">ลบ</button>
+            </div>)}
             {visibleImports.length === 0 && <p className="py-5 text-center text-sm text-gray-500">ไม่พบไฟล์ตามตัวกรอง</p>}
           </div>
-          {selectedImport && (
-            <div className="mt-4 space-y-2 text-sm text-gray-600">
-              <div className="flex justify-between"><span>ไฟล์</span><strong className="max-w-[190px] truncate text-gray-800" title={selectedImport.file_name}>{selectedImport.file_name}</strong></div>
-              <div className="flex justify-between"><span>วันที่ในไฟล์</span><strong className="text-gray-800">{selectedImport.pickup_date_from}</strong></div>
-              <div className="flex justify-between"><span>นำเข้าเมื่อ</span><strong className="text-gray-800">{formatDateTime(selectedImport.uploaded_at)}</strong></div>
-              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-                <button type="button" onClick={exportResult} disabled={rows.length === 0} className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2.5 text-sm font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">ส่งออกผลตรวจสอบ</button>
-                <button type="button" onClick={() => setDeleteImportOpen(true)} className="rounded-lg border border-red-300 bg-red-50 px-3 py-2.5 text-sm font-bold text-red-700 hover:bg-red-100">ลบประวัติรอบนี้</button>
-              </div>
-            </div>
-          )}
         </section>}
       </div>
 
@@ -618,18 +639,18 @@ export default function DeliveryCheckPanel() {
       </Modal>
 
       <Modal
-        open={deleteImportOpen && Boolean(selectedImport)}
+        open={deleteImportOpen && Boolean(deleteTarget)}
         onClose={() => !deletingImport && setDeleteImportOpen(false)}
         contentClassName="max-w-lg"
       >
         <div className="p-6">
           <h3 className="text-lg font-bold text-gray-900">ยืนยันลบประวัติการนำเข้า</h3>
           <p className="mt-2 text-sm text-gray-600">ระบบจะลบรอบนำเข้าและผลตรวจของรอบนี้เท่านั้น บิลและ Tracking ในระบบออเดอร์จะไม่ถูกลบ</p>
-          {selectedImport && (
+          {deleteTarget && (
             <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm">
-              <div className="flex justify-between gap-4"><span className="text-gray-600">วันที่</span><strong>{selectedImport.pickup_date_from}</strong></div>
-              <div className="mt-2 flex justify-between gap-4"><span className="text-gray-600">บริษัทขนส่ง</span><strong>{selectedImport.carrier}</strong></div>
-              <div className="mt-2 flex justify-between gap-4"><span className="text-gray-600">ไฟล์</span><strong className="max-w-[270px] truncate" title={selectedImport.file_name}>{selectedImport.file_name}</strong></div>
+              <div className="flex justify-between gap-4"><span className="text-gray-600">วันที่</span><strong>{deleteTarget.pickup_date_from}</strong></div>
+              <div className="mt-2 flex justify-between gap-4"><span className="text-gray-600">บริษัทขนส่ง</span><strong>{deleteTarget.carrier}</strong></div>
+              <div className="mt-2 flex justify-between gap-4"><span className="text-gray-600">ไฟล์</span><strong className="max-w-[270px] truncate" title={deleteTarget.file_name}>{deleteTarget.file_name}</strong></div>
             </div>
           )}
           <div className="mt-5 flex justify-end gap-2">

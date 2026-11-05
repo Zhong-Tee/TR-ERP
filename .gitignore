@@ -56,3 +56,6 @@ dist-delivery-review/
 
 # Local invoice reconciliation plan, database backup, and execution reports
 .tmp/legacy-tax-reconcile-20261105/
+
+# Local WMS relink backups and execution reports
+.tmp/wms-relink-20261105/

@@ -627,7 +627,7 @@ export default function WorkOrderManageList({
     setConfirmModal({
       open: true,
       title: 'ยืนยันยกเลิกใบงาน',
-      message: `ต้องการยกเลิกใบงาน "${wo.work_order_name}" หรือไม่?`,
+      message: `ต้องการยกเลิกใบงาน "${wo.work_order_name}" และนำบิลกลับคิวหรือไม่? รายการที่หยิบหรือตัดสต๊อกแล้วจะเก็บไว้ใช้ต่อเมื่อสร้างใบงานใหม่ โดยไม่หยิบหรือตัดซ้ำ หากต้องการคืนสินค้าจริงให้ใช้ขั้นตอนคืนสินค้า`,
       onConfirm: () => doCancelWorkOrder(wo),
     })
   }
@@ -636,26 +636,9 @@ export default function WorkOrderManageList({
     setConfirmModal((prev) => ({ ...prev, open: false }))
     setUpdating(true)
     try {
-      // ย้ายบิลกลับคิว Plan: เขียนสถานะใบสั่งงานโดยตรง (soft-deprecate สถานะย้ายจากใบงาน)
-      const commonResetFields = {
-        work_order_id: null,
-        work_order_name: null,
-        plan_released_from_work_order: null,
-        plan_released_from_work_order_id: null,
-        plan_released_at: null,
-        status: 'ใบสั่งงาน' as const,
-      }
-      const { error: updateOrdersError } = await supabase
-        .from('or_orders')
-        .update({ ...commonResetFields })
-        .eq('work_order_id', wo.id)
-      if (updateOrdersError) throw updateOrdersError
-      // ไม่ลบใบงานทิ้ง: เก็บไว้ในแท็บ "ใบงานทั้งหมด" พร้อมสถานะยกเลิก
-      const { error: cancelWoError } = await supabase
-        .from('or_work_orders')
-        .update({ status: 'ยกเลิก', order_count: 0 })
-        .eq('id', wo.id)
-      if (cancelWoError) throw cancelWoError
+      const {data,error}=await supabase.rpc('rpc_cancel_work_order_preserve_wms',{p_work_order_id:wo.id})
+      if(error) throw error
+      if(!data?.success) throw new Error(data?.error || 'ยกเลิกใบงานไม่สำเร็จ')
       await loadWorkOrders()
       onRefresh?.()
       setMessageModal({ open: true, message: `ยกเลิกใบงาน "${wo.work_order_name}" เรียบร้อย` })

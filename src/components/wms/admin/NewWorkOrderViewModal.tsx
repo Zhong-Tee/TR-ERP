@@ -46,7 +46,12 @@ export default function NewWorkOrderViewModal({ workOrder, onClose }: {
       {loading ? <p className="py-8 text-center text-slate-500">กำลังโหลด...</p> : error ? <p role="alert" className="py-8 text-center text-red-600">{error}</p> : bills.length === 0 ? <p className="py-8 text-center text-slate-500">ไม่มีบิลที่รอดำเนินการในใบงานนี้</p> :
         <div className="space-y-5 max-h-[70vh] overflow-y-auto">
           {bills.map(bill => <section key={bill.id} className="rounded-lg border overflow-hidden">
-            <div className="bg-slate-100 px-4 py-3"><h4 className="font-bold">{bill.bill_no || '-'} · {bill.customer_name || '-'}</h4><p className="text-sm text-slate-600">{bill.status}</p></div>
+            <div className="bg-slate-100 px-4 py-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0"><h4 className="font-bold">{bill.bill_no || '-'}</h4><p className="mt-1 break-words text-sm text-slate-500">บัญชีผู้ซื้อ: {bill.customer_name?.trim() || '—'}</p></div>
+                <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600">{bill.status}</span>
+              </div>
+            </div>
             <div className="overflow-x-auto"><table className="w-full text-sm text-left">
               <thead className="bg-slate-50"><tr>{['UID', 'สินค้า', 'สีหมึก', 'ลาย', 'เส้น', 'ฟอนต์', 'ข้อความ', 'จำนวน', 'หมายเหตุ'].map(label => <th key={label} className="px-3 py-2 whitespace-nowrap">{label}</th>)}</tr></thead>
               <tbody className="divide-y">{sortOrderItemsForBillDisplay(bill.or_order_items || []).map(item => <tr key={item.id}>

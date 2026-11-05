@@ -7,7 +7,6 @@ import { useWmsModal } from '../useWmsModal'
 import {
   fetchWmsNonPickerCategories,
   fetchSubWarehouseProductIds,
-  fetchWorkOrderNamesWithWmsAssigned,
   isWmsPickableProduct,
 } from '../wmsUtils'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../../../lib/orderFlowFilter'
@@ -79,7 +78,7 @@ export default function NewOrdersSection() {
       .subscribe()
     const wmsChannel = supabase
       .channel('wms-new-workorders-wms')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'wms_orders' }, () => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_orders' }, () => {
         scheduleReload()
       })
       .subscribe()
@@ -94,13 +93,13 @@ export default function NewOrdersSection() {
   const loadWorkOrders = async () => {
     const requestId = ++loadRequestRef.current
     try {
-      const [{ data }, assignedNames, nonPickerCategories, subWarehouseProductIds] = await Promise.all([
+      const [{ data }, pickerQueue, nonPickerCategories, subWarehouseProductIds] = await Promise.all([
         supabase
           .from('or_work_orders')
           .select('id, work_order_name, order_count, created_at, plan_wo_modified')
           .eq('status', 'กำลังผลิต')
           .order('created_at', { ascending: false }),
-        fetchWorkOrderNamesWithWmsAssigned(),
+        supabase.rpc('rpc_wms_work_orders_needing_picker'),
         fetchWmsNonPickerCategories(),
         fetchSubWarehouseProductIds(),
       ])
@@ -113,7 +112,9 @@ export default function NewOrdersSection() {
       }
 
       const deduped = dedupeWorkOrdersByName(data)
-      const unassigned = deduped.filter((wo) => !assignedNames.has(wo.work_order_name))
+      if(pickerQueue.error) throw pickerQueue.error
+      const needsPicker=new Set((pickerQueue.data || []) as string[])
+      const unassigned = deduped.filter((wo) => needsPicker.has(wo.work_order_name))
 
       let finalList: Array<{
         id: string
@@ -189,6 +190,9 @@ export default function NewOrdersSection() {
       setActiveBillCountByWo(counts)
       setDueBillsByWo(dueMap)
       setWorkOrders(finalList)
+    } catch(error) {
+      if(requestId===loadRequestRef.current) showMessage({message:'โหลดคิวมอบหมายไม่สำเร็จ กรุณาลองใหม่'})
+      console.error('Error loading Picker queue:',error)
     } finally {
       if (requestId === loadRequestRef.current) setInitialLoading(false)
     }
@@ -219,17 +223,6 @@ export default function NewOrdersSection() {
     }
     setAssigning(true)
     try {
-      const { count } = await supabase
-        .from('wms_orders')
-        .select('id', { count: 'exact', head: true })
-        .eq('work_order_id', selectedWorkOrder)
-        .or('fulfillment_mode.eq.warehouse_pick,fulfillment_mode.is.null')
-        .neq('status', 'cancelled')
-      if ((count || 0) > 0) {
-        showMessage({ message: 'ใบงานนี้ถูกสร้างในระบบ WMS แล้ว' })
-        return
-      }
-
       const { data: rpcResult, error: rpcError } = await supabase.rpc('rpc_assign_wms_for_work_order_v2', {
         p_work_order_id: selectedWorkOrder,
         p_picker_id: selectedPickerId,
@@ -244,6 +237,7 @@ export default function NewOrdersSection() {
         system_complete?: number
       }
       if (!result || !result.success) {
+        void loadWorkOrders()
         showMessage({ message: result?.error || 'มอบหมาย WMS ไม่สำเร็จ' })
         return
       }
@@ -269,7 +263,7 @@ export default function NewOrdersSection() {
     <div className="flex-1 flex flex-col overflow-hidden">
       <h2 className="text-xl font-black mb-4 pl-2">ใบงานใหม่</h2>
       <p className="text-sm text-slate-600 mb-3 pl-2">
-        แสดง<strong>เฉพาะ</strong>ใบงานที่ยัง<strong>ไม่ได้มอบหมาย Picker</strong> และมีสินค้าที่ต้องหยิบคลัง — ใบงานที่มอบหมายแล้วหรือปิดงานแล้วดูที่เมนู{' '}
+        แสดง<strong>เฉพาะ</strong>ใบงานที่ยังมีสินค้า<strong>รอมอบหมาย Picker</strong> — รายการที่หยิบแล้วจะใช้ผลเดิม และมอบหมายเฉพาะรายการที่ยังขาด ดูงานที่มอบหมายแล้วที่เมนู{' '}
         <strong>รายการใบงาน</strong> หรือหน้ามือถือของ Picker
       </p>
       {workOrders.length === 0 ? (

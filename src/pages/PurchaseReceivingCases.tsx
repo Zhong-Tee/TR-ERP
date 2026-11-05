@@ -5,7 +5,7 @@ import { useAuthContext } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { loadCaseUsers, CaseFinance, CaseMethod, CaseSettlement, ReceivingCase, canViewPurchaseCost, caseAction, caseMethods, caseStatuses, errorText, loadReceivingCases, uploadCaseEvidence } from '../lib/receivingCases'
 
-const actions: Record<string, string> = { created: 'สร้างคำขอ', approve: 'อนุมัติปิดยอดค้างรับ', reject: 'ไม่อนุมัติ', resubmit: 'ส่งขออนุมัติหลังติดตาม', settle: 'บันทึกการคืนเงิน / ปรับยอด', note: 'บันทึกผลติดตาม' }
+const actions: Record<string, string> = { created: 'สร้างคำขอ', approve: 'อนุมัติปิดยอดค้างรับ', reject: 'ไม่อนุมัติ', resubmit: 'ส่งขออนุมัติหลังติดตาม', settle: 'บันทึกผลดำเนินการ', note: 'บันทึกผลติดตาม' }
 const money = (n: number) => Number(n).toLocaleString('th-TH', { minimumFractionDigits: 2 })
 const date = (s: string) => new Date(s).toLocaleString('th-TH')
 const inputClass = 'w-full rounded-lg border p-2 mt-1'
@@ -34,6 +34,8 @@ export default function PurchaseReceivingCases() {
   const [method, setMethod] = useState<CaseMethod>('refund')
   const [confirmed, setConfirmed] = useState(false)
   const [files, setFiles] = useState<File[]>([])
+  const isAdjustment=selected?.method==='cancel_unpaid'
+  const settlementLabel=isAdjustment?'ปรับยอดชำระ':'รับเงินคืน'
 
   async function refresh(id?: string) {
     const list = await loadReceivingCases(); setCases(list)
@@ -81,10 +83,15 @@ export default function PurchaseReceivingCases() {
     if (!selected || busy) return
     if (['approve', 'reject', 'settle'].includes(action) && !confirmed) { setError('กรุณายืนยันว่าตรวจสอบข้อมูลและหลักฐานแล้ว'); return }
     if (action === 'approve' && ['refund', 'cancel_unpaid'].includes(selected.method) && (!Number.isFinite(Number(amount)) || Number(amount) <= 0)) { setError('ระบุยอดเงินตามข้อตกลงก่อนอนุมัติ'); return }
-    if (action === 'settle' && (!Number.isFinite(Number(amount)) || Number(amount) <= 0 || !reference.trim() || !settledOn)) { setError('ระบุจำนวนเงิน วันที่ และเลขอ้างอิงให้ครบ'); return }
+    if (action === 'settle') {
+      if(!Number.isFinite(Number(amount)) || Number(amount)<=0 || !settledOn) { setError(`กรอกจำนวนเงินและวันที่${settlementLabel}ให้ครบ`); return }
+      if(!isAdjustment && !reference.trim()) { setError('กรอกเลขอ้างอิงการรับเงินคืน'); return }
+      if(!finance) { setError('ยังโหลดข้อมูลยอดเงินไม่สำเร็จ กรุณาปิดแล้วเปิดรายการใหม่'); return }
+      if(Number(amount)>Number(finance.expected_amount)-Number(finance.settled_amount)) { setError('จำนวนเงินเกินยอดคงเหลือที่ต้องดำเนินการ'); return }
+    }
     setBusy(true); setError('')
     try {
-      await caseAction(selected.id, action, { note: note.trim(), amount: amount ? Number(amount) : null, currency, reference: reference.trim(), settled_on: settledOn, method })
+      await caseAction(selected.id, action, { note: note.trim(), amount: amount ? Number(amount) : null, currency, reference: reference.trim() || (action==='settle' && isAdjustment ? `ปรับยอดชำระตามข้อตกลง RC-${selected.case_no} (ไม่ระบุเลขเอกสาร)` : ''), settled_on: settledOn, method })
       setConfirmed(false); setAmount(''); setNote(''); setReference('')
       await refresh(selected.id)
     } catch (e) { setError(errorText(e)) } finally { setBusy(false) }
@@ -111,11 +118,10 @@ export default function PurchaseReceivingCases() {
       {selected && <div className="p-6 space-y-4 text-gray-900">
         <h2 className="text-xl font-bold pr-10">RC-{selected.case_no} · {selected.inv_po?.po_no}</h2>
         <p>{caseMethods[selected.method]} · <strong>{caseStatuses[selected.status]}</strong></p>
-        {error && <p role="alert" className="p-3 rounded bg-red-50 text-red-700">{error}</p>}
         <div className="p-3 bg-gray-50 rounded text-sm space-y-1"><p>ผู้ขาย: {selected.inv_po?.supplier_name || '-'}</p><p>ผู้สร้าง: {users[selected.created_by]} · ผู้รับผิดชอบ: {users[selected.assigned_to]}</p><p>เหตุผล: {selected.reason}</p>{selected.approved_at && <p>อนุมัติโดย {users[selected.approved_by || '']} เมื่อ {date(selected.approved_at)}</p>}<p>PO: <Link className="text-blue-600 underline" to={`/purchase/po?search=${encodeURIComponent(selected.inv_po?.po_no || '')}`}>{selected.inv_po?.po_no}</Link></p><p>GR ที่เกี่ยวข้อง: {grs.length ? grs.map(g => <Link key={g.id} className="text-blue-600 underline mr-3" to={`/purchase/gr?search=${encodeURIComponent(g.gr_no)}`}>{g.gr_no}</Link>) : '-'}</p></div>
         <table className="w-full text-sm"><thead className="bg-gray-100"><tr><th className="p-2 text-left">สินค้า</th><th>จำนวนที่ขอปิด</th><th>รับจริงสะสม</th></tr></thead><tbody>{selected.inv_receiving_case_items.map(i => <tr key={i.id} className="border-b"><td className="p-2">{i.inv_po_items?.pr_products?.product_code} {i.inv_po_items?.pr_products?.product_name}</td><td className="text-center">{i.qty} {i.inv_po_items?.unit}</td><td className="text-center">{i.inv_po_items?.qty_received_total}</td></tr>)}</tbody></table>
-        {financial && finance && <div className="bg-blue-50 p-3 rounded text-sm">ยอดตามข้อตกลง {money(finance.expected_amount)} · ดำเนินการแล้ว {money(finance.settled_amount)} · คงเหลือ <strong>{money(finance.expected_amount - finance.settled_amount)} {finance.currency}</strong></div>}
-        {financial && settlements.length > 0 && <div className="space-y-1 text-sm">{settlements.map(s => <p key={s.id}>{s.settled_on} · {money(s.amount)} {finance?.currency} · อ้างอิง {s.reference}</p>)}</div>}
+        {financial && finance && <div className="bg-blue-50 p-3 rounded text-sm">{isAdjustment?'ยอดที่ต้องปรับชำระ':'ยอดที่ต้องรับเงินคืน'} {money(finance.expected_amount)} · {isAdjustment?'ปรับยอดแล้ว':'รับเงินคืนแล้ว'} {money(finance.settled_amount)} · คงเหลือ <strong>{money(finance.expected_amount - finance.settled_amount)} {finance.currency}</strong></div>}
+        {financial && settlements.length > 0 && <div className="space-y-1 text-sm">{settlements.map(s => <p key={s.id}>{s.settled_on} · {settlementLabel} {money(s.amount)} {finance?.currency} · อ้างอิง {s.reference}</p>)}</div>}
         <div className="border rounded p-3 space-y-2"><h3 className="font-semibold">หลักฐาน</h3><p className="text-xs text-gray-500">เห็นเฉพาะไฟล์ของคุณ หรือทุกไฟล์เมื่อเป็น superadmin, admin, account</p>
           {evidence.map(e => <a key={e.url} href={e.url} target="_blank" rel="noreferrer" className="block text-blue-600 underline text-sm">{e.name}</a>)}
           {!evidence.length && <p className="text-sm text-gray-500">{detailLoading ? 'กำลังโหลด...' : 'ไม่มีหลักฐานที่คุณเปิดดูได้'}</p>}
@@ -127,13 +133,17 @@ export default function PurchaseReceivingCases() {
           <button onClick={() => run('note')} disabled={!note.trim()} className="border rounded px-3 py-2 text-sm disabled:opacity-50">บันทึกผลติดตาม</button>
           {selected.status === 'dispute' && <div className="flex gap-2"><select aria-label="วิธีจัดการหลังติดตาม" value={method} onChange={e => setMethod(e.target.value as CaseMethod)} className="border rounded p-2">{Object.entries(caseMethods).filter(([key]) => key !== 'dispute').map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select><button onClick={() => run('resubmit')} className="bg-blue-600 text-white rounded px-3 py-2">ส่งขออนุมัติ</button></div>}
           {financial && ['pending', 'dispute', 'refund_pending', 'adjustment_pending'].includes(selected.status) && <div className="border-t pt-3 space-y-3">
-            {((selected.status === 'pending' && ['refund', 'cancel_unpaid'].includes(selected.method)) || ['refund_pending', 'adjustment_pending'].includes(selected.status)) && <div className="grid sm:grid-cols-2 gap-3"><label>จำนวนเงิน {selected.status === 'pending' ? 'ตามข้อตกลงที่ตรวจสอบแล้ว' : 'ที่ได้รับคืน / ปรับยอดครั้งนี้'}<input type="number" min="0.01" step="0.01" className={inputClass} value={amount} onChange={e => setAmount(e.target.value)} /></label>{selected.status === 'pending' ? <label>สกุลเงิน<select className={inputClass} value={currency} onChange={e => setCurrency(e.target.value)}>{['THB','CNY','USD'].map(v => <option key={v}>{v}</option>)}</select></label> : <label>วันที่ดำเนินการ<input type="date" value={settledOn} onChange={e => setSettledOn(e.target.value)} className={inputClass} /></label>}</div>}
-            {['refund_pending', 'adjustment_pending'].includes(selected.status) && <label className="block">เลขอ้างอิงการโอน / เอกสารปรับยอด<input value={reference} onChange={e => setReference(e.target.value)} className={inputClass} /></label>}
+            {((selected.status === 'pending' && ['refund', 'cancel_unpaid'].includes(selected.method)) || ['refund_pending', 'adjustment_pending'].includes(selected.status)) && <div className="grid sm:grid-cols-2 gap-3"><label>จำนวนเงิน {selected.status === 'pending' ? 'ตามข้อตกลงที่ตรวจสอบแล้ว' : isAdjustment?'ที่ปรับยอดชำระครั้งนี้':'ที่รับเงินคืนครั้งนี้'}<input type="number" min="0.01" step="0.01" className={inputClass} value={amount} onChange={e => setAmount(e.target.value)} /></label>{selected.status === 'pending' ? <label>สกุลเงิน<select className={inputClass} value={currency} onChange={e => setCurrency(e.target.value)}>{['THB','CNY','USD'].map(v => <option key={v}>{v}</option>)}</select></label> : <label>วันที่{settlementLabel}<input type="date" value={settledOn} onChange={e => setSettledOn(e.target.value)} className={inputClass} /></label>}</div>}
+            {['refund_pending', 'adjustment_pending'].includes(selected.status) && <label className="block">{isAdjustment?'เลขเอกสาร / ข้อตกลงปรับยอดชำระ (ถ้ามี)':'เลขอ้างอิงการรับเงินคืน (จำเป็น)'}<input value={reference} onChange={e => setReference(e.target.value)} className={inputClass} /></label>}
+            {['refund_pending','adjustment_pending'].includes(selected.status)&&<p className="text-sm text-gray-600">{isAdjustment
+              ? `ใช้บันทึกส่วนที่ตกลงไม่ต้องชำระ ไม่ใช่การรับเงินคืน หากไม่มีเลขเอกสาร ระบบจะบันทึกว่า “ปรับยอดชำระตามข้อตกลง RC-${selected.case_no} (ไม่ระบุเลขเอกสาร)”`
+              : 'บันทึกเฉพาะเงินที่ได้รับคืนจริง พร้อมวันที่และเลขอ้างอิงการรับเงินคืน'}</p>}
             <label className="flex gap-2 text-sm"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />ตรวจสอบยอด ข้อตกลง และหลักฐานแล้ว{selected.method === 'cancel_unpaid' && selected.status === 'pending' ? ' ยืนยันว่าเป็นยอดที่ยังไม่ได้ชำระ' : ''}</label>
-            <div className="flex gap-2">{selected.status === 'pending' && <button onClick={() => run('approve')} className="rounded bg-green-600 text-white px-4 py-2">อนุมัติปิดยอดค้างรับ</button>}{['pending','dispute'].includes(selected.status) && <button onClick={() => run('reject')} className="rounded border border-red-300 text-red-700 px-4 py-2">ไม่อนุมัติ</button>}{['refund_pending','adjustment_pending'].includes(selected.status) && <button onClick={() => run('settle')} className="rounded bg-green-600 text-white px-4 py-2">{selected.status === 'refund_pending' ? 'บันทึกรับเงินคืน' : 'บันทึกปรับยอดชำระ'}</button>}</div>
+            <div className="flex gap-2">{selected.status === 'pending' && <button onClick={() => run('approve')} className="rounded bg-green-600 text-white px-4 py-2">อนุมัติปิดยอดค้างรับ</button>}{['pending','dispute'].includes(selected.status) && <button onClick={() => run('reject')} className="rounded border border-red-300 text-red-700 px-4 py-2">ไม่อนุมัติ</button>}{['refund_pending','adjustment_pending'].includes(selected.status) && <button onClick={() => run('settle')} className="rounded bg-green-600 text-white px-4 py-2">{busy?'กำลังบันทึก…':`บันทึก${settlementLabel}`}</button>}</div>
           </div>}
+          {error&&<p role="alert" className="rounded bg-red-50 p-3 text-red-700">{error}</p>}
         </fieldset>
-        <div className="border-t pt-3 space-y-2"><h3 className="font-semibold">ประวัติการดำเนินการ</h3>{[...selected.inv_receiving_case_events].sort((a,b) => a.created_at.localeCompare(b.created_at)).map(e => <div key={e.id} className="text-sm border-l-2 pl-3"><p>{actions[e.action] || e.action} · {users[e.actor_id]} · {date(e.created_at)}</p>{e.note && <p className="text-gray-600">{caseMethods[e.note as CaseMethod] || e.note}</p>}</div>)}</div>
+        <div className="border-t pt-3 space-y-2"><h3 className="font-semibold">ประวัติการดำเนินการ</h3>{[...selected.inv_receiving_case_events].sort((a,b) => a.created_at.localeCompare(b.created_at)).map(e => <div key={e.id} className="text-sm border-l-2 pl-3"><p>{e.action==='settle'?`บันทึก${settlementLabel}`:actions[e.action] || e.action} · {users[e.actor_id]} · {date(e.created_at)}</p>{e.note && <p className="text-gray-600">{caseMethods[e.note as CaseMethod] || e.note}</p>}</div>)}</div>
       </div>}
     </Modal>
   </div>
