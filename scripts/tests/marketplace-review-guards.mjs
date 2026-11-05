@@ -233,7 +233,44 @@ try {
       INSERT INTO or_order_items(id,order_id,product_id) VALUES('${id(order+100)}','${id(order)}','${id(1)}');
       DELETE FROM or_order_items WHERE id='${id(order+100)}'`)
   }
-  console.log('Marketplace correction guards passed: only flagged fields, stable item IDs, no insert/delete, atomic rollback, ordinary/QT/PC unchanged.')
+  // Regression: tax workflow added a stored generated column after these guards.
+  await db.exec(`ALTER TABLE or_orders ADD total_amount numeric DEFAULT 100,
+    ADD billing_details jsonb DEFAULT '{}'::jsonb,
+    ADD receivable_amount numeric GENERATED ALWAYS AS
+      (total_amount - coalesce((billing_details->>'withheld')::numeric,0)) STORED`)
+  const transition = status => db.query('SELECT or_apply_payment_review_status($1,$2,$3)', [id(10),status,'order_review'])
+  const statusSql = await fs.readFile(new URL('../../supabase/legacy-migrations/pre-baseline-20261104/648_refund_production_gate_and_status_history.sql', import.meta.url), 'utf8')
+  const statusFunction = statusSql.match(/CREATE FUNCTION public\.or_apply_payment_review_status[\s\S]*?END \$\$;/)[0]
+  await db.exec(statusFunction)
+  // Reproduce both failures before installing the fix.
+  await assert.rejects(transition('ลงข้อมูลผิด'), /รอตรวจคำสั่งซื้อ/)
+  await assert.rejects(db.exec(`UPDATE or_orders SET status='ใบสั่งงาน' WHERE id='${id(10)}'`), /รอตรวจคำสั่งซื้อ/)
+  await db.exec(await fs.readFile(new URL('../../supabase/migrations/20261105090000_fix_marketplace_generated_receivable_guards.sql', import.meta.url), 'utf8'))
+  for (const status of ['ใบสั่งงาน','รอตรวจคำสั่งซื้อ','รอคอนเฟิร์ม','รอตรวจคำสั่งซื้อ','ลงข้อมูลผิด']) {
+    await transition(status)
+    assert.equal((await row('or_orders')).status, status)
+    assert.equal((await row('or_orders')).receivable_amount, '100')
+  }
+  // The returned header guard also ignores the generated value, but still locks inputs.
+  for (const assignment of ["total_amount=90", `billing_details='{"withheld":3}'::jsonb`, "customer_name='bypass'"]) {
+    await assert.rejects(db.exec(`UPDATE or_orders SET ${assignment} WHERE id='${id(10)}'`), /เฉพาะฟิลด์/)
+  }
+  items = await payload()
+  await save({status:'รอตรวจคำสั่งซื้อ',tracking_number:'AFTER-TAX-FIX'}, [
+    {...items[0],font:'F05'},...items.slice(1),
+  ])
+  assert.equal((await row('or_orders')).tracking_number, 'AFTER-TAX-FIX')
+  assert.equal((await row('or_order_items')).font, 'F05')
+  for (const assignment of ["total_amount=90", `billing_details='{"withheld":3}'::jsonb`, "customer_name='bypass'"]) {
+    await assert.rejects(db.exec(`UPDATE or_orders SET status='ใบสั่งงาน',${assignment} WHERE id='${id(10)}'`), /รอตรวจคำสั่งซื้อ/)
+  }
+  await assert.rejects(db.exec(`UPDATE or_order_items SET font='bypass' WHERE id='${id(40)}'`), /รอตรวจคำสั่งซื้อ/)
+  await assert.rejects(db.exec(`DELETE FROM or_orders WHERE id='${id(10)}'`), /รอตรวจคำสั่งซื้อ/)
+  for (const order of [11,12]) {
+    await db.exec(`UPDATE or_orders SET status='ใบสั่งงาน',total_amount=200,billing_details='{"withheld":6}' WHERE id='${id(order)}'`)
+    assert.equal((await db.query(`SELECT receivable_amount FROM or_orders WHERE id='${id(order)}'`)).rows[0].receivable_amount, '194')
+  }
+  console.log('Marketplace guards passed, including generated receivable regression: review transitions, atomic corrections, locked financial inputs, ordinary/QT/PC unchanged.')
 
 } finally {
   await db.close()

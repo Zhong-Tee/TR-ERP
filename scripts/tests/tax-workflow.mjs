@@ -17,6 +17,7 @@ CREATE TABLE storage.objects(id uuid DEFAULT gen_random_uuid(),bucket_id text,na
 CREATE FUNCTION storage.foldername(text) RETURNS text[] LANGUAGE sql IMMUTABLE AS $$ SELECT string_to_array($1,'/') $$;
 `)
 for(const file of ['695_tax_workflow.sql','696_tax_invoice_numbering.sql']) await db.exec(readFileSync(`supabase/legacy-migrations/pre-baseline-20261104/${file}`,'utf8'))
+await db.exec(readFileSync('supabase/migrations/20261105100000_normalize_tax_identity_validation.sql','utf8'))
 const actor='10000000-0000-0000-0000-000000000001',sales='10000000-0000-0000-0000-000000000002',head='20000000-0000-0000-0000-000000000001'
 const ids=[1,2,3,4,5].map(n=>`30000000-0000-0000-0000-${String(n).padStart(12,'0')}`)
 await db.query(`INSERT INTO us_users VALUES ($1,'acc','acc@test','account'),($2,'seller','seller@test','sales-tr'); INSERT INTO bill_header_settings VALUES ($3,'TR')`,[actor,sales,head]).catch(async()=>{
@@ -88,6 +89,21 @@ assert.equal((await db.query(`SELECT bank_auto_match_order_has_capacity($1,1) ok
 await db.exec(readFileSync('supabase/legacy-migrations/pre-baseline-20261104/699_tax_queue.sql','utf8'))
 const queue=(await db.query(`SELECT or_tax_queue('invoice','issued','',0) result`)).rows[0].result
 assert.equal(queue.total,2);assertions++
+await db.exec(readFileSync('supabase/migrations/20261105093000_search_tax_queue_identity.sql','utf8'))
+// Search applies to all results before paging and counts in both shared views.
+for (const mode of ['invoice','sales']) {
+ for (const term of ['ทดสอบ','  บริษัททดสอบ  ','0103563005345','01035','0-1035-63005-34-5',ids[1].slice(0,8)]) {
+  const result=(await db.query('SELECT or_tax_queue($1,$2,$3,0) result',[mode,'issued',term])).rows[0].result
+  assert.equal(result.total,2,`${mode}: ${term}`)
+  assert.equal(result.rows.length,2)
+  assert.equal(result.counts.issued,2)
+  assertions+=3
+ }
+ const absent=(await db.query('SELECT or_tax_queue($1,$2,$3,0) result',[mode,'issued','no-such-tax-recipient'])).rows[0].result
+ assert.equal(absent.total,0);assert.deepEqual(absent.rows,[]);assert.equal(absent.counts.issued,0);assertions+=3
+ const next=(await db.query('SELECT or_tax_queue($1,$2,$3,50) result',[mode,'issued','ทดสอบ'])).rows[0].result
+ assert.equal(next.total,2);assert.deepEqual(next.rows,[]);assertions+=2
+}
 
 // Exercise address relationship checks and receipt ownership.
 await db.exec(`CREATE TABLE thai_provinces(id bigint,name_th text);CREATE TABLE thai_districts(id bigint,name_th text,province_id bigint);CREATE TABLE thai_sub_districts(id bigint,name_th text,district_id bigint,zip_code text);CREATE TABLE thai_sub_district_postal_aliases(sub_district_id bigint,zip_code text);INSERT INTO thai_provinces VALUES(10,'กรุงเทพมหานคร');INSERT INTO thai_districts VALUES(1001,'บางแค',10);INSERT INTO thai_sub_districts VALUES(100101,'หลักสอง',1001,'10160');`)
@@ -114,6 +130,9 @@ const otherSales='10000000-0000-0000-0000-000000000003'
 await db.query(`INSERT INTO us_users VALUES($1,'other','other@test','sales-pump')`,[otherSales])
 await uid(otherSales)
 assert.equal((await db.query(`SELECT or_tax_queue('sales','pending','',0) result`)).rows[0].result.total,0);assertions++
+for (const term of ['ทดสอบ','0103563005345']) {
+ assert.equal((await db.query(`SELECT or_tax_queue('sales','pending',$1,0) result`,[term])).rows[0].result.total,0);assertions++
+}
 await denied(()=>action(ids[3],'invoice','resubmit',identity),/ไม่มีสิทธิ์จัดการบิลนี้/)
 // Recover a manually issued legacy number without consuming a new number.
 await db.exec(readFileSync('supabase/migrations/20261104150000_recover_legacy_tax_invoice.sql','utf8'))
@@ -130,5 +149,21 @@ assert.equal((await recover(' OLD-125 ')).rows[0].invoice_no,'OLD-125');assertio
 assert.equal((await db.query('SELECT last_number FROM or_tax_invoice_counters WHERE header_id=$1 AND period=$2',[head,'2611'])).rows[0].last_number,43);assertions++
 assert.equal((await db.query('SELECT billing_details FROM or_orders WHERE id=$1',[ids[4]])).rows[0].billing_details.erp_tax_invoice_no,'OLD-125');assertions++
 await denied(()=>recover('OLD-126'),/มีเลขใบกำกับ/)
+// Real Account role (not superadmin) can approve/reject formatted legacy IDs.
+await db.query(`UPDATE us_users SET role='account' WHERE id=$1`,[actor])
+const formatted='30000000-0000-0000-0000-000000000098'
+await db.query(`INSERT INTO or_orders(id,bill_no,status,admin_user,total_amount,billing_details) VALUES($1,'FORMATTED-TAX','ตรวจสอบแล้ว','seller',580,$2)`,[formatted,{...identity,tax_id:'0 1255 67024 62 1'}])
+await action(formatted,'invoice','approve')
+assert.equal((await db.query('SELECT billing_details FROM or_orders WHERE id=$1',[formatted])).rows[0].billing_details.tax_workflow.invoice.status,'approved');assertions++
+await action(formatted,'invoice','reject',{reason:'แก้ชื่อ'})
+await uid(sales)
+await action(formatted,'invoice','resubmit',{...identity,tax_id:'0-1255-67024-62-1'})
+assert.equal((await db.query('SELECT billing_details FROM or_orders WHERE id=$1',[formatted])).rows[0].billing_details.tax_id,'0125567024621');assertions++
+await uid(actor)
+await action(formatted,'invoice','approve')
+for (const tax_id of ['0125567024622','012556702462','012556702462A']) {
+ await denied(()=>db.query('SELECT or_tax_validate($1)',[{...identity,tax_id}]),/เลขตรวจสอบ|13 หลัก/)
+}
+assert.equal((await db.query('SELECT count(*) n FROM or_tax_audit WHERE order_id=$1',[formatted])).rows[0].n,4);assertions++
 console.log(`PASS: ${assertions} PostgreSQL workflow/payment assertions; no external database used`)
 await db.close()

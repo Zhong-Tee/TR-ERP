@@ -53,3 +53,6 @@ dist-delivery-review/
 .tmp/production-baseline-20261104/
 .tmp/pg17-dump-tools/
 .tmp/download-pg17-tools.py
+
+# Local invoice reconciliation plan, database backup, and execution reports
+.tmp/legacy-tax-reconcile-20261105/

@@ -10,6 +10,28 @@ const order={id:'order-1',bill_no:'FBTR26110001',total_amount:1070,customer_name
 beforeEach(()=>{rpc.mockReset();auth.role='account'})
 afterEach(cleanup)
 describe('tax review actions',()=>{
+ it('shows Account approval failures inside the modal and allows a successful retry',async()=>{
+  rpc.mockImplementation((name:string)=>Promise.resolve(name==='or_tax_queue'?{data:{rows:[{order_data:order,kind:'invoice',state:'pending',issued:false}],total:1,rejected_total:0},error:null}:{data:null,error:{message:'เลขตรวจสอบผู้เสียภาษีไม่ถูกต้อง'}}))
+  render(<TaxRequestBoard mode="invoice"/>)
+  fireEvent.click(await screen.findByRole('button',{name:'ตรวจและอนุมัติ'}))
+  const modal=screen.getByRole('dialog')
+  fireEvent.click(within(modal).getByRole('button',{name:'ยืนยัน'}))
+  expect((await within(modal).findByRole('alert')).textContent).toContain('เลขตรวจสอบผู้เสียภาษีไม่ถูกต้อง')
+  expect(rpc).toHaveBeenCalledWith('or_tax_action',expect.objectContaining({p_action:'approve',p_payload:expect.objectContaining({expected_details:order.billing_details})}))
+  rpc.mockResolvedValue({data:{rows:[],total:0,rejected_total:0},error:null})
+  fireEvent.click(within(modal).getByRole('button',{name:'ยืนยัน'}))
+  await waitFor(()=>expect(screen.queryByRole('dialog')).toBeNull())
+  expect(screen.getByRole('status').textContent).toContain('บันทึกเรียบร้อย')
+ })
+ it('navigates to a legacy request by bill and state, including repeated navigation',async()=>{
+  rpc.mockResolvedValue({data:{rows:[],total:0,rejected_total:0},error:null})
+  const {rerender}=render(<TaxRequestBoard mode="invoice" reviewRequest={{billNo:order.bill_no,state:'approved'}}/>)
+  await waitFor(()=>expect(rpc).toHaveBeenCalledWith('or_tax_queue',{p_mode:'invoice',p_state:'approved',p_search:order.bill_no,p_offset:0}))
+  fireEvent.change(screen.getByRole('textbox'),{target:{value:'other'}})
+  rerender(<TaxRequestBoard mode="invoice" reviewRequest={{billNo:order.bill_no,state:'pending'}}/>)
+  await waitFor(()=>expect(rpc).toHaveBeenLastCalledWith('or_tax_queue',{p_mode:'invoice',p_state:'pending',p_search:order.bill_no,p_offset:0}))
+  expect(document.activeElement).toBe(screen.getByRole('textbox'))
+ })
  it('requires rejection reason and sends the inspected snapshot',async()=>{
   rpc.mockImplementation((name:string)=>Promise.resolve(name==='or_tax_queue'?{data:{rows:[{order_data:order,kind:'invoice',state:'pending',issued:false}],total:1,rejected_total:0},error:null}:{data:null,error:null}))
   render(<TaxRequestBoard mode="invoice"/>)

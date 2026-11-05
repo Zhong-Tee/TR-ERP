@@ -236,6 +236,8 @@ export default function Account() {
   const [pendingWaiverCount, setPendingWaiverCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [billingLoading, setBillingLoading] = useState(true)
+  const taxReviewRef = useRef<HTMLDivElement>(null)
+  const [taxReviewRequest,setTaxReviewRequest] = useState<{billNo:string;state:string}>()
   const [taxInvoiceOrders, setTaxInvoiceOrders] = useState<BillingRequestOrder[]>([])
   const [easyslipQuotaInfo, setEasyslipQuotaInfo] = useState<{
     usedQuota: number
@@ -1831,7 +1833,7 @@ export default function Account() {
       )}
 
       {activeTab === 'withholding' && hasAccess('account-withholding') && <TaxRequestBoard mode="withholding" />}
-      {activeTab === 'tax-invoice' && hasAccess('account-tax-invoice') && <TaxRequestBoard mode="invoice" onIssue={o => void confirmTaxInvoice({...o, channel_order_no:o.channel_order_no || null})} />}
+      {activeTab === 'tax-invoice' && hasAccess('account-tax-invoice') && <div ref={taxReviewRef} className="scroll-mt-36"><TaxRequestBoard mode="invoice" reviewRequest={taxReviewRequest} onIssue={o => void confirmTaxInvoice({...o, channel_order_no:o.channel_order_no || null})} /></div>}
       {activeTab === 'claim-approval' && hasAccess('account-claim-approval') && <ClaimApprovalSection />}
 
       {activeTab === 'refunds' && hasAccess('account-refunds') && (
@@ -1930,7 +1932,7 @@ export default function Account() {
       <details><summary className="cursor-pointer rounded border p-3">รายการคำขอเดิม / จัดการคำขอบิลยกเลิก</summary><section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 bg-sky-50/50">
           <h2 className="text-lg font-semibold text-gray-800">รายการขอใบกำกับภาษี</h2>
-          <p className="text-sm text-gray-500 mt-0.5">รอยืนยันจากฝ่ายบัญชี — คลิกรายการเพื่อดูข้อมูลบิล</p>
+          <p className="text-sm text-gray-500 mt-0.5">คลิกรายการเพื่อดูข้อมูลบิล หรือกด “ไปยังคำขอ” เพื่อดำเนินการในตารางด้านบน</p>
         </div>
         {billingLoading ? (
           <div className="flex justify-center items-center py-14">
@@ -2015,10 +2017,15 @@ export default function Account() {
                         ) : (
                           <button
                             type="button"
-                            onClick={(e) => { e.stopPropagation(); setBillingResultModal({open:true,title:'ตรวจคำขอก่อน',message:'กรุณาอนุมัติและออกเอกสารจากกรอบคำขอด้านบน'}) }}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              const workflow = bd.tax_workflow as {invoice?:{status?:string}} | undefined
+                              setTaxReviewRequest({billNo:o.bill_no,state:bd.account_confirmed_tax?'issued':workflow?.invoice?.status || 'pending'})
+                              taxReviewRef.current?.scrollIntoView({behavior:'smooth',block:'start'})
+                            }}
                             className="px-2.5 py-1 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 text-xs font-medium transition-colors"
                           >
-                            ตรวจสอบ
+                            ไปยังคำขอ
                           </button>
                         )}
                       </td>

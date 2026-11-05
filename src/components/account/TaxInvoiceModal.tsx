@@ -89,6 +89,8 @@ export default function TaxInvoiceModal({
   const [documentError, setDocumentError] = useState('')
   const [issuing, setIssuing] = useState(false)
   const [flowReference, setFlowReference] = useState('')
+  const [flowSaveMessage, setFlowSaveMessage] = useState('')
+  const [flowSaveError, setFlowSaveError] = useState('')
   const [legacyOpen, setLegacyOpen] = useState(false)
   const [legacyNumber, setLegacyNumber] = useState('')
   const [legacyError, setLegacyError] = useState('')
@@ -163,8 +165,10 @@ export default function TaxInvoiceModal({
 
     setInvoiceNo('ระบบจะรันเลขเมื่อยืนยัน')
 
-    const taxAddr = (bd.tax_customer_address || '').trim()
-    if (taxAddr) {
+    // Preserve the approved address verbatim: issuance/recovery compares the
+    // snapshot with the stored buyer data, including legacy spaces/newlines.
+    const taxAddr = bd.tax_customer_address || ''
+    if (taxAddr.trim()) {
       setCustomerAddress(taxAddr)
     } else {
       const addrParts = [
@@ -207,6 +211,7 @@ export default function TaxInvoiceModal({
     let active = true
     issuedRef.current=false
     setLegacyOpen(false); setLegacyNumber(''); setLegacyError('');
+    setFlowSaveMessage(''); setFlowSaveError('');
     setDocumentLoading(true); setDocumentError(''); setIssued(false); setSavedCompany(null); setSavedAmounts(null); setFlowReference('')
     supabase.from('or_tax_invoices').select('*').eq('order_id',order.id).maybeSingle().then(({data,error}) => {
       if(!active) return
@@ -372,10 +377,23 @@ export default function TaxInvoiceModal({
     if(!error) setSeriesOpen(false)
   }
   async function saveFlowReference() {
-    if(!order || !issued || !canIssue) return
+    if(!order || !issued || !canIssue || issuing) return
     setIssuing(true)
-    const {error}=await supabase.rpc('or_tax_flow_reference',{p_order_id:order.id,p_reference:flowReference})
-    setDocumentError(error?.message || ''); setIssuing(false)
+    setFlowSaveMessage(''); setFlowSaveError('')
+    const reference=flowReference.trim()
+    try {
+      const {error}=await supabase.rpc('or_tax_flow_reference',{p_order_id:order.id,p_reference:reference})
+      if(error) throw error
+      const {data,error:readError}=await supabase.from('or_tax_invoices').select('flow_account_reference').eq('order_id',order.id).maybeSingle()
+      if(readError) throw readError
+      if(!data || data.flow_account_reference!==reference) throw new Error('ยังยืนยันเลขอ้างอิงที่บันทึกไม่ได้ กรุณาปิดแล้วเปิดเอกสารตรวจสอบอีกครั้ง')
+      setFlowReference(data.flow_account_reference)
+      setFlowSaveMessage(reference ? `บันทึกเลขอ้างอิงเรียบร้อย: ${reference}` : 'ล้างเลขอ้างอิงเรียบร้อย')
+    } catch(error) {
+      setFlowSaveError((error as {message?:string})?.message || 'บันทึกเลขอ้างอิงไม่สำเร็จ กรุณาตรวจการเชื่อมต่อแล้วลองใหม่')
+    } finally {
+      setIssuing(false)
+    }
   }
 
   async function copyFullInvoiceForExcel() {
@@ -548,8 +566,17 @@ export default function TaxInvoiceModal({
         {documentLoading && <p role="status">กำลังโหลดเอกสาร…</p>}
         {documentError && <p role="alert" className="rounded bg-red-50 p-3 text-red-700">{documentError}</p>}
         <label className="block">วันที่ออกเอกสาร<input type="date" disabled={issued || issuing || documentLoading || !canIssue} value={invoiceDate} onChange={e=>setInvoiceDate(e.target.value)} className="ml-2 rounded border p-2" /></label>
-        <label className="block">เลขอ้างอิงจาก FlowAccount<input value={flowReference} disabled={!canIssue || issuing} onChange={e=>setFlowReference(e.target.value)} className="ml-2 rounded border p-2" /></label>
-        {issued && canIssue && <button type="button" disabled={issuing} onClick={()=>void saveFlowReference()} className="rounded border p-2">บันทึกเลขอ้างอิง</button>}
+        <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor="tax-flow-reference">เลขอ้างอิงจาก FlowAccount</label>
+          <div className="flex min-w-0 items-center gap-2">
+            <input id="tax-flow-reference" value={flowReference} disabled={!canIssue || issuing} onChange={e=>{setFlowReference(e.target.value);setFlowSaveMessage('');setFlowSaveError('')}} className="min-w-0 w-48 rounded border p-2" />
+            {issued && canIssue && <button type="button" disabled={issuing} onClick={()=>void saveFlowReference()} className="shrink-0 whitespace-nowrap rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition-colors hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50">{issuing?'กำลังบันทึก…':'บันทึกเลขอ้างอิง'}</button>}
+          </div>
+        </div>
+        {issued && canIssue && <div className="space-y-2">
+          {flowSaveMessage&&<p role="status" className="rounded bg-emerald-50 p-3 text-emerald-700">{flowSaveMessage}</p>}
+          {flowSaveError&&<p role="alert" className="rounded bg-red-50 p-3 text-red-700">{flowSaveError}</p>}
+        </div>}
         {!issued && !isLegacy && <p className="text-sm text-amber-800">ตัวอย่างก่อนออกเอกสาร — ระบบจะรันเลขจริงเมื่อยืนยัน</p>}
         {isLegacy && !issued && canIssue && !documentLoading && <button type="button" disabled={issuing} onClick={()=>{setLegacyError('');setLegacyOpen(true)}} className="mr-4 mb-2 rounded bg-blue-600 px-4 py-2 text-white">บันทึกเลขใบกำกับเดิม</button>}
         <Modal open={legacyOpen} stackClassName="z-[60]" onClose={()=>{if(!issuing)setLegacyOpen(false)}} contentClassName="max-w-xl" ariaLabelledby="legacy-invoice-title" showCloseButton={!issuing}>
