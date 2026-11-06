@@ -81,35 +81,32 @@ export default function TaxInvoiceFields({ value, onChange, disabled }: Props) {
   const current = validTaxId(value.tax_id) && /^\d{5}$/.test(branch) && result?.key === key ? result : null
   return <div className="space-y-3">
     <div className="grid grid-cols-1 items-stretch gap-x-4 gap-y-3 md:grid-cols-2">
-      <label className="flex min-w-0 flex-col gap-2 md:col-start-1 md:row-start-1">
-        <span>วางข้อมูลเต็มเพื่อ Auto Fill</span>
-        <textarea rows={6} disabled={disabled} value={raw} onChange={e => setRaw(e.target.value)} className="block min-h-[10rem] w-full flex-1 rounded border p-2" />
-      </label>
-      <div className="min-w-0 space-y-3 md:col-start-1 md:row-start-2">
-        <button type="button" disabled={disabled || autoFilling || !raw.trim()} onClick={() => void autofill()} className="rounded bg-blue-100 px-3 py-2 text-blue-800">แยกข้อมูล</button>
+      <div className="flex min-w-0 flex-col gap-2 md:col-start-1 md:row-start-1">
+        <div className="flex items-center justify-between gap-2"><label htmlFor="tax-autofill-text">วางข้อมูลเต็มเพื่อ Auto Fill</label><button type="button" disabled={disabled || autoFilling || !raw.trim()} onClick={() => void autofill()} className="tax-autofill-action shrink-0 rounded-md bg-blue-100 px-2 py-0.5 text-sm leading-5 text-blue-800 disabled:opacity-50">แยกข้อมูล</button></div>
+        <textarea id="tax-autofill-text" rows={6} disabled={disabled} value={raw} onChange={e => setRaw(e.target.value)} className="block min-h-[10rem] w-full flex-1 rounded border p-2" />
         {notice && <p role="status" className="text-sm text-blue-700">{notice}</p>}
       </div>
       <div className="flex min-w-0 flex-col gap-2 md:col-start-2 md:row-start-1">
-        <h4>ข้อมูลจากกรมสรรพากร</h4>
-        <div role="status" className="min-h-[10rem] min-w-0 flex-1 space-y-2 break-words rounded border bg-white p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2"><h4>ข้อมูลจากกรมสรรพากร</h4><div className="flex flex-wrap gap-1">{current?.status === 'found' && current.records?.map((record, i) => <button key={i} type="button" disabled={disabled} onClick={() => onChange({ ...value, ...record, address: formatTaxAddress(record.tax_address) })} className="tax-autofill-action shrink-0 rounded-md bg-blue-100 px-2 py-0.5 text-sm leading-5 text-blue-800 disabled:opacity-50">ใช้ข้อมูล{current.records!.length > 1 ? ` (${record.branch})` : ''}</button>)}</div></div>
+        <div role="status" className="tax-registry-result min-h-[10rem] min-w-0 flex-1 space-y-2 break-words rounded border bg-white p-3">
           {!current && <p className="text-sm text-gray-500">กรอกเลขภาษีที่ถูกต้องครบ 13 หลัก ระบบจะค้นทะเบียน VAT ให้อัตโนมัติ</p>}
       {current?.status === 'loading' && 'กำลังตรวจสอบ…'}
       {current?.status === 'not_found' && 'ไม่พบข้อมูลในทะเบียน VAT สามารถกรอกเองได้ ผลนี้ไม่ได้ยืนยันว่าเลขภาษีผิด'}
       {current?.status === 'unavailable' && <>ยังตรวจสอบไม่ได้{current.reason && <p className="text-sm text-amber-800">{current.reason}</p>} <button type="button" onClick={() => setRetry(n => n + 1)} className="text-blue-700 underline">ตรวจสอบอีกครั้ง</button></>}
-      {current?.status === 'found' && current.records?.map((record, i) => <div key={i} className="space-y-2"><p>กรมสรรพากร: {record.company_name} · สาขา {record.branch}</p><p>{formatTaxAddress(record.tax_address)}</p>{(record.company_name !== value.company_name || formatTaxAddress(record.tax_address) !== value.address) && <p className="text-amber-800">ข้อมูลต่างจากที่กรอก โปรดตรวจเทียบ รูปแบบข้อความต่างกันอาจเป็นข้อมูลเดียวกัน</p>}<button type="button" disabled={disabled} onClick={() => onChange({ ...value, ...record, address: formatTaxAddress(record.tax_address) })} className="rounded bg-blue-100 p-2">ใช้ข้อมูลจากกรมสรรพากร</button></div>)}
+      {current?.status === 'found' && current.records?.map((record, i) => <div key={i} className="space-y-2"><p>กรมสรรพากร: {record.company_name} · สาขา {record.branch}</p><p>{formatTaxAddress(record.tax_address)}</p></div>)}
         </div>
       </div>
     </div>
     {!!candidates.length && <label className="block">พบเลขที่อาจเป็นเลขภาษี กรุณาเลือกยืนยัน<select disabled={disabled} value="" onChange={e => { onChange({ ...value, tax_id: e.target.value }); setCandidates([]) }} className="w-full rounded border p-2"><option value="">เลือกเลขภาษี</option>{candidates.map(id => <option key={id}>{id}</option>)}</select></label>}
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-      <label>ชื่อลูกค้า / บริษัท<input disabled={disabled} value={value.company_name} onChange={e => onChange({ ...value, company_name: e.target.value })} className="w-full rounded border p-2" /></label>
-      <label>เลขประจำตัวผู้เสียภาษี<input disabled={disabled} value={value.tax_id} onChange={e => onChange({ ...value, tax_id: normalizeTaxId(e.target.value) })} className="w-full rounded border p-2" />{value.tax_id && !validTaxId(value.tax_id) && <span className="text-sm text-red-700">เลขภาษีต้องเป็นตัวเลข 13 หลักและเลขตรวจสอบถูกต้อง</span>}</label>
-      <label>สำนักงานใหญ่ / เลขสาขา<input disabled={disabled} inputMode="numeric" maxLength={5} value={branch} onChange={e => onChange({ ...value, branch: e.target.value.replace(/\D/g, '') })} className="w-full rounded border p-2" /><span className="text-xs">สำนักงานใหญ่ใช้ 00000; สาขาใช้เลข 5 หลัก</span></label>
-      {fields.map(([field, label]) => <label key={field}>{label}<input disabled={disabled} value={a[field] || ''} onChange={e => updateAddress({ [field]: e.target.value, legacy_text: undefined })} className="w-full rounded border p-2" /></label>)}
-      <label>รหัสไปรษณีย์<input disabled={disabled} inputMode="numeric" maxLength={5} value={a.postal_code} onChange={e => updateAddress({ postal_code: e.target.value.replace(/\D/g, ''), sub_district: '', district: '', province: '' })} className="w-full rounded border p-2" />{a.postal_code && !/^\d{5}$/.test(a.postal_code) && <span className="text-red-700">กรอกตัวเลข 5 หลัก</span>}</label>
-      <label>ตำบล / แขวง<select disabled={disabled || !options.length} value={options.findIndex(o => o.subDistrict === a.sub_district && o.district === a.district)} onChange={e => { const selected = options[Number(e.target.value)]; if (selected) updateAddress({ sub_district: selected.subDistrict, district: selected.district, province: selected.province || '' }) }} className="w-full rounded border p-2"><option value={-1}>เลือกตำบล / แขวง</option>{options.map((o, i) => <option key={`${o.subDistrict}:${o.district}:${o.province}`} value={i}>{o.subDistrict} — {o.district}</option>)}</select>{a.postal_code.length === 5 && !options.length && <span className="text-sm text-amber-800">ยังโหลดรายการที่อยู่ไม่ได้ กรุณาลองใหม่ หรือใช้ที่อยู่เดิม</span>}</label>
-      <label>อำเภอ / เขต<input readOnly value={a.district} className="w-full rounded border bg-gray-100 p-2" /></label>
-      <label>จังหวัด<input readOnly value={a.province} className="w-full rounded border bg-gray-100 p-2" /></label>
+    <div className="grid grid-cols-2 gap-3">
+      <label className="col-span-2 min-w-0">เลขประจำตัวผู้เสียภาษี<input disabled={disabled} value={value.tax_id} onChange={e => onChange({ ...value, tax_id: normalizeTaxId(e.target.value) })} className="w-full rounded border p-2" />{value.tax_id && !validTaxId(value.tax_id) && <span className="text-sm text-red-700">เลขภาษีต้องเป็นตัวเลข 13 หลักและเลขตรวจสอบถูกต้อง</span>}</label>
+      <label className="col-span-2 min-w-0">ชื่อลูกค้า / บริษัท<input disabled={disabled} value={value.company_name} onChange={e => onChange({ ...value, company_name: e.target.value })} className="w-full rounded border p-2" /></label>
+      <label className="min-w-0">สำนักงานใหญ่ / เลขสาขา<input disabled={disabled} inputMode="numeric" maxLength={5} value={branch} onChange={e => onChange({ ...value, branch: e.target.value.replace(/\D/g, '') })} className="w-full rounded border p-2" /><span className="text-xs">สำนักงานใหญ่ใช้ 00000; สาขาใช้เลข 5 หลัก</span></label>
+      {fields.map(([field, label]) => <label key={field} className="min-w-0">{label}<input disabled={disabled} value={a[field] || ''} onChange={e => updateAddress({ [field]: e.target.value, legacy_text: undefined })} className="w-full rounded border p-2" /></label>)}
+      <label className="min-w-0">รหัสไปรษณีย์<input disabled={disabled} inputMode="numeric" maxLength={5} value={a.postal_code} onChange={e => updateAddress({ postal_code: e.target.value.replace(/\D/g, ''), sub_district: '', district: '', province: '' })} className="w-full rounded border p-2" />{a.postal_code && !/^\d{5}$/.test(a.postal_code) && <span className="text-red-700">กรอกตัวเลข 5 หลัก</span>}</label>
+      <label className="min-w-0">ตำบล / แขวง<select disabled={disabled || !options.length} value={options.findIndex(o => o.subDistrict === a.sub_district && o.district === a.district)} onChange={e => { const selected = options[Number(e.target.value)]; if (selected) updateAddress({ sub_district: selected.subDistrict, district: selected.district, province: selected.province || '' }) }} className="w-full rounded border p-2"><option value={-1}>เลือกตำบล / แขวง</option>{options.map((o, i) => <option key={`${o.subDistrict}:${o.district}:${o.province}`} value={i}>{o.subDistrict} — {o.district}</option>)}</select>{a.postal_code.length === 5 && !options.length && <span className="text-sm text-amber-800">ยังโหลดรายการที่อยู่ไม่ได้ กรุณาลองใหม่ หรือใช้ที่อยู่เดิม</span>}</label>
+      <label className="min-w-0">อำเภอ / เขต<input readOnly value={a.district} className="w-full rounded border bg-gray-100 p-2" /></label>
+      <label className="min-w-0">จังหวัด<input readOnly value={a.province} className="w-full rounded border bg-gray-100 p-2" /></label>
     </div>
     <div className="space-y-1">
       <h4>ที่อยู่สำหรับใบกำกับภาษี</h4>

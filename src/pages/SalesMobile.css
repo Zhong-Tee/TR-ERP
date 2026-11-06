@@ -9,7 +9,92 @@
 .sales-mobile td input:not([type=checkbox]), .sales-mobile td select { width: 100%; }
 .sales-mobile input[type=checkbox] { width: 22px; height: 22px; }
 .sales-mobile button { min-height: 44px; }
+.sales-mobile .prebill-document-actions button {
+  min-height: 32px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 20px;
+}
 .sales-mobile section { min-width: 0; }
+.sales-mobile .prebill-customer-form input,
+.sales-mobile .prebill-customer-form select,
+.sales-mobile .prebill-customer-form textarea {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background-color: white;
+}
+.sales-mobile .prebill-customer-form button {
+  min-height: 32px;
+}
 .sales-mobile fieldset > section.grid { grid-template-columns: minmax(0, 1fr); }
 .sales-mobile fieldset > section.grid > * { grid-column: auto; }
 .sales-mobile td[data-label="สินค้า"] { padding: .5rem 0; }
+.sales-mobile .prebill-tax-switch { width: 48px; height: 28px; min-height: 28px; }
+.sales-mobile .prebill-tax-switch span { left: 0; }
+.sales-mobile .tax-autofill-action { min-height: 24px; font-size: 14px; }
+.sales-mobile textarea.prebill-address-textarea,
+.sales-mobile textarea#tax-autofill-text {
+  height: 96px;
+  min-height: 96px;
+  flex: none;
+  padding: 8px 10px;
+  border-radius: 10px;
+  resize: vertical;
+}
+.sales-mobile .tax-registry-result {
+  height: 144px;
+  min-height: 144px;
+  flex: none;
+  overflow-y: auto;
+  border-radius: 10px;
+}
+.sales-mobile input.prebill-promotion-count {
+  width: 44px; min-height: 30px; height: 30px; padding: 3px 6px; font-size: 12px;
+}
+.sales-mobile .prebill-promotion-choice,
+.sales-mobile .prebill-promotion-choice > label {
+  align-items: center;
+}
+.sales-mobile .prebill-promotion-choice input[type=checkbox] {
+  margin-top: 0;
+  flex-shrink: 0;
+}
+.sales-mobile .prebill-promotion-toggle {
+  min-height: 28px;
+  padding: 3px 8px;
+  font-size: 11px;
+  line-height: 20px;
+  border-radius: 8px;
+}
+.sales-mobile .prebill-product-editor tr {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px; padding: 12px;
+}
+.sales-mobile .prebill-product-editor td { padding: 0; }
+.sales-mobile .prebill-product-editor td[data-label="รายการ"] { grid-column: 1; grid-row: 1; font-weight: 700; }
+.sales-mobile .prebill-product-editor td[data-label="รายการ"]::before { display: inline; margin-right: 6px; }
+.sales-mobile .prebill-product-editor td[data-label="ฟรี"] { grid-column: 2; grid-row: 1; text-align: right; }
+.sales-mobile .prebill-product-editor td[data-label="ฟรี"]::before { display: inline; margin-right: 6px; }
+.sales-mobile .prebill-product-editor td[data-label="สินค้า"],
+.sales-mobile .prebill-product-editor td[data-label="หมายเหตุ"],
+.sales-mobile .prebill-product-editor td[data-label="ไฟล์แนบ"] { grid-column: 1 / -1; }
+.sales-mobile .prebill-product-editor td[data-label="OH"] { grid-column: 1 / -1; font-size: 12px; color: #64748b; }
+.sales-mobile .prebill-product-editor td[data-label="OH"]::before { display: inline; margin-right: 6px; }
+.sales-mobile .prebill-product-editor td[data-label="ลบรายการ"] { grid-column: 1 / -1; text-align: right; }
+.sales-mobile .prebill-product-editor td[data-label="ลบรายการ"]::before { display: none; }
+.sales-mobile .prebill-product-editor td.prebill-no-name,
+.sales-mobile .prebill-product-editor td.prebill-text-line { grid-column: 1 / -1; }
+.sales-mobile .prebill-product-editor td.prebill-no-name::before { display: none; }
+.sales-mobile .prebill-product-editor td[data-label="ลบรายการ"] button { min-height: 28px; }
+.sales-mobile .prebill-product-editor td[data-label="สินค้า"] button { min-height: 44px; }
+.sales-mobile .prebill-form-actions button { min-height: 36px; padding: 6px 10px; font-size: 12px; border-radius: 10px; }
+.sales-mobile .prebill-form-actions > div > button { flex: 1; }
+.sales-mobile .prebill-add-row {
+  min-height: 30px;
+  margin-top: 10px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 20px;
+}

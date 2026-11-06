@@ -1,12 +1,14 @@
 import { supabase } from './supabase'
-import type { PreBillDocument, PreBillDocumentType } from '../types/prebill'
+import type { PreBillDocument, PreBillDocumentType, PreBillItem } from '../types/prebill'
 
 export type PreBillView = 'draft' | 'mine' | 'pending' | 'approved' | 'converted' | 'expired' | 'cancelled'
 export const PREBILL_VIEWS: PreBillView[] = ['draft', 'mine', 'pending', 'approved', 'converted', 'expired', 'cancelled']
 export const PREBILL_PAGE_SIZE = 25
 export type PreBillSummary = Pick<PreBillDocument,
   'id' | 'document_type' | 'document_no' | 'status' | 'channel_code' | 'customer_name' |
-  'valid_until' | 'total_amount' | 'converted_order_id' | 'converted_order' | 'owner_name' | 'created_at'>
+  'valid_until' | 'total_amount' | 'converted_order_id' | 'converted_order' | 'owner_name' | 'created_at'> & {
+  or_prebill_items?: Pick<PreBillItem, 'sort_order' | 'product_name' | 'quantity' | 'unit_price' | 'is_free' | 'is_detail_row'>[]
+}
 export type PreBillFilters = {
   documentType: PreBillDocumentType
   dateFrom: string
@@ -15,7 +17,7 @@ export type PreBillFilters = {
   today: string
 }
 
-const summaryColumns = 'id,document_type,document_no,status,channel_code,customer_name,valid_until,total_amount,converted_order_id,owner_name,created_at,converted_order:or_orders!converted_order_id(bill_no)'
+const summaryColumns = 'id,document_type,document_no,status,channel_code,customer_name,valid_until,total_amount,converted_order_id,owner_name,created_at,converted_order:or_orders!converted_order_id(bill_no),or_prebill_items(sort_order,product_name,quantity,unit_price,is_free,is_detail_row)'
 
 function baseQuery(filters: PreBillFilters, columns: string, head = false) {
   let query = supabase.from('or_prebill_documents').select(columns, { count: 'exact', head })

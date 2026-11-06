@@ -24,7 +24,7 @@ describe('automatic registry lookup',()=>{
   await act(async()=>{await vi.advanceTimersByTimeAsync(1)})
   expect(invoke).toHaveBeenCalledTimes(1)
   expect((screen.getByLabelText('ชื่อลูกค้า / บริษัท') as HTMLInputElement).value).toBe('ชื่อที่กรอกเอง')
-  fireEvent.click(screen.getByRole('button',{name:'ใช้ข้อมูลจากกรมสรรพากร'}))
+  fireEvent.click(screen.getByRole('button',{name:'ใช้ข้อมูล'}))
   expect((screen.getByLabelText('ชื่อลูกค้า / บริษัท') as HTMLInputElement).value).toBe('ชื่อทะเบียน VAT')
  })
  it('ignores a stale response after changing the ID and looks up a new branch',async()=>{
@@ -35,7 +35,7 @@ describe('automatic registry lookup',()=>{
   await act(async()=>{await vi.advanceTimersByTimeAsync(1000)})
   fireEvent.change(screen.getByLabelText('เลขประจำตัวผู้เสียภาษี'),{target:{value:'0107537002443'}})
   await act(async()=>{old.resolve({data:{status:'found',records:[record]},error:null});await Promise.resolve()})
-  expect(screen.queryByRole('button',{name:'ใช้ข้อมูลจากกรมสรรพากร'})).toBeNull()
+  expect(screen.queryByRole('button',{name:'ใช้ข้อมูล'})).toBeNull()
   await act(async()=>{await vi.advanceTimersByTimeAsync(1000)})
   expect(screen.getByText(/ไม่พบข้อมูลในทะเบียน VAT/)).toBeTruthy()
   fireEvent.change(screen.getByLabelText(/สำนักงานใหญ่ \/ เลขสาขา/),{target:{value:'00001'}})

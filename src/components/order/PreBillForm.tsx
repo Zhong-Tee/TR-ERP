@@ -2,6 +2,7 @@ import { calculateWithholding } from '../../lib/taxInvoice'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { FiEye, FiCopy, FiDownload, FiFileText, FiClipboard, FiMapPin } from 'react-icons/fi'
 import html2canvas from 'html2canvas'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { fetchReservationStock, saveReservationPrebill } from '../../lib/stockReservations'
@@ -26,6 +27,7 @@ import { PREBILL_TYPE_LABEL } from '../../types/prebill'
 import Modal from '../ui/Modal'
 import TaxInvoiceFields, { type TaxInvoiceFieldsValue } from './TaxInvoiceFields'
 import { validTaxId } from '../../lib/taxInvoice'
+import MobilePreBillPreview from './MobilePreBillPreview'
 import PreBillPreview, { buildPreBillCustomerText } from './PreBillPreview'
 
 type Props = {
@@ -217,6 +219,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
   const [priceMap, setPriceMap] = useState<Record<string, number>>({})
   const [settings, setSettings] = useState<PreBillChannelSetting[]>([])
   const [sellerName, setSellerName] = useState(user?.seller_name?.trim() || '')
+  const [showAllPromotions, setShowAllPromotions] = useState(false)
   const [promotions, setPromotions] = useState<PromotionDefinition[]>([])
   const [selectedPromotionIds, setSelectedPromotionIds] = useState<string[]>(seed?.promotion_ids || [])
   const [promotionApplicationCounts, setPromotionApplicationCounts] = useState<Record<string, number>>(() => Object.fromEntries((seed?.promotion_snapshot || []).map(snapshot => {
@@ -273,6 +276,7 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
   const [manualShipping, setManualShipping] = useState<number | null>(seed && !isRenewal ? Number(seed.shipping_cost || 0) : null)
   const [message, setMessage] = useState('')
   const [toast, setToast] = useState('')
+  const [remoteAreaOpen, setRemoteAreaOpen] = useState(false)
   const [discountModal, setDiscountModal] = useState(false)
   const [discountRequest, setDiscountRequest] = useState({
     type: seed?.special_discount_type || 'amount' as 'amount' | 'percent',
@@ -537,6 +541,15 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
   const specialDiscount = Number(document?.special_discount || 0)
   const totalAmount = Math.max(0, subtotal + shippingCost - promotionDiscount - specialDiscount)
   const paymentSummary = calculateWithholding(totalAmount, withholdingRequested)
+  const requestedDiscountAmount = discountRequest.type === 'percent'
+    ? subtotal * Math.min(100, Math.max(0, Number(discountRequest.value) || 0)) / 100
+    : Math.min(subtotal, Math.max(0, Number(discountRequest.value) || 0))
+  const requestedPaymentSummary = calculateWithholding(Math.max(0, subtotal + shippingCost - promotionDiscount - requestedDiscountAmount), withholdingRequested)
+  const discountRequestStatus = document?.status === 'pending_discount' ? 'รออนุมัติ'
+    : document?.status === 'rejected' ? 'ไม่อนุมัติ'
+    : document?.status === 'cancelled' ? 'ยกเลิกแล้ว'
+    : document?.status === 'expired' ? 'เอกสารหมดอายุ'
+    : document?.approved_by ? 'อนุมัติแล้ว' : 'ต้องขออนุมัติใหม่'
   const selectedSetting = settings.find(s => s.channel_code === form.channel_code && s.document_type === documentType)
   const headerName = selectedSetting?.header_name || PREBILL_TYPE_LABEL[documentType]
   const deliveryTerm = form.delivery_term === 'custom' ? form.delivery_custom.trim() : form.delivery_term
@@ -778,12 +791,12 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
     const result = promoResults.find(item => item.promotion_id === promotion.id)
     const limit = promotionApplicationLimit(promotion)
     return (
-      <div key={promotion.id} className="flex items-start gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-blue-50">
+      <div key={promotion.id} className="prebill-promotion-choice flex items-start gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-blue-50">
         <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2">
           <input type="checkbox" checked={selected} onChange={event => togglePromotion(promotion, event.target.checked)} className="mt-0.5 h-4 w-4 rounded border-gray-300 accent-blue-600" />
           <span className="min-w-0 flex-1"><span className="font-medium">{showStar && <span className="mr-1 text-amber-500">★</span>}{promotion.name}</span>{selected && result?.checked && <span className={`ml-2 text-xs font-semibold ${result.passed ? 'text-emerald-600' : 'text-red-600'}`}>{result.passed ? 'ผ่าน' : 'ไม่ผ่าน'}</span>}</span>
         </label>
-        {limit > 1 && <input type="number" inputMode="numeric" min="1" max={limit} step="1" value={promotionApplicationCounts[promotion.id] || 1} disabled={!selected} onWheel={event => event.currentTarget.blur()} onChange={event => updatePromotionCount(promotion, Number(event.target.value))} aria-label={`จำนวน ${promotion.name} ต่อเอกสาร`} title={`ระบุจำนวนที่ใช้ (สูงสุด ${limit})`} className="w-14 shrink-0 appearance-none rounded-md border px-2 py-1 text-center text-xs tabular-nums [appearance:textfield] disabled:bg-gray-100 disabled:text-gray-400 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" />}
+        {limit > 1 && <input type="number" inputMode="numeric" min="1" max={limit} step="1" value={promotionApplicationCounts[promotion.id] || 1} disabled={!selected} onWheel={event => event.currentTarget.blur()} onChange={event => updatePromotionCount(promotion, Number(event.target.value))} aria-label={`จำนวน ${promotion.name} ต่อเอกสาร`} title={`ระบุจำนวนที่ใช้ (สูงสุด ${limit})`} className="prebill-promotion-count w-14 shrink-0 appearance-none rounded-md border px-2 py-1 text-center text-xs tabular-nums [appearance:textfield] disabled:bg-gray-100 disabled:text-gray-400 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" />}
       </div>
     )
   }
@@ -974,8 +987,19 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
 
   if (loading) return <div className="p-10 text-center text-slate-500">กำลังโหลดข้อมูล...</div>
 
+  const remoteAreaDetails = !isPickup && <div>
+          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-5">
+            <label className="text-xs font-semibold">ที่อยู่<input value={address.address_line} onChange={e => { setAddress(v => ({ ...v, address_line: e.target.value })); setManualShipping(null) }} className="mt-1 w-full rounded-lg border p-2" /></label>
+            <label className="text-xs font-semibold">ตำบล/แขวง{subDistrictOptions.length > 0 ? <select value={subDistrictOptions.findIndex(option => option.subDistrict === address.sub_district)} onChange={e => { const option = subDistrictOptions[Number(e.target.value)]; if (option) { setAddress(v => ({ ...v, sub_district: option.subDistrict, district: option.district })); setManualShipping(null) } }} className="mt-1 w-full rounded-lg border bg-white p-2"><option value={-1}>เลือกตำบล/แขวง</option>{subDistrictOptions.map((option, optionIndex) => <option key={`${option.subDistrict}-${option.district}`} value={optionIndex}>{option.subDistrict}</option>)}</select> : <input value={address.sub_district} onChange={e => { setAddress(v => ({ ...v, sub_district: e.target.value })); setManualShipping(null) }} className="mt-1 w-full rounded-lg border p-2" />}</label>
+            <label className="text-xs font-semibold">อำเภอ/เขต<input value={address.district} onChange={e => { setAddress(v => ({ ...v, district: e.target.value })); setManualShipping(null) }} className="mt-1 w-full rounded-lg border p-2" /></label>
+            <label className="text-xs font-semibold">จังหวัด<input value={address.province} onChange={e => { setAddress(v => ({ ...v, province: e.target.value })); setManualShipping(null) }} className="mt-1 w-full rounded-lg border p-2" /></label>
+            <label className="text-xs font-semibold">รหัสไปรษณีย์<input value={address.postal_code} onChange={e => { setAddress(v => ({ ...v, postal_code: e.target.value })); setManualShipping(null) }} className="mt-1 w-full rounded-lg border p-2" /></label>
+          </div>
+          {matchedArea ? <p className="mt-3 font-semibold text-violet-700">พบ{SHIPPING_AREA_TYPE_LABELS[matchedArea.area_type]}: เพิ่ม {money(matchedArea.surcharge)} บาท · {channel?.default_carrier}</p> : <p className="mt-3 text-sm text-amber-700">{areaMatchMessage}</p>}
+        </div>
+
   return (
-    <div className="space-y-5 pb-12">
+    <div className={mobile ? "space-y-3 pb-12" : "space-y-5 pb-12"}>
       {toast && <div role="status" className="fixed bottom-6 left-1/2 z-[400] -translate-x-1/2 rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white shadow-2xl">{toast}</div>}
       <Modal
         open={!!message}
@@ -993,86 +1017,84 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
           </div>
         </div>
       </Modal>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-2xl font-bold">{document ? `${permanentlyLocked ? 'ดู' : 'แก้ไข'} ${document.document_no}` : `สร้าง${PREBILL_TYPE_LABEL[documentType]}`}</h2>
+      <div className={mobile ? "flex items-start justify-between gap-2" : "flex flex-wrap items-center justify-between gap-3"}>
+        <div className="min-w-0 flex-1">
+          <h2 className={mobile ? "text-lg font-bold leading-snug" : "text-2xl font-bold"}>{document ? `${permanentlyLocked ? 'ดู' : 'แก้ไข'} ${document.document_no}` : `สร้าง${mobile && documentType === 'production_confirmation' ? 'ใบยืนยันการผลิต' : PREBILL_TYPE_LABEL[documentType]}`}</h2>
           {isRenewal && <p className="text-sm text-blue-600">สร้างใหม่จาก {sourceDocument?.document_no} โดยใช้ราคาและโปรโมชั่นปัจจุบัน</p>}
           {(locked || expired) && <p className="mt-1 text-sm font-semibold text-amber-700">{expired ? 'เอกสารหมดอายุแล้ว กรุณาสร้างใหม่จากข้อมูลเดิม' : permanentlyLocked ? 'เอกสารที่เปิดบิลหรือยกเลิกแล้วเป็นแบบอ่านอย่างเดียว' : 'เอกสารถูกล็อกระหว่าง/หลังการอนุมัติ'}</p>}
         </div>
-        <button type="button" onClick={onCancel} className="rounded-xl border border-blue-600 bg-blue-600 px-4 py-2 font-semibold text-white shadow-sm transition-colors hover:border-blue-700 hover:bg-blue-700">กลับรายการ</button>
+        <button type="button" onClick={onCancel} className={`shrink-0 rounded-xl border border-blue-600 bg-blue-600 py-2 font-semibold text-white shadow-sm transition-colors hover:border-blue-700 hover:bg-blue-700 ${mobile ? 'px-3 text-sm' : 'px-4'}`}>กลับรายการ</button>
       </div>
 
-      <fieldset disabled={locked || expired || saving} className="space-y-5 disabled:opacity-75">
-        <section className="grid grid-cols-1 gap-4 rounded-2xl bg-white p-5 shadow-sm md:grid-cols-2 lg:grid-cols-4">
-          <label className="text-sm font-semibold">ช่องทาง *
-            <select value={form.channel_code} onChange={e => { priceRefreshChannelRef.current = e.target.value; setForm(v => ({ ...v, channel_code: e.target.value })); setManualShipping(null) }} className="mt-1 w-full rounded-xl border p-2.5 bg-white">
+      <fieldset disabled={locked || expired || saving} className={`${mobile ? 'space-y-3' : 'space-y-5'} disabled:opacity-75`}>
+        <section className={mobile ? 'prebill-customer-form space-y-3 rounded-2xl bg-white p-3 shadow-sm' : 'grid grid-cols-1 gap-4 rounded-2xl bg-white p-5 shadow-sm md:grid-cols-2 lg:grid-cols-4'}>
+          <div className={mobile ? 'grid grid-cols-2 gap-x-2 gap-y-3' : 'contents'}>
+          {mobile && <h3 className="col-span-2 text-sm font-bold text-slate-800">ข้อมูลลูกค้า</h3>}
+          <div className={mobile ? "col-span-2 min-w-0 text-xs font-semibold text-slate-600" : "min-w-0 text-sm font-semibold"}><label htmlFor="prebill-channel">ช่องทาง *</label><div className="mt-1 flex items-center gap-2">
+            <select id="prebill-channel" value={form.channel_code} onChange={e => { priceRefreshChannelRef.current = e.target.value; setForm(v => ({ ...v, channel_code: e.target.value })); setManualShipping(null) }} className="min-w-0 flex-1 rounded-xl border p-2.5 bg-white">
               <option value="">เลือกช่องทาง</option>{channels.map(c => <option key={c.channel_code} value={c.channel_code}>{c.channel_code} — {c.channel_name}</option>)}
             </select>
-          </label>
-          <label className="text-sm font-semibold">ชื่อลูกค้า *<input value={form.customer_name} onChange={e => setForm(v => ({ ...v, customer_name: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5" /></label>
-          <label className="text-sm font-semibold">ชื่อผู้รับ<input value={form.recipient_name} onChange={e => setForm(v => ({ ...v, recipient_name: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5" /></label>
-          <label className="text-sm font-semibold">เบอร์โทร<input value={form.customer_phone} onChange={e => setForm(v => ({ ...v, customer_phone: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5" /></label>
-          {!isPickup && <div className="text-sm font-semibold lg:col-span-2"><div className="flex items-center justify-between gap-2"><span>ที่อยู่ (ไม่บังคับ)</span><button type="button" disabled={autoFillAddressLoading || !form.customer_address.trim()} onClick={() => void handleAutoFillAddress()} className="rounded-lg bg-blue-100 px-2.5 py-1 text-xs text-blue-700 disabled:opacity-50">{autoFillAddressLoading ? 'กำลังแยก...' : 'Auto fill'}</button></div><textarea value={form.customer_address} onChange={e => setForm(v => ({ ...v, customer_address: e.target.value }))} onPaste={e => { const pasted = e.clipboardData.getData('text'); if (!pasted.trim()) return; const target = e.currentTarget; const next = target.value.slice(0, target.selectionStart ?? target.value.length) + pasted + target.value.slice(target.selectionEnd ?? target.value.length); window.setTimeout(() => void handleAutoFillAddress(next), 0) }} className="mt-1 min-h-36 w-full resize-y rounded-xl border p-2.5 font-normal" rows={5} placeholder="วางที่อยู่พร้อมรหัสไปรษณีย์ แล้วกด Auto fill" /></div>}
-          <label className="text-sm font-semibold">ระยะเวลาจัดส่ง *
+            {!isPickup && <button type="button" onClick={() => setRemoteAreaOpen(true)} aria-label="ข้อมูลที่อยู่สำหรับตรวจพื้นที่ห่างไกล" title="ข้อมูลที่อยู่สำหรับตรวจพื้นที่ห่างไกล" className="flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-xs font-semibold text-slate-600 hover:bg-blue-50 hover:text-blue-700"><FiMapPin aria-hidden="true" className="h-4 w-4" /><span>ห่างไกล</span></button>}
+          </div></div>
+          <label className={mobile ? "col-span-2 min-w-0 text-xs font-semibold text-slate-600" : "text-sm font-semibold"}>ชื่อลูกค้า *<input value={form.customer_name} onChange={e => setForm(v => ({ ...v, customer_name: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5" /></label>
+          <label className={mobile ? "min-w-0 text-xs font-semibold text-slate-600" : "text-sm font-semibold"}>ชื่อผู้รับ<input value={form.recipient_name} onChange={e => setForm(v => ({ ...v, recipient_name: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5" /></label>
+          <label className={mobile ? "min-w-0 text-xs font-semibold text-slate-600" : "text-sm font-semibold"}>เบอร์โทร<input type="tel" value={form.customer_phone} onChange={e => setForm(v => ({ ...v, customer_phone: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5" /></label>
+          </div>
+          {!isPickup && <div className={mobile ? 'border-t border-slate-100 pt-3 text-xs font-semibold text-slate-600' : 'text-sm font-semibold lg:col-span-2'}><div className="flex items-center justify-between gap-2"><span>ที่อยู่ (ไม่บังคับ)</span><button type="button" disabled={autoFillAddressLoading || !form.customer_address.trim()} onClick={() => void handleAutoFillAddress()} className="rounded-lg bg-blue-100 px-2.5 py-1 text-xs text-blue-700 disabled:opacity-50">{autoFillAddressLoading ? 'กำลังแยก...' : 'Auto fill'}</button></div><textarea value={form.customer_address} onChange={e => setForm(v => ({ ...v, customer_address: e.target.value }))} onPaste={e => { const pasted = e.clipboardData.getData('text'); if (!pasted.trim()) return; const target = e.currentTarget; const next = target.value.slice(0, target.selectionStart ?? target.value.length) + pasted + target.value.slice(target.selectionEnd ?? target.value.length); window.setTimeout(() => void handleAutoFillAddress(next), 0) }} className={`mt-1 w-full resize-y rounded-xl border p-2.5 font-normal ${mobile ? 'prebill-address-textarea min-h-24' : 'min-h-36'}`} rows={mobile ? 3 : 5} placeholder="วางที่อยู่พร้อมรหัสไปรษณีย์ แล้วกด Auto fill" /></div>}
+          <div className={mobile ? 'grid grid-cols-2 gap-2 border-t border-slate-100 pt-3' : 'grid grid-cols-2 content-start gap-4 lg:col-span-2'}>
+          {mobile && <h3 className="col-span-2 mb-1 text-sm font-bold text-slate-800">เงื่อนไขเอกสาร</h3>}
+          <label className={mobile ? 'min-w-0 text-xs font-semibold text-slate-600' : 'text-sm font-semibold'}>ระยะเวลาจัดส่ง *
             <select value={form.delivery_term} onChange={e => setForm(v => ({ ...v, delivery_term: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5 bg-white">
               {['1-3 วัน','7 วัน','14 วัน','30 วัน'].map(v => <option key={v}>{v}</option>)}<option value="custom">ระบุเอง</option>
             </select>
             {form.delivery_term === 'custom' && <input value={form.delivery_custom} onChange={e => setForm(v => ({ ...v, delivery_custom: e.target.value }))} placeholder="เช่น 45 วัน" className="mt-2 w-full rounded-xl border p-2.5" />}
           </label>
-          <label className="text-sm font-semibold">ยืนราคาถึงวันที่ *<input type="date" min={today()} value={form.valid_until} onChange={e => setForm(v => ({ ...v, valid_until: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5" /></label>
+          <label className={mobile ? "min-w-0 text-xs font-semibold text-slate-600" : "text-sm font-semibold"}>ยืนราคาถึงวันที่ *<input type="date" min={today()} value={form.valid_until} onChange={e => setForm(v => ({ ...v, valid_until: e.target.value }))} className="mt-1 w-full rounded-xl border p-2.5" /></label>
+          </div>
         </section>
 
-        {!isPickup && <details className="rounded-2xl bg-white p-5 shadow-sm" open={!!form.customer_address}>
-          <summary className="cursor-pointer font-bold">ข้อมูลที่อยู่สำหรับตรวจพื้นที่ห่างไกล</summary>
-          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-5">
-            <label className="text-xs font-semibold">ที่อยู่<input value={address.address_line} onChange={e => { setAddress(v => ({ ...v, address_line: e.target.value })); setManualShipping(null) }} className="mt-1 w-full rounded-lg border p-2" /></label>
-            <label className="text-xs font-semibold">ตำบล/แขวง{subDistrictOptions.length > 0 ? <select value={subDistrictOptions.findIndex(option => option.subDistrict === address.sub_district)} onChange={e => { const option = subDistrictOptions[Number(e.target.value)]; if (option) { setAddress(v => ({ ...v, sub_district: option.subDistrict, district: option.district })); setManualShipping(null) } }} className="mt-1 w-full rounded-lg border bg-white p-2"><option value={-1}>เลือกตำบล/แขวง</option>{subDistrictOptions.map((option, optionIndex) => <option key={`${option.subDistrict}-${option.district}`} value={optionIndex}>{option.subDistrict}</option>)}</select> : <input value={address.sub_district} onChange={e => { setAddress(v => ({ ...v, sub_district: e.target.value })); setManualShipping(null) }} className="mt-1 w-full rounded-lg border p-2" />}</label>
-            <label className="text-xs font-semibold">อำเภอ/เขต<input value={address.district} onChange={e => { setAddress(v => ({ ...v, district: e.target.value })); setManualShipping(null) }} className="mt-1 w-full rounded-lg border p-2" /></label>
-            <label className="text-xs font-semibold">จังหวัด<input value={address.province} onChange={e => { setAddress(v => ({ ...v, province: e.target.value })); setManualShipping(null) }} className="mt-1 w-full rounded-lg border p-2" /></label>
-            <label className="text-xs font-semibold">รหัสไปรษณีย์<input value={address.postal_code} onChange={e => { setAddress(v => ({ ...v, postal_code: e.target.value })); setManualShipping(null) }} className="mt-1 w-full rounded-lg border p-2" /></label>
-          </div>
-          {matchedArea ? <p className="mt-3 font-semibold text-violet-700">พบ{SHIPPING_AREA_TYPE_LABELS[matchedArea.area_type]}: เพิ่ม {money(matchedArea.surcharge)} บาท · {channel?.default_carrier}</p> : <p className="mt-3 text-sm text-amber-700">{areaMatchMessage}</p>}
-        </details>}
 
-        {mobile && <section className="rounded-2xl bg-white p-5 shadow-sm">
-          <h3 className="text-lg font-bold">ข้อมูลออกใบกำกับภาษี</h3>
-          <label className="my-3 flex items-center gap-3"><input type="checkbox" checked={requestTaxInvoice || withholdingRequested} disabled={withholdingRequested} onChange={e => setRequestTaxInvoice(e.target.checked)} />ต้องการใบกำกับภาษี</label>
+
+        {mobile && <section className="rounded-2xl bg-white p-3 shadow-sm">
+          <div className="flex items-center justify-between gap-3"><div><h3 id="prebill-tax-switch-label" className="text-sm font-bold">ข้อมูลออกใบกำกับภาษี</h3><p className="mt-1 text-xs text-slate-500">{requestTaxInvoice || withholdingRequested ? 'ต้องการใบกำกับภาษี' : 'เปิดเมื่อต้องการใบกำกับภาษี'}</p></div>
+          <button type="button" role="switch" aria-labelledby="prebill-tax-switch-label" aria-checked={requestTaxInvoice || withholdingRequested} disabled={withholdingRequested} onClick={() => setRequestTaxInvoice(value => !value)} className={`prebill-tax-switch relative shrink-0 rounded-full transition-colors focus-visible:outline-blue-600 disabled:opacity-50 ${requestTaxInvoice || withholdingRequested ? 'bg-blue-600' : 'bg-slate-200'}`}><span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-transform ${requestTaxInvoice || withholdingRequested ? 'translate-x-6' : 'translate-x-1'}`} /></button></div>
           {(requestTaxInvoice || withholdingRequested) && <>
             <p className="mb-3 text-sm text-slate-500">เตรียมข้อมูลสำหรับเปิดบิลบนคอมฯ แยกจากที่อยู่จัดส่ง</p>
-            <button type="button" className="mb-4 rounded-xl border px-4 py-2" onClick={() => setTaxInvoice(v => ({ ...v, company_name: form.customer_name, address: form.customer_address, tax_address: undefined }))}>ใช้ชื่อและที่อยู่ลูกค้า</button>
             <TaxInvoiceFields value={taxInvoice} onChange={setTaxInvoice} disabled={locked || expired || saving} />
           </>}
         </section>}
-        <section className="overflow-x-auto rounded-2xl bg-white p-4 shadow-sm">
+        <section className="prebill-product-editor overflow-x-auto rounded-2xl bg-white p-3 shadow-sm">
           <div className="mb-3 flex items-center justify-between"><h3 className="text-lg font-bold">รายการสินค้า</h3></div>
           <table className={`${documentType === 'production_confirmation' ? 'min-w-[1720px]' : 'min-w-[980px]'} w-full border-collapse text-sm`}>
             <thead><tr className="bg-slate-100"><th className="w-10 border p-1 text-center text-[10px]">ฟรี</th><th className="w-10 border p-1 text-center text-[10px]">#</th><th className={`${documentType === 'production_confirmation' ? 'min-w-[240px]' : 'min-w-[360px]'} border p-1.5`}>ชื่อสินค้า</th><th className="w-14 border p-1 text-center text-[10px]">OH</th>{documentType === 'production_confirmation' && <><th className="w-32 border p-1.5">สีหมึก</th><th className="w-16 border p-1.5">ชั้น</th><th className="w-28 border p-1.5">ลาย</th><th className="w-24 border p-1.5">ฟอนต์</th><th className="w-14 border p-1 text-center text-[10px] whitespace-nowrap">ไม่รับชื่อ</th><th className="min-w-[150px] border p-1.5">บรรทัด 1</th><th className="min-w-[150px] border p-1.5">บรรทัด 2</th><th className="min-w-[150px] border p-1.5">บรรทัด 3</th></>}<th className="w-20 border p-1.5">จำนวน</th><th className="w-24 border p-1 text-[10px] whitespace-nowrap">ราคา/หน่วย</th><th className="min-w-[150px] border p-1.5">หมายเหตุ</th>{documentType === 'production_confirmation' && <th className="min-w-[140px] border p-1.5">ไฟล์แนบ</th>}<th className="w-10 border p-1.5" /></tr></thead>
             <tbody>{items.map((item, index) => (
               <tr key={item.id || index} className={`align-middle ${itemGroupRowClass(index)} ${item.is_free ? 'bg-green-50' : ''}`}>
-                <td data-label="ฟรี" className="border p-1 text-center">{item.is_detail_row ? <span className="text-slate-400">-</span> : <input type="checkbox" checked={item.is_free} onChange={e => updateItem(index, { is_free: e.target.checked, unit_price: e.target.checked ? 0 : item.unit_price })} className="h-4 w-4 align-middle" />}</td>
+                {(!mobile || item.product_id) && <td data-label="ฟรี" className="border p-1 text-center">{item.is_detail_row ? <span className="text-slate-400">-</span> : <input type="checkbox" checked={item.is_free} onChange={e => updateItem(index, { is_free: e.target.checked, unit_price: e.target.checked ? 0 : item.unit_price })} className="h-4 w-4 align-middle" />}</td>}
                 <td data-label="รายการ" className="border p-1 text-center text-xs font-semibold text-slate-600">{itemDisplayNumber(index)}</td>
                 <td data-label="สินค้า" className="border p-1.5"><div className="relative w-full"><input ref={element => { productInputRefs.current[index] = element }} value={item.product_name} disabled={item.is_detail_row} placeholder="ค้นหาหรือเลือกสินค้า..." onFocus={event => { if (!item.is_detail_row) openProductDropdown(index, event.currentTarget, true) }} onChange={event => { selectProduct(index, event.target.value); setProductSearchTerms(current => ({ ...current, [index]: event.target.value })); openProductDropdown(index, event.currentTarget) }} onBlur={() => window.setTimeout(() => { setOpenProductIndex(current => current === index ? null : current); setProductDropdownPosition(null) }, 150)} className="w-full rounded border px-1.5 py-1 pr-7 text-xs disabled:bg-slate-100" autoComplete="off" />{!item.is_detail_row && <button type="button" tabIndex={-1} onMouseDown={event => event.preventDefault()} onClick={() => { const input = productInputRefs.current[index]; if (!input) return; if (openProductIndex === index) { setOpenProductIndex(null); setProductDropdownPosition(null) } else openProductDropdown(index, input, true) }} className="absolute right-0 top-0 h-7 w-7 text-slate-500">▾</button>}</div></td>
+                {(!mobile || item.product_id) && <>
                 <td data-label="OH" className="border p-1 text-center align-middle text-xs font-semibold">{item.product_id ? Number(stockMap[String(item.product_id)] ?? item.oh_snapshot).toLocaleString() : <span className="text-slate-400">-</span>}</td>
                 {documentType === 'production_confirmation' && <>
-                  <td data-label="สีหมึก" className="border p-1.5">{fieldState(index,'ink_color') ? <select value={item.ink_color || ''} onChange={e => updateInkColor(index, e.target.value)} className="w-full rounded border px-1.5 py-1 text-xs"><option value="">เลือกสี</option>{inkTypes.map(value => <option key={value} value={value}>{value}</option>)}</select> : '-'}</td>
-                  <td data-label="ชั้น" className="border p-1.5">{fieldState(index,'product_type') ? <input value={item.product_type || ''} placeholder="ชั้น1" onChange={e => updateItem(index, { product_type: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs" /> : '-'}</td>
-                  <td data-label="ลาย" className="border p-1.5">{fieldState(index,'cartoon_pattern') ? <LookupDropdownInput value={item.cartoon_pattern || ''} options={filteredPatternNames(index)} placeholder="ลาย" onChange={value => updatePattern(index, value)} /> : '-'}</td>
-                  <td data-label="ฟอนต์" className="border p-1.5">{fieldState(index,'font') ? <LookupDropdownInput value={item.font || ''} options={fonts} placeholder="F01" onChange={value => updateItem(index, { font: value })} /> : '-'}</td>
-                  <td data-label="ไม่มีบั้งชื่อ" className="border p-1 text-center"><input type="checkbox" checked={item.no_name_line} onChange={e => updateItem(index, { no_name_line: e.target.checked })} className="h-4 w-4 align-middle" /></td>
-                  {(['line_1','line_2','line_3'] as const).map((key, lineIndex) => <td data-label={`บรรทัด ${lineIndex + 1}`} key={key} className="border p-1.5">{fieldState(index,key) ? <input value={item[key] || ''} disabled={item.no_name_line} placeholder={`บรรทัด ${lineIndex + 1}`} onChange={e => updateItem(index, { [key]: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100" /> : '-'}</td>)}
+                  {(!mobile || fieldState(index,'ink_color')) && <td data-label="สีหมึก" className="border p-1.5">{fieldState(index,'ink_color') ? <select value={item.ink_color || ''} onChange={e => updateInkColor(index, e.target.value)} className="w-full rounded border px-1.5 py-1 text-xs"><option value="">เลือกสี</option>{inkTypes.map(value => <option key={value} value={value}>{value}</option>)}</select> : '-'}</td>}
+                  {(!mobile || fieldState(index,'product_type')) && <td data-label="ชั้น" className="border p-1.5">{fieldState(index,'product_type') ? <input value={item.product_type || ''} placeholder="ชั้น1" onChange={e => updateItem(index, { product_type: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs" /> : '-'}</td>}
+                  {(!mobile || fieldState(index,'cartoon_pattern')) && <td data-label="ลาย" className="border p-1.5">{fieldState(index,'cartoon_pattern') ? <LookupDropdownInput value={item.cartoon_pattern || ''} options={filteredPatternNames(index)} placeholder="ลาย" onChange={value => updatePattern(index, value)} /> : '-'}</td>}
+                  {(!mobile || fieldState(index,'font')) && <td data-label="ฟอนต์" className="border p-1.5">{fieldState(index,'font') ? <LookupDropdownInput value={item.font || ''} options={fonts} placeholder="F01" onChange={value => updateItem(index, { font: value })} /> : '-'}</td>}
+                  {(!mobile || ['line_1', 'line_2', 'line_3'].some(key => fieldState(index, key))) && <td data-label={mobile ? "ไม่รับชื่อ" : "ไม่มีบั้งชื่อ"} className="prebill-no-name border p-1 text-center"><label className={mobile ? "flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600" : "inline-flex"}>{mobile && <span>ไม่รับชื่อ</span>}<input aria-label="ไม่รับชื่อ" type="checkbox" checked={item.no_name_line} onChange={e => updateItem(index, { no_name_line: e.target.checked })} className="h-4 w-4 align-middle" /></label></td>}
+                  {(['line_1','line_2','line_3'] as const).map((key, lineIndex) => (!mobile || (fieldState(index, key) && !item.no_name_line)) ? <td data-label={`บรรทัด ${lineIndex + 1}`} key={key} className="prebill-text-line border p-1.5">{fieldState(index,key) ? <input value={item[key] || ''} disabled={item.no_name_line} placeholder={`บรรทัด ${lineIndex + 1}`} onChange={e => updateItem(index, { [key]: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100" /> : '-'}</td> : null)}
                 </>}
                 <td data-label="จำนวน" className="border p-1.5"><input type="number" min="1" value={item.quantity} disabled={item.is_detail_row} onChange={e => updateItem(index, { quantity: Math.max(1, Number(e.target.value)) })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100" /></td>
                 <td data-label="ราคา/หน่วย" className="border p-1.5"><input type="number" min="0" value={item.unit_price} placeholder="0.00" disabled={item.is_detail_row || item.is_free || (!MANUAL_PRICE_CHANNELS.has(form.channel_code) && !!item.product_id)} onChange={e => updateItem(index, { unit_price: Number(e.target.value) })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100 disabled:text-slate-500" /></td>
-                <td data-label="หมายเหตุ" className="border p-1.5">{fieldState(index,'notes') ? <input value={item.notes || ''} placeholder="หมายเหตุเพิ่มเติม" onChange={e => updateItem(index, { notes: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs" /> : '-'}</td>
-                {documentType === 'production_confirmation' && <td data-label="ไฟล์แนบ" className="border p-1.5"><div className="space-y-1"><input value={item.attachment_name || ''} disabled={!fieldState(index,'attachment')} placeholder="ชื่อกำกับ" onChange={e => updateItem(index, { attachment_name: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100" /><input value={item.file_attachment || ''} disabled={!fieldState(index,'attachment')} placeholder="ไฟล์แนบ (URL)" onChange={e => updateItem(index, { file_attachment: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100" /></div></td>}
-                <td data-label="ลบรายการ" className="border p-1 text-center"><button type="button" disabled={items.length === 1} onClick={() => removeItem(index)} className="h-7 w-7 rounded bg-red-500 font-bold text-white hover:bg-red-600 disabled:bg-slate-200">×</button></td>
+                {(!mobile || fieldState(index,'notes')) && <td data-label="หมายเหตุ" className="border p-1.5">{fieldState(index,'notes') ? <input value={item.notes || ''} placeholder="หมายเหตุเพิ่มเติม" onChange={e => updateItem(index, { notes: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs" /> : '-'}</td>}
+                {documentType === 'production_confirmation' && (!mobile || fieldState(index, 'attachment')) && <td data-label="ไฟล์แนบ" className="border p-1.5"><div className="space-y-1"><input value={item.attachment_name || ''} disabled={!fieldState(index,'attachment')} placeholder="ชื่อกำกับ" onChange={e => updateItem(index, { attachment_name: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100" /><input value={item.file_attachment || ''} disabled={!fieldState(index,'attachment')} placeholder="ไฟล์แนบ (URL)" onChange={e => updateItem(index, { file_attachment: e.target.value })} className="w-full rounded border px-1.5 py-1 text-xs disabled:bg-slate-100" /></div></td>}
+                </>}
+                <td data-label="ลบรายการ" className="border p-1 text-center"><button type="button" aria-label={`ลบรายการ ${itemDisplayNumber(index)}`} disabled={items.length === 1} onClick={() => removeItem(index)} className="h-7 w-7 rounded bg-red-500 font-bold text-white hover:bg-red-600 disabled:bg-slate-200">×</button></td>
               </tr>
             ))}</tbody>
           </table>
           {tubeGiftMissing && <p className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-2 text-sm font-semibold text-amber-800">พบสินค้า TUBE แต่ไม่พบสินค้าของแถมรหัส {TUBE_GIFT_PRODUCT_CODE} ที่เปิดใช้งาน จึงยังไม่สามารถเพิ่มเชือกอัตโนมัติได้</p>}
           {jumboSharpenerGiftMissing && <p className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-2 text-sm font-semibold text-amber-800">พบสินค้าที่ร่วมรายการ แต่ไม่พบสินค้าของแถมรหัส {JUMBO_SHARPENER_GIFT_PRODUCT_CODE} ที่เปิดใช้งาน จึงยังไม่สามารถเพิ่มกบเหลา JUMBO อัตโนมัติได้</p>}
           {missingPlasticGiftNames.length > 0 && <p className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-2 text-sm font-semibold text-amber-800">ไม่พบสินค้าหมึกพลาสติกของแถมที่เปิดใช้งาน: {missingPlasticGiftNames.join(', ')}</p>}
-          <button type="button" onClick={() => setItems(current => [...current, blankItem(current.length)])} className="mt-4 rounded bg-slate-600 px-4 py-2 text-sm font-bold text-white hover:bg-slate-700">+ เพิ่มแถว</button>
+          <button type="button" onClick={() => setItems(current => [...current, blankItem(current.length)])} className="prebill-add-row mt-4 rounded bg-slate-600 px-4 py-2 text-sm font-bold text-white hover:bg-slate-700">+ เพิ่มแถว</button>
         </section>
 
         {openProductIndex !== null && productDropdownPosition && createPortal(<div className="fixed z-[300] overflow-auto rounded-xl border border-slate-200 bg-white py-1 shadow-2xl" style={{ left: productDropdownPosition.left, top: productDropdownPosition.top, width: productDropdownPosition.width, maxHeight: productDropdownPosition.maxHeight }}>{matchingProducts(productSearchTerms[openProductIndex] ?? '').length > 0 ? matchingProducts(productSearchTerms[openProductIndex] ?? '').map(product => <button key={product.id} type="button" onMouseDown={event => { event.preventDefault(); selectProduct(openProductIndex, product.id); setOpenProductIndex(null); setProductDropdownPosition(null) }} className="block w-full whitespace-nowrap px-3 py-2 text-left hover:bg-blue-50"><span className="block font-semibold">{product.product_name}</span><span className="block text-xs text-slate-500">{product.product_code}</span></button>) : <div className="px-3 py-4 text-center text-slate-500">ไม่พบสินค้า</div>}</div>, globalThis.document.body)}
@@ -1090,17 +1112,23 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
                     return <span key={promotion.id} className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold ${result?.checked && !result.passed ? 'border-red-200 bg-red-50 text-red-700' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>{promotion.name}{promotionApplicationLimit(promotion) > 1 && ` ×${promotionApplicationCounts[promotion.id] || 1}`}<button type="button" onClick={() => togglePromotion(promotion, false)} className="ml-0.5 rounded-full px-1 text-sm leading-none hover:bg-white/80" aria-label={`ยกเลิกโปรโมชั่น ${promotion.name}`} title="ยกเลิกโปรโมชั่นนี้">×</button></span>
                   })}</div>}
                 </div>
-                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                  <div className="min-w-0"><div className="mb-1 flex items-center justify-between gap-2"><p className="text-xs font-bold text-amber-700">★ โปรฯ ติดดาว</p><span className="text-[10px] text-amber-600">{featuredPromotions.length} รายการ</span></div><div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border border-amber-200 bg-amber-50/40 p-1">{featuredPromotions.length === 0 ? <p className="px-2 py-4 text-center text-xs text-gray-400">ยังไม่มีโปรฯ ติดดาว</p> : featuredPromotions.map(promotion => renderPromotionChoice(promotion, true))}</div></div>
-                  <div className="min-w-0"><div className="mb-1 flex items-center justify-between gap-2"><p className="text-xs font-bold text-gray-600">รายการโปรฯ ทั้งหมด</p><span className="text-[10px] text-gray-400">{promotionsForSelection.length} รายการ</span></div><div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border bg-white p-1">{promotionsForSelection.length === 0 ? <p className="px-2 py-4 text-center text-xs text-gray-400">ยังไม่มีโปรโมชั่นที่เปิดใช้งาน</p> : promotionsForSelection.map(promotion => renderPromotionChoice(promotion, promotion.is_featured === true))}</div></div>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-2"><span className="text-xs text-slate-500">เลือกโปรโมชั่นที่ใช้กับเอกสารนี้</span><button type="button" aria-expanded={showAllPromotions} onClick={() => setShowAllPromotions(value => !value)} className="prebill-promotion-toggle rounded-lg border border-blue-200 px-2 py-1 text-xs font-semibold text-blue-700">{showAllPromotions ? 'แสดงเฉพาะติดดาว' : 'ดูทั้งหมด'}</button></div>
+                  {!showAllPromotions && <div className="min-w-0"><div className="mb-1 flex items-center justify-between gap-2"><p className="text-xs font-bold text-amber-700">★ โปรฯ ติดดาว</p><span className="text-[10px] text-amber-600">{featuredPromotions.length} รายการ</span></div><div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border border-amber-200 bg-amber-50/40 p-1">{featuredPromotions.length === 0 ? <p className="px-2 py-4 text-center text-xs text-gray-400">ยังไม่มีโปรฯ ติดดาว</p> : featuredPromotions.map(promotion => renderPromotionChoice(promotion, true))}</div></div>}
+                  {showAllPromotions && <div className="min-w-0"><div className="mb-1 flex items-center justify-between gap-2"><p className="text-xs font-bold text-gray-600">รายการโปรฯ ทั้งหมด</p><span className="text-[10px] text-gray-400">{promotionsForSelection.length} รายการ</span></div><div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border bg-white p-1">{promotionsForSelection.length === 0 ? <p className="px-2 py-4 text-center text-xs text-gray-400">ยังไม่มีโปรโมชั่นที่เปิดใช้งาน</p> : promotionsForSelection.map(promotion => renderPromotionChoice(promotion, promotion.is_featured === true))}</div></div>}
                 </div>
               </div>
               {selectedPromotionIds.length > 0 && <div className="mt-2 space-y-1">{promoResults.filter(result => result.checked).map(result => <p key={result.promotion_id} className={`text-xs ${result.passed ? 'text-emerald-600' : 'text-red-600'}`}>{result.promotion_name}: {result.passed ? `ผ่าน${result.expected_discount > 0 ? ` · ส่วนลด ${money(result.expected_discount)} บาท` : ''}${selectedPromotions.find(promotion => promotion.id === result.promotion_id)?.free_shipping ? ' · ส่งฟรี' : ''}` : result.messages.join(' · ')}</p>)}</div>}
             </div>
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3"><div className="mb-2 text-sm font-semibold text-amber-900">ส่วนลดที่ต้องการขออนุมัติ</div><div className="grid grid-cols-3 gap-2"><select value={discountRequest.type} onChange={e => setDiscountRequest(current => ({ ...current, type: e.target.value as 'amount' | 'percent' }))} className="rounded-lg border bg-white p-2 text-sm"><option value="amount">บาท</option><option value="percent">เปอร์เซ็นต์</option></select><input type="number" min="0" value={discountRequest.value} onChange={e => setDiscountRequest(current => ({ ...current, value: e.target.value }))} placeholder="ส่วนลด" className="col-span-2 rounded-lg border p-2 text-sm" /></div><textarea value={discountRequest.note} onChange={e => setDiscountRequest(current => ({ ...current, note: e.target.value }))} placeholder="หมายเหตุคำขอส่วนลด" rows={2} className="mt-2 w-full rounded-lg border p-2 text-sm" /></div>
           </div>
           <div className="rounded-2xl bg-white p-5 shadow-sm">
             <h3 className="text-lg font-bold">สรุปยอด</h3>
+            {!isRenewal && document?.discount_requested_at && <div className="mt-3 space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-semibold text-slate-700">คำขอส่วนลด</span><span className={`rounded-full px-2 py-1 text-xs font-semibold ${document.status === 'pending_discount' ? 'bg-amber-100 text-amber-800' : document.status === 'rejected' ? 'bg-red-100 text-red-700' : document.approved_by ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>{discountRequestStatus}</span></div>
+              <p className="font-semibold text-slate-900">{document.special_discount_type === 'percent' ? `${document.special_discount_value}% · ` : ''}{money(document.special_discount)} บาท</p>
+              {document.discount_request_note && <p className="whitespace-pre-wrap break-words text-xs text-slate-600">เหตุผล: {document.discount_request_note}</p>}
+              {(document.rejection_note || document.approval_note) && <p className="whitespace-pre-wrap break-words text-xs text-slate-600">ผลพิจารณา: {document.rejection_note || document.approval_note}</p>}
+            </div>}
             <div className="mt-4 space-y-3">
               <div className="flex justify-between"><span>ยอดสินค้า</span><b>{money(subtotal)}</b></div>
               <div className="flex justify-between text-emerald-700"><span>ส่วนลดโปรโมชั่น</span><b>-{money(promotionDiscount)}</b></div>
@@ -1119,20 +1147,27 @@ export default function PreBillForm({ documentType, document, sourceDocument, on
         </section>
       </fieldset>
 
-      <div className="flex flex-wrap gap-2 rounded-2xl bg-white p-4 shadow-sm">
+      <div className="prebill-form-actions rounded-2xl bg-white p-3 shadow-sm">
+        <div className="flex flex-wrap gap-2">
         {!locked && !expired && <><button disabled={saving} onClick={() => save('draft')} className="rounded-xl border px-4 py-2 font-bold">บันทึกร่าง</button><button disabled={saving} onClick={() => save('active')} className="rounded-xl bg-blue-600 px-4 py-2 font-bold text-white">บันทึก</button><button disabled={saving} onClick={() => setDiscountModal(true)} className="rounded-xl bg-amber-500 px-4 py-2 font-bold text-white">ขอส่วนลด</button></>}
-        <button disabled={saving} onClick={openPreview} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">ตัวอย่าง</button>
-        <button disabled={saving} onClick={copyImage} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">คัดลอกรูป</button>
-        <button disabled={saving} onClick={downloadImage} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">ดาวน์โหลดรูป</button>
-        <button disabled={saving} onClick={downloadPdf} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">ดาวน์โหลด PDF</button>
-        <button disabled={saving} onClick={copyText} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50">คัดลอกข้อความ</button>
+        </div>
+        <div className="mt-2 border-t border-slate-100 pt-2">
+        <div className={mobile ? "grid grid-cols-2 gap-2 sm:grid-cols-3" : "grid grid-cols-5 gap-2"}>
+        <button disabled={saving} onClick={openPreview} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50"><span className="inline-flex items-center justify-center gap-2"><FiEye aria-hidden="true" className="h-4 w-4 shrink-0" />ตัวอย่าง</span></button>
+        <button disabled={saving} onClick={copyImage} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50"><span className="inline-flex items-center justify-center gap-2"><FiCopy aria-hidden="true" className="h-4 w-4 shrink-0" />คัดลอกรูป</span></button>
+        <button disabled={saving} onClick={downloadImage} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50"><span className="inline-flex items-center justify-center gap-2"><FiDownload aria-hidden="true" className="h-4 w-4 shrink-0" />ดาวน์โหลดรูป</span></button>
+        <button disabled={saving} onClick={downloadPdf} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50"><span className="inline-flex items-center justify-center gap-2"><FiFileText aria-hidden="true" className="h-4 w-4 shrink-0" />ดาวน์โหลด PDF</span></button>
+        <button disabled={saving} onClick={copyText} className="rounded-xl border px-4 py-2 font-bold disabled:opacity-50"><span className="inline-flex items-center justify-center gap-2"><FiClipboard aria-hidden="true" className="h-4 w-4 shrink-0" />คัดลอกข้อความ</span></button>
+        </div></div>
         {!mobile && onOpenBill && document && !expired && ['active','approved'].includes(document.status) && !document.converted_order_id && <button onClick={() => onOpenBill(document)} className="ml-auto rounded-xl bg-emerald-600 px-5 py-2 font-bold text-white">เปิดบิล</button>}
       </div>
 
-      <Modal open={discountModal} onClose={() => setDiscountModal(false)} contentClassName="max-w-md" ariaLabelledby="prebill-discount-request-title"><div className="p-6"><h3 id="prebill-discount-request-title" className="pr-8 text-xl font-bold">ขออนุมัติส่วนลด</h3><div className="mt-4 grid grid-cols-3 gap-2"><select value={discountRequest.type} onChange={e => setDiscountRequest(v => ({ ...v, type: e.target.value as 'amount' | 'percent' }))} className="rounded-xl border p-2"><option value="amount">บาท</option><option value="percent">เปอร์เซ็นต์</option></select><input type="number" min="0" value={discountRequest.value} onChange={e => setDiscountRequest(v => ({ ...v, value: e.target.value }))} className="col-span-2 rounded-xl border p-2" placeholder="จำนวนที่ขอ" /></div><div className="mt-3 rounded-xl bg-amber-50 p-3 text-sm"><div className="flex justify-between"><span>ยอดสินค้า</span><b>{money(subtotal)}</b></div><div className="mt-1 flex justify-between"><span>ส่วนลดที่ขอ</span><b>{money(discountRequest.type === 'percent' ? subtotal * Math.min(100, Number(discountRequest.value || 0)) / 100 : Math.min(subtotal, Number(discountRequest.value || 0)))}</b></div></div><textarea value={discountRequest.note} onChange={e => setDiscountRequest(v => ({ ...v, note: e.target.value }))} rows={4} placeholder="หมายเหตุคำขอ (บังคับ)" className="mt-3 w-full rounded-xl border p-3" /><div className="mt-4 flex justify-end gap-2"><button onClick={() => setDiscountModal(false)} className="rounded-xl border px-4 py-2">ยกเลิก</button><button disabled={!discountRequest.value || !discountRequest.note.trim()} onClick={requestDiscount} className="rounded-xl bg-amber-500 px-4 py-2 font-bold text-white disabled:opacity-50">ส่งคำขอ</button></div></div></Modal>
+      <Modal open={remoteAreaOpen && !isPickup} onClose={() => setRemoteAreaOpen(false)} contentClassName="max-w-3xl" ariaLabelledby="prebill-remote-area-title"><div className="p-4"><h3 id="prebill-remote-area-title" className="pr-10 text-sm font-bold">ข้อมูลที่อยู่สำหรับตรวจพื้นที่ห่างไกล</h3><fieldset disabled={locked || expired || saving}>{remoteAreaDetails}</fieldset></div></Modal>
+      <Modal open={discountModal} onClose={() => setDiscountModal(false)} contentClassName="max-w-md" ariaLabelledby="prebill-discount-request-title"><div className="p-6"><h3 id="prebill-discount-request-title" className="pr-8 text-xl font-bold">ขออนุมัติส่วนลด</h3><div className="mt-4 grid grid-cols-3 gap-2"><select value={discountRequest.type} onChange={e => setDiscountRequest(v => ({ ...v, type: e.target.value as 'amount' | 'percent' }))} className="rounded-xl border p-2"><option value="amount">บาท</option><option value="percent">เปอร์เซ็นต์</option></select><input type="number" min="0" value={discountRequest.value} onChange={e => setDiscountRequest(v => ({ ...v, value: e.target.value }))} className="col-span-2 rounded-xl border p-2" placeholder="จำนวนที่ขอ" /></div><div className="mt-3 rounded-xl bg-amber-50 p-3 text-sm"><div className="flex justify-between"><span>ยอดสินค้า</span><b>{money(subtotal)}</b></div><div className="mt-1 flex justify-between"><span>ส่วนลดที่ขอ</span><b>{money(requestedDiscountAmount)}</b></div><div className="mt-2 flex justify-between border-t border-amber-200 pt-2 font-semibold"><span>ยอดรับชำระหลังส่วนลด</span><b>{money(requestedPaymentSummary.receivable)} บาท</b></div><p className="mt-1 text-xs text-amber-800">ยอดประมาณการเมื่อคำขอได้รับอนุมัติ</p></div><textarea value={discountRequest.note} onChange={e => setDiscountRequest(v => ({ ...v, note: e.target.value }))} rows={4} placeholder="หมายเหตุคำขอ (บังคับ)" className="mt-3 w-full rounded-xl border p-3" /><div className="mt-4 flex justify-end gap-2"><button onClick={() => setDiscountModal(false)} className="rounded-xl border px-4 py-2">ยกเลิก</button><button disabled={!discountRequest.value || !discountRequest.note.trim()} onClick={requestDiscount} className="rounded-xl bg-amber-500 px-4 py-2 font-bold text-white disabled:opacity-50">ส่งคำขอ</button></div></div></Modal>
 
-      {previewOpen && createPortal(<div className="fixed inset-0 z-[200] overflow-auto bg-black/60 p-4 pt-16 pr-24"><div className="relative mx-auto w-[794px]"><button type="button" onClick={() => setPreviewOpen(false)} className="absolute -right-20 top-0 z-[210] rounded-xl bg-white px-5 py-2 font-bold shadow-lg">ปิด</button><PreBillPreview ref={previewRef} document={previewDocument} items={items} /></div></div>, globalThis.document.body)}
-      {!previewOpen && <div className="fixed left-[-10000px] top-0"><PreBillPreview ref={previewRef} document={previewDocument} items={items} /></div>}
+      {previewOpen && mobile && createPortal(<MobilePreBillPreview document={previewDocument} items={items} onClose={() => setPreviewOpen(false)} />, globalThis.document.body)}
+      {previewOpen && !mobile && createPortal(<div className="fixed inset-0 z-[200] overflow-auto bg-black/60 p-4 pt-16 pr-24"><div className="relative mx-auto w-[794px]"><button type="button" onClick={() => setPreviewOpen(false)} className="absolute -right-20 top-0 z-[210] rounded-xl bg-white px-5 py-2 font-bold shadow-lg">ปิด</button><PreBillPreview ref={previewRef} document={previewDocument} items={items} /></div></div>, globalThis.document.body)}
+      {(!previewOpen || mobile) && <div className="fixed left-[-10000px] top-0"><PreBillPreview ref={previewRef} document={previewDocument} items={items} /></div>}
     </div>
   )
 }

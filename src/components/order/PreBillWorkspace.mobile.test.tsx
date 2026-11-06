@@ -19,15 +19,29 @@ afterEach(cleanup)
 const doc = { id: 'qt-1', document_type: 'quotation', document_no: 'QT-001', customer_name: 'Customer', status: 'active', valid_until: '2099-01-01', created_at: '2026-11-04', total_amount: 500 }
 const props = { pendingCounts: { quotation: 0, production_confirmation: 0 }, onOpenBill: vi.fn(), onViewConvertedOrder: vi.fn(), onReviewDiscounts: vi.fn() }
 describe('Sales QT/PC workspace isolation', () => {
-  it('mobile can edit shared documents without offering bill conversion', async () => {
+  it('mobile opens read-only details before offering edit without bill conversion', async () => {
     api.page.mockResolvedValue({ documents: [doc], total: 1 })
     api.detail.mockResolvedValue(doc)
     render(createElement(PreBillWorkspace, { ...props, mobile: true }))
     expect(await screen.findByText('QT-001')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'เปิดบิล' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'แก้ไข' }))
+    expect(screen.queryByRole('button', { name: 'แก้ไข' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'ยกเลิก' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'ดูรายละเอียด QT-001' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'แก้ไข' }))
     expect(await screen.findByText('editor:mobile:no-convert')).toBeTruthy()
     expect(api.detail).toHaveBeenCalledWith('qt-1')
+  })
+  it('returns from details to the compact list and keeps cancelled documents read-only', async () => {
+    api.page.mockResolvedValue({ documents: [{ ...doc, status: 'cancelled' }], total: 1 })
+    api.detail.mockResolvedValue({ ...doc, status: 'cancelled' })
+    render(createElement(PreBillWorkspace, { ...props, mobile: true }))
+    fireEvent.click(await screen.findByRole('button', { name: 'ดูรายละเอียด QT-001' }))
+    const back = await screen.findByRole('button', { name: '‹ กลับไปรายการ' })
+    expect(screen.queryByRole('button', { name: 'แก้ไข' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'ยกเลิก' })).toBeNull()
+    fireEvent.click(back)
+    expect(screen.getByRole('button', { name: 'ดูรายละเอียด QT-001' })).toBeTruthy()
   })
   it('desktop keeps its conversion action and existing editor', async () => {
     api.page.mockResolvedValue({ documents: [doc], total: 1 })

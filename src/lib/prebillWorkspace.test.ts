@@ -34,7 +34,7 @@ describe('prebill workspace reads', () => {
     expect(params.get('owner_id')).toBe('eq.owner-id')
     expect(params.getAll('created_at')).toEqual(['gte.2026-10-01T00:00:00+07:00', 'lt.2026-11-01T00:00:00+07:00'])
     expect(params.get('select')).not.toContain('*')
-    expect(params.get('select')).not.toContain('or_prebill_items')
+    expect(params.get('select')).toContain('or_prebill_items(sort_order,product_name,quantity,unit_price,is_free,is_detail_row)')
     expect(result.total).toBe(63)
   })
 
