@@ -35,6 +35,7 @@ export interface VerificationResultModalProps {
   onConfirmOverpay?: (details: OverpayRefundBankDetails) => void | Promise<void>
   onConfirmNoRefund?: (details: { reason: string; evidenceUrl: string | null }) => void | Promise<void>
   /** กำลังดำเนินการ (เช่น กำลังสร้างรายการโอนคืน) */
+  requestError?: string
   confirmingOverpay?: boolean
 }
 
@@ -200,6 +201,7 @@ export default function VerificationResultModal({
   statusMessage,
   onConfirmOverpay,
   onConfirmNoRefund,
+  requestError,
   confirmingOverpay = false,
 }: VerificationResultModalProps) {
   const [showOverpayBankForm, setShowOverpayBankForm] = useState(false)
@@ -288,6 +290,7 @@ export default function VerificationResultModal({
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-4">
+        {requestError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{requestError}</p>}
         {isOverTransfer && showWaiverForm && (
           <div className="space-y-4 text-sm">
             <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">ยอดบิล ฿{orderAmount.toLocaleString()} · รับเงิน ฿{totalAmount.toLocaleString()}<div className="mt-1 font-semibold">ลูกค้าไม่รับส่วนเกิน ฿{overpayAmount.toLocaleString()} คืน</div></div>

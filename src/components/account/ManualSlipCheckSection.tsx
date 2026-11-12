@@ -3,8 +3,11 @@ import { supabase } from '../../lib/supabase'
 import { Order } from '../../types'
 import { formatDateTime } from '../../lib/utils'
 import Modal from '../ui/Modal'
+import VerificationResultModal, { type OverpayRefundBankDetails } from '../order/VerificationResultModal'
 import OrderDetailView from '../order/OrderDetailView'
 import { useAuthContext } from '../../contexts/AuthContext'
+
+type Overpayment = { order_amount: number; paid_amount: number; amount: number; pending: boolean }
 
 type ManualSlipRow = {
   id: string
@@ -45,6 +48,9 @@ type EditingCell = {
 
 export default function ManualSlipCheckSection() {
   const { user } = useAuthContext()
+  const [overpayment, setOverpayment] = useState<{ orderId: string; info: Overpayment } | null>(null)
+  const [overpaymentSaving, setOverpaymentSaving] = useState(false)
+  const [overpaymentError, setOverpaymentError] = useState('')
   const [revokeGroup, setRevokeGroup] = useState<OrderGroup | null>(null)
   const [revokeReason, setRevokeReason] = useState('')
   const [revoking, setRevoking] = useState(false)
@@ -306,8 +312,8 @@ export default function ManualSlipCheckSection() {
       p_rejected_reason: action === 'rejected' ? rejectedReason?.trim() || null : null,
     })
     if (error) throw error
-    const result = (data || {}) as { order_status?: string }
-    return { orderUpdateStatus: result.order_status || (action === 'approved' ? 'ตรวจสอบแล้ว' : 'ตรวจสอบไม่ผ่าน'), action }
+    const result = (data || {}) as { order_status?: string; overpayment?: Overpayment }
+    return { overpayment: result.overpayment, orderUpdateStatus: result.order_status || (action === 'approved' ? 'ตรวจสอบแล้ว' : 'ตรวจสอบไม่ผ่าน'), action }
   }
 
   async function revokeApproval() {
@@ -338,10 +344,16 @@ export default function ManualSlipCheckSection() {
     if (!actionModal.group) return
     setActionSubmitting(true)
     try {
-      const { orderUpdateStatus } = await applyManualSlipDecision(actionModal.group, action, actionRejectReason)
+      const { orderUpdateStatus, overpayment: info } = await applyManualSlipDecision(actionModal.group, action, actionRejectReason)
       setActionModal({ open: false, group: null })
       setActionRejectReason('')
       await loadRows()
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+      if (action === 'approved' && info && info.amount > 0.01 && !info.pending) {
+        setOverpaymentError('')
+        setOverpayment({ orderId: actionModal.group.order_id, info })
+        return
+      }
       setCheckResult({
         open: true,
         message:
@@ -356,6 +368,41 @@ export default function ManualSlipCheckSection() {
       setCheckResult({ open: true, message: 'ดำเนินการไม่สำเร็จ: ' + (e?.message || e), type: 'info' })
     } finally {
       setActionSubmitting(false)
+    }
+  }
+
+  async function openOverpayment(orderId: string) {
+    try {
+      const { data, error } = await supabase.rpc('manual_slip_overpayment', { p_order_id: orderId })
+      if (error) throw error
+      const info = data as Overpayment
+      if (info.amount <= 0.01 || info.pending) {
+        setCheckResult({ open: true, message: info.pending ? 'มีคำขอจัดการยอดเกินรอพิจารณาแล้ว' : 'ไม่มียอดเกินที่ต้องจัดการ', type: 'info' })
+        return
+      }
+      setOverpaymentError('')
+      setOverpayment({ orderId, info })
+    } catch (error: any) {
+      setCheckResult({ open: true, message: error?.message || 'ตรวจยอดเกินไม่สำเร็จ', type: 'warning' })
+    }
+  }
+
+  async function submitOverpayment(details: OverpayRefundBankDetails | { reason: string; evidenceUrl: string | null }) {
+    if (!overpayment || overpaymentSaving) return
+    setOverpaymentSaving(true)
+    setOverpaymentError('')
+    try {
+      const { error } = 'reason' in details
+        ? await supabase.rpc('submit_overpayment_waiver', { p_order_id: overpayment.orderId, p_reason: details.reason, p_evidence_url: details.evidenceUrl })
+        : await supabase.rpc('manual_slip_request_refund', { p_order_id: overpayment.orderId, p_details: details })
+      if (error) throw error
+      setOverpayment(null)
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+      setCheckResult({ open: true, message: 'ส่งคำขอจัดการยอดเกินแล้ว รอบัญชีอนุมัติก่อนนำเข้าใบงาน', type: 'success' })
+    } catch (error: any) {
+      setOverpaymentError(error?.message || 'ส่งคำขอไม่สำเร็จ')
+    } finally {
+      setOverpaymentSaving(false)
     }
   }
 
@@ -573,6 +620,7 @@ export default function ManualSlipCheckSection() {
                       >
                         <i className="fas fa-eye mr-1"></i> ดูบิล
                       </button>
+                      {group.entries.some(entry => entry.status === 'approved') && <button type="button" onClick={() => void openOverpayment(group.order_id)} className="px-3 py-2 rounded-lg border border-amber-400 text-amber-800 text-sm">จัดการยอดเกิน</button>}
                       {user?.role === 'superadmin' && group.entries.some(entry => entry.status === 'approved') && (
                         <button
                           type="button"
@@ -622,6 +670,17 @@ export default function ManualSlipCheckSection() {
         )}
       </div>
 
+      {overpayment && <VerificationResultModal
+        open type="over_transfer"
+        onClose={() => { if (!overpaymentSaving) setOverpayment(null) }}
+        accountMatch={null} bankCodeMatch={null} amountStatus="over"
+        orderAmount={overpayment.info.order_amount} totalAmount={overpayment.info.paid_amount}
+        overpayAmount={overpayment.info.amount}
+        statusMessage="อนุมัติสลิปมือแล้ว พบยอดโอนเกิน กรุณาส่งคำขอโอนคืนหรือไม่รับเงินคืน"
+        requestError={overpaymentError}
+        confirmingOverpay={overpaymentSaving}
+        onConfirmOverpay={submitOverpayment} onConfirmNoRefund={submitOverpayment}
+      />}
       <Modal open={!!revokeGroup && user?.role === 'superadmin'} onClose={() => { if (!revoking) setRevokeGroup(null) }} contentClassName="max-w-md" closeOnBackdropClick={!revoking} ariaLabelledby="revoke-approval-title">
         <div className="p-6">
           <h3 id="revoke-approval-title" className="text-lg font-bold text-gray-900">ยกเลิกการอนุมัติสลิปมือ</h3>
