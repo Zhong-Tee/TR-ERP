@@ -16,6 +16,7 @@ import { supabase } from '../../lib/supabase'
 import { fetchHRCompanies, isEmployeeSocialSecurityEnabled } from '../../lib/payrollApi'
 import { fetchPaySchedules } from '../../lib/payrollPaymentApi'
 import type { PaySchedule } from '../../lib/payrollSchedule'
+import PaySchedulePreview from './PaySchedulePreview'
 import SalaryHistoryPanel from './SalaryHistoryPanel'
 import PhotoLightbox from './PhotoLightbox'
 import EmployeeOpeningBalances from './EmployeeOpeningBalances'
@@ -192,6 +193,9 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
     return()=>{active=false}
   }, [company_id])
   const [hire_date, setHireDate] = useState('')
+  // New hires always start their selected pay schedule on their hire date.
+  // Existing employees retain an independently editable effective date.
+  const payScheduleEffectiveDate = employee ? pay_schedule_effective_date || hire_date : hire_date
   const [probation_end_date, setProbationEndDate] = useState('')
   const [contract_end_date, setContractEndDate] = useState('')
   const [compensationDateEdited, setCompensationDateEdited] = useState(false)
@@ -522,7 +526,7 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
         position_id: position_id || undefined,
         hire_date: hire_date || undefined,
         pay_schedule_id: pay_schedule_id || null,
-        pay_schedule_effective_date: pay_schedule_effective_date || hire_date || null,
+        pay_schedule_effective_date: payScheduleEffectiveDate || null,
         compensation_effective_date: employee ? compensation_effective_date : hire_date || compensation_effective_date,
         probation_end_date: probation_end_date || undefined,
         contract_end_date: contract_end_date || null,
@@ -1109,10 +1113,20 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
                 {payScheduleError&&<span className="mt-1 block text-xs text-red-600">{payScheduleError}</span>}
               </label>
               <label>
-                <span className="block text-sm font-medium text-gray-700 mb-1">วันที่เริ่มใช้รอบจ่าย</span>
-                <input type="date" value={pay_schedule_effective_date || hire_date} onChange={event=>setPayScheduleEffectiveDate(event.target.value)} className={fieldClass}/>
-                <span className="mt-1 block text-xs text-gray-500">เก็บประวัติรอบเดิมตามวันที่มีผล และตรวจวันที่ยืนยัน/จ่ายแล้วเพื่อป้องกันจ่ายซ้ำ</span>
+                <span className="block text-sm font-semibold text-emerald-800 mb-1">วันที่เริ่มใช้รอบจ่ายสำหรับพนักงานคนนี้</span>
+                <input type="date" value={payScheduleEffectiveDate} readOnly={!employee} aria-describedby="pay-schedule-effective-help" onChange={event=>{if(employee)setPayScheduleEffectiveDate(event.target.value)}} className={`${fieldClass}${!employee ? ' bg-gray-50' : ''}`}/>
+                <span id="pay-schedule-effective-help" className="mt-1 block text-xs text-gray-600">{employee ? 'วันที่ก่อนหน้านี้ยังใช้รอบเดิม หากต้องการใช้ตั้งแต่เริ่มงาน ให้ระบุวันเริ่มงาน หากเปลี่ยนตั้งแต่ต้นเดือน ให้ระบุวันที่ 1 ของเดือนนั้น ระบบตรวจวันที่ยืนยัน/จ่ายแล้วเพื่อป้องกันจ่ายซ้ำ' : 'กำหนดให้ตรงกับวันเริ่มงานโดยอัตโนมัติ เมื่อเปลี่ยนวันที่เข้างาน วันที่นี้และตัวอย่างช่วงค่าจ้างจะเปลี่ยนตาม ไม่ต้องกรอกซ้ำ'}</span>
               </label>
+              <div className="col-span-2">
+                {(!pay_schedule_id || paySchedules.some(row=>row.id===pay_schedule_id)) ? <PaySchedulePreview
+                  schedule={paySchedules.find(row=>row.id===pay_schedule_id) || {frequency:'monthly',payment_day:null}}
+                  month={payScheduleEffectiveDate.slice(0,7)}
+                  effectiveDate={payScheduleEffectiveDate}
+                  hireDate={hire_date}
+                  endDate={contract_end_date}
+                  employee
+                /> : <p className="text-sm text-gray-500">ยังแสดงตัวอย่างไม่ได้ กรุณาตรวจสอบว่ารอบจ่ายที่เลือกโหลดครบแล้ว</p>}
+              </div>
               <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">รูปแบบการทำงาน</span>
                 <select

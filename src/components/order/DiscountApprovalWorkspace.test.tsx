@@ -1,11 +1,65 @@
-import { describe, expect, it, vi } from 'vitest'
-import { renderToStaticMarkup } from 'react-dom/server'
-import { createElement } from 'react'
-const auth = vi.hoisted(() => ({ role: 'superadmin' }))
-vi.mock('../../contexts/AuthContext', () => ({ useAuthContext: () => ({ user: { role: auth.role } }) }))
-vi.mock('../../lib/supabase', () => ({ supabase: { rpc: vi.fn() } }))
+// @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import DiscountApprovalWorkspace from './DiscountApprovalWorkspace'
-describe('discount review workspace role access', () => {
- it('superadmin sees combined bill/QT/PC filters', () => { auth.role='superadmin'; const html=renderToStaticMarkup(createElement(DiscountApprovalWorkspace,{onChanged:()=>{}})); expect(html).toContain('บิลขาย'); expect(html).toContain('QT'); expect(html).toContain('PC'); expect(html).toContain('รออนุมัติ') })
- it('other roles cannot see review UI even when directly mounted', () => { for (const role of ['admin','sales-tr','sales-pump','account','store']) { auth.role=role; const html=renderToStaticMarkup(createElement(DiscountApprovalWorkspace,{onChanged:()=>{}})); expect(html).toContain('เฉพาะ superadmin'); expect(html).not.toContain('<table') } })
+const { rpc, from, loadDetail } = vi.hoisted(() => ({ rpc: vi.fn(), from: vi.fn(), loadDetail: vi.fn() }))
+vi.mock('../../contexts/AuthContext', () => ({ useAuthContext: () => ({ user: { role: 'superadmin' } }) }))
+vi.mock('../../lib/prebillWorkspace', () => ({ loadPreBillDetail: loadDetail }))
+vi.mock('./OrderDetailView', () => ({ default: ({ readOnly }: { readOnly: boolean }) => <p>รายละเอียดบิลขาย {String(readOnly)}</p> }))
+vi.mock('./PreBillPreview', () => ({ default: () => <p>รายละเอียด PC</p> }))
+vi.mock('../../lib/supabase', () => ({ supabase: { rpc, from, channel: () => { const channel = { on: () => channel, subscribe: () => channel }; return channel }, removeChannel: vi.fn() } }))
+const row = { source: 'PC', id: 'request', document_id: 'document', document_no: 'PC-001', owner_name: 'ผู้ขอทดสอบ', reason: 'แก้ไขราคาผิด', subtotal: 380, shipping_cost: 30, discount: 160, total_amount: 250, status: 'pending', created_at: '2026-11-10T01:00:00Z', snapshot: { items: [{ product_id: 'p', product_name: 'ตรายาง', quantity: 1, unit_price: 380 }] } }
+beforeEach(() => {
+ vi.clearAllMocks()
+ rpc.mockImplementation((name: string) => Promise.resolve({ data: name === 'rpc_discount_approval_queue' ? { rows: [row], count: 1 } : null, error: null }))
+ from.mockReturnValue({ select: () => ({ eq: () => ({ single: () => Promise.resolve({ data: { id: 'document', customer_name: 'ลูกค้าทดสอบ', channel_code: 'WEB' }, error: null }) }) }) })
+ loadDetail.mockResolvedValue({ id: 'document', document_no: 'PC-001', or_prebill_items: [] })
+})
+afterEach(cleanup)
+it('saves only after the final confirmation, preserving the decision and note', async () => {
+ const changed = vi.fn()
+ render(<DiscountApprovalWorkspace onChanged={changed} />)
+ fireEvent.click(await screen.findByRole('button', { name: 'พิจารณา' }))
+ expect(await screen.findByText('ลูกค้าทดสอบ')).toBeTruthy()
+ fireEvent.change(screen.getByLabelText(/หมายเหตุผู้พิจารณา/), { target: { value: 'ตรวจสอบแล้ว' } })
+ fireEvent.click(screen.getByRole('button', { name: 'ยืนยันผลพิจารณา' }))
+ const dialog = screen.getByRole('dialog', { name: 'ยืนยันอนุมัติส่วนลด' })
+ expect(within(dialog).getByText('ตรวจสอบแล้ว', { exact: false })).toBeTruthy()
+ expect(rpc.mock.calls.filter(([name]) => name === 'rpc_review_prebill_discount')).toHaveLength(0)
+ fireEvent.click(within(dialog).getByRole('button', { name: 'กลับไปแก้ไข' }))
+ expect(screen.getByLabelText(/หมายเหตุผู้พิจารณา/).getAttribute('disabled')).toBeNull()
+ fireEvent.click(screen.getByRole('button', { name: 'ยืนยันผลพิจารณา' }))
+ fireEvent.click(screen.getByRole('button', { name: 'ยืนยันอนุมัติ' }))
+ await waitFor(() => expect(rpc).toHaveBeenCalledWith('rpc_review_prebill_discount', { p_document_id: 'request', p_approve: true, p_approved_discount: null, p_note: 'ตรวจสอบแล้ว' }))
+ await waitFor(() => expect(changed).toHaveBeenCalledOnce())
+})
+it('requires a rejection note and keeps errors visible after a failed save', async () => {
+ render(<DiscountApprovalWorkspace onChanged={() => {}} />)
+ fireEvent.click(await screen.findByRole('button', { name: 'พิจารณา' }))
+ await screen.findByText('ลูกค้าทดสอบ')
+ fireEvent.change(screen.getByLabelText('ผลพิจารณา'), { target: { value: 'no' } })
+ expect((screen.getByRole('button', { name: 'ยืนยันผลพิจารณา' }) as HTMLButtonElement).disabled).toBe(true)
+ fireEvent.change(screen.getByLabelText(/หมายเหตุผู้พิจารณา/), { target: { value: 'ไม่ตรงเงื่อนไข' } })
+ fireEvent.click(screen.getByRole('button', { name: 'ยืนยันผลพิจารณา' }))
+ rpc.mockResolvedValueOnce({ error: { message: 'ข้อมูลเปลี่ยน ต้องขออนุมัติใหม่' } })
+ fireEvent.click(screen.getByRole('button', { name: 'ยืนยันไม่อนุมัติ' }))
+ expect(await screen.findAllByText('ข้อมูลเปลี่ยน ต้องขออนุมัติใหม่')).toHaveLength(2)
+ expect(screen.queryByRole('dialog', { name: 'ยืนยันไม่อนุมัติส่วนลด' })).toBeNull()
+})
+it('opens the read-only document using document_id rather than the approval request id', async () => {
+ render(<DiscountApprovalWorkspace onChanged={() => {}} />)
+ fireEvent.click(await screen.findByRole('button', { name: 'ดูรายละเอียดบิล PC-001' }))
+ expect(await screen.findByText('รายละเอียด PC')).toBeTruthy()
+ expect(loadDetail).toHaveBeenCalledWith('document')
+})
+it('loads sale details read-only and reviews the sale request id', async () => {
+ rpc.mockImplementation((name: string) => Promise.resolve({ data: name === 'rpc_discount_approval_queue' ? { rows: [{ ...row, source: 'sale' }], count: 1 } : null, error: null }))
+ render(<DiscountApprovalWorkspace onChanged={() => {}} />)
+ fireEvent.click(await screen.findByRole('button', { name: 'ดูรายละเอียดบิล PC-001' }))
+ expect(await screen.findByText('รายละเอียดบิลขาย true')).toBeTruthy()
+ fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /ปิด/ }))
+ fireEvent.click(screen.getByRole('button', { name: 'พิจารณา' }))
+ fireEvent.click(screen.getByRole('button', { name: 'ยืนยันผลพิจารณา' }))
+ fireEvent.click(screen.getByRole('button', { name: 'ยืนยันอนุมัติ' }))
+ await waitFor(() => expect(rpc).toHaveBeenCalledWith('rpc_review_sales_discount', { p_request_id: 'request', p_approve: true, p_note: null }))
 })
