@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { groupManualSlipRows } from '../../lib/manualSlipGroups'
 import { supabase } from '../../lib/supabase'
 import { Order } from '../../types'
 import { formatDateTime } from '../../lib/utils'
@@ -173,34 +174,10 @@ export default function ManualSlipCheckSection() {
     }
   }
 
-  const orderGroups = useMemo(() => {
-    const map = new Map<string, OrderGroup>()
-    for (const row of rows) {
-      const existing = map.get(row.order_id)
-      if (existing) {
-        existing.entries.push(row)
-        if (!existing.rejected_reason && row.rejected_reason) existing.rejected_reason = row.rejected_reason
-      } else {
-        map.set(row.order_id, {
-          order_id: row.order_id,
-          bill_no: row.bill_no,
-          status: row.status,
-          submitted_by: row.submitted_by,
-          submitted_at: row.submitted_at,
-          reviewed_by: row.reviewed_by,
-          reviewed_at: row.reviewed_at,
-          rejected_reason: row.rejected_reason,
-          entries: [row],
-        })
-      }
-    }
-    return Array.from(map.values())
-  }, [rows])
+  const orderGroups = useMemo(() => groupManualSlipRows(rows), [rows])
 
   const filteredGroups = useMemo(() => {
-    const groupsByStatus = filterTab === 'pending'
-      ? orderGroups.filter(g => g.entries.some(e => e.status === 'pending'))
-      : orderGroups.filter(g => g.entries.every(e => e.status !== 'pending'))
+    const groupsByStatus = orderGroups.filter(g => (g.status === 'pending') === (filterTab === 'pending'))
     const query = searchQuery.trim().toLocaleLowerCase('th-TH')
     if (!query) return groupsByStatus
     return groupsByStatus.filter((group) => {
@@ -508,7 +485,7 @@ export default function ManualSlipCheckSection() {
               onClick={() => setFilterTab('done')}
               className={`px-4 py-2 rounded-lg text-sm font-bold transition ${filterTab === 'done' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
             >
-              เสร็จสิ้น
+              ประวัติ / เสร็จสิ้น
               <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs ${filterTab === 'done' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'}`}>
                 {doneCount}
               </span>
@@ -534,12 +511,12 @@ export default function ManualSlipCheckSection() {
         ) : filteredGroups.length === 0 ? (
           <div className="text-center py-12 text-gray-400">
             <i className="fas fa-inbox text-4xl mb-3 block"></i>
-            <p>{searchQuery.trim() ? `ไม่พบรายการที่ตรงกับ “${searchQuery.trim()}”` : filterTab === 'pending' ? 'ไม่มีรายการใหม่' : 'ไม่มีรายการที่เสร็จสิ้น'}</p>
+            <p>{searchQuery.trim() ? `ไม่พบรายการที่ตรงกับ “${searchQuery.trim()}”` : filterTab === 'pending' ? 'ไม่มีรายการใหม่' : 'ไม่มีประวัติรายการ'}</p>
           </div>
         ) : (
           <div className="divide-y">
             {filteredGroups.map((group) => (
-              <div key={group.order_id} className="px-6 py-4 hover:bg-gray-50/50 transition">
+              <div key={group.entries[0].id} className="px-6 py-4 hover:bg-gray-50/50 transition">
                 <div className="flex flex-wrap items-start gap-4">
                   {/* Slip thumbnails */}
                   <div className="shrink-0">
